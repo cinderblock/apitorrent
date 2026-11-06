@@ -45,6 +45,7 @@ too_many_lines = "allow"
 struct_field_names = "allow"
 match_same_arms = "allow"
 case_sensitive_file_extension_comparisons = "allow"
+similar_names = "allow"
 
 [profile.release]
 lto = "thin"

@@ -1,10 +1,17 @@
 //! The apitorrent BitTorrent engine.
 //!
 //! The protocol-level pieces (bitfields, layout, picking, verification) are plain state with
-//! no I/O. The session layer drives them from tokio tasks.
+//! no I/O. The session layer drives them from tokio tasks: one actor per torrent, one task
+//! per peer connection.
 
 pub mod bitfield;
 pub mod layout;
+mod peer;
 pub mod picker;
+mod session;
 pub mod storage;
+mod torrent;
 pub mod verify;
+
+pub use session::{AddError, Session, SessionConfig};
+pub use torrent::{AddTorrent, TorrentHandle, TorrentState, TorrentStats};
