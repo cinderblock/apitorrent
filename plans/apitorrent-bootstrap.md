@@ -84,6 +84,15 @@ No existing client has the whole combination:
 
 ## Findings / gotchas
 
+- libtorrent's fixture expectations are platform-dependent (Windows strips trailing spaces,
+  others don't). We apply one portable rule set everywhere, so our expectations differ in a
+  few documented cases (`crates/apitorrent-metainfo/tests/libtorrent_fixtures.rs`). A
+  Deluge import must therefore carry libtorrent-style paths as per-file overrides where
+  they differ.
+- Real `.torrent` files can have trailing bytes after the root dictionary, and keys out of
+  order outside the v2 file tree. Both are accepted. The v2 file tree must be in order.
+- BitComet's legacy pad files are recognised by the `_____padding_file_` name prefix.
+
 - No maintained Rust bindings for libtorrent exist. `libtorrent-sys` was last updated in
   2022 and `lt-rs` is 0.1. This was moot once we chose our own engine.
 - rqbit 9.1 (October 2026) lacks MSE/PE encryption, rarest-first picking and full
@@ -97,10 +106,10 @@ No existing client has the whole combination:
 - [x] Research the engine options and prior art
 - [x] `docs/architecture.md`, revised for our own engine and TypeScript plugins
 - [x] User's go-ahead on direction (2026-11-06)
-- [ ] M0.1 workspace
-- [ ] M0.2 bencode
-- [ ] M0.3 metainfo
-- [ ] M0.4 wire
+- [x] M0.1 workspace, MIT licence, README (`1f9a837`)
+- [x] M0.2 bencode: strict codec with property tests (`1f9a837`)
+- [x] M0.3 metainfo: v1, v2 and hybrid, magnets, sanitising; libtorrent fixtures pass (`04e7c70`)
+- [ ] M0.4 wire ← current
 
 ## Open questions for the user
 
