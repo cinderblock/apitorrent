@@ -108,8 +108,12 @@ No existing client has the whole combination:
 - Windows reserves TCP port ranges (Hyper-V/WinNAT), so binding can fail with
   `PermissionDenied`. On this machine 17691–19290 (and more) are excluded, while 8742 is
   free. `serve` reports this case with an explicit message.
-- The engine doesn't announce to trackers yet. Peers only come from `AddTorrent::peers`
-  or incoming connections until M1.5 lands.
+- Tracker TLS uses rustls with the **ring** provider (not aws-lc-rs) so Windows builds
+  need no CMake or NASM. reqwest gets a preconfigured rustls config; if reqwest's rustls
+  version ever diverges from ours, the client fails to build (a test catches it), rather
+  than silently changing TLS backend.
+- Tracker proxy environment variables are ignored on purpose (`no_proxy()`). Proxy
+  support will be an explicit setting.
 - Known engine gaps, to fix before real-world use: no memory cap on in-flight piece
   buffers, no banning of peers that send bad data, a v2 `Unknown` verdict is treated as
   invalid (needs BEP 52 hash requests), upload `cancel` is ignored, no rate limiting.
@@ -127,9 +131,9 @@ No existing client has the whole combination:
 - [x] M1.2 engine core: bitfield, layout, storage, verify, picker (`0e4c4c8`)
 - [x] M1.3 networking: session/listener, torrent actor, peer tasks, choker (`fc61d2f`)
 - [x] M1.4 loopback tests: v1/v2/hybrid transfers, 4-node swarm, skipped files (`fc61d2f`, `478d482`)
-- [ ] M1.5 trackers: HTTP (strict TLS) and UDP (BEP 15). **Delegated** to a background
-  agent in a git worktree under `.claude/worktrees/`; merge its branch when it reports
-  back, then wire announces into the torrent actor.
+- [x] M1.5 trackers: `apitorrent-tracker` (HTTP/HTTPS/UDP, strict TLS via
+  rustls-platform-verifier, built by a background agent, cherry-picked as `d25c643`),
+  announce scheduler with BEP 12 tiers wired into the actor (`7153af1`)
 - [x] M1.6 resume state, file-size validation of resume data, check on add (`c9cd733`)
 - [x] M2.1 `apitorrent-types` with TS bindings → `web/src/api/generated` (`e5f9595`)
 - [x] M2.2 `apitorrent-core`: SQLite (WAL, FULL sync, migrations), registry, store (`e5f9595`)

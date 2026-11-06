@@ -91,6 +91,7 @@ version = "0.1.0"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-metainfo",
+ "apitorrent-tracker",
  "apitorrent-wire",
  "bytes",
  "proptest",
