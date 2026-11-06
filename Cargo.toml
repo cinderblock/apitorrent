@@ -22,7 +22,7 @@ apitorrent-server = { path = "crates/apitorrent-server" }
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.23"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 directories = "6"
 futures-util = "0.3"
 rusqlite = { version = "0.41", features = ["bundled"] }

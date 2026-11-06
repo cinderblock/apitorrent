@@ -1,0 +1,22 @@
+[package]
+name = "apitorrentd"
+description = "The apitorrent daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+apitorrent-core.workspace = true
+apitorrent-engine.workspace = true
+apitorrent-server.workspace = true
+clap.workspace = true
+directories.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
