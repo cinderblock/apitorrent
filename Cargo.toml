@@ -14,6 +14,7 @@ repository = "https://github.com/cinderblock/apitorrent"
 apitorrent-bencode = { path = "crates/apitorrent-bencode" }
 apitorrent-metainfo = { path = "crates/apitorrent-metainfo" }
 apitorrent-wire = { path = "crates/apitorrent-wire" }
+apitorrent-engine = { path = "crates/apitorrent-engine" }
 
 bytes = "1"
 hex = "0.4"
@@ -23,6 +24,11 @@ sha2 = "0.10"
 thiserror = "2"
 data-encoding = "2"
 proptest = "1"
+rand = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -411,7 +411,12 @@ mod tests {
 
     fn data(len: usize, seed: u8) -> Vec<u8> {
         (0..len)
-            .map(|i| u8::try_from(i % 256).unwrap().wrapping_mul(31).wrapping_add(seed))
+            .map(|i| {
+                u8::try_from(i % 256)
+                    .unwrap()
+                    .wrapping_mul(31)
+                    .wrapping_add(seed)
+            })
             .collect()
     }
 
