@@ -15,6 +15,7 @@ apitorrent-bencode = { path = "crates/apitorrent-bencode" }
 apitorrent-metainfo = { path = "crates/apitorrent-metainfo" }
 apitorrent-wire = { path = "crates/apitorrent-wire" }
 apitorrent-engine = { path = "crates/apitorrent-engine" }
+apitorrent-tracker = { path = "crates/apitorrent-tracker" }
 apitorrent-types = { path = "crates/apitorrent-types" }
 apitorrent-core = { path = "crates/apitorrent-core" }
 apitorrent-server = { path = "crates/apitorrent-server" }
@@ -46,6 +47,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+url = "2"
+# TLS: rustls with the ring provider (no OpenSSL, no CMake), with certificates verified
+# against the OS trust store by rustls-platform-verifier. Nothing may disable verification.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
