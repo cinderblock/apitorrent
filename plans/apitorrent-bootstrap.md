@@ -105,6 +105,15 @@ No existing client has the whole combination:
 - Bun has no permission model, so it isn't safe as an in-process or subprocess plugin
   runtime.
 
+- Windows reserves TCP port ranges (Hyper-V/WinNAT), so binding can fail with
+  `PermissionDenied`. On this machine 17691–19290 (and more) are excluded, while 8742 is
+  free. `serve` reports this case with an explicit message.
+- The engine doesn't announce to trackers yet. Peers only come from `AddTorrent::peers`
+  or incoming connections until M1.5 lands.
+- Known engine gaps, to fix before real-world use: no memory cap on in-flight piece
+  buffers, no banning of peers that send bad data, a v2 `Unknown` verdict is treated as
+  invalid (needs BEP 52 hash requests), upload `cancel` is ignored, no rate limiting.
+
 ## Progress log
 
 - [x] Research the engine options and prior art
@@ -116,10 +125,17 @@ No existing client has the whole combination:
 - [x] M0.4 wire: handshake, all messages, BEP 9/10/11 payloads, decoder (`c7fb73c`)
 - [x] M1.1 torrent creator, v1/v2/hybrid (`642c534`)
 - [x] M1.2 engine core: bitfield, layout, storage, verify, picker (`0e4c4c8`)
-- [ ] M1.3 networking: peer connection task, torrent actor, session/listener ← current
-- [ ] M1.4 loopback integration test: seeder session → leecher session, all versions
-- [ ] M1.5 trackers: HTTP (strict TLS) and UDP (BEP 15)
-- [ ] M1.6 resume state (bitfield and file sizes) and recheck
+- [x] M1.3 networking: session/listener, torrent actor, peer tasks, choker (`fc61d2f`)
+- [x] M1.4 loopback tests: v1/v2/hybrid transfers, 4-node swarm, skipped files (`fc61d2f`, `478d482`)
+- [ ] M1.5 trackers: HTTP (strict TLS) and UDP (BEP 15). **Delegated** to a background
+  agent in a git worktree under `.claude/worktrees/`; merge its branch when it reports
+  back, then wire announces into the torrent actor.
+- [x] M1.6 resume state, file-size validation of resume data, check on add (`c9cd733`)
+- [x] M2.1 `apitorrent-types` with TS bindings → `web/src/api/generated` (`e5f9595`)
+- [x] M2.2 `apitorrent-core`: SQLite (WAL, FULL sync, migrations), registry, store (`e5f9595`)
+- [x] M2.3 `apitorrent-server`: REST + sync WebSocket, Host/Origin guards (`1220f9f`)
+- [x] M2.4 `apitorrentd` daemon, default port 8742 (`1220f9f`)
+- [ ] M3 web UI ← current
 
 ## Open questions for the user
 
