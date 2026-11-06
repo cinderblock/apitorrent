@@ -1,0 +1,26 @@
+[package]
+name = "apitorrent-core"
+description = "apitorrent's core: torrent registry, persistence and state sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+apitorrent-engine.workspace = true
+apitorrent-metainfo.workspace = true
+apitorrent-types.workspace = true
+base64.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

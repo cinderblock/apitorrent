@@ -6,3 +6,4 @@ dist/
 .env.*
 /fuzz/artifacts
 /fuzz/corpus
+/.claude/

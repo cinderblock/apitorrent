@@ -1,0 +1,217 @@
+//! Types of the apitorrent HTTP and WebSocket API (`/api/v1`).
+//!
+//! These are the wire contract between the server and every client: the web UI, the desktop
+//! app, the CLI and plugins. TypeScript definitions are generated from them (run
+//! `cargo test -p apitorrent-types export_bindings`), so the UI cannot drift from the server.
+//!
+//! JSON field names are camelCase. Byte counts and rates are plain numbers (bytes and
+//! bytes per second); timestamps are milliseconds since the Unix epoch.
+
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
+/// The API version in the URL prefix.
+pub const API_VERSION: u32 = 1;
+
+/// A torrent's id: its v2 info-hash in hex if it has one, otherwise its v1 info-hash.
+/// Stable across restarts and the same on every instance.
+pub type TorrentId = String;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum TorrentState {
+    /// Checking files already on disk.
+    Checking,
+    Downloading,
+    /// Every wanted piece is downloaded; uploading to others.
+    Seeding,
+    Paused,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TorrentSummary {
+    pub id: TorrentId,
+    pub name: String,
+    pub info_hash_v1: Option<String>,
+    pub info_hash_v2: Option<String>,
+    pub state: TorrentState,
+    /// Fraction of pieces downloaded, 0 to 1.
+    pub progress: f64,
+    /// Total size of the torrent's files.
+    #[ts(type = "number")]
+    pub size: u64,
+    pub pieces_have: u32,
+    pub pieces_total: u32,
+    /// All-time totals, including previous sessions.
+    #[ts(type = "number")]
+    pub downloaded: u64,
+    #[ts(type = "number")]
+    pub uploaded: u64,
+    #[ts(type = "number")]
+    pub download_rate: u64,
+    #[ts(type = "number")]
+    pub upload_rate: u64,
+    pub peers: u32,
+    pub seeds: u32,
+    #[ts(type = "number")]
+    pub added_at: i64,
+    pub label: Option<String>,
+    pub save_path: String,
+    pub private: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TorrentFile {
+    pub index: u32,
+    /// Path inside the save directory, joined with `/`.
+    pub path: String,
+    #[ts(type = "number")]
+    pub length: u64,
+    /// 0 means skipped.
+    pub priority: u8,
+    /// Fraction of the file's pieces downloaded, 0 to 1.
+    pub progress: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TorrentDetail {
+    pub summary: TorrentSummary,
+    pub files: Vec<TorrentFile>,
+    pub trackers: Vec<Vec<String>>,
+    pub comment: Option<String>,
+    pub created_by: Option<String>,
+    #[ts(type = "number | null")]
+    pub creation_date: Option<i64>,
+    #[ts(type = "number")]
+    pub piece_length: u64,
+    pub magnet: String,
+}
+
+/// Where a new torrent comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export)]
+pub enum AddSource {
+    /// A `.torrent` file, base64-encoded.
+    TorrentFile {
+        data: String,
+    },
+    Magnet {
+        uri: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AddTorrentRequest {
+    pub source: AddSource,
+    /// Defaults to the server's download directory.
+    #[serde(default)]
+    pub save_path: Option<String>,
+    #[serde(default)]
+    pub paused: bool,
+    #[serde(default)]
+    pub label: Option<String>,
+    /// One per file. Omit to download everything.
+    #[serde(default)]
+    pub file_priorities: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AddTorrentResponse {
+    pub id: TorrentId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetFilePrioritiesRequest {
+    pub priorities: Vec<u8>,
+}
+
+/// The body of every error response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ApiError {
+    /// Stable, machine-readable: `not_found`, `invalid_torrent`, `duplicate`, …
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ServerInfo {
+    pub version: String,
+    pub api_version: u32,
+    /// Feature flags clients can check before using optional features.
+    pub capabilities: Vec<String>,
+}
+
+/// Messages from the server on the `/api/v1/sync` WebSocket.
+///
+/// The server keeps a revisioned store. A client first gets a `snapshot` at some revision,
+/// then `patch`es that each advance the revision by one. If a client falls behind, the
+/// server sends a fresh snapshot instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[ts(export)]
+pub enum SyncMessage {
+    #[serde(rename_all = "camelCase")]
+    Snapshot {
+        #[ts(type = "number")]
+        revision: u64,
+        torrents: Vec<TorrentSummary>,
+    },
+    #[serde(rename_all = "camelCase")]
+    Patch {
+        #[ts(type = "number")]
+        revision: u64,
+        upserted: Vec<TorrentSummary>,
+        removed: Vec<TorrentId>,
+    },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_shape() {
+        let req: AddTorrentRequest = serde_json::from_str(
+            r#"{"source":{"kind":"magnet","uri":"magnet:?xt=urn:btih:00"},"paused":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            req.source,
+            AddSource::Magnet {
+                uri: "magnet:?xt=urn:btih:00".into()
+            }
+        );
+        assert!(req.paused);
+        assert_eq!(req.save_path, None);
+
+        let msg = SyncMessage::Patch {
+            revision: 3,
+            upserted: vec![],
+            removed: vec!["ab".into()],
+        };
+        assert_eq!(
+            serde_json::to_string(&msg).unwrap(),
+            r#"{"type":"patch","revision":3,"upserted":[],"removed":["ab"]}"#
+        );
+    }
+}
