@@ -162,6 +162,13 @@ impl TorrentBuilder {
 
         let v1 = matches!(self.version, Version::V1 | Version::Hybrid);
         let v2 = matches!(self.version, Version::V2 | Version::Hybrid);
+        let mut files = self.files;
+        if v2 {
+            // A v2 file tree is a nest of sorted dictionaries, so its files come out in path
+            // order. A hybrid torrent's v1 list must match that order (BEP 52), and the piece
+            // layout follows it.
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+        }
         let pad = self.version == Version::Hybrid;
         let piece_length = self.piece_length;
 
@@ -169,10 +176,10 @@ impl TorrentBuilder {
         let mut v1_files = Vec::new();
         let mut v2_files: Vec<(Vec<String>, u64, Sha256Hash, bool)> = Vec::new();
         let mut layers: Vec<(Sha256Hash, Vec<Sha256Hash>)> = Vec::new();
-        let count = self.files.len();
+        let count = files.len();
 
         let mut buf = vec![0u8; 1 << 20];
-        for (i, mut file) in self.files.into_iter().enumerate() {
+        for (i, mut file) in files.into_iter().enumerate() {
             let mut file_hasher = FileHasher::new();
             let mut remaining = file.length;
             while remaining > 0 {
@@ -476,6 +483,33 @@ mod tests {
         };
         assert_eq!(layout(&hybrid), layout(&v2));
         assert_eq!(hybrid.info.piece_count(), v2.info.piece_count());
+    }
+
+    #[test]
+    fn hybrid_files_follow_tree_order() {
+        // Given out of order, with an empty file sorting before a non-empty one.
+        let bytes = TorrentBuilder::new("pack", Version::Hybrid)
+            .piece_length(16 * 1024)
+            .file(FileSource::from_bytes(&["z.bin"], data(20_000, 1)))
+            .file(FileSource::from_bytes(
+                &["dir", "small.txt"],
+                data(7_000, 2),
+            ))
+            .file(FileSource::from_bytes(&["dir", "empty"], Vec::new()))
+            .build()
+            .unwrap();
+        let t = Torrent::from_bytes(&bytes).unwrap();
+        let paths: Vec<String> = t
+            .info
+            .files
+            .iter()
+            .filter(|f| !f.is_pad())
+            .map(crate::FileEntry::display_path)
+            .collect();
+        assert_eq!(
+            paths,
+            ["pack/dir/empty", "pack/dir/small.txt", "pack/z.bin"]
+        );
     }
 
     #[test]
