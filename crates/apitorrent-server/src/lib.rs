@@ -16,10 +16,14 @@ mod routes;
 mod sync;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderName, HeaderValue, header};
 use axum::routing::{get, post, put};
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use apitorrent_core::Core;
 
@@ -32,7 +36,16 @@ pub struct ServerConfig {
     /// Hostnames (without port) the server answers to besides loopback names, such as the
     /// name a reverse proxy forwards.
     pub public_hosts: Vec<String>,
+    /// A built web UI (`web/dist`) to serve at `/`. Unknown paths fall back to its
+    /// `index.html`, so client-side routes work on reload.
+    pub web_root: Option<PathBuf>,
 }
+
+/// The page may load only its own scripts, styles and images, talk only to its own origin
+/// (which covers the sync WebSocket), and never be framed.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; img-src 'self' data:; \
+     style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; \
+     base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
@@ -69,9 +82,28 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
         )
         .route("/sync", get(sync::handler))
         .fallback(routes::not_found);
-    Router::new()
-        .nest("/api/v1", api)
-        .layer(DefaultBodyLimit::max(MAX_BODY))
+    let mut app = Router::new().nest("/api/v1", api);
+    if let Some(dir) = &config.web_root {
+        let index = ServeFile::new(dir.join("index.html"));
+        app = app.fallback_service(ServeDir::new(dir).fallback(index));
+    }
+    app.layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
         .layer(axum::middleware::from_fn_with_state(guard, guard::check))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(AppState { core })

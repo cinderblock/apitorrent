@@ -22,8 +22,8 @@ use apitorrent_engine::{
 };
 use apitorrent_metainfo::{Magnet, Torrent};
 use apitorrent_types::{
-    AddSource, AddTorrentRequest, TorrentDetail, TorrentFile, TorrentId, TorrentState,
-    TorrentSummary,
+    AddSource, AddTorrentRequest, FilePriority, TorrentDetail, TorrentFile, TorrentId,
+    TorrentState, TorrentSummary,
 };
 
 use crate::db::{Database, TorrentRow};
@@ -367,24 +367,37 @@ impl Core {
         Ok(())
     }
 
-    pub async fn set_file_priorities(&self, id: &str, prios: Vec<u8>) -> Result<(), CoreError> {
+    /// Change the priority of some files; the others keep theirs. Pad entries can't be
+    /// changed (they are never downloaded).
+    pub async fn set_file_priorities(
+        &self,
+        id: &str,
+        updates: &[FilePriority],
+    ) -> Result<(), CoreError> {
         let handle = self.handle(id)?;
-        {
+        let prios = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
-            let files = torrents
-                .get(id)
-                .ok_or(CoreError::NotFound)?
-                .torrent
-                .info
-                .files
-                .len();
-            if prios.len() != files {
-                return Err(CoreError::InvalidRequest(format!(
-                    "{} file priorities for {files} files",
-                    prios.len()
-                )));
+            let entry = torrents.get(id).ok_or(CoreError::NotFound)?;
+            let files = &entry.torrent.info.files;
+            let mut prios = entry.file_priorities.clone();
+            for u in updates {
+                let i = u.index as usize;
+                if files
+                    .get(i)
+                    .is_none_or(apitorrent_metainfo::FileEntry::is_pad)
+                {
+                    return Err(CoreError::InvalidRequest(format!("no file {}", u.index)));
+                }
+                if u.priority > 7 {
+                    return Err(CoreError::InvalidRequest(format!(
+                        "priority {} is above the maximum of 7",
+                        u.priority
+                    )));
+                }
+                prios[i] = u.priority;
             }
-        }
+            prios
+        };
         let key = id.to_owned();
         let stored = prios.clone();
         self.db(move |db| db.set_file_priorities(&key, &stored))

@@ -34,6 +34,10 @@ struct Args {
     #[arg(long, env = "APITORRENT_PEER_LISTEN", default_value = "0.0.0.0:6881")]
     peer_listen: SocketAddr,
 
+    /// A built web UI to serve (the `web/dist` directory).
+    #[arg(long, env = "APITORRENT_WEB_ROOT")]
+    web_root: Option<PathBuf>,
+
     /// Extra host names the API answers to (for a reverse proxy). Repeatable.
     #[arg(
         long = "public-host",
@@ -112,6 +116,7 @@ async fn main() -> ExitCode {
     let server = ServerConfig {
         listen: args.api,
         public_hosts: args.public_hosts,
+        web_root: args.web_root,
     };
     let result = apitorrent_server::serve(core.clone(), server, shutdown_signal()).await;
     if let Err(e) = core.shutdown().await {

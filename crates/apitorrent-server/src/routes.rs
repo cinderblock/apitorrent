@@ -103,7 +103,7 @@ pub(crate) async fn set_priorities(
     Path(id): Path<String>,
     Json(req): Json<SetFilePrioritiesRequest>,
 ) -> ApiResult<StatusCode> {
-    s.core.set_file_priorities(&id, req.priorities).await?;
+    s.core.set_file_priorities(&id, &req.priorities).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

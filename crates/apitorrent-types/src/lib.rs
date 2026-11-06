@@ -138,7 +138,18 @@ pub struct AddTorrentResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct SetFilePrioritiesRequest {
-    pub priorities: Vec<u8>,
+    /// Files to change; the rest keep their priority.
+    pub priorities: Vec<FilePriority>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FilePriority {
+    /// [`TorrentFile::index`].
+    pub index: u32,
+    /// 0 skips the file; up to 7.
+    pub priority: u8,
 }
 
 /// The body of every error response.

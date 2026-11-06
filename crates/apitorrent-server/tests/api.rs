@@ -33,6 +33,7 @@ fn config() -> ServerConfig {
     ServerConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
         public_hosts: vec!["torrents.example.com".into()],
+        web_root: None,
     }
 }
 
@@ -137,7 +138,7 @@ async fn crud_and_errors() {
         &format!("/api/v1/torrents/{id}/files/priorities"),
         "localhost",
         None,
-        Some(r#"{"priorities":[1,2]}"#.into()),
+        Some(r#"{"priorities":[{"index":5,"priority":1}]}"#.into()),
     ))
     .await
     .unwrap();
@@ -223,6 +224,7 @@ async fn refuses_non_loopback_until_auth_exists() {
     let cfg = ServerConfig {
         listen: "0.0.0.0:0".parse().unwrap(),
         public_hosts: vec![],
+        web_root: None,
     };
     let err = apitorrent_server::serve(core.clone(), cfg, std::future::pending())
         .await
@@ -287,5 +289,50 @@ async fn sync_websocket() {
     };
     assert_eq!(next, revision + 1);
     assert_eq!(upserted[0].name, "hello.txt");
+    core.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serves_the_ui_with_security_headers() {
+    let root = tempfile::tempdir().unwrap();
+    let web = root.path().join("web");
+    std::fs::create_dir_all(web.join("assets")).unwrap();
+    std::fs::write(web.join("index.html"), "<!doctype html><title>ui</title>").unwrap();
+    std::fs::write(web.join("assets").join("app.js"), "console.log(1)").unwrap();
+    let core = core(root.path()).await;
+    let cfg = ServerConfig {
+        web_root: Some(web),
+        ..config()
+    };
+    let app = router(core.clone(), &cfg);
+    let call = |r| app.clone().oneshot(r);
+
+    let resp = call(req("GET", "/", "localhost", None, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let csp = resp.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+    assert_eq!(resp.headers()["x-content-type-options"], "nosniff");
+
+    let resp = call(req("GET", "/assets/app.js", "localhost", None, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // A client-side route falls back to index.html.
+    let resp = call(req("GET", "/torrents/abc", "localhost", None, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("<title>ui</title>"));
+    // API 404s stay JSON.
+    let resp = call(req("GET", "/api/v1/nope", "localhost", None, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     core.shutdown().await.unwrap();
 }
