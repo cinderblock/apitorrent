@@ -3,7 +3,10 @@
 A BitTorrent client meant to replace Deluge. It has its own Rust engine, a native desktop app,
 a full web UI with passkey login, and sandboxed TypeScript plugins.
 
-> **Status: early development.** Nothing is usable yet. See
+> **Status: early development.** The engine downloads and seeds v1, v2 and hybrid
+> torrents from `.torrent` files, finds peers through HTTP, HTTPS and UDP trackers, and
+> can be driven from the web UI. Magnet links, DHT, authentication and the desktop app are
+> next. Don't point it at anything you care about yet. See
 > [`plans/apitorrent-bootstrap.md`](plans/apitorrent-bootstrap.md) for progress, and
 > [`docs/architecture.md`](docs/architecture.md) for the design.
 
@@ -32,8 +35,21 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 You need Rust (stable) and Bun.
 
 ```sh
-cargo test --workspace
+cargo test --workspace                 # Rust tests
+cd web && bun install && bun test      # web UI tests
+
+# Run the daemon with the web UI at http://localhost:8742
+cd web && bun run build && cd ..
+cargo run -p apitorrentd -- --web-root web/dist
 ```
+
+The API listens on `127.0.0.1:8742` by default and refuses other addresses until
+authentication is implemented. `apitorrentd --help` lists the options; each one can also
+be set with an `APITORRENT_*` environment variable.
+
+For UI work, run `bun run dev` in `web/` alongside the daemon: Vite proxies `/api` to it.
+The UI's API types in `web/src/api/generated` are generated from the Rust types with
+`cargo test -p apitorrent-types`.
 
 ## Licence
 

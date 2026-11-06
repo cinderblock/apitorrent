@@ -139,11 +139,31 @@ No existing client has the whole combination:
 - [x] M2.2 `apitorrent-core`: SQLite (WAL, FULL sync, migrations), registry, store (`e5f9595`)
 - [x] M2.3 `apitorrent-server`: REST + sync WebSocket, Host/Origin guards (`1220f9f`)
 - [x] M2.4 `apitorrentd` daemon, default port 8742 (`1220f9f`)
-- [ ] M3 web UI ← current
+- [x] M3.1 web UI: live table, filters, details, file priorities, add/remove, drag-drop
+  (`d185833`); daemon serves it with CSP and other security headers (`f459ad6`)
+- [ ] M3.2 UI: per-tracker status (engine already reports it), peers tab, label
+  editing, settings page, column chooser, embedding `web/dist` into release binaries
+- [ ] **Next milestone: waiting on the user's priority call** (see the open questions)
 
 ## Open questions for the user
 
-*(none right now)*
+1. Which milestone next? Options: magnets + DHT + PEX (the client becomes useful on
+   real public swarms), passkey auth (lets the API leave loopback), or the Tauri desktop
+   app. **Recommendation: magnets + DHT + PEX first.**
+2. May I run a short real-world interop test: join a public Ubuntu ISO swarm (HTTPS
+   tracker), download about 50 MB to check interop with real libtorrent and Transmission
+   peers, then stop and delete the data? It uses your network and IP briefly.
+
+## How to run it
+
+```sh
+cd web && bun install && bun run build && cd ..
+cargo run -p apitorrentd -- --web-root web/dist
+# then open http://localhost:8742
+```
+
+For UI development, run `bun run dev` in `web/` (Vite proxies `/api` to the daemon on
+8742) and open http://localhost:5173.
 
 ## Things not to do
 
