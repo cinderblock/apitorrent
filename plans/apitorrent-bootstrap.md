@@ -3,11 +3,11 @@
 ## Goal
 
 Build a complete replacement for Deluge with:
-- a fast, cross-platform core;
+- a fast, cross-platform core: our own Rust BitTorrent engine;
 - a native Tauri desktop app that can also serve the web UI, or act as a thin client to a
   headless daemon (with path mappings to open remote folders over OS file sharing);
 - a full web UI with passkey login;
-- full plugin support;
+- full plugin support (TypeScript);
 - first-class file sharing between torrents ("packs");
 - strict TLS: never accept an unverified certificate.
 
@@ -21,79 +21,94 @@ The target design is in `docs/architecture.md`.
 - Repo: `C:\Users\camer\git\apitorrent`, git initialized 2026-11-06, branch `master`, no
   remote.
 - Toolchain: rustc/cargo 1.99, bun 1.4.2, tauri-cli 2.10.1, VS 2022 Community (MSVC),
-  CMake, Ninja, LLVM clang. No vcpkg and no Boost installed.
+  CMake, Ninja, LLVM clang.
 - Cargo is capped at `jobs = 4` machine-wide. Heavy builds go through
-  `~/.srm/bin/srmctl run --slots 4 --low`.
+  `~/.srm/bin/srmctl run --slots 4 --low --label apitorrent -- cargo …`.
 - `rbuild`/sentinel is **not** approved for this repo.
 
 ## Decisions already made (don't re-ask)
 
-- License: MIT. Local only until the user says to publish. *(user)*
-- Language: Rust core; web UI in TypeScript and React, built with Vite and Bun; desktop on
-  Tauri 2. *(user: Tauri; the rest is my choice)*
-- Engine: libtorrent-rasterbar RC_2_0 behind our own `Engine` trait, with a mock engine for
-  tests and UI work. Reasons are in `docs/architecture.md` → Engine. *(my choice; the
-  user's brief allowed "libtorrent or a Rust equivalent")*
-- TLS: expect a reverse proxy. Built-in rustls supports bring-your-own certificates and
-  ACME HTTP-01. DNS-01 runs through a `dns-provider` plugin. *(user's brief; my plugin split)*
+- **License**: MIT. Local only until the user says to publish. *(user)*
+- **Engine**: our own pure-Rust engine, sans-IO protocol core, depending on rqbit's
+  separable leaf crates (DHT, uTP, UPnP, LSD; Apache-2.0) where each passes evaluation.
+  Don't fork `librqbit`'s session. libtorrent is dropped as a backend and kept only as an
+  interop test peer. *(user 2026-11-06: "wouldn't be against a full rust core … or fork the
+  core from rqbit"; I chose own engine plus leaf deps)*
+- **Plugins**: TypeScript on embedded V8 (`deno_core`), one isolate per plugin,
+  capability-checked ops, a curated set of globals. Bun is the authoring toolchain
+  (bundle and test), not the runtime, because it has no permission system. WebAssembly was
+  dropped. *(user 2026-11-06: "webassembly scares me … why not TypeScript + Bun?")*
+- **qBittorrent WebAPI compatibility**: yes, as a first-party plugin (`qbittorrent-api`),
+  off by default. *(user agreed; plugin rather than core is my recommendation; see the
+  reasons in the architecture doc)*
+- **Stack**: Rust core; web UI in TypeScript and React, built with Vite and Bun; desktop on
+  Tauri 2.
+- **TLS**: expect a reverse proxy. Built-in rustls supports bring-your-own certificates and
+  ACME HTTP-01. DNS-01 runs through a `dns-provider` plugin.
 
-## Prior art (checked 2026-11-06, in answer to "are we recreating something that exists?")
+## Prior art (checked 2026-11-06)
 
-No existing client has the whole combination, but many have parts of it:
+No existing client has the whole combination:
 
-- **qBittorrent**: libtorrent-based, mature, with a web UI. Its desktop app cannot act as a
-  thin client. Its plugins are Python search plugins only. It has no passkeys and no
-  content library. Its WebAPI is what the *arr, autobrr and cross-seed ecosystem speaks.
-- **Deluge**: what we're replacing.
-- **Porla**: a libtorrent daemon with a web UI, Lua plugins and JWT auth. Early stage, C++.
-- **rqbit**: Rust, with a web UI and a Tauri wrapper. Its engine is weak: no encryption,
-  sequential picking only, partial v2 support. **rustTorrent** is a fork of it.
-- **Transmission**: its own C engine, a daemon and a web UI. Remote GUIs such as TrguiNG
-  exist.
-- **BiglyBT**: "swarm merging", which shares identical files across torrents. It matches by
-  size only and is opportunistic. Java.
-- **cross-seed / qui**: external tools that reuse existing files for new torrents through
-  hardlinks or reflinks. Their docs warn that partial overlap can corrupt seeded files and
-  recommend reflinks. This confirms the boundary-piece hazard in our design.
-- **Flood**: a web UI on top of other clients.
+- **qBittorrent**: libtorrent, mature, web UI. No thin-client desktop, Python search
+  plugins only, no passkeys, no content library.
+- **Porla**: a libtorrent daemon, web UI, Lua plugins. Early stage, C++.
+- **rqbit**: Rust, web UI, Tauri wrapper. Weak engine. **rustTorrent** is a fork.
+- **BiglyBT**: swarm merging, size-only matching, Java.
+- **cross-seed / qui**: external file reuse through links. They warn that partial overlap
+  corrupts seeded files. Our staged boundary-piece writes address this.
+- **Transmission**, **Flood**: the daemon-plus-web-UI pattern.
 
 ## Plan / steps
 
-1. **← current: write the architecture doc, then wait for the user's go-ahead after the
-   prior-art question.**
-2. M0: Cargo workspace, types, Engine trait, mock engine, core registry with SQLite, axum API
-   and WebSocket sync, web UI skeleton.
-3. M1: auth (bootstrap, passkeys, sessions, API tokens).
-4. M2: libtorrent build spike on Windows (Boost headers, CMake, cxx shim), then the
-   `engine-lt` backend.
-5. M3: content library, plus the part-file / copy-on-write spike for boundary pieces.
-6. M4: Tauri desktop (local and remote modes, path mappings).
-7. M5: plugin host (wasmtime, WIT) and the first source plugins.
-8. M6: Deluge importer and a qBittorrent-WebAPI compatibility shim (proposed).
-9. M7: CI (GitHub Actions) when the repo goes public.
+- **M0: foundations** ← current
+  1. Cargo workspace, licence, README, CI-ready layout (no remote).
+  2. `apitorrent-bencode`: a strict codec, depth-limited, with canonical-encoding checks
+     and a fuzz target.
+  3. `apitorrent-metainfo`: v1, v2 and hybrid parsing, info-hashes (SHA-1 and SHA-256),
+     file trees, BEP 47 pad files, merkle roots, magnet URIs, path sanitising.
+  4. `apitorrent-wire`: sans-IO handshake and message codec, extension handshake.
+- **M1: engine MVP**: TCP peers, a picker, storage (placement-based), HTTP and UDP
+  trackers, resume state. Download from a local seeder in an integration test.
+- **M2: core and server**: registry with SQLite, axum API, WebSocket sync, daemon binary.
+- **M3: web UI**: torrent list (virtualised), details, add torrent, settings.
+- **M4: auth**: bootstrap, passkeys, sessions, API tokens, CSRF.
+- **M5: engine depth**: DHT, PEX, LSD, uTP, MSE/PE, magnet metadata, v2 merkle
+  verification, webseeds, choker, rate limits, NAT.
+- **M6: content library**: matching, staging, materialising.
+- **M7: desktop**: Tauri app with local and remote modes, path mappings, TLS pinning.
+- **M8: plugin host**: deno_core, the SDK, first plugins (qbittorrent-api, RSS, Ubuntu,
+  Raspberry Pi).
+- **M9: Deluge importer**, rules and retention, distribution channels.
+- **M10: CI**: GitHub Actions when the repo goes public, including the interop matrix.
 
 ## Findings / gotchas
 
 - No maintained Rust bindings for libtorrent exist. `libtorrent-sys` was last updated in
-  2022 and `lt-rs` is 0.1, so we write our own cxx shim.
-- rqbit 9.1 (October 2026) still lacks MSE/PE encryption, rarest-first picking and full
-  BEP 52 support.
+  2022 and `lt-rs` is 0.1. This was moot once we chose our own engine.
+- rqbit 9.1 (October 2026) lacks MSE/PE encryption, rarest-first picking and full
+  BEP 52 support. It is Apache-2.0, so its leaf crates can be MIT-compatible
+  dependencies.
+- Bun has no permission model, so it isn't safe as an in-process or subprocess plugin
+  runtime.
 
 ## Progress log
 
 - [x] Research the engine options and prior art
-- [x] `docs/architecture.md` first draft
-- [ ] User's go-ahead on direction (see the open questions)
+- [x] `docs/architecture.md`, revised for our own engine and TypeScript plugins
+- [x] User's go-ahead on direction (2026-11-06)
+- [ ] M0.1 workspace
+- [ ] M0.2 bencode
+- [ ] M0.3 metainfo
+- [ ] M0.4 wire
 
 ## Open questions for the user
 
-1. Proceed with a new client, or build on something existing (an rqbit fork, a layer over
-   qBittorrent, or contributing to Porla)? **Recommendation: build new, on libtorrent.**
-2. Add a qBittorrent-WebAPI compatibility layer so Sonarr, Radarr, autobrr and cross-seed
-   work unchanged? **Recommendation: yes, in M6.**
+*(none right now)*
 
 ## Things not to do
 
 - Don't add an "ignore certificate errors" option anywhere.
 - Don't use `rbuild`/sentinel for this repo until it's approved.
 - Don't push or create a remote until the user asks.
+- Don't fork `librqbit`'s session or storage. Depend on leaf crates instead.

@@ -1,8 +1,8 @@
 # apitorrent architecture
 
-apitorrent is a BitTorrent client meant to replace Deluge. It has a fast, cross-platform
-Rust core, a native desktop app (Tauri), and a full web UI. The daemon, the desktop app and
-the web UI share one API and one security model.
+apitorrent is a BitTorrent client meant to replace Deluge. It has its own Rust BitTorrent
+engine, a native desktop app (Tauri), and a full web UI. The daemon, the desktop app and the
+web UI share one API and one security model.
 
 This document describes the target design. `plans/` tracks what is built so far.
 
@@ -24,23 +24,22 @@ This document describes the target design. `plans/` tracks what is built so far.
 ## Process model
 
 ```
-                ┌──────────────────────────── apitorrent-core ─────────────────────────────┐
-                │  TorrentRegistry · Queue · Rules · ContentLibrary · Feeds · Distribution │
-                │  EventBus (revisioned state store)        Persistence (SQLite, WAL)      │
-                │                         │                                                │
-                │                   Engine trait                                           │
-                │        ┌────────────────┼──────────────────┐                             │
-                │   engine-lt (libtorrent 2.0, cxx)    engine-mock (tests/UI dev)          │
-                └──────────────────────────────┬───────────────────────────────────────────┘
-                                               │
-                                       apitorrent-server (axum)
-                      HTTP API + WebSocket sync · auth · static web UI · optional TLS/ACME
-                                               │
-          ┌──────────────────┬─────────────────┼───────────────────┬────────────────────┐
-     apitorrentd        desktop app        web UI (browser)       CLI            WASM plugins
-   (headless daemon)  (embedded core, or                                        (wasmtime host,
-                       thin client to a                                          in-process)
-                       remote daemon)
+           ┌──────────────────────────────── apitorrent-core ────────────────────────────────┐
+           │  TorrentRegistry · Queue · Rules · ContentLibrary · Feeds · Distribution        │
+           │  EventBus (revisioned state store)          Persistence (SQLite, WAL)           │
+           │                              │                                                  │
+           │                     apitorrent-engine (pure Rust)                               │
+           │   session · peer wire (sans-IO) · picker · choker · storage · trackers · DHT    │
+           └──────────────────────────────┬──────────────────────────────────────────────────┘
+                                          │
+                                  apitorrent-server (axum)
+                 HTTP API + WebSocket sync · auth · static web UI · optional TLS/ACME
+                                          │
+     ┌──────────────────┬─────────────────┼────────────────┬──────────────┬────────────────────┐
+apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V8      external tools
+(headless       (embedded core, or                                  isolates,           (scoped API
+ daemon)         thin client to a                                   in-process)          tokens)
+                 remote daemon)
 ```
 
 - **`apitorrentd`** is the headless daemon. It runs as a systemd service, a Windows
@@ -58,64 +57,90 @@ This document describes the target design. `plans/` tracks what is built so far.
 
 | Path | Role |
 |---|---|
-| `crates/apitorrent-types` | Shared domain types (ids, info-hashes, torrent state, API DTOs). Exported to TypeScript. |
-| `crates/apitorrent-engine` | The `Engine` trait, the engine event types and an engine-agnostic settings model. |
-| `crates/apitorrent-engine-mock` | A deterministic in-memory engine that simulates peers and progress. Used by tests and UI development. |
-| `crates/apitorrent-engine-lt` | The libtorrent-rasterbar 2.0 backend: a cxx bridge over a small C++ shim. |
+| `crates/apitorrent-bencode` | A strict, depth-limited, zero-copy bencode codec. Fuzzed. |
+| `crates/apitorrent-metainfo` | `.torrent` and magnet parsing for v1, v2 and hybrid torrents. Info-hashes, file trees, merkle trees, path sanitising, torrent creation. |
+| `crates/apitorrent-wire` | The sans-IO peer wire protocol: handshake, messages, extension protocol, MSE/PE. Pure state machines, no sockets. |
+| `crates/apitorrent-engine` | The engine: session, peer manager, piece picker, choker, storage, trackers, DHT/LSD/PEX, uTP, rate limiting. |
+| `crates/apitorrent-types` | Shared domain and API DTO types. Exported to TypeScript. |
 | `crates/apitorrent-core` | Orchestration: registry, persistence, queue, labels, rules, content library, feeds, the event store. |
 | `crates/apitorrent-auth` | Users, passkeys (WebAuthn), optional passwords (Argon2id), sessions, scoped API tokens, device pairing. |
 | `crates/apitorrent-server` | axum HTTP/WS API, static web UI, TLS (rustls), ACME. |
 | `crates/apitorrent-client` | A Rust client for the API with strict TLS and certificate pinning. Used by the desktop thin client and the CLI. |
-| `crates/apitorrent-plugin-host` | The wasmtime component-model host, WIT worlds, capability enforcement. |
+| `crates/apitorrent-plugin-host` | Embedded V8 (`deno_core`): one isolate per plugin, capability-checked ops, the plugin lifecycle. |
 | `crates/apitorrentd` | Daemon binary. |
 | `crates/apitorrent-cli` | `apitorrent` CLI. |
 | `apps/desktop` | Tauri 2 app. |
 | `web/` | The web UI (TypeScript, React, Vite, Bun), shared with the desktop app. |
-| `wit/` | Plugin interface definitions. |
-| `plugins/` | First-party plugins (RSS/Atom, Ubuntu releases, Raspberry Pi images, …). |
+| `packages/plugin-sdk` | `@apitorrent/plugin-sdk`: types, a test harness and a build helper for plugin authors. |
+| `plugins/` | First-party plugins (qBittorrent API, RSS/Atom, Ubuntu releases, Raspberry Pi images, ACME DNS providers, …). |
 
 ## Engine
 
-### Choice: libtorrent-rasterbar 2.0, behind our own trait
+### Choice: our own Rust engine
 
-| | libtorrent RC_2_0 | rqbit 9.x (Rust) |
-|---|---|---|
-| Maturity | 20 years. Powers qBittorrent and Deluge. | Young. v9.1 (Oct 2026) still fixed remote crash bugs. |
-| BitTorrent v2 (BEP 52) | Full, including hybrid torrents | Groundwork only. Hybrid torrents can be added. |
-| Piece picking | Rarest-first, sequential, priorities, time-critical | Sequential only |
-| MSE/PE encryption | Yes. Many private trackers require it. | No |
-| Webseeds, i2p, super-seeding, share mode | Yes | No |
-| uTP, DHT, PEX, LSD, UPnP/NAT-PMP | Yes | Yes (uTP disabled by default) |
-| Rust integration | No maintained bindings, so we write a cxx shim | Native |
-| Build | C++ with CMake and Boost headers. Heavier on Windows. | `cargo build` |
+Decided 2026-11-06. libtorrent was the first choice. We dropped it because the features that
+set apitorrent apart, packs and shared files above all, depend on owning the storage layer.
+In libtorrent that means a custom `disk_interface` written in C++, across an FFI boundary.
 
-The protocol engine is the part users notice when it goes wrong, and libtorrent is the only
-option that is both feature-complete and proven. Deluge's core is already libtorrent, so
-we keep what was good about it and replace everything Deluge layers on top.
+| Option | Verdict |
+|---|---|
+| libtorrent through cxx | Proven, but the storage work would be in C++ behind FFI, and the Windows build needs Boost. Rejected. |
+| Fork rqbit's `librqbit` | Its session and storage design is sequential-only, with no encryption and partial v2 support. We'd rewrite exactly the parts we forked it for. Rejected as a base. |
+| **Our own engine, reusing leaf crates** | We own the session, peer manager, picker, choker and storage. We depend on proven, separable crates (rqbit's DHT, uTP, UPnP and LSD crates, Apache-2.0) once each one passes evaluation. **Chosen.** |
 
-The **`Engine` trait** keeps the choice reversible. The core never touches libtorrent
-types. A pure-Rust engine (rqbit, or our own) can be added later as another backend, and the
-mock engine lets everything above the engine be built and tested without C++.
+Dependencies beat forks: we keep getting upstream fixes. If a leaf crate needs changes, we
+propose them upstream (each post needs the owner's approval), or vendor a fork with its
+licence notices intact.
 
-### Engine boundary rules
+### Design principles
 
-- The engine owns the peer wire, the trackers, DHT, piece picking and disk I/O. It knows
-  nothing about labels, users, feeds or libraries.
-- Engine → core communication is an **event stream** (libtorrent alerts mapped to
-  `EngineEvent`) plus **periodic stat batches** (`post_torrent_updates`, so only torrents
-  that changed are reported).
-- Core → engine communication is **commands** (`add`, `pause`, `set_file_priorities`,
-  `move_storage`, `force_recheck`, `save_resume_data`, …).
-- Fast-resume data is opaque bytes that the core persists in SQLite, versioned per backend.
+- **Sans-IO protocol core.** The wire protocol, the per-torrent state, the picker and the
+  choker are deterministic state machines. They take events (bytes received, timer fired,
+  disk write finished) and return actions (send, connect, read, write). A thin tokio layer
+  does the I/O. This makes the hard parts unit-testable, and allows **deterministic network
+  simulation**: thousands of virtual peers, packet loss and churn, reproducible from a
+  seed, all inside `cargo test`.
+- **Storage is ours.** A storage layer built on placements (see "Content library")
+  replaces "a torrent owns its save path". The write path stages every piece and verifies
+  its hash **before** any byte lands in a file another torrent shares. This removes the
+  corruption hazard that cross-seed and qui warn about.
+- **Never trust the network.** Every parser has length and depth limits and a fuzz target.
+  No panics on peer input; a misbehaving peer costs us only its connection.
+- **Interop is tested, not assumed.** CI runs the engine against libtorrent (qBittorrent-nox),
+  Transmission and rqbit in containers: download from each, seed to each, v1, v2 and hybrid,
+  TCP and uTP, with and without encryption.
+
+### Feature scope
+
+| Area | BEPs / features |
+|---|---|
+| Core protocol | BEP 3, 6 (fast), 10 (extension protocol), 20 (peer id) |
+| Metadata | BEP 9 (magnet metadata), 12 (multitracker), 47 (pad files, attributes), 52 (v2, hybrid), 53 (magnet file selection) |
+| Discovery | BEP 5 (DHT), 11 (PEX), 14 (LSD), 15 (UDP tracker), 23 (compact), 7 / 32 (IPv6), 48 (scrape) |
+| Transport | TCP, BEP 29 (uTP), BEP 55 (holepunch), MSE/PE encryption, SOCKS5 proxy, IPv6 |
+| Data | BEP 19 (webseeds), 17 (HTTP seeds). Not BEP 30, the superseded v1 merkle extension. |
+| Picking | rarest-first with availability tracking, priorities, sequential and streaming deadlines, endgame |
+| Choking | tit-for-tat with optimistic unchoke, a rate-based seed choker, upload slots |
+| NAT | UPnP IGD, NAT-PMP / PCP |
+| Limits | global, per-torrent and per-peer-class rate limits, connection limits, scheduling |
+| Later | I2P, BEP 21 (partial seeds), super-seeding, share mode |
+
+### Engine API
+
+The core talks to the engine through a Rust API: commands (`add`, `pause`,
+`set_file_priorities`, `relocate`, `recheck`, …) and an event stream (state changes, stat
+batches, errors). The engine knows nothing about labels, users, feeds or libraries.
+Resume state is a versioned, serialisable struct that the core stores.
 
 ## Persistence
 
 - **SQLite in WAL mode**, one database per instance: torrents, files, labels, rules, feeds,
   library entries, users, credentials, sessions, tokens, audit log.
-- Fast-resume blobs live in the same database. They are written on every
-  `save_resume_data` alert, and flushed with a checkpoint on shutdown.
-- The `.torrent` / metadata info-dict is stored once and keyed by info-hash. A v2 hash or a
-  hybrid hash pair both count as identity.
+- Resume state (piece bitfields, file mtimes and sizes for quick validation, stats) is
+  saved incrementally. A bitfield is flushed after each verified piece batch, at most every
+  few seconds, so a power failure loses seconds of progress, not hours.
+- The torrent info-dict is stored once and keyed by info-hash. A v2 hash or a hybrid hash
+  pair both count as identity.
 - Schema migrations are embedded and forward-only, and a backup is taken before each
   upgrade.
 
@@ -175,21 +200,65 @@ certificate errors" switch. A server is trusted in one of three ways:
 - **CSRF**: SameSite=Strict, plus an `Origin` / `Sec-Fetch-Site` check on every state-changing
   request and on WebSocket upgrade.
 - **API tokens**: scoped (`read`, `torrents:write`, `admin`, …), hashed at rest, optionally
-  tied to an IP range. Used by scripts and the *arr ecosystem.
+  tied to an IP range. Used by scripts and external tools.
 - **Device pairing**: the desktop thin client gets a device credential. It is a bearer
   token bound to the pinned key, and can be revoked per device.
 - **Roles**: `admin`, `user` (owns its torrents) and `viewer`. Multi-user from day one,
   because adding it later is painful.
 - **Audit log** of security-relevant events.
 
-### Plugins
+## Plugins
 
-- Plugins are **WebAssembly components only** (wasmtime). Native plugins are not supported:
-  a native plugin can do anything the daemon can.
-- Each plugin declares the capabilities it needs in its manifest: network host allow-list,
-  filesystem preopens, API scopes, timers, KV storage. The admin approves them at install,
-  and any expansion at upgrade.
-- Fuel and memory limits stop a buggy plugin from stalling the core.
+### Runtime: TypeScript on embedded V8
+
+Decided 2026-11-06, replacing the earlier WebAssembly plan. WebAssembly adds a toolchain
+most plugin authors don't know, and that cost falls on exactly the people we want writing
+plugins.
+
+| Option | Verdict |
+|---|---|
+| WebAssembly components | Sandboxed and multi-language, but authoring friction is high. Rejected. |
+| Bun as the plugin runtime | Great tooling, but it has **no permission system**: every plugin would run with the daemon's full privileges. It can't be embedded either, so plugins would be subprocesses. Rejected as the runtime. **Kept as the authoring toolchain.** |
+| Full Node or Deno compatibility | A large surface and a large attack surface. Most of it is never needed. Rejected. |
+| **Embedded V8 with our own globals** (`deno_core`) | TypeScript, fast, in-process, with a small curated API in which every privileged call is an op the host checks against the plugin's grants. **Chosen.** |
+
+- Authors write TypeScript against `@apitorrent/plugin-sdk`, and test and bundle it with
+  Bun (`bun test`, `bun build` → a single ESM file). npm packages work as long as they bundle
+  to plain JS without Node built-ins.
+- **Each plugin gets its own V8 isolate** with a heap limit. A watchdog terminates runaway
+  execution and records the reason.
+- **Globals**: `fetch` (host-checked), `URL`, `TextEncoder` / `TextDecoder`, `crypto.subtle`
+  and `getRandomValues`, timers, `structuredClone`, `console` (to the plugin log),
+  `AbortController`, `Headers` / `Request` / `Response`, plus the `apitorrent` module.
+- **The `apitorrent` module**: torrents (query, add, control), events (subscribe),
+  library, rules, KV storage, scheduling, settings schema (rendered by the UI), HTTP routes
+  under `/plugins/<id>/` (or a dedicated listener), and roles such as `source`,
+  `dns-provider` and `api-compat`.
+
+### Capabilities
+
+A plugin's manifest declares what it needs: network hosts, API scopes, HTTP routes,
+listeners, filesystem paths, schedule. The admin approves those at install, and any
+expansion at upgrade. Undeclared calls fail. Plugins get **no** raw filesystem, process,
+environment or socket access.
+
+### External integrations
+
+Anything that speaks the HTTP API with a scoped token is an external integration, in any
+language and any runtime, Bun included. Plugins are for code that should live inside the
+daemon, be managed by it and stay sandboxed. External integrations are for everything else.
+
+### First-party plugins
+
+They prove the plugin API, and they ship in the box:
+
+- **`qbittorrent-api`**: a qBittorrent WebAPI v2 compatibility layer, so Sonarr, Radarr,
+  autobrr, cross-seed and friends work unchanged. Login maps to scoped API tokens.
+  Categories and tags map to labels. It mounts on its own listener, or under a URL base
+  (the *arr apps support one). Off by default.
+- **Sources**: RSS/Atom/JSON feeds, Ubuntu releases, Raspberry Pi images, open-data
+  publishers.
+- **DNS providers** for ACME DNS-01.
 
 ## Content library (cross-torrent file sharing)
 
@@ -206,15 +275,18 @@ This is the feature Deluge cannot do, and it is designed in from the start.
 - A **placement** is a torrent's view of a file: `(torrent, file index) → content item`,
   materialised at the torrent's save path.
 
-### Materialising placements
+Because the engine's storage works through placements, sharing is native. Two torrents
+that share a file both read from the same content item. Links are only needed when a user
+wants to see the file at a path of their own.
 
-In order of preference, when torrent B needs file X that the library already has:
+### Materialising placements on disk
 
-1. **Same path**: B's save path is laid out so that it points at the existing file.
-2. **Reflink / copy-on-write clone** (Btrfs, XFS, APFS, ReFS): the files share blocks and are
-   fully independent on write. This is the best option where available.
-3. **Hardlink** on the same volume (NTFS, ext4, APFS, …). It is safe because the content is
-   complete and verified, and the engine is told it already has those pieces.
+In order of preference, when torrent B's visible layout needs file X that the library
+already has:
+
+1. **Read through the content item** (engine-internal). No link is needed for seeding.
+2. **Reflink / copy-on-write clone** (Btrfs, XFS, APFS, ReFS) for a user-visible path.
+3. **Hardlink** on the same volume (NTFS, ext4, APFS, …).
 4. **Symlink** (on Windows, only where the user has the privilege or Developer Mode).
 5. **Copy**, as the last resort, and only with the user's consent per root.
 
@@ -228,16 +300,12 @@ When a torrent is added, before it starts:
    Verify every piece that lies **wholly inside** the candidate file against the new
    torrent's piece hashes. If all of those pieces pass, the file matches. Pieces at a file
    boundary that straddle a file we don't have are the only ones downloaded.
-3. Matched files are materialised. The torrent is added with those pieces marked as already
-   verified (libtorrent `seed_mode` for complete torrents, or a targeted recheck for
-   partial ones).
-4. **Protecting shared bytes**: the engine must never write into a file shared by another
-   torrent. A boundary piece that overlaps a shared file is therefore downloaded through
-   copy-on-write. The libtorrent backend uses a priority-0 part-file trick, to be validated
-   in the M3 spike, or a custom `disk_interface` if that trick does not hold.
+3. A boundary piece that overlaps a shared file is assembled in a **staging area**. Once it
+   verifies, only the bytes that belong to files this torrent owns are written out. The
+   shared file is never written to.
 
-The old torrent keeps seeding from the same physical file. Removing a torrent removes its
-placements, and the content item is deleted only when no placement and no retention rule
+The old torrent keeps seeding from the same content item. Removing a torrent removes its
+placements, and a content item is deleted only when no placement and no retention rule
 still references it.
 
 ## Remote file access (thin client)
@@ -257,13 +325,7 @@ still references it.
 ### Sources (plugins)
 
 A `source` plugin turns some upstream into **release candidates**: `{ id, title, version,
-published, links (torrent / magnet / webseed), metadata }`. Examples:
-
-- A generic RSS/Atom/JSON feed, with filters.
-- **Ubuntu releases**: watch `releases.ubuntu.com` / cdimage, and pick the newest LTS or
-  interim per flavour and architecture.
-- **Raspberry Pi images**: the `os_list` JSON.
-- **Open-data publishers**: dataset feeds.
+published, links (torrent / magnet / webseed), metadata }`.
 
 ### Rules (core)
 
@@ -285,19 +347,20 @@ seeding, stop, or remove after a ratio or time.
 ## Deluge migration
 
 An importer reads a Deluge state directory: `torrents.state`, which is a Python pickle
-(read with `serde-pickle`; no Python needed), `*.torrent`, `*.fastresume`, labels and
-per-torrent options. It re-adds the torrents with their fast-resume data, so no recheck is
-needed. That is the onboarding path for existing Deluge users.
+(read with `serde-pickle`; no Python needed), `*.torrent`, `*.fastresume` (libtorrent
+bencoded resume data, of which we read the bitfield and file info), labels and per-torrent
+options. Imported torrents get a fast validation (sizes and mtimes) instead of a full
+recheck. That is the onboarding path for existing Deluge users.
 
 ## Performance targets
 
 - Sustain 10,000 loaded torrents, of which 2,000 are active, on a small home server.
 - The UI list stays smooth at 10,000 rows. The UI virtualises the list, and the sync
   protocol sends only the fields the UI subscribes to.
-- Startup with 10,000 torrents takes under 5 s to a usable UI. The engine re-adds torrents
-  lazily in the background, using fast-resume data.
-- Line-rate download on 10 GbE with NVMe storage. That is engine-bound, so we tune the
-  libtorrent disk settings and use mmap storage.
+- Startup with 10,000 torrents takes under 5 s to a usable UI. Torrents resume lazily.
+- Line-rate download on 10 GbE with NVMe storage. Piece hashing runs on a dedicated pool,
+  using SHA-NI or ARMv8 crypto extensions where available. Writes are vectored, and the
+  disk I/O pool is separate from the network.
 
 ## Cross-platform notes
 
