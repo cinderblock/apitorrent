@@ -4,6 +4,7 @@
 //! no I/O. The session layer drives them from tokio tasks: one actor per torrent, one task
 //! per peer connection.
 
+mod announce;
 pub mod bitfield;
 pub mod layout;
 mod peer;
@@ -13,5 +14,6 @@ pub mod storage;
 mod torrent;
 pub mod verify;
 
+pub use announce::TrackerStatus;
 pub use session::{AddError, Session, SessionConfig};
 pub use torrent::{AddTorrent, TorrentHandle, TorrentState, TorrentStats};

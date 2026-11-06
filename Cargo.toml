@@ -72,6 +72,7 @@ struct_field_names = "allow"
 match_same_arms = "allow"
 case_sensitive_file_extension_comparisons = "allow"
 similar_names = "allow"
+assert_is_empty = "allow"
 
 [profile.release]
 lto = "thin"

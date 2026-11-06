@@ -15,6 +15,7 @@ use apitorrent_metainfo::{InfoHashes, Sha1Hash, Torrent};
 use apitorrent_wire::extended::{ExtensionHandshake, names};
 use apitorrent_wire::{BlockRef, Decoder, Handshake, MAX_BLOCK_LEN, Message, PeerId};
 
+use crate::announce::{Announcer, Job, TrackerStatus};
 use crate::bitfield::Bitfield;
 use crate::layout::Layout;
 use crate::peer::{self, PeerCmd, PeerEvent};
@@ -75,6 +76,7 @@ pub(crate) enum Command {
     AddPeers(Vec<SocketAddr>),
     /// The pieces we have right now, for resume data.
     Have(oneshot::Sender<Bitfield>),
+    Trackers(oneshot::Sender<Vec<TrackerStatus>>),
     /// One priority per file (0 = skip, up to [`crate::picker::MAX_PRIORITY`]).
     FilePriorities(Vec<u8>),
     Pause,
@@ -98,6 +100,10 @@ pub(crate) enum ActorMsg {
         peer: PeerKey,
         block: BlockRef,
         result: Result<Bytes, String>,
+    },
+    Announced {
+        job: Job,
+        result: Result<apitorrent_tracker::AnnounceResponse, String>,
     },
 }
 
@@ -146,6 +152,20 @@ impl TorrentHandle {
             .await
             .ok()?;
         rx.await.ok()
+    }
+
+    /// The status of each tracker.
+    pub async fn trackers(&self) -> Vec<TrackerStatus> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(ActorMsg::Command(Command::Trackers(tx)))
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
     }
 
     /// Set a download priority per file: 0 skips the file, higher values are fetched first.
@@ -277,6 +297,9 @@ pub(crate) struct TorrentActor {
     ticks: u32,
     max_message: u32,
     file_priorities: Option<Vec<u8>>,
+    announcer: Announcer,
+    /// Whether the download was already finished; finishing sends `completed` once.
+    finished: bool,
 }
 
 impl TorrentActor {
@@ -347,6 +370,8 @@ impl TorrentActor {
             ticks: 0,
             max_message,
             file_priorities: params.file_priorities,
+            announcer: Announcer::new(&torrent.trackers, &keys, Instant::now()),
+            finished: false,
         };
         actor.add_candidates(params.peers);
         match params.have {
@@ -385,6 +410,7 @@ impl TorrentActor {
         if let Some(prios) = &self.file_priorities {
             picker.set_priorities(&piece_priorities(&self.layout, prios));
         }
+        self.finished = picker.is_finished();
         self.picker = Some(picker);
         if let Err(e) = self.storage.create_empty_files() {
             tracing::warn!(error = %e, "could not create empty files");
@@ -428,6 +454,7 @@ impl TorrentActor {
                 msg = self.rx.recv() => {
                     let Some(msg) = msg else { break };
                     if let ActorMsg::Command(Command::Shutdown(reply)) = msg {
+                        self.send_stopped();
                         self.shutdown_peers();
                         let _ = self.storage.sync();
                         let have = self.picker.as_ref().map_or_else(
@@ -455,11 +482,13 @@ impl TorrentActor {
                 }
                 Command::Pause => {
                     self.paused = true;
+                    self.send_stopped();
                     self.shutdown_peers();
                     self.publish_stats();
                 }
                 Command::Resume => {
                     self.paused = false;
+                    self.announce();
                     self.connect_more();
                     self.publish_stats();
                 }
@@ -471,6 +500,9 @@ impl TorrentActor {
                     let _ = reply.send(have);
                 }
                 Command::FilePriorities(prios) => self.set_file_priorities(&prios),
+                Command::Trackers(reply) => {
+                    let _ = reply.send(self.announcer.status());
+                }
                 Command::Shutdown(_) => unreachable!("handled in run"),
             },
             ActorMsg::Incoming {
@@ -489,7 +521,85 @@ impl TorrentActor {
                 block,
                 result,
             } => self.on_block_read(peer, block, result),
+            ActorMsg::Announced { job, result } => self.on_announced(&job, result),
         }
+    }
+
+    // ----- trackers -----------------------------------------------------------------------
+
+    fn announce(&mut self) {
+        if self.paused || self.picker.is_none() {
+            return;
+        }
+        for job in self.announcer.due(Instant::now()) {
+            self.spawn_announce(job, true);
+        }
+    }
+
+    fn spawn_announce(&self, job: Job, report: bool) {
+        let req = apitorrent_tracker::AnnounceRequest {
+            info_hash: job.info_hash,
+            peer_id: self.shared.peer_id,
+            port: self.shared.listen_port(),
+            uploaded: self.uploaded,
+            downloaded: self.downloaded,
+            left: self.bytes_left(),
+            event: job.event,
+            num_want: Some(if self.finished { 0 } else { 50 }),
+            key: self.shared.announce_key,
+            tracker_id: job.tracker_id.clone(),
+        };
+        let client = self.shared.tracker.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .announce(&job.url, &req)
+                .await
+                .map_err(|e| e.to_string());
+            if report {
+                let _ = tx.send(ActorMsg::Announced { job, result }).await;
+            }
+        });
+    }
+
+    /// Best-effort `stopped` announces; their results are not waited for.
+    fn send_stopped(&mut self) {
+        for job in self.announcer.stop(Instant::now()) {
+            self.spawn_announce(job, false);
+        }
+    }
+
+    fn on_announced(
+        &mut self,
+        job: &Job,
+        result: Result<apitorrent_tracker::AnnounceResponse, String>,
+    ) {
+        let now = Instant::now();
+        match result {
+            Ok(resp) => {
+                tracing::debug!(url = %job.url, peers = resp.peers.len(), "announced");
+                self.announcer.on_success(job, &resp, now);
+                self.add_candidates(resp.peers);
+                self.connect_more();
+            }
+            Err(e) => {
+                tracing::debug!(url = %job.url, error = %e, "announce failed");
+                self.announcer.on_failure(job, &e, now);
+            }
+        }
+        // A failure may make the next tracker in the tier due right away.
+        self.announce();
+    }
+
+    /// Bytes of wanted pieces we don't have yet.
+    fn bytes_left(&self) -> u64 {
+        let Some(picker) = &self.picker else {
+            return self.torrent.info.content_length();
+        };
+        (0..self.layout.piece_count())
+            .filter(|&p| picker.is_wanted(p))
+            .map(|p| u64::from(self.layout.piece_size(p)))
+            .sum()
     }
 
     // ----- connections ------------------------------------------------------------------
@@ -885,9 +995,12 @@ impl TorrentActor {
                 for key in keys {
                     self.update_interest(key);
                 }
-                if self.picker.as_ref().is_some_and(Picker::is_finished) {
+                if !self.finished && self.picker.as_ref().is_some_and(Picker::is_finished) {
+                    self.finished = true;
                     let _ = self.storage.sync();
                     tracing::info!(torrent = %self.info_hashes.id_string(), "download complete");
+                    self.announcer.completed(Instant::now());
+                    self.announce();
                 }
             }
             Ok(Verdict::Invalid | Verdict::Unknown) => {
@@ -1053,6 +1166,7 @@ impl TorrentActor {
         if self.ticks.is_multiple_of(CHOKE_EVERY) {
             self.run_choker();
         }
+        self.announce();
         self.connect_more();
         self.publish_stats();
         self.last_downloaded = self.downloaded;

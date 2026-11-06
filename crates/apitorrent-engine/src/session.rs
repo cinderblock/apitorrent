@@ -10,6 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
 use apitorrent_metainfo::{InfoHashes, Sha1Hash};
+use apitorrent_tracker::TrackerClient;
 use apitorrent_wire::PeerId;
 
 use crate::peer;
@@ -51,6 +52,9 @@ pub enum AddError {
 pub(crate) struct Shared {
     pub(crate) config: SessionConfig,
     pub(crate) peer_id: PeerId,
+    pub(crate) tracker: TrackerClient,
+    /// Sent with every announce so trackers can recognise us across IP changes.
+    pub(crate) announce_key: u32,
     listen_port: u16,
     next_key: AtomicU64,
     torrents: Mutex<HashMap<Sha1Hash, mpsc::Sender<ActorMsg>>>,
@@ -90,9 +94,12 @@ impl Session {
         let listen_addr = listener.local_addr()?;
         let version = version_digits();
         let peer_id = PeerId::azureus(*b"AT", version, rand::random());
+        let tracker = TrackerClient::new().map_err(io::Error::other)?;
         let shared = Arc::new(Shared {
             config,
             peer_id,
+            tracker,
+            announce_key: rand::random(),
             listen_port: listen_addr.port(),
             next_key: AtomicU64::new(1),
             torrents: Mutex::new(HashMap::new()),
