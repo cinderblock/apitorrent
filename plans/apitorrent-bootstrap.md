@@ -68,7 +68,11 @@ No existing client has the whole combination:
   3. `apitorrent-metainfo`: v1, v2 and hybrid parsing, info-hashes (SHA-1 and SHA-256),
      file trees, BEP 47 pad files, merkle roots, magnet URIs, path sanitising.
   4. `apitorrent-wire`: sans-IO handshake and message codec, extension handshake.
-- **M1: engine MVP**: TCP peers, a picker, storage (placement-based), HTTP and UDP
+- **M1: engine MVP** (design notes: per-torrent actor task owns the picker and
+  `PieceHashes`; each peer connection is a tokio task doing socket I/O only and exchanging
+  messages with the actor over channels; blocks are assembled in memory per piece, hashed
+  on a blocking pool and written only once verified; a memory cap on in-flight pieces is
+  still to do): TCP peers, a picker, storage (placement-based), HTTP and UDP
   trackers, resume state. Download from a local seeder in an integration test.
 - **M2: core and server**: registry with SQLite, axum API, WebSocket sync, daemon binary.
 - **M3: web UI**: torrent list (virtualised), details, add torrent, settings.
@@ -109,7 +113,13 @@ No existing client has the whole combination:
 - [x] M0.1 workspace, MIT licence, README (`1f9a837`)
 - [x] M0.2 bencode: strict codec with property tests (`1f9a837`)
 - [x] M0.3 metainfo: v1, v2 and hybrid, magnets, sanitising; libtorrent fixtures pass (`04e7c70`)
-- [ ] M0.4 wire ← current
+- [x] M0.4 wire: handshake, all messages, BEP 9/10/11 payloads, decoder (`c7fb73c`)
+- [x] M1.1 torrent creator, v1/v2/hybrid (`642c534`)
+- [x] M1.2 engine core: bitfield, layout, storage, verify, picker (`0e4c4c8`)
+- [ ] M1.3 networking: peer connection task, torrent actor, session/listener ← current
+- [ ] M1.4 loopback integration test: seeder session → leecher session, all versions
+- [ ] M1.5 trackers: HTTP (strict TLS) and UDP (BEP 15)
+- [ ] M1.6 resume state (bitfield and file sizes) and recheck
 
 ## Open questions for the user
 
