@@ -350,7 +350,11 @@ impl TorrentActor {
         };
         actor.add_candidates(params.peers);
         match params.have {
-            Some(have) => actor.start(have),
+            Some(have) => {
+                let have = validate_resume(actor.storage.as_ref(), &actor.layout, have);
+                actor.start(have);
+                actor.publish_stats();
+            }
             None => actor.check_files(),
         }
         tokio::spawn(actor.run());
@@ -1129,6 +1133,29 @@ fn set_peer_has(picker: &mut Picker, peer: &mut Peer, has: Bitfield) {
     peer.wanted =
         u32::try_from(has.iter_ones().filter(|&p| picker.is_wanted(p)).count()).expect("fits");
     peer.has = has;
+}
+
+/// Drop pieces from resume data whose files are missing or too short. That catches files
+/// deleted or truncated while we weren't running, without hashing anything.
+fn validate_resume(storage: &dyn Storage, layout: &Layout, mut have: Bitfield) -> Bitfield {
+    if have.len() != layout.piece_count() {
+        return Bitfield::new(layout.piece_count());
+    }
+    let sizes = storage.file_sizes();
+    let pieces: Vec<u32> = have.iter_ones().collect();
+    for piece in pieces {
+        let ok = layout
+            .segments(
+                layout.piece_offset(piece),
+                layout.piece_size(piece) as usize,
+            )
+            .iter()
+            .all(|s| s.pad || sizes[s.file].is_some_and(|len| len >= s.file_offset + s.len as u64));
+        if !ok {
+            have.clear(piece);
+        }
+    }
+    have
 }
 
 /// Hash whatever is already on disk and return the pieces that verify.
