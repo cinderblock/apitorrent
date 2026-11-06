@@ -26,6 +26,10 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
 
     /// Flush written data to stable storage.
     fn sync(&self) -> io::Result<()>;
+
+    /// Create the torrent's zero-length files. They hold no pieces, so no write ever
+    /// creates them.
+    fn create_empty_files(&self) -> io::Result<()>;
 }
 
 /// Plain files under a download directory.
@@ -148,6 +152,15 @@ impl Storage for FileStorage {
             .iter()
             .map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
             .collect()
+    }
+
+    fn create_empty_files(&self) -> io::Result<()> {
+        for (i, f) in self.layout.files().iter().enumerate() {
+            if f.length == 0 && !f.pad && !self.paths[i].exists() {
+                self.handle(i, true)?;
+            }
+        }
+        Ok(())
     }
 
     fn sync(&self) -> io::Result<()> {

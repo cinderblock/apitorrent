@@ -59,11 +59,6 @@ fn assert_files(root: &Path, fx: &Fixture) {
         for c in path {
             p.push(c);
         }
-        if bytes.is_empty() {
-            // Empty files need no pieces; creating them is the storage layer's job when the
-            // torrent completes, which is not implemented yet.
-            continue;
-        }
         let got = std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         assert!(got == *bytes, "{} differs", p.display());
     }
@@ -90,6 +85,7 @@ async fn transfer(version: Version) {
             have: None,
             paused: false,
             peers: Vec::new(),
+            file_priorities: None,
         })
         .unwrap();
     let stats = tokio::time::timeout(Duration::from_secs(30), seed.wait_finished())
@@ -109,6 +105,7 @@ async fn transfer(version: Version) {
             have: Some(Bitfield::new(pieces)),
             paused: false,
             peers: vec![seeder.listen_addr()],
+            file_priorities: None,
         })
         .unwrap();
     let stats = tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
@@ -158,6 +155,7 @@ async fn small_swarm() {
             have: None,
             paused: false,
             peers: Vec::new(),
+            file_priorities: None,
         })
         .unwrap();
     seed.wait_finished().await;
@@ -187,6 +185,7 @@ async fn small_swarm() {
                 have: Some(Bitfield::new(pieces)),
                 paused: false,
                 peers,
+                file_priorities: None,
             })
             .unwrap(),
         );
@@ -204,4 +203,59 @@ async fn small_swarm() {
         from_leechers > 0,
         "leechers should have shared pieces with each other"
     );
+}
+
+/// A file with priority 0 is not downloaded. In a hybrid torrent files are piece-aligned,
+/// so a skipped file shares no piece with a wanted one and is never created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_files_are_not_downloaded() {
+    let fx = fixture(Version::Hybrid);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    write_files(seed_dir.path(), &fx);
+    let seeder = Session::start(local_config()).await.unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent {
+            torrent: fx.torrent.clone(),
+            save_path: seed_dir.path().to_path_buf(),
+            have: None,
+            paused: false,
+            peers: Vec::new(),
+            file_priorities: None,
+        })
+        .unwrap();
+    seed.wait_finished().await;
+
+    // Skip the big file; keep everything else (pad entries get 0 too, which is ignored).
+    let prios: Vec<u8> = fx
+        .torrent
+        .info
+        .files
+        .iter()
+        .map(|f| u8::from(f.path.last().is_some_and(|n| n != "big.bin")) * 4)
+        .collect();
+    let leecher = Session::start(local_config()).await.unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            torrent: fx.torrent.clone(),
+            save_path: leech_dir.path().to_path_buf(),
+            have: Some(Bitfield::new(pieces)),
+            paused: false,
+            peers: vec![seeder.listen_addr()],
+            file_priorities: Some(prios),
+        })
+        .unwrap();
+    let stats = tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .expect("download timed out");
+    assert!(stats.pieces_have < stats.pieces_total);
+    let root = leech_dir.path().join("pack");
+    assert!(!root.join("big.bin").exists());
+    assert_eq!(std::fs::read(root.join("tail.bin")).unwrap(), fx.files[3].1);
+    assert_eq!(
+        std::fs::read(root.join("dir").join("small.txt")).unwrap(),
+        fx.files[1].1
+    );
+    assert!(root.join("dir").join("empty").exists());
 }

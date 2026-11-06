@@ -67,10 +67,16 @@ pub struct AddTorrent {
     pub paused: bool,
     /// Peers to try straight away.
     pub peers: Vec<SocketAddr>,
+    /// One priority per file; `None` downloads everything at the default priority.
+    pub file_priorities: Option<Vec<u8>>,
 }
 
 pub(crate) enum Command {
     AddPeers(Vec<SocketAddr>),
+    /// The pieces we have right now, for resume data.
+    Have(oneshot::Sender<Bitfield>),
+    /// One priority per file (0 = skip, up to [`crate::picker::MAX_PRIORITY`]).
+    FilePriorities(Vec<u8>),
     Pause,
     Resume,
     Shutdown(oneshot::Sender<Bitfield>),
@@ -130,6 +136,25 @@ impl TorrentHandle {
 
     pub async fn resume(&self) {
         let _ = self.tx.send(ActorMsg::Command(Command::Resume)).await;
+    }
+
+    /// The pieces downloaded and verified so far.
+    pub async fn have(&self) -> Option<Bitfield> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(ActorMsg::Command(Command::Have(tx)))
+            .await
+            .ok()?;
+        rx.await.ok()
+    }
+
+    /// Set a download priority per file: 0 skips the file, higher values are fetched first.
+    /// A piece shared by several files takes the highest priority among them.
+    pub async fn set_file_priorities(&self, priorities: Vec<u8>) {
+        let _ = self
+            .tx
+            .send(ActorMsg::Command(Command::FilePriorities(priorities)))
+            .await;
     }
 
     /// Stop the torrent, returning the pieces it had (for resume data).
@@ -251,6 +276,7 @@ pub(crate) struct TorrentActor {
     last_uploaded: u64,
     ticks: u32,
     max_message: u32,
+    file_priorities: Option<Vec<u8>>,
 }
 
 impl TorrentActor {
@@ -320,6 +346,7 @@ impl TorrentActor {
             last_uploaded: 0,
             ticks: 0,
             max_message,
+            file_priorities: params.file_priorities,
         };
         actor.add_candidates(params.peers);
         match params.have {
@@ -350,7 +377,43 @@ impl TorrentActor {
 
     fn start(&mut self, have: Bitfield) {
         let seed = rand::random();
-        self.picker = Some(Picker::new(self.layout.clone(), have, seed));
+        let mut picker = Picker::new(self.layout.clone(), have, seed);
+        if let Some(prios) = &self.file_priorities {
+            picker.set_priorities(&piece_priorities(&self.layout, prios));
+        }
+        self.picker = Some(picker);
+        if let Err(e) = self.storage.create_empty_files() {
+            tracing::warn!(error = %e, "could not create empty files");
+        }
+    }
+
+    fn set_file_priorities(&mut self, prios: &[u8]) {
+        if prios.len() != self.layout.files().len() {
+            tracing::warn!(
+                given = prios.len(),
+                files = self.layout.files().len(),
+                "ignoring file priorities of the wrong length"
+            );
+            return;
+        }
+        self.file_priorities = Some(prios.to_vec());
+        if let Some(picker) = self.picker.as_mut() {
+            picker.set_priorities(&piece_priorities(&self.layout, prios));
+            for peer in self.peers.values_mut() {
+                peer.wanted = u32::try_from(
+                    peer.has
+                        .iter_ones()
+                        .filter(|&p| picker.is_wanted(p))
+                        .count(),
+                )
+                .expect("fits");
+            }
+            let keys: Vec<PeerKey> = self.peers.keys().copied().collect();
+            for key in keys {
+                self.update_interest(key);
+            }
+            self.publish_stats();
+        }
     }
 
     async fn run(mut self) {
@@ -396,6 +459,14 @@ impl TorrentActor {
                     self.connect_more();
                     self.publish_stats();
                 }
+                Command::Have(reply) => {
+                    let have = self.picker.as_ref().map_or_else(
+                        || Bitfield::new(self.layout.piece_count()),
+                        |p| p.have().clone(),
+                    );
+                    let _ = reply.send(have);
+                }
+                Command::FilePriorities(prios) => self.set_file_priorities(&prios),
                 Command::Shutdown(_) => unreachable!("handled in run"),
             },
             ActorMsg::Incoming {
@@ -1025,6 +1096,21 @@ impl TorrentActor {
             }
         });
     }
+}
+
+/// Each piece gets the highest priority of the files it overlaps. Pad files don't count.
+fn piece_priorities(layout: &Layout, file_prios: &[u8]) -> Vec<u8> {
+    let mut out = vec![0u8; layout.piece_count() as usize];
+    for (i, f) in layout.files().iter().enumerate() {
+        if f.pad {
+            continue;
+        }
+        let prio = file_prios[i];
+        for p in layout.file_pieces(i) {
+            out[p as usize] = out[p as usize].max(prio);
+        }
+    }
+    out
 }
 
 /// Record the peer's full set of pieces (from a bitfield or have-all).
