@@ -10,6 +10,7 @@
 //! [BEP 3]: https://www.bittorrent.org/beps/bep_0003.html
 //! [BEP 52]: https://www.bittorrent.org/beps/bep_0052.html
 
+mod create;
 mod error;
 mod hash;
 mod info;
@@ -18,6 +19,7 @@ pub mod merkle;
 pub mod sanitize;
 mod torrent;
 
+pub use create::{CreateError, FileSource, TorrentBuilder};
 pub use error::MetainfoError;
 pub use hash::{InfoHashes, ParseHashError, Sha1Hash, Sha256Hash};
 pub use info::{FileAttributes, FileEntry, Info, Limits, Version};
