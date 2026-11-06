@@ -230,6 +230,7 @@ impl<'a> Decoder<'a, '_> {
         Ok(Dict {
             entries,
             raw: &self.input[start..self.pos],
+            sorted_in_input: sorted,
         })
     }
 }

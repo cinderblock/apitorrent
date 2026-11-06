@@ -26,6 +26,7 @@ pub struct List<'a> {
 pub struct Dict<'a> {
     pub(crate) entries: Vec<(&'a [u8], Value<'a>)>,
     pub(crate) raw: &'a [u8],
+    pub(crate) sorted_in_input: bool,
 }
 
 impl<'a> Value<'a> {
@@ -173,6 +174,13 @@ impl<'a> Dict<'a> {
     /// The exact bytes this dictionary was decoded from, including the `d` and `e` delimiters.
     pub fn raw(&self) -> &'a [u8] {
         self.raw
+    }
+
+    /// Whether the keys were in ascending order in the input. Always true for a dictionary
+    /// decoded with [`crate::DecodeOptions::require_sorted_keys`]. Formats that require
+    /// canonical ordering for part of a document (such as the BEP 52 file tree) check this.
+    pub fn sorted_in_input(&self) -> bool {
+        self.sorted_in_input
     }
 }
 
