@@ -25,6 +25,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "apitorrent-wire"
+version = "0.1.0"
+dependencies = [
+ "apitorrent-bencode",
+ "apitorrent-metainfo",
+ "bytes",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
