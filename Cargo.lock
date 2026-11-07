@@ -221,6 +221,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "apitorrent-utp"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rand 0.9.5",
+ "sha1 0.10.7",
+ "socket2",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "apitorrent-wire"
 version = "0.1.0"
 dependencies = [

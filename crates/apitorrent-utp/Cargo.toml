@@ -1,0 +1,23 @@
+[package]
+name = "apitorrent-utp"
+description = "uTP (BEP 29) with LEDBAT congestion control: a sans-IO connection and a tokio socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+rand.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+sha1.workspace = true
+
+[lints]
+workspace = true
