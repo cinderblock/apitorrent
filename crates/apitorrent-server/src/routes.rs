@@ -9,8 +9,9 @@ use serde::Deserialize;
 use apitorrent_core::CoreError;
 use apitorrent_types::{
     API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, Ban, BanRequest,
-    QueueMoveRequest, ReleaseHeldRequest, ServerInfo, SetFilePrioritiesRequest, SetLabelRequest,
-    SetUnwantedPolicyRequest, Settings, TorrentDetail, TorrentLimits, TorrentSummary,
+    ImportDelugeRequest, ImportReport, QueueMoveRequest, ReleaseHeldRequest, ServerInfo,
+    SetFilePrioritiesRequest, SetLabelRequest, SetUnwantedPolicyRequest, Settings, TorrentDetail,
+    TorrentLimits, TorrentSummary,
 };
 
 use crate::AppState;
@@ -163,6 +164,13 @@ pub(crate) async fn queue_move(
 ) -> ApiResult<StatusCode> {
     s.core.queue_move(&id, req.to).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn import_deluge(
+    State(s): State<AppState>,
+    Json(req): Json<ImportDelugeRequest>,
+) -> ApiResult<Json<ImportReport>> {
+    Ok(Json(s.core.import_deluge(req).await?))
 }
 
 pub(crate) async fn bans(State(s): State<AppState>) -> Json<Vec<Ban>> {

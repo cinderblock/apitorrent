@@ -573,3 +573,112 @@ async fn a_pack_reuses_and_supersedes_single_episodes() {
     );
     core.shutdown().await.unwrap();
 }
+
+/// Importing from Deluge: data where Deluge left it (one file renamed there), progress
+/// from its resume data, labels and totals carried over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deluge_import() {
+    use apitorrent_bencode::OwnedValue;
+
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let deluge = root.path().join("deluge");
+    let state = deluge.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    // Where Deluge saved, as Deluge saw it, and where it really is now.
+    let deluge_save = "/mnt/old-server/torrents";
+    let real_save = root.path().join("torrents");
+
+    let one: Vec<u8> = (0..60_000u32)
+        .map(|i| u8::try_from(i % 249).unwrap())
+        .collect();
+    let two: Vec<u8> = (0..30_000u32)
+        .map(|i| u8::try_from(i % 241).unwrap())
+        .collect();
+    let bytes = TorrentBuilder::new("album", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&["one.flac"], one.clone()))
+        .file(FileSource::from_bytes(&["two.flac"], two.clone()))
+        .build()
+        .unwrap();
+    let t = apitorrent_metainfo::Torrent::from_bytes(&bytes).unwrap();
+    let id = t.info.info_hashes().get_v1().unwrap().to_hex();
+    std::fs::write(state.join(format!("{id}.torrent")), &bytes).unwrap();
+    // The data, with two.flac renamed in Deluge.
+    std::fs::create_dir_all(real_save.join("album").join("renamed")).unwrap();
+    std::fs::write(real_save.join("album").join("one.flac"), &one).unwrap();
+    std::fs::write(real_save.join("album").join("renamed").join("2.flac"), &two).unwrap();
+
+    let pieces = vec![1u8; usize::try_from(t.info.piece_count()).unwrap()];
+    let resume = OwnedValue::dict()
+        .insert("save_path", deluge_save)
+        .insert("pieces", pieces)
+        .insert("total_downloaded", 90_000i64)
+        .insert("total_uploaded", 12_345i64)
+        .insert("added_time", 1_600_000_000i64)
+        .insert(
+            "mapped_files",
+            OwnedValue::List(vec![
+                OwnedValue::from(""),
+                OwnedValue::from("album/renamed/2.flac"),
+            ]),
+        )
+        .to_bytes();
+    std::fs::write(
+        state.join("torrents.fastresume"),
+        OwnedValue::dict().insert(id.as_str(), resume).to_bytes(),
+    )
+    .unwrap();
+    std::fs::write(
+        deluge.join("label.conf"),
+        format!(r#"{{"file": 1, "format": 1}}{{"torrent_labels": {{"{id}": "music"}}}}"#),
+    )
+    .unwrap();
+
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let report = core
+        .import_deluge(apitorrent_types::ImportDelugeRequest {
+            config_dir: deluge.to_string_lossy().into_owned(),
+            path_map: vec![apitorrent_types::PathMapping {
+                from: deluge_save.into(),
+                to: real_save.to_string_lossy().into_owned(),
+            }],
+            import_settings: false,
+            paused: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.imported, ["album"], "{report:?}");
+    assert!(report.skipped.is_empty(), "{report:?}");
+
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    let s = core.store().get(&id).unwrap();
+    assert_eq!(s.label.as_deref(), Some("music"));
+    assert_eq!(s.downloaded, 90_000);
+    assert_eq!(s.uploaded, 12_345);
+    assert_eq!(s.added_at, 1_600_000_000_000);
+    assert_eq!(
+        s.pieces_have, s.pieces_total,
+        "progress came from Deluge, not a download"
+    );
+
+    // Importing again skips it.
+    let again = core
+        .import_deluge(apitorrent_types::ImportDelugeRequest {
+            config_dir: deluge.to_string_lossy().into_owned(),
+            path_map: Vec::new(),
+            import_settings: false,
+            paused: false,
+        })
+        .await
+        .unwrap();
+    assert!(again.imported.is_empty());
+    assert_eq!(again.skipped.len(), 1);
+    core.shutdown().await.unwrap();
+    drop(core);
+
+    // The renamed layout survives a restart.
+    let core = Core::start(cfg).await.unwrap();
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    core.shutdown().await.unwrap();
+}

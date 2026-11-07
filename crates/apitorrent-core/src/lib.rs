@@ -5,6 +5,7 @@
 //! layer over [`Core`].
 
 pub mod db;
+pub mod import;
 pub mod library;
 pub mod settings;
 pub mod store;
@@ -103,6 +104,8 @@ struct Entry {
     group: Option<String>,
     naming: u8,
     superseded_by: Option<TorrentId>,
+    /// Per-file paths overriding the naming policy.
+    file_paths: Option<Vec<Vec<String>>>,
 }
 
 /// A magnet link waiting for its metadata.
@@ -120,6 +123,17 @@ struct Pending {
     /// Progress of the fetch, and a way to cancel it; `None` while paused.
     fetch: Option<(watch::Receiver<FetchStatus>, oneshot::Sender<()>)>,
 }
+
+/// A torrent as the library sees it: id, metainfo, save path, naming, custom paths,
+/// handle.
+type LibrarySnapshot = (
+    String,
+    Arc<Torrent>,
+    PathBuf,
+    u8,
+    Option<Vec<Vec<String>>>,
+    TorrentHandle,
+);
 
 /// Everything needed to start a torrent in the engine and track it.
 struct Spawn {
@@ -144,6 +158,8 @@ struct Spawn {
     naming: u8,
     /// Files hard-linked from other torrents (copy-on-write in the engine).
     linked: Vec<usize>,
+    /// Per-file paths overriding the naming policy.
+    file_paths: Option<Vec<Vec<String>>>,
 }
 
 struct Inner {
@@ -448,7 +464,7 @@ impl Core {
             return Vec::new();
         }
         // A snapshot of every torrent's files: where they are and what's complete.
-        let entries: Vec<(String, Arc<Torrent>, PathBuf, u8, TorrentHandle)> = self
+        let entries: Vec<LibrarySnapshot> = self
             .inner
             .torrents
             .read()
@@ -461,17 +477,26 @@ impl Core {
                     e.torrent.clone(),
                     e.save_path.clone(),
                     e.naming,
+                    e.file_paths.clone(),
                     e.handle.clone(),
                 )
             })
             .collect();
         let mut sources = Vec::with_capacity(entries.len());
-        for (sid, t, save, naming, handle) in entries {
+        for (sid, t, save, naming, custom, handle) in entries {
             let Some(have) = handle.have().await else {
                 continue;
             };
             let placements = handle.placements();
-            let paths = Self::disk_paths(&t, &save, naming)
+            let paths = custom
+                .map_or_else(
+                    || Self::disk_paths(&t, &save, naming),
+                    |c| {
+                        c.into_iter()
+                            .map(|p| p.iter().fold(save.clone(), |a, x| a.join(x)))
+                            .collect::<Vec<_>>()
+                    },
+                )
                 .into_iter()
                 .zip(placements)
                 .map(|(p, pl)| (pl == Placement::Save).then_some(p))
@@ -533,6 +558,194 @@ impl Core {
             }
         }
         linked
+    }
+
+    /// Bring in a Deluge installation's torrents: files where Deluge left them, progress from
+    /// its resume data (validated against the files on disk, so nothing is rehashed),
+    /// labels, queue order, per-torrent limits and all-time totals.
+    pub async fn import_deluge(
+        &self,
+        req: apitorrent_types::ImportDelugeRequest,
+    ) -> Result<apitorrent_types::ImportReport, CoreError> {
+        use apitorrent_types::{ImportReport, ImportSkip};
+        let dir = PathBuf::from(&req.config_dir);
+        let state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
+            .await
+            .expect("Deluge reader panicked")
+            .map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
+        let map: Vec<(String, String)> = req
+            .path_map
+            .iter()
+            .map(|m| (m.from.clone(), m.to.clone()))
+            .collect();
+        let mut report = ImportReport {
+            warnings: state.warnings.clone(),
+            ..ImportReport::default()
+        };
+        if req.import_settings {
+            let d = &state.settings;
+            let mut s = self.settings();
+            s.download_rate = d.max_download_rate.unwrap_or(0);
+            s.upload_rate = d.max_upload_rate.unwrap_or(0);
+            if let Some(n) = d.max_connections {
+                s.max_connections = n;
+            }
+            s.queue.max_active_downloads = d.max_active_downloading.unwrap_or(0);
+            s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
+            s.queue.max_active = d.max_active_limit.unwrap_or(0);
+            self.set_settings(s).await?;
+        }
+        let ours = self.inner.config.download_dir.clone();
+        for t in state.torrents {
+            let label = || t.id.clone();
+            let skip = |report: &mut ImportReport, name: String, reason: String| {
+                report.skipped.push(ImportSkip { name, reason });
+            };
+            let bytes = match &t.trackers {
+                Some(tiers) => {
+                    import::with_trackers(&t.torrent, tiers).unwrap_or_else(|| t.torrent.clone())
+                }
+                None => t.torrent.clone(),
+            };
+            let torrent = match Torrent::from_bytes(&bytes) {
+                Ok(parsed) => Arc::new(parsed),
+                Err(e) => {
+                    // A magnet that never got its metadata in Deluge: add it as a magnet.
+                    if let Some(uri) = &t.magnet {
+                        match self
+                            .add(AddTorrentRequest {
+                                source: AddSource::Magnet { uri: uri.clone() },
+                                save_path: t.save_path.as_deref().map(|p| import::remap(p, &map)),
+                                paused: req.paused || t.paused,
+                                label: t.label.clone(),
+                                file_priorities: None,
+                                unwanted_policy: UnwantedPolicy::Hold,
+                            })
+                            .await
+                        {
+                            Ok(_) => report.imported.push(label()),
+                            Err(e) => skip(&mut report, label(), e.to_string()),
+                        }
+                    } else {
+                        skip(&mut report, label(), format!("unreadable .torrent: {e}"));
+                    }
+                    continue;
+                }
+            };
+            let name = torrent.info.name.clone();
+            let id = torrent.info.info_hashes().id_string();
+            let taken = self
+                .inner
+                .torrents
+                .read()
+                .expect("torrents lock poisoned")
+                .contains_key(&id);
+            if taken {
+                skip(&mut report, name, "already in apitorrent".into());
+                continue;
+            }
+            let save_path = import::save_path(
+                t.save_path.as_deref(),
+                state.settings.download_location.as_deref(),
+                &ours,
+                &map,
+            );
+            let files = torrent.info.files.len();
+            let prios = t
+                .file_priorities
+                .clone()
+                .filter(|p| p.len() == files)
+                .unwrap_or_else(|| vec![4; files]);
+            let pieces = u32::try_from(torrent.info.piece_count()).unwrap_or(0);
+            let have = t
+                .pieces
+                .as_deref()
+                .and_then(|p| import::pieces_bitfield(p, pieces));
+            let file_paths = {
+                let (tor, save, renamed) = (torrent.clone(), save_path.clone(), t.renamed.clone());
+                tokio::task::spawn_blocking(move || import::file_layout(&tor, &save, &renamed))
+                    .await
+                    .unwrap_or(None)
+            };
+            let held_path = held_path_for(&self.inner.config.data_dir, &save_path, &id);
+            let limits = TorrentLimits {
+                download_rate: t.max_download_rate.unwrap_or(0),
+                upload_rate: t.max_upload_rate.unwrap_or(0),
+                max_connections: t.max_connections,
+            };
+            let paused = req.paused || t.paused;
+            let hashes = torrent.info.info_hashes();
+            let row = TorrentRow {
+                id: id.clone(),
+                info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
+                info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
+                name: name.clone(),
+                torrent: bytes,
+                save_path: save_path.to_string_lossy().into_owned(),
+                label: t.label.clone(),
+                added_at: t.added_at.map_or_else(now_ms, |s| s.saturating_mul(1000)),
+                paused,
+                have: have.as_ref().map(|h| h.as_bytes().to_vec()),
+                file_priorities: Some(prios.clone()),
+                downloaded_total: t.total_downloaded,
+                uploaded_total: t.total_uploaded,
+                placements: None,
+                held_path: Some(held_path.to_string_lossy().into_owned()),
+                unwanted_policy: 0,
+                queue_position: self.next_queue_position(),
+                download_rate: limits.download_rate,
+                upload_rate: limits.upload_rate,
+                max_connections: limits.max_connections,
+                magnet: None,
+                naming: 0,
+                linked: None,
+                file_paths: file_paths
+                    .as_ref()
+                    .map(|p| serde_json::to_string(p).expect("serialize")),
+            };
+            let (added_at, queue_position) = (row.added_at, row.queue_position);
+            if let Err(e) = self.db(move |db| db.insert_torrent(&row)).await {
+                skip(&mut report, name, e.to_string());
+                continue;
+            }
+            let spawned = self.spawn_entry(Spawn {
+                id: id.clone(),
+                peers: Vec::new(),
+                torrent,
+                save_path,
+                held_path,
+                have,
+                placements: None,
+                paused,
+                file_priorities: prios,
+                unwanted: UnwantedPolicy::Hold,
+                label: t.label.clone(),
+                added_at,
+                totals: (t.total_downloaded, t.total_uploaded),
+                queue_position,
+                limits,
+                queued: !paused && self.queue_limited(),
+                naming: 0,
+                linked: Vec::new(),
+                file_paths,
+            });
+            match spawned {
+                Ok(_) => report.imported.push(name),
+                Err(e) => {
+                    let key = id.clone();
+                    let _ = self.db(move |db| db.remove_torrent(&key)).await;
+                    skip(&mut report, name, e.to_string());
+                }
+            }
+        }
+        tracing::info!(
+            imported = report.imported.len(),
+            skipped = report.skipped.len(),
+            "Deluge import finished"
+        );
+        self.apply_queue().await;
+        self.refresh();
+        Ok(report)
     }
 
     /// Remove superseded torrents whose tracker now says they're unregistered. Their files
@@ -745,6 +958,10 @@ impl Core {
                     .as_deref()
                     .map(unpack_indices)
                     .unwrap_or_default(),
+                file_paths: row
+                    .file_paths
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str(j).ok()),
             })?;
         }
         let superseded = self.db(|db| db.superseded()).await?;
@@ -888,6 +1105,7 @@ impl Core {
             queued: !p.paused && self.queue_limited(),
             naming: p.naming,
             linked,
+            file_paths: None,
         })?;
         self.apply_queue().await;
         self.refresh();
@@ -957,6 +1175,7 @@ impl Core {
             magnet: Some(uri.to_owned()),
             naming,
             linked: None,
+            file_paths: None,
         };
         let (added_at, queue_position) = (row.added_at, row.queue_position);
         self.db(move |db| db.insert_torrent(&row)).await?;
@@ -1008,10 +1227,12 @@ impl Core {
             queued,
             naming,
             linked,
+            file_paths: custom_paths,
         } = s;
-        let file_paths = match naming_from_byte(naming) {
-            Naming::Portable => None,
-            other => match torrent.info.paths(other) {
+        let file_paths = match (&custom_paths, naming_from_byte(naming)) {
+            (Some(p), _) => Some(p.clone()),
+            (None, Naming::Portable) => None,
+            (None, other) => match torrent.info.paths(other) {
                 Ok(p) => Some(p),
                 Err(e) => {
                     tracing::warn!(%id, error = %e, "native paths failed; using portable names");
@@ -1068,6 +1289,7 @@ impl Core {
                     group,
                     naming,
                     superseded_by: None,
+                    file_paths: custom_paths,
                 },
             );
         Ok(id)
@@ -1157,6 +1379,7 @@ impl Core {
             magnet: None,
             naming: self.choose_naming(&save_path).await,
             linked: None,
+            file_paths: None,
         };
         let queue_position = row.queue_position;
         let naming = row.naming;
@@ -1184,6 +1407,7 @@ impl Core {
             queued: !req.paused && self.queue_limited(),
             naming,
             linked,
+            file_paths: None,
         }) {
             let id2 = id.clone();
             self.db(move |db| db.remove_torrent(&id2)).await?;

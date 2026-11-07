@@ -5,6 +5,7 @@ import { SyncClient } from "./api/sync";
 import { AddTorrent } from "./components/AddTorrent";
 import { ConfirmRemove } from "./components/ConfirmRemove";
 import { DetailPane } from "./components/DetailPane";
+import { ImportDeluge } from "./components/ImportDeluge";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentTable } from "./components/TorrentTable";
@@ -43,6 +44,7 @@ export function App() {
   const [removing, setRemoving] = useState<string[] | null>(null);
   const [dragging, setDragging] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const rows = useMemo(() => visibleTorrents(state.torrents, view), [state.torrents, view]);
   const counts = useMemo(() => countByFilter(state.torrents), [state.torrents]);
@@ -203,7 +205,16 @@ export function App() {
         {focused && <DetailPane summary={focused} />}
       </main>
       {adding && <AddTorrent initialFiles={adding} onClose={() => setAdding(null)} />}
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          onClose={() => setSettingsOpen(false)}
+          onImport={() => {
+            setSettingsOpen(false);
+            setImporting(true);
+          }}
+        />
+      )}
+      {importing && <ImportDeluge onClose={() => setImporting(false)} />}
       {removing && (
         <ConfirmRemove
           count={removing.length}

@@ -28,7 +28,7 @@ function NumberField({ label, value, onChange, hint }: { label: string; value: n
 
 const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, uploadRate: 0, maxConnections: 0 };
 
-export function SettingsDialog({ onClose }: { onClose: () => void }) {
+export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onImport: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -171,6 +171,9 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         )}
         {error && <p className="error-text">{error}</p>}
         <div className="actions">
+          <button type="button" className="link actions-start" onClick={onImport}>
+            Import from Deluge…
+          </button>
           <button type="button" onClick={onClose}>
             Cancel
           </button>

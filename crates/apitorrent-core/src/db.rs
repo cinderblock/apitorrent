@@ -64,6 +64,11 @@ const MIGRATIONS: &[&str] = &[
         by_torrent TEXT NOT NULL
     );
     ",
+    // 7: per-file paths that differ from the naming policy's (files renamed in Deluge, or
+    // laid out the way libtorrent did), as a JSON list of path component lists.
+    "
+    ALTER TABLE torrents ADD COLUMN file_paths TEXT;
+    ",
 ];
 
 /// A torrent as stored.
@@ -98,6 +103,8 @@ pub struct TorrentRow {
     pub naming: u8,
     /// Indices of files still linked to another torrent's copy, as little-endian u32s.
     pub linked: Option<Vec<u8>>,
+    /// Per-file paths overriding the naming policy, as JSON.
+    pub file_paths: Option<String>,
 }
 
 /// Resume state saved periodically for one torrent.
@@ -167,9 +174,9 @@ impl Database {
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
                  placements, held_path, unwanted_policy, queue_position, download_rate,
-                 upload_rate, max_connections, magnet, naming, linked)
+                 upload_rate, max_connections, magnet, naming, linked, file_paths)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -194,6 +201,7 @@ impl Database {
                 row.magnet,
                 row.naming,
                 row.linked,
+                row.file_paths,
             ],
         )?;
         Ok(())
@@ -211,7 +219,7 @@ impl Database {
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
                     paused, have, file_priorities, downloaded_total, uploaded_total,
                     placements, held_path, unwanted_policy, queue_position, download_rate,
-                    upload_rate, max_connections, magnet, naming, linked
+                    upload_rate, max_connections, magnet, naming, linked, file_paths
              FROM torrents ORDER BY queue_position, added_at",
         )?;
         stmt.query_map([], |r| {
@@ -239,6 +247,7 @@ impl Database {
                 magnet: r.get(20)?,
                 naming: r.get(21)?,
                 linked: r.get(22)?,
+                file_paths: r.get(23)?,
             })
         })?
         .collect()
@@ -438,6 +447,7 @@ mod tests {
             magnet: None,
             naming: 0,
             linked: None,
+            file_paths: None,
         }
     }
 

@@ -198,6 +198,10 @@ engine core stays in the main thread, because its pieces interlock.
 - **Windows: `File::open(..).sync_all()` fails with "Access is denied"**, because
   `FlushFileBuffers` needs write access. That broke the cross-volume move fallback and
   unsharing linked files. Open with `.write(true)` to flush.
+- The Deluge importer is tested on synthesized state, not a real install: none on this
+  machine, and the user's Deluge is presumably on a server I must not touch. Ask for a
+  copy of a real `~/.config/deluge` (it can be from a stopped Deluge) to test before
+  relying on it.
 - Known engine gaps: none blocking real-world use now that hash requests and cancels exist.
   Still missing: DHT/uTP/MSE wiring.
 - **Naming policy** (done): `sanitize::Naming` is Portable, Native or Verbatim, and
@@ -272,7 +276,15 @@ engine core stays in the main thread, because its pieces interlock.
   settings and UI. A season pack replacing two single episodes finished with nothing
   downloaded (core test `a_pack_reuses_and_supersedes_single_episodes`)
 - [ ] Content library, next: piece-level reuse, fingerprints, reflinks, tracker adapters
-- [ ] M3.2, M7, M8, M9, TLS, M10
+- [x] M9 (part): Deluge importer. `apitorrent-deluge` reads `state/*.torrent`,
+  `torrents.fastresume`, the `torrents.state` pickle (safe unpickler; fixture made by
+  Python), `label.conf` and `core.conf`. `Core::import_deluge` keeps files where they are
+  (path-prefix remapping, renamed files, libtorrent-layout detection; DB migration 7
+  `file_paths`), uses resume progress without rehashing, and keeps labels, queue order,
+  limits, totals and edited trackers. `POST /import/deluge`, and a UI dialog under
+  Settings
+- [ ] M9 rest: rules and retention, distribution channels
+- [ ] M3.2, M7, M8, TLS, M10
 
 ## Open questions for the user
 

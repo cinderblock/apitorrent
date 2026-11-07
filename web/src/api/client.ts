@@ -5,6 +5,8 @@ import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
 import type { AddTorrentResponse } from "./generated/AddTorrentResponse";
 import type { ApiError } from "./generated/ApiError";
 import type { FilePriority } from "./generated/FilePriority";
+import type { ImportDelugeRequest } from "./generated/ImportDelugeRequest";
+import type { ImportReport } from "./generated/ImportReport";
 import type { QueueMove } from "./generated/QueueMove";
 import type { Settings } from "./generated/Settings";
 import type { TorrentLimits } from "./generated/TorrentLimits";
@@ -58,6 +60,7 @@ export const api = {
   setFilePriorities: (id: string, priorities: FilePriority[]) =>
     request<void>("PUT", `/torrents/${enc(id)}/files/priorities`, { priorities }),
   settings: () => request<Settings>("GET", "/settings"),
+  importDeluge: (req: ImportDelugeRequest) => request<ImportReport>("POST", "/import/deluge", req),
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),
   setLimits: (id: string, limits: TorrentLimits) => request<void>("PUT", `/torrents/${enc(id)}/limits`, limits),
   setLabel: (id: string, label: string | null) => request<void>("PUT", `/torrents/${enc(id)}/label`, { label }),

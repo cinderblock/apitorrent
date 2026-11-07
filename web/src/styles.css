@@ -632,6 +632,10 @@ code {
   gap: 8px;
 }
 
+.actions-start {
+  margin-right: auto;
+}
+
 .dialog.wide {
   width: min(46rem, 94vw);
 }

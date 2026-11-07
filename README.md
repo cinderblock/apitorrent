@@ -40,6 +40,8 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 - **Automation.** Plugins watch sources such as feeds, Ubuntu releases and Raspberry Pi
   images. Rules decide what to fetch and what to retire, and channels push it to your other
   servers.
+- **Moving from Deluge.** Import a Deluge config directory: torrents keep their files,
+  progress, labels, queue order, limits and totals, with no rehash and no re-download.
 - **qBittorrent WebAPI compatibility** (a plugin), for the *arr ecosystem.
 
 ## Development

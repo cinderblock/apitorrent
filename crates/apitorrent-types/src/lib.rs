@@ -364,6 +364,53 @@ pub struct ServerInfo {
     pub capabilities: Vec<String>,
 }
 
+/// Import a Deluge installation's torrents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImportDelugeRequest {
+    /// Deluge's config directory on the machine running apitorrent (the one holding
+    /// `state/`), such as `~/.config/deluge`.
+    pub config_dir: String,
+    /// Rewrite save paths that start with `from` to start with `to` instead, for when
+    /// Deluge ran elsewhere or saw the downloads under another path.
+    #[serde(default)]
+    pub path_map: Vec<PathMapping>,
+    /// Also take Deluge's speed, connection and queue limits.
+    #[serde(default)]
+    pub import_settings: bool,
+    /// Add everything paused, whatever its state in Deluge.
+    #[serde(default)]
+    pub paused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PathMapping {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImportReport {
+    /// Names of the torrents added.
+    pub imported: Vec<String>,
+    pub skipped: Vec<ImportSkip>,
+    /// Problems that didn't stop the import.
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImportSkip {
+    pub name: String,
+    pub reason: String,
+}
+
 /// Why an address is banned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

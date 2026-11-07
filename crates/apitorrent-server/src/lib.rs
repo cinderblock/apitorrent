@@ -92,6 +92,7 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
         .route("/torrents/{id}/limits", put(routes::set_limits))
         .route("/torrents/{id}/label", put(routes::set_label))
         .route("/torrents/{id}/queue", post(routes::queue_move))
+        .route("/import/deluge", post(routes::import_deluge))
         .route("/bans", get(routes::bans).post(routes::ban))
         .route("/bans/{ip}", delete(routes::unban))
         .route("/sync", get(sync::handler))
