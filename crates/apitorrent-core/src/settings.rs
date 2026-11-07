@@ -18,6 +18,7 @@ pub fn defaults(session: &SessionConfig) -> Settings {
         connect_rate: u32::try_from(session.connect_rate).unwrap_or(u32::MAX),
         queue: QueueSettings::default(),
         groups: Vec::new(),
+        naming: apitorrent_types::NamingPolicy::Portable,
     }
 }
 

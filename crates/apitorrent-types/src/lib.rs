@@ -149,6 +149,8 @@ pub struct TorrentDetail {
     pub magnet: String,
     pub unwanted_policy: UnwantedPolicy,
     pub limits: TorrentLimits,
+    /// The naming the torrent's files were laid out with.
+    pub naming: NamingPolicy,
 }
 
 /// A torrent's own limits. 0 or null means no limit of its own.
@@ -185,6 +187,23 @@ pub struct Settings {
     pub connect_rate: u32,
     pub queue: QueueSettings,
     pub groups: Vec<GroupSettings>,
+    /// How file names are made safe for new torrents. Existing torrents keep theirs.
+    #[serde(default)]
+    pub naming: NamingPolicy,
+}
+
+/// How torrent file names are turned into names on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum NamingPolicy {
+    /// The same safe names on every OS, so a download directory can be shared over SMB
+    /// or moved to exFAT. The default.
+    #[default]
+    Portable,
+    /// Only what the save directory's filesystem forbids is changed. Falls back to
+    /// portable when the filesystem needs it (NTFS, exFAT, FAT, SMB shares).
+    Native,
 }
 
 /// How many torrents run at once. The rest wait, in queue order.

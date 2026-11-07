@@ -246,6 +246,7 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
             <Row label="Label" value={<LabelEditor id={summary.id} label={summary.label} />} />
             <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings)</span>} />
             <Row label="Queue" value={`Position ${summary.queuePosition + 1}`} />
+            {detail && <Row label="File names" value={detail.naming === "native" ? "Native" : "Portable"} />}
             {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} />} />}
             <Row label="Added" value={<When ms={summary.addedAt} />} />
             {summary.infoHashV1 && <Row label="Info-hash v1" value={<code>{summary.infoHashV1}</code>} />}

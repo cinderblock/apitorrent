@@ -8,7 +8,7 @@ use apitorrent_bencode::{Dict, Value};
 use crate::error::MetainfoError;
 use crate::hash::{InfoHashes, Sha1Hash, Sha256Hash};
 use crate::merkle;
-use crate::sanitize;
+use crate::sanitize::{self, Naming};
 
 /// Limits that bound the memory and work a torrent can demand. The defaults are far beyond
 /// any real torrent, and still small enough that a hostile one can't exhaust a server.
@@ -128,6 +128,32 @@ impl Info {
     }
 
     pub(crate) fn from_dict(info: &Dict<'_>, limits: &Limits) -> Result<Self, MetainfoError> {
+        Self::from_dict_with(info, limits, Naming::Portable)
+    }
+
+    /// Every file's path under other naming rules, in the same order as
+    /// [`Info::files`]. Used for native layouts and for web seed URLs.
+    pub fn paths(&self, naming: Naming) -> Result<Vec<Vec<String>>, MetainfoError> {
+        let value = apitorrent_bencode::decode_with(
+            &self.raw,
+            &apitorrent_bencode::DecodeOptions::lenient(),
+        )?;
+        let dict = value.as_dict().ok_or(MetainfoError::MissingInfo)?;
+        let limits = Limits {
+            max_files: usize::MAX,
+            max_total_length: u64::MAX,
+            max_pieces: u64::MAX,
+            ..Limits::default()
+        };
+        let other = Self::from_dict_with(dict, &limits, naming)?;
+        Ok(other.files.into_iter().map(|f| f.path).collect())
+    }
+
+    fn from_dict_with(
+        info: &Dict<'_>,
+        limits: &Limits,
+        naming: Naming,
+    ) -> Result<Self, MetainfoError> {
         let raw = info.raw();
 
         let meta_version = info.get(b"meta version");
@@ -162,19 +188,19 @@ impl Info {
         let name = if name_raw.iter().all(|&b| b == b' ' || b == b'.') {
             info_hashes.id_string()
         } else {
-            sanitize::component(name_raw)
+            naming.component(name_raw)
         };
 
         let v2_files = if has_v2 {
             let tree = info
                 .get_dict(b"file tree")
                 .ok_or(MetainfoError::Field("file tree"))?;
-            Some(parse_file_tree(tree, &name, limits)?)
+            Some(parse_file_tree(tree, &name, naming, limits)?)
         } else {
             None
         };
         let v1_files = if has_v1 {
-            Some(parse_v1_files(info, &name, limits)?)
+            Some(parse_v1_files(info, &name, naming, limits)?)
         } else {
             None
         };
@@ -236,7 +262,7 @@ impl Info {
             Arc::from([])
         };
 
-        disambiguate(&mut files);
+        disambiguate(&mut files, naming);
         check_roots(&files)?;
 
         let private = info.get_int(b"private") == Some(1);
@@ -369,13 +395,13 @@ fn file_length(dict: &Dict<'_>, path: &[String]) -> Result<u64, MetainfoError> {
     })
 }
 
-fn parse_components(list: &apitorrent_bencode::List<'_>) -> Option<Vec<String>> {
+fn parse_components(list: &apitorrent_bencode::List<'_>, naming: Naming) -> Option<Vec<String>> {
     let mut out = Vec::with_capacity(list.len());
     for item in list {
         let bytes = item.as_bytes()?;
         // Empty components are meaningless (`a//b`), so they are dropped.
         if !bytes.is_empty() {
-            out.push(sanitize::component(bytes));
+            out.push(naming.component(bytes));
         }
     }
     Some(out)
@@ -384,6 +410,7 @@ fn parse_components(list: &apitorrent_bencode::List<'_>) -> Option<Vec<String>> 
 fn parse_v1_files(
     info: &Dict<'_>,
     name: &str,
+    naming: Naming,
     limits: &Limits,
 ) -> Result<Vec<FileEntry>, MetainfoError> {
     let Some(list) = info.get(b"files") else {
@@ -417,7 +444,7 @@ fn parse_v1_files(
         let mut path = vec![name.to_owned()];
         match path_value {
             Some(Value::List(l)) => {
-                path.extend(parse_components(l).ok_or(MetainfoError::Field("path"))?);
+                path.extend(parse_components(l, naming).ok_or(MetainfoError::Field("path"))?);
             }
             Some(_) => return Err(MetainfoError::Field("path")),
             // BEP 47 lets pad files omit their path.
@@ -447,7 +474,7 @@ fn parse_v1_files(
             path.push("_".to_owned());
         }
         let symlink_target = if attributes.symlink {
-            Some(parse_symlink(dict, &path, &[name.to_owned()])?)
+            Some(parse_symlink(dict, &path, &[name.to_owned()], naming)?)
         } else {
             None
         };
@@ -471,10 +498,11 @@ fn parse_symlink(
     dict: &Dict<'_>,
     path: &[String],
     root: &[String],
+    naming: Naming,
 ) -> Result<Vec<String>, MetainfoError> {
     let invalid = || MetainfoError::InvalidSymlink(path.join("/"));
     let list = dict.get_list(b"symlink path").ok_or_else(invalid)?;
-    let target = parse_components(list).ok_or_else(invalid)?;
+    let target = parse_components(list, naming).ok_or_else(invalid)?;
     if target.is_empty() {
         return Err(invalid());
     }
@@ -493,6 +521,7 @@ struct TreeFile {
 fn parse_file_tree(
     tree: &Dict<'_>,
     name: &str,
+    naming: Naming,
     limits: &Limits,
 ) -> Result<Vec<TreeFile>, MetainfoError> {
     if tree.is_empty() {
@@ -513,7 +542,7 @@ fn parse_file_tree(
     };
     let mut prefix = root.clone();
     let mut out = Vec::new();
-    walk_tree(tree, &mut prefix, &root, &mut out, limits)?;
+    walk_tree(tree, &mut prefix, &root, &mut out, naming, limits)?;
     Ok(out)
 }
 
@@ -522,6 +551,7 @@ fn walk_tree(
     prefix: &mut Vec<String>,
     root: &[String],
     out: &mut Vec<TreeFile>,
+    naming: Naming,
     limits: &Limits,
 ) -> Result<(), MetainfoError> {
     if !dir.sorted_in_input() {
@@ -534,7 +564,7 @@ fn walk_tree(
         let node = node
             .as_dict()
             .ok_or_else(|| MetainfoError::FileTree("node is not a dictionary".into()))?;
-        prefix.push(sanitize::component(key));
+        prefix.push(naming.component(key));
         if let Some(leaf) = node.get(b"") {
             if node.len() != 1 {
                 return Err(MetainfoError::FileTree(format!(
@@ -545,7 +575,7 @@ fn walk_tree(
             if out.len() >= limits.max_files {
                 return Err(MetainfoError::TooManyFiles(limits.max_files));
             }
-            out.push(parse_tree_file(leaf, prefix, root)?);
+            out.push(parse_tree_file(leaf, prefix, root, naming)?);
         } else {
             if node.is_empty() {
                 return Err(MetainfoError::FileTree(format!(
@@ -553,7 +583,7 @@ fn walk_tree(
                     prefix.join("/")
                 )));
             }
-            walk_tree(node, prefix, root, out, limits)?;
+            walk_tree(node, prefix, root, out, naming, limits)?;
         }
         prefix.pop();
     }
@@ -564,6 +594,7 @@ fn parse_tree_file(
     leaf: &Value<'_>,
     path: &[String],
     root: &[String],
+    naming: Naming,
 ) -> Result<TreeFile, MetainfoError> {
     let display = || path.join("/");
     let dict = leaf
@@ -582,7 +613,7 @@ fn parse_tree_file(
         file_length(dict, path)?
     };
     let symlink_target = if attributes.symlink {
-        Some(parse_symlink(dict, path, root)?)
+        Some(parse_symlink(dict, path, root, naming)?)
     } else {
         None
     };
@@ -719,7 +750,17 @@ fn merge_hybrid(
 
 /// Rename files whose paths would collide on a case-insensitive filesystem, or where a
 /// file and a directory would need the same path. Later files get a `.N` suffix.
-fn disambiguate(files: &mut [FileEntry]) {
+fn disambiguate(files: &mut [FileEntry], naming: Naming) {
+    if naming == Naming::Verbatim {
+        return;
+    }
+    let fold = |name: &str| {
+        if naming.folds_case() {
+            sanitize::fold_case(name)
+        } else {
+            name.to_owned()
+        }
+    };
     let mut file_keys: HashSet<String> = HashSet::new();
     let mut dir_keys: HashSet<String> = HashSet::new();
     for file in files.iter_mut().filter(|f| !f.is_pad()) {
@@ -729,9 +770,9 @@ fn disambiguate(files: &mut [FileEntry]) {
             let base = key.clone();
             let join = |name: &str| {
                 if base.is_empty() {
-                    sanitize::fold_case(name)
+                    fold(name)
                 } else {
-                    format!("{base}/{}", sanitize::fold_case(name))
+                    format!("{base}/{}", fold(name))
                 }
             };
             let original = file.path[i].clone();

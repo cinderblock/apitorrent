@@ -25,6 +25,7 @@ use apitorrent_engine::{
     AddTorrent, Session, SessionConfig, TorrentHandle, TorrentState as EngineState,
     UnwantedPolicy as EnginePolicy,
 };
+use apitorrent_metainfo::sanitize::Naming;
 use apitorrent_metainfo::{Magnet, Torrent};
 use apitorrent_types::{
     AddSource, AddTorrentRequest, FilePlacement, FilePriority, QueueMove, Settings, TorrentDetail,
@@ -97,6 +98,7 @@ struct Entry {
     /// Paused by the queue (not by the user) until a slot frees up.
     queued: bool,
     group: Option<String>,
+    naming: u8,
 }
 
 /// A magnet link waiting for its metadata.
@@ -110,6 +112,7 @@ struct Pending {
     paused: bool,
     unwanted: UnwantedPolicy,
     queue_position: u32,
+    naming: u8,
     /// Progress of the fetch, and a way to cancel it; `None` while paused.
     fetch: Option<(watch::Receiver<FetchStatus>, oneshot::Sender<()>)>,
 }
@@ -134,6 +137,7 @@ struct Spawn {
     limits: TorrentLimits,
     /// Start paused by the queue; the next queue pass decides.
     queued: bool,
+    naming: u8,
 }
 
 struct Inner {
@@ -411,6 +415,34 @@ impl Core {
         Ok(())
     }
 
+    /// The naming for a new torrent saved under `save_path`: the setting, unless the
+    /// filesystem there can't take native names.
+    async fn choose_naming(&self, save_path: &std::path::Path) -> u8 {
+        if self.settings().naming == apitorrent_types::NamingPolicy::Portable {
+            return 0;
+        }
+        let path = save_path.to_path_buf();
+        tokio::task::spawn_blocking(move || match probe_filesystem(&path) {
+            Ok(fs) if fs.native_names => {
+                if fs.case_insensitive {
+                    2
+                } else {
+                    1
+                }
+            }
+            Ok(_) => {
+                tracing::info!(path = %path.display(), "filesystem needs portable names");
+                0
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "could not probe the filesystem; using portable names");
+                0
+            }
+        })
+        .await
+        .unwrap_or(0)
+    }
+
     fn next_queue_position(&self) -> u32 {
         let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
         let pending = self.inner.pending.read().expect("pending lock poisoned");
@@ -556,6 +588,7 @@ impl Core {
                     max_connections: row.max_connections,
                 },
                 queued: !row.paused && self.queue_limited(),
+                naming: row.naming,
             })?;
         }
         tracing::info!(count, "torrents restored");
@@ -598,6 +631,7 @@ impl Core {
                     paused: row.paused,
                     unwanted: policy_from_byte(row.unwanted_policy),
                     queue_position: row.queue_position,
+                    naming: row.naming,
                     fetch: None,
                 },
             );
@@ -684,6 +718,7 @@ impl Core {
             queue_position: p.queue_position,
             limits: TorrentLimits::default(),
             queued: !p.paused && self.queue_limited(),
+            naming: p.naming,
         })?;
         self.apply_queue().await;
         self.refresh();
@@ -728,6 +763,7 @@ impl Core {
                 .expect("held path probe panicked")
         };
         let name = magnet.display_name.clone().unwrap_or_else(|| id.clone());
+        let naming = self.choose_naming(&save_path).await;
         let row = TorrentRow {
             id: id.clone(),
             info_hash_v1: magnet.info_hashes.get_v1().map(|h| h.to_hex()),
@@ -750,6 +786,7 @@ impl Core {
             upload_rate: 0,
             max_connections: None,
             magnet: Some(uri.to_owned()),
+            naming,
         };
         let (added_at, queue_position) = (row.added_at, row.queue_position);
         self.db(move |db| db.insert_torrent(&row)).await?;
@@ -769,6 +806,7 @@ impl Core {
                     paused: req.paused,
                     unwanted: req.unwanted_policy,
                     queue_position,
+                    naming,
                     fetch: None,
                 },
             );
@@ -798,7 +836,18 @@ impl Core {
             queue_position,
             limits,
             queued,
+            naming,
         } = s;
+        let file_paths = match naming_from_byte(naming) {
+            Naming::Portable => None,
+            other => match torrent.info.paths(other) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    tracing::warn!(%id, error = %e, "native paths failed; using portable names");
+                    None
+                }
+            },
+        };
         let group = settings::group_for(&self.settings(), label.as_deref()).map(str::to_owned);
         let parts_path = self
             .inner
@@ -820,6 +869,7 @@ impl Core {
                 file_priorities: Some(file_priorities.clone()),
                 limits: engine_limits(limits),
                 group: group.clone(),
+                file_paths,
                 ..AddTorrent::new(torrent.clone(), save_path.clone())
             })
             .map_err(|_| CoreError::Duplicate)?;
@@ -844,6 +894,7 @@ impl Core {
                     limits,
                     queued,
                     group,
+                    naming,
                 },
             );
         Ok(id)
@@ -931,8 +982,10 @@ impl Core {
             upload_rate: 0,
             max_connections: None,
             magnet: None,
+            naming: self.choose_naming(&save_path).await,
         };
         let queue_position = row.queue_position;
+        let naming = row.naming;
         let added_at = row.added_at;
         self.db(move |db| db.insert_torrent(&row)).await?;
         if let Err(e) = self.spawn_entry(Spawn {
@@ -952,6 +1005,7 @@ impl Core {
             queue_position,
             limits: TorrentLimits::default(),
             queued: !req.paused && self.queue_limited(),
+            naming,
         }) {
             let id2 = id.clone();
             self.db(move |db| db.remove_torrent(&id2)).await?;
@@ -1152,8 +1206,15 @@ impl Core {
             .read()
             .expect("pending lock poisoned")
             .get(id)
-            .map(|p| (p.uri.clone(), p.magnet.trackers.clone(), p.unwanted));
-        if let Some((uri, trackers, unwanted_policy)) = pending {
+            .map(|p| {
+                (
+                    p.uri.clone(),
+                    p.magnet.trackers.clone(),
+                    p.unwanted,
+                    p.naming,
+                )
+            });
+        if let Some((uri, trackers, unwanted_policy, naming)) = pending {
             let summary = self.inner.store.get(id).ok_or(CoreError::NotFound)?;
             return Ok(TorrentDetail {
                 summary,
@@ -1166,9 +1227,10 @@ impl Core {
                 magnet: uri,
                 unwanted_policy,
                 limits: TorrentLimits::default(),
+                naming: policy_of(naming),
             });
         }
-        let (torrent, handle, prios, unwanted_policy, limits) = {
+        let (torrent, handle, prios, unwanted_policy, limits, naming) = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let e = torrents.get(id).ok_or(CoreError::NotFound)?;
             (
@@ -1177,6 +1239,7 @@ impl Core {
                 e.file_priorities.clone(),
                 e.unwanted,
                 e.limits,
+                e.naming,
             )
         };
         let placements = {
@@ -1229,6 +1292,7 @@ impl Core {
             magnet: magnet.to_uri(),
             unwanted_policy,
             limits,
+            naming: policy_of(naming),
         })
     }
 
@@ -1460,6 +1524,64 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+fn naming_from_byte(b: u8) -> Naming {
+    match b {
+        1 => Naming::Native {
+            case_insensitive: false,
+        },
+        2 => Naming::Native {
+            case_insensitive: true,
+        },
+        _ => Naming::Portable,
+    }
+}
+
+fn policy_of(naming: u8) -> apitorrent_types::NamingPolicy {
+    if naming == 0 {
+        apitorrent_types::NamingPolicy::Portable
+    } else {
+        apitorrent_types::NamingPolicy::Native
+    }
+}
+
+/// What a filesystem allows, found by trying it.
+struct FsTraits {
+    /// Names Windows forbids (`:` and a trailing `.`) can be created and read back.
+    native_names: bool,
+    case_insensitive: bool,
+}
+
+/// Try the filesystem under `dir`: create a scratch directory, a file with a name only
+/// POSIX filesystems accept, and check whether names differing in case collide. A real
+/// test is the only check that works for every OS, mount, junction and network share.
+fn probe_filesystem(dir: &std::path::Path) -> std::io::Result<FsTraits> {
+    std::fs::create_dir_all(dir)?;
+    let scratch = dir.join(format!(".apitorrent-probe-{:08x}", rand_u32()));
+    std::fs::create_dir(&scratch)?;
+    let result = (|| {
+        let odd = "probe:name.";
+        let native_names = std::fs::write(scratch.join(odd), b"").is_ok()
+            && std::fs::read_dir(&scratch)?
+                .filter_map(Result::ok)
+                .any(|e| e.file_name() == odd);
+        std::fs::write(scratch.join("CaseProbe"), b"")?;
+        let case_insensitive = scratch.join("CASEPROBE").exists();
+        Ok(FsTraits {
+            native_names,
+            case_insensitive,
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+fn rand_u32() -> u32 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    nanos ^ std::process::id()
 }
 
 fn placement_to_byte(p: Placement) -> u8 {

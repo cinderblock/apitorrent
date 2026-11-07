@@ -137,6 +137,9 @@ pub struct AddTorrent {
     pub limits: TorrentLimits,
     /// The group whose shared limits apply too (see [`crate::Session::set_group`]).
     pub group: Option<String>,
+    /// Each file's path under the save path, overriding the torrent's own (portable)
+    /// paths. Used for native naming. Must have one entry per file.
+    pub file_paths: Option<Vec<Vec<String>>>,
 }
 
 impl AddTorrent {
@@ -154,6 +157,7 @@ impl AddTorrent {
             file_priorities: None,
             limits: TorrentLimits::default(),
             group: None,
+            file_paths: None,
         }
     }
 }
@@ -493,7 +497,11 @@ impl TorrentActor {
         let info = &torrent.info;
         let info_hashes = info.info_hashes();
         let layout = Layout::from_info(info);
-        let relative: Vec<Vec<String>> = info.files.iter().map(|f| f.path.clone()).collect();
+        let relative: Vec<Vec<String>> = params
+            .file_paths
+            .clone()
+            .filter(|p| p.len() == info.files.len())
+            .unwrap_or_else(|| info.files.iter().map(|f| f.path.clone()).collect());
         let id = info_hashes.id_string();
         let internal = params.save_path.join(".apitorrent");
         let paths = StoragePaths {
@@ -727,7 +735,10 @@ impl TorrentActor {
         let info = &self.torrent.info;
         let shape = Arc::new(WebSeedTorrent {
             layout: self.layout.clone(),
-            paths: info.files.iter().map(|f| f.path.clone()).collect(),
+            // URLs name the server's files as the torrent does, not our sanitised names.
+            paths: info
+                .paths(apitorrent_metainfo::sanitize::Naming::Verbatim)
+                .unwrap_or_else(|_| info.files.iter().map(|f| f.path.clone()).collect()),
             name: info.name.clone(),
             single_file: info.is_single_file(),
         });

@@ -16,6 +16,65 @@
 //! Sibling names that collide case-insensitively, as they would on Windows and macOS, are
 //! disambiguated by [`crate::FileList`] during parsing.
 
+/// Rules for turning torrent-supplied names into path components.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Naming {
+    /// The same rules on every platform (see the module docs): safe to share over SMB,
+    /// move to exFAT, or open from any OS. The default.
+    #[default]
+    Portable,
+    /// Only the host's rules, plus the ones that are always enforced: no separators, no
+    /// `.` or `..`, no control characters, 255 bytes at most. On Windows this is the same
+    /// as [`Naming::Portable`]. `case_insensitive` says whether the target filesystem
+    /// folds case, so siblings differing only in case must be renamed.
+    Native { case_insensitive: bool },
+    /// The names exactly as the torrent gives them (invalid UTF-8 replaced). Never for
+    /// disk paths: for building web seed URLs, which name the server's original files.
+    Verbatim,
+}
+
+impl Naming {
+    /// Make one path component under these rules.
+    pub fn component(self, raw: &[u8]) -> String {
+        match self {
+            Naming::Portable => component(raw),
+            Naming::Native { .. } if cfg!(windows) => component(raw),
+            Naming::Native { .. } => posix_component(raw),
+            Naming::Verbatim => String::from_utf8_lossy(raw).into_owned(),
+        }
+    }
+
+    /// Whether sibling names that differ only in case collide.
+    pub fn folds_case(self) -> bool {
+        match self {
+            Naming::Portable => true,
+            Naming::Native { case_insensitive } => case_insensitive || cfg!(windows),
+            Naming::Verbatim => false,
+        }
+    }
+}
+
+/// A component under POSIX rules: only `/`, NUL and control characters are replaced, and
+/// `.`, `..` and empty names become `_`. Never returns an empty string, `.` or `..`.
+pub fn posix_component(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let text = text.trim_start_matches('/');
+    let mut out: String = text
+        .chars()
+        .map(|c| match c {
+            '\u{0}'..='\u{1f}' | '\u{7f}' | '/' | '\u{fffd}' => '_',
+            c => c,
+        })
+        .collect();
+    if out.is_empty() || out == "." || out == ".." {
+        "_".clone_into(&mut out);
+    }
+    if out.len() > MAX_COMPONENT_BYTES {
+        out = shorten(&out);
+    }
+    out
+}
+
 /// The longest component, in bytes of UTF-8. Linux allows 255 bytes; Windows allows 255
 /// UTF-16 code units, which is never fewer characters.
 pub const MAX_COMPONENT_BYTES: usize = 255;

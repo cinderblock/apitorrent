@@ -51,6 +51,10 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE torrents ADD COLUMN magnet TEXT;
     ",
+    // 5: naming: 0 portable, 1 native (case-sensitive filesystem), 2 native (case-insensitive).
+    "
+    ALTER TABLE torrents ADD COLUMN naming INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// A torrent as stored.
@@ -81,6 +85,8 @@ pub struct TorrentRow {
     pub max_connections: Option<u32>,
     /// The magnet link it was added from, if any.
     pub magnet: Option<String>,
+    /// 0 portable, 1 native case-sensitive, 2 native case-insensitive.
+    pub naming: u8,
 }
 
 /// Resume state saved periodically for one torrent.
@@ -149,9 +155,9 @@ impl Database {
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
                  placements, held_path, unwanted_policy, queue_position, download_rate,
-                 upload_rate, max_connections, magnet)
+                 upload_rate, max_connections, magnet, naming)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21)",
+                 ?17, ?18, ?19, ?20, ?21, ?22)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -174,6 +180,7 @@ impl Database {
                 to_i64(row.upload_rate),
                 row.max_connections,
                 row.magnet,
+                row.naming,
             ],
         )?;
         Ok(())
@@ -191,7 +198,7 @@ impl Database {
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
                     paused, have, file_priorities, downloaded_total, uploaded_total,
                     placements, held_path, unwanted_policy, queue_position, download_rate,
-                    upload_rate, max_connections, magnet
+                    upload_rate, max_connections, magnet, naming
              FROM torrents ORDER BY queue_position, added_at",
         )?;
         stmt.query_map([], |r| {
@@ -217,6 +224,7 @@ impl Database {
                 upload_rate: from_i64(r.get(18)?),
                 max_connections: r.get(19)?,
                 magnet: r.get(20)?,
+                naming: r.get(21)?,
             })
         })?
         .collect()
@@ -391,6 +399,7 @@ mod tests {
             upload_rate: 0,
             max_connections: None,
             magnet: None,
+            naming: 0,
         }
     }
 

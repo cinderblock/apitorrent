@@ -397,3 +397,50 @@ async fn pending_magnet_can_be_paused_and_removed() {
     assert!(core.store().get(&id).is_none());
     core.shutdown().await.unwrap();
 }
+
+/// With native naming, names are kept wherever the save directory's filesystem allows.
+/// On NTFS (Windows) the probe finds `:` refused, so the torrent falls back to portable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_naming_follows_the_filesystem() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let mut settings = core.settings();
+    settings.naming = apitorrent_types::NamingPolicy::Native;
+    core.set_settings(settings).await.unwrap();
+
+    let data = vec![9u8; 50_000];
+    let bytes = TorrentBuilder::new("talk: part 1.mp3", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&[], data.clone()))
+        .build()
+        .unwrap();
+    // The file is already there under the name the filesystem will get.
+    let expected = if cfg!(windows) {
+        "talk_ part 1.mp3"
+    } else {
+        "talk: part 1.mp3"
+    };
+    std::fs::write(cfg.download_dir.join(expected), &data).unwrap();
+    let id = core
+        .add(AddTorrentRequest {
+            source: AddSource::TorrentFile {
+                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+            },
+            save_path: None,
+            paused: false,
+            label: None,
+            file_priorities: None,
+            unwanted_policy: UnwantedPolicy::Hold,
+        })
+        .await
+        .unwrap();
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    let naming = core.detail(&id).await.unwrap().naming;
+    if cfg!(windows) {
+        assert_eq!(naming, apitorrent_types::NamingPolicy::Portable);
+    } else {
+        assert_eq!(naming, apitorrent_types::NamingPolicy::Native);
+    }
+    core.shutdown().await.unwrap();
+}

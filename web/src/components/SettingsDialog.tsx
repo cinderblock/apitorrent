@@ -95,6 +95,20 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               </div>
             </fieldset>
             <fieldset className="settings-section">
+              <legend>File names</legend>
+              <label className="field">
+                <span>For new torrents</span>
+                <select value={settings.naming} onChange={(e) => update({ naming: e.target.value as Settings["naming"] })}>
+                  <option value="portable">Portable: names safe on every OS</option>
+                  <option value="native">Native: change only what this filesystem forbids</option>
+                </select>
+              </label>
+              <p className="hint muted">
+                Portable names can be shared over SMB or moved to exFAT unchanged. Native keeps names like <code>a:b</code> where the filesystem allows them, and
+                falls back to portable where it doesn&apos;t. Torrents already added keep their names.
+              </p>
+            </fieldset>
+            <fieldset className="settings-section">
               <legend>Groups</legend>
               <p className="hint muted">Torrents whose label is listed share the group&apos;s limits, on top of the ones above.</p>
               {settings.groups.map((g, i) => (
