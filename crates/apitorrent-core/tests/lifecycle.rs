@@ -444,3 +444,132 @@ async fn native_naming_follows_the_filesystem() {
     }
     core.shutdown().await.unwrap();
 }
+
+/// A tracker that answers every announce with a failure: the torrent is unregistered.
+async fn unregistered_tracker() -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let body = b"d14:failure reason20:Unregistered torrente";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            });
+        }
+    });
+    format!("http://{addr}/announce")
+}
+
+fn add_bytes(bytes: &[u8]) -> AddTorrentRequest {
+    AddTorrentRequest {
+        source: AddSource::TorrentFile {
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
+        save_path: None,
+        paused: false,
+        label: None,
+        file_priorities: None,
+        unwanted_policy: UnwantedPolicy::Hold,
+    }
+}
+
+/// The pack case: single episodes are seeding, a season pack with the same files arrives,
+/// and it reuses them instead of downloading. The singles are superseded, and one whose
+/// tracker says "unregistered" is retired without touching its file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pack_reuses_and_supersedes_single_episodes() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let ep = |seed: u32, len: u32| -> Vec<u8> {
+        (0..len)
+            .map(|i| u8::try_from((i * 7 + seed) % 251).unwrap())
+            .collect()
+    };
+    let (e1, e2) = (ep(1, 150_000), ep(2, 90_000));
+    let tracker = unregistered_tracker().await;
+
+    let single = |name: &str, data: &[u8], tracker: Option<&str>| {
+        let mut b = TorrentBuilder::new(name, Version::V1)
+            .piece_length(16 * 1024)
+            .file(FileSource::from_bytes(&[], data.to_vec()));
+        if let Some(t) = tracker {
+            b = b.tracker_tier(vec![t.to_owned()]);
+        }
+        b.build().unwrap()
+    };
+    std::fs::write(cfg.download_dir.join("Show.S01E01.mkv"), &e1).unwrap();
+    std::fs::write(cfg.download_dir.join("Show.S01E02.mkv"), &e2).unwrap();
+    let s1 = core
+        .add(add_bytes(&single("Show.S01E01.mkv", &e1, Some(&tracker))))
+        .await
+        .unwrap();
+    let s2 = core
+        .add(add_bytes(&single("Show.S01E02.mkv", &e2, None)))
+        .await
+        .unwrap();
+    wait_for(&core, &s1, TorrentState::Seeding).await;
+    wait_for(&core, &s2, TorrentState::Seeding).await;
+
+    // The pack: the same episodes, under a season directory, at a different alignment.
+    let pack_bytes = TorrentBuilder::new("Show Season 1", Version::V1)
+        .piece_length(32 * 1024)
+        .file(FileSource::from_bytes(&["Show.S01E01.mkv"], e1.clone()))
+        .file(FileSource::from_bytes(&["Show.S01E02.mkv"], e2.clone()))
+        .build()
+        .unwrap();
+    let pack = core.add(add_bytes(&pack_bytes)).await.unwrap();
+    // No peers at all: it can only finish from the library.
+    wait_for(&core, &pack, TorrentState::Seeding).await;
+    let season = cfg.download_dir.join("Show Season 1");
+    assert_eq!(std::fs::read(season.join("Show.S01E01.mkv")).unwrap(), e1);
+    assert_eq!(std::fs::read(season.join("Show.S01E02.mkv")).unwrap(), e2);
+    assert_eq!(
+        core.store().get(&pack).unwrap().downloaded,
+        0,
+        "nothing downloaded"
+    );
+    assert_eq!(
+        core.store().get(&s1).unwrap().superseded_by.as_deref(),
+        Some(pack.as_str())
+    );
+    assert_eq!(
+        core.store().get(&s2).unwrap().superseded_by.as_deref(),
+        Some(pack.as_str())
+    );
+
+    // Episode 1's tracker calls it unregistered: it is retired, its file stays.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while core.store().get(&s1).is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "episode 1 was never retired"
+        );
+        core.retire_superseded().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        cfg.download_dir.join("Show.S01E01.mkv").exists(),
+        "retiring keeps the file"
+    );
+    assert!(
+        core.store().get(&s2).is_some(),
+        "episode 2's tracker is fine"
+    );
+    assert_eq!(
+        core.store().get(&pack).unwrap().state,
+        TorrentState::Seeding
+    );
+    core.shutdown().await.unwrap();
+}

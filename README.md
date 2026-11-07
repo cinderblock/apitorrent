@@ -32,8 +32,11 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
   how many torrents download and seed at once.
 - **Bad peers are banned on evidence.** Corrupt data is traced to the peer that sent it,
   block by block, before anyone is banned. IP blocklists load from common formats.
-- **A content library.** A file can belong to several torrents. A new pack reuses the files
-  you already have, and the old torrents keep seeding them.
+- **A content library.** A new torrent reuses files other torrents already have (hard
+  links, so no extra space), instead of downloading them again. A season pack picks up
+  the single episodes you have; they keep seeding until their tracker drops them, then
+  retire on their own. Shared files are copy-on-write, so one torrent never changes
+  another's data.
 - **Automation.** Plugins watch sources such as feeds, Ubuntu releases and Raspberry Pi
   images. Rules decide what to fetch and what to retire, and channels push it to your other
   servers.

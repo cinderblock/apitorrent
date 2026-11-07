@@ -82,6 +82,22 @@ function location(f: TorrentFile): React.ReactNode {
   return null;
 }
 
+/** Names the torrent that took over this one's files. */
+function SupersededBy({ id }: { id: string }) {
+  const [name, setName] = useState<string | null>(null);
+  useEffect(() => {
+    api.detail(id).then(
+      (d) => setName(d.summary.name),
+      () => setName(null),
+    );
+  }, [id]);
+  return (
+    <span>
+      All of its files are in <strong>{name ?? id}</strong>. It keeps seeding until its tracker drops it.
+    </span>
+  );
+}
+
 function LabelEditor({ id, label }: { id: string; label: string | null }) {
   const [value, setValue] = useState(label ?? "");
   useEffect(() => setValue(label ?? ""), [label]);
@@ -246,6 +262,7 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
             <Row label="Label" value={<LabelEditor id={summary.id} label={summary.label} />} />
             <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings)</span>} />
             <Row label="Queue" value={`Position ${summary.queuePosition + 1}`} />
+            {summary.supersededBy && <Row label="Superseded" value={<SupersededBy id={summary.supersededBy} />} />}
             {detail && <Row label="File names" value={detail.naming === "native" ? "Native" : "Portable"} />}
             {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} />} />}
             <Row label="Added" value={<When ms={summary.addedAt} />} />

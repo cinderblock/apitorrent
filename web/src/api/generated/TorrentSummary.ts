@@ -22,4 +22,8 @@ queuePosition: number,
 /**
  * The group whose shared limits apply, chosen by label.
  */
-group: string | null, };
+group: string | null, 
+/**
+ * Another torrent holds all of this one's files (a pack that replaced it).
+ */
+supersededBy: string | null, };

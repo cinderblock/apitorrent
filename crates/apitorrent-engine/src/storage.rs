@@ -12,6 +12,7 @@
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::layout::{Layout, Segment};
@@ -65,6 +66,11 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
     /// creates them.
     fn create_empty_files(&self) -> io::Result<()>;
 
+    /// Which files are links to (or clones of) another torrent's copy, still shared.
+    fn linked(&self) -> Vec<bool> {
+        Vec::new()
+    }
+
     /// Delete the torrent's held area and part store, and its files in the save directory
     /// too when `save_files` is set.
     fn delete(&self, save_files: bool) -> io::Result<()>;
@@ -87,6 +93,13 @@ struct FileSlot {
     /// Held for reading during every I/O on the file, and for writing while it moves.
     placement: RwLock<Placement>,
     handle: Mutex<Option<Arc<File>>>,
+    /// The file is a hard link to another torrent's copy (the content library). Writes
+    /// that would change it break the link first, so the other torrent's file is never
+    /// modified.
+    linked: AtomicBool,
+    /// Serialises writes to a linked file, so two pieces can't both unshare it and lose
+    /// one write to the other's copy.
+    unshare: Mutex<()>,
 }
 
 /// Plain files under a download directory.
@@ -130,6 +143,8 @@ impl FileStorage {
                         .unwrap_or_default(),
                 ),
                 handle: Mutex::new(None),
+                linked: AtomicBool::new(false),
+                unshare: Mutex::new(()),
             })
             .collect();
         let parts = PartFile::open(&paths.parts, layout.piece_length(), layout.piece_count());
@@ -159,6 +174,47 @@ impl FileStorage {
             Placement::Held => &self.held_root,
             _ => &self.save_root,
         }
+    }
+
+    /// Mark files as linked to another torrent's copy (see [`FileSlot::linked`]).
+    pub fn set_linked(&self, files: &[usize]) {
+        for &f in files {
+            if let Some(slot) = self.files.get(f) {
+                slot.linked.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// Write into a file that may be shared with another torrent. Bytes that are already
+    /// there are skipped; if anything would change, the link is broken first by giving
+    /// this torrent a private copy of the file.
+    fn write_linked(&self, file: usize, path: &Path, src: &[u8], at: u64) -> io::Result<()> {
+        let _one_writer = self.files[file]
+            .unshare
+            .lock()
+            .expect("unshare lock poisoned");
+        let f = self.handle(file, path, true)?.expect("created");
+        if !self.files[file].linked.load(Ordering::Acquire) {
+            // Another write unshared it while we waited.
+            return write_all_at(&f, src, at);
+        }
+        let mut existing = vec![0u8; src.len()];
+        let same = read_exact_at(&f, &mut existing, at).is_ok() && existing == src;
+        if same {
+            return Ok(());
+        }
+        drop(f);
+        // Unshare: copy beside it, then rename the copy over the link. The other torrent
+        // keeps the original inode.
+        self.close(file);
+        let tmp = path.with_extension("apitorrent-unshare");
+        std::fs::copy(path, &tmp)?;
+        OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        self.files[file].linked.store(false, Ordering::Release);
+        tracing::info!(path = %path.display(), "a shared file differs here; it now has its own copy");
+        let f = self.handle(file, path, true)?.expect("created");
+        write_all_at(&f, src, at)
     }
 
     /// The path file `file` has in the save directory.
@@ -285,6 +341,9 @@ impl Storage for FileStorage {
                 .read()
                 .expect("placement lock poisoned");
             match self.path_at(seg.file, *placement) {
+                Some(path) if self.files[seg.file].linked.load(Ordering::Acquire) => {
+                    self.write_linked(seg.file, path, src, seg.file_offset)?;
+                }
                 Some(path) => {
                     let f = self.handle(seg.file, path, true)?.expect("created");
                     write_all_at(&f, src, seg.file_offset)?;
@@ -437,6 +496,13 @@ impl Storage for FileStorage {
         self.parts.sync()
     }
 
+    fn linked(&self) -> Vec<bool> {
+        self.files
+            .iter()
+            .map(|f| f.linked.load(Ordering::Acquire))
+            .collect()
+    }
+
     fn delete(&self, save_files: bool) -> io::Result<()> {
         let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
         let mut first_error = None;
@@ -533,7 +599,7 @@ fn move_file(src: &Path, dst: &Path) -> io::Result<()> {
         Err(rename_error) => {
             // Cross-volume (EXDEV, ERROR_NOT_SAME_DEVICE) or similar: copy, then delete.
             std::fs::copy(src, dst).map_err(|_| rename_error)?;
-            File::open(dst)?.sync_all()?;
+            OpenOptions::new().write(true).open(dst)?.sync_all()?;
             std::fs::remove_file(src)
         }
     }
@@ -758,6 +824,41 @@ mod tests {
             Path::new(r"\\?\UNC\server\share\x")
         );
         assert_eq!(long_path(Path::new(r"\\?\C:\a")), Path::new(r"\\?\C:\a"));
+    }
+
+    /// A file hard-linked from another torrent is never changed through the link: equal
+    /// bytes are skipped, and different bytes first give this torrent its own copy.
+    #[test]
+    fn linked_files_are_copy_on_write() {
+        let bytes = TorrentBuilder::new("x.bin", Version::V1)
+            .piece_length(16 * 1024)
+            .file(FileSource::from_bytes(&[], vec![5; 40_000]))
+            .build()
+            .unwrap();
+        let t = Torrent::from_bytes(&bytes).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let mine = tempfile::tempdir().unwrap();
+        let original = other.path().join("x.bin");
+        std::fs::write(&original, vec![5u8; 40_000]).unwrap();
+        std::fs::hard_link(&original, mine.path().join("x.bin")).unwrap();
+        let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
+        let s = FileStorage::new(&paths(mine.path()), Layout::from_info(&t.info), &rel, None);
+        s.set_linked(&[0]);
+
+        s.write(0, &[5; 16 * 1024]).unwrap();
+        assert_eq!(s.linked(), [true], "equal bytes keep the link");
+
+        s.write(16 * 1024, &[9; 16 * 1024]).unwrap();
+        s.sync().unwrap();
+        assert_eq!(s.linked(), [false]);
+        let mut expected = vec![5u8; 40_000];
+        expected[16 * 1024..32 * 1024].fill(9);
+        assert_eq!(std::fs::read(mine.path().join("x.bin")).unwrap(), expected);
+        assert_eq!(
+            std::fs::read(&original).unwrap(),
+            vec![5u8; 40_000],
+            "the other torrent's file is untouched"
+        );
     }
 
     #[test]

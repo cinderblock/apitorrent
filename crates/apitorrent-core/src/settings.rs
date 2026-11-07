@@ -19,6 +19,7 @@ pub fn defaults(session: &SessionConfig) -> Settings {
         queue: QueueSettings::default(),
         groups: Vec::new(),
         naming: apitorrent_types::NamingPolicy::Portable,
+        library: apitorrent_types::LibrarySettings::default(),
     }
 }
 

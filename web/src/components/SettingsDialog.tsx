@@ -95,6 +95,30 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               </div>
             </fieldset>
             <fieldset className="settings-section">
+              <legend>Library</legend>
+              <label className="check">
+                <input type="checkbox" checked={settings.library.enabled} onChange={(e) => update({ library: { ...settings.library, enabled: e.target.checked } })} />
+                Reuse files other torrents already have instead of downloading them
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={settings.library.allowCopy}
+                  disabled={!settings.library.enabled}
+                  onChange={(e) => update({ library: { ...settings.library, allowCopy: e.target.checked } })}
+                />
+                Copy them when they are on another drive (otherwise they are hard-linked, using no extra space)
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={settings.library.retireSuperseded}
+                  onChange={(e) => update({ library: { ...settings.library, retireSuperseded: e.target.checked } })}
+                />
+                Remove torrents a pack has replaced once their tracker drops them (their files stay)
+              </label>
+            </fieldset>
+            <fieldset className="settings-section">
               <legend>File names</legend>
               <label className="field">
                 <span>For new torrents</span>

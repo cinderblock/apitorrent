@@ -140,6 +140,9 @@ pub struct AddTorrent {
     /// Each file's path under the save path, overriding the torrent's own (portable)
     /// paths. Used for native naming. Must have one entry per file.
     pub file_paths: Option<Vec<Vec<String>>>,
+    /// Files that are hard links to another torrent's copy (the content library). Writes
+    /// that would change them give this torrent its own copy first.
+    pub linked: Vec<usize>,
 }
 
 impl AddTorrent {
@@ -158,6 +161,7 @@ impl AddTorrent {
             limits: TorrentLimits::default(),
             group: None,
             file_paths: None,
+            linked: Vec::new(),
         }
     }
 }
@@ -283,6 +287,16 @@ impl TorrentHandle {
     /// Where each file's bytes are (for resume data). Waits for a move in progress.
     pub fn placements(&self) -> Vec<Placement> {
         self.storage.placements()
+    }
+
+    /// The files still linked to another torrent's copy (for resume data).
+    pub fn linked(&self) -> Vec<usize> {
+        self.storage
+            .linked()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &l)| l.then_some(i))
+            .collect()
     }
 
     /// Change this torrent's own limits.
@@ -523,12 +537,9 @@ impl TorrentActor {
                 })
                 .collect()
         });
-        let storage: Arc<dyn Storage> = Arc::new(FileStorage::new(
-            &paths,
-            layout.clone(),
-            &relative,
-            Some(&placements),
-        ));
+        let file_storage = FileStorage::new(&paths, layout.clone(), &relative, Some(&placements));
+        file_storage.set_linked(&params.linked);
+        let storage: Arc<dyn Storage> = Arc::new(file_storage);
         let hashes = Arc::new(PieceHashes::new(&torrent));
         let (tx, rx) = mpsc::channel(1024);
         let (peer_tx, peer_rx) = mpsc::channel(4096);

@@ -55,6 +55,15 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE torrents ADD COLUMN naming INTEGER NOT NULL DEFAULT 0;
     ",
+    // 6: the content library: files linked from other torrents, and which torrents a pack
+    // has taken over.
+    "
+    ALTER TABLE torrents ADD COLUMN linked BLOB;
+    CREATE TABLE superseded (
+        torrent    TEXT PRIMARY KEY,
+        by_torrent TEXT NOT NULL
+    );
+    ",
 ];
 
 /// A torrent as stored.
@@ -87,6 +96,8 @@ pub struct TorrentRow {
     pub magnet: Option<String>,
     /// 0 portable, 1 native case-sensitive, 2 native case-insensitive.
     pub naming: u8,
+    /// Indices of files still linked to another torrent's copy, as little-endian u32s.
+    pub linked: Option<Vec<u8>>,
 }
 
 /// Resume state saved periodically for one torrent.
@@ -95,6 +106,7 @@ pub struct ResumeRow {
     pub id: String,
     pub have: Vec<u8>,
     pub placements: Vec<u8>,
+    pub linked: Vec<u8>,
     pub downloaded_total: u64,
     pub uploaded_total: u64,
 }
@@ -155,9 +167,9 @@ impl Database {
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
                  placements, held_path, unwanted_policy, queue_position, download_rate,
-                 upload_rate, max_connections, magnet, naming)
+                 upload_rate, max_connections, magnet, naming, linked)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22)",
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -181,6 +193,7 @@ impl Database {
                 row.max_connections,
                 row.magnet,
                 row.naming,
+                row.linked,
             ],
         )?;
         Ok(())
@@ -198,7 +211,7 @@ impl Database {
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
                     paused, have, file_priorities, downloaded_total, uploaded_total,
                     placements, held_path, unwanted_policy, queue_position, download_rate,
-                    upload_rate, max_connections, magnet, naming
+                    upload_rate, max_connections, magnet, naming, linked
              FROM torrents ORDER BY queue_position, added_at",
         )?;
         stmt.query_map([], |r| {
@@ -225,6 +238,7 @@ impl Database {
                 max_connections: r.get(19)?,
                 magnet: r.get(20)?,
                 naming: r.get(21)?,
+                linked: r.get(22)?,
             })
         })?
         .collect()
@@ -236,7 +250,7 @@ impl Database {
         {
             let mut stmt = tx.prepare(
                 "UPDATE torrents SET have = ?2, placements = ?3, downloaded_total = ?4,
-                     uploaded_total = ?5
+                     uploaded_total = ?5, linked = ?6
                  WHERE id = ?1",
             )?;
             for r in rows {
@@ -245,7 +259,8 @@ impl Database {
                     r.have,
                     r.placements,
                     to_i64(r.downloaded_total),
-                    to_i64(r.uploaded_total)
+                    to_i64(r.uploaded_total),
+                    r.linked
                 ])?;
             }
         }
@@ -344,7 +359,29 @@ impl Database {
     pub fn remove_torrent(&self, id: &str) -> rusqlite::Result<()> {
         self.conn
             .execute("DELETE FROM torrents WHERE id = ?1", [id])?;
+        self.conn.execute(
+            "DELETE FROM superseded WHERE torrent = ?1 OR by_torrent = ?1",
+            [id],
+        )?;
         Ok(())
+    }
+
+    /// Record that `by` holds every file of `torrent`.
+    pub fn set_superseded(&self, torrent: &str, by: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO superseded (torrent, by_torrent) VALUES (?1, ?2)
+             ON CONFLICT(torrent) DO UPDATE SET by_torrent = excluded.by_torrent",
+            params![torrent, by],
+        )?;
+        Ok(())
+    }
+
+    pub fn superseded(&self) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT torrent, by_torrent FROM superseded")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect()
     }
 
     pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {
@@ -400,6 +437,7 @@ mod tests {
             max_connections: None,
             magnet: None,
             naming: 0,
+            linked: None,
         }
     }
 
@@ -416,6 +454,7 @@ mod tests {
             id: "a".into(),
             have: vec![0xff],
             placements: vec![0, 2],
+            linked: Vec::new(),
             downloaded_total: 10,
             uploaded_total: 20,
         }])

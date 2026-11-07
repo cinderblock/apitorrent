@@ -27,6 +27,7 @@ function t(id: string, over: Partial<TorrentSummary> = {}): TorrentSummary {
     error: null,
     queuePosition: 0,
     group: null,
+    supersededBy: null,
     ...over,
   };
 }

@@ -5,6 +5,7 @@
 //! layer over [`Core`].
 
 pub mod db;
+pub mod library;
 pub mod settings;
 pub mod store;
 
@@ -39,6 +40,8 @@ pub use crate::store::{Patch, Snapshot, Store};
 const REFRESH: Duration = Duration::from_secs(1);
 /// How often resume state is saved.
 const SAVE_EVERY: Duration = Duration::from_secs(30);
+/// How often superseded torrents are checked for retirement.
+const RETIRE_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
@@ -99,6 +102,7 @@ struct Entry {
     queued: bool,
     group: Option<String>,
     naming: u8,
+    superseded_by: Option<TorrentId>,
 }
 
 /// A magnet link waiting for its metadata.
@@ -138,6 +142,8 @@ struct Spawn {
     /// Start paused by the queue; the next queue pass decides.
     queued: bool,
     naming: u8,
+    /// Files hard-linked from other torrents (copy-on-write in the engine).
+    linked: Vec<usize>,
 }
 
 struct Inner {
@@ -415,6 +421,151 @@ impl Core {
         Ok(())
     }
 
+    /// Where each file of `torrent` lives on disk under `save_path` with `naming`.
+    fn disk_paths(torrent: &Torrent, save_path: &std::path::Path, naming: u8) -> Vec<PathBuf> {
+        let rel: Vec<Vec<String>> = match naming_from_byte(naming) {
+            Naming::Portable => None,
+            other => torrent.info.paths(other).ok(),
+        }
+        .unwrap_or_else(|| torrent.info.files.iter().map(|f| f.path.clone()).collect());
+        rel.into_iter()
+            .map(|c| c.iter().fold(save_path.to_path_buf(), |p, x| p.join(x)))
+            .collect()
+    }
+
+    /// Link files the library already has into a new torrent's save path. Returns the
+    /// linked file indices, and records torrents the new one fully takes over.
+    async fn link_from_library(
+        &self,
+        id: &str,
+        torrent: &Arc<Torrent>,
+        save_path: &std::path::Path,
+        naming: u8,
+        priorities: &[u8],
+    ) -> Vec<usize> {
+        let lib = self.settings().library;
+        if !lib.enabled {
+            return Vec::new();
+        }
+        // A snapshot of every torrent's files: where they are and what's complete.
+        let entries: Vec<(String, Arc<Torrent>, PathBuf, u8, TorrentHandle)> = self
+            .inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .iter()
+            .filter(|(k, _)| k.as_str() != id)
+            .map(|(k, e)| {
+                (
+                    k.clone(),
+                    e.torrent.clone(),
+                    e.save_path.clone(),
+                    e.naming,
+                    e.handle.clone(),
+                )
+            })
+            .collect();
+        let mut sources = Vec::with_capacity(entries.len());
+        for (sid, t, save, naming, handle) in entries {
+            let Some(have) = handle.have().await else {
+                continue;
+            };
+            let placements = handle.placements();
+            let paths = Self::disk_paths(&t, &save, naming)
+                .into_iter()
+                .zip(placements)
+                .map(|(p, pl)| (pl == Placement::Save).then_some(p))
+                .collect();
+            sources.push(library::Source {
+                id: sid,
+                torrent: t,
+                paths,
+                have,
+            });
+        }
+        if sources.is_empty() {
+            return Vec::new();
+        }
+        let targets = Self::disk_paths(torrent, save_path, naming);
+        let (new, prios) = (torrent.clone(), priorities.to_vec());
+        let (linked, superseded) = tokio::task::spawn_blocking(move || {
+            let matches = library::find_matches(&new, &targets, &prios, &sources);
+            let mut done = Vec::new();
+            for m in &matches {
+                match library::materialize(&m.from, &targets[m.file], lib.allow_copy) {
+                    Some(how) => {
+                        tracing::info!(
+                            file = %targets[m.file].display(),
+                            from = %m.source_id,
+                            ?how,
+                            "reused a file from the library"
+                        );
+                        done.push(m.clone());
+                    }
+                    None => {
+                        tracing::debug!(file = %targets[m.file].display(), "could not link or copy");
+                    }
+                }
+            }
+            let superseded = library::superseded(&done, &sources);
+            (
+                done.into_iter().map(|m| m.file).collect::<Vec<_>>(),
+                superseded,
+            )
+        })
+        .await
+        .unwrap_or_default();
+        for s in superseded {
+            let (key, by) = (s.clone(), id.to_owned());
+            if self
+                .db(move |db| db.set_superseded(&key, &by))
+                .await
+                .is_ok()
+                && let Some(e) = self
+                    .inner
+                    .torrents
+                    .write()
+                    .expect("torrents lock poisoned")
+                    .get_mut(&s)
+            {
+                tracing::info!(torrent = %s, by = %id, "torrent superseded by a pack");
+                e.superseded_by = Some(id.to_owned());
+            }
+        }
+        linked
+    }
+
+    /// Remove superseded torrents whose tracker now says they're unregistered. Their files
+    /// stay: the torrent that superseded them holds the same data.
+    pub async fn retire_superseded(&self) {
+        if !self.settings().library.retire_superseded {
+            return;
+        }
+        let candidates: Vec<(String, TorrentHandle)> = self
+            .inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .iter()
+            .filter(|(_, e)| e.superseded_by.is_some())
+            .map(|(k, e)| (k.clone(), e.handle.clone()))
+            .collect();
+        for (id, handle) in candidates {
+            let gone = handle
+                .trackers()
+                .await
+                .iter()
+                .filter_map(|t| t.error.as_deref())
+                .any(library::is_unregistered);
+            if gone {
+                tracing::info!(%id, "retiring a superseded torrent its tracker no longer knows");
+                if let Err(e) = self.remove(&id, false).await {
+                    tracing::warn!(%id, error = %e, "could not retire");
+                }
+            }
+        }
+    }
+
     /// The naming for a new torrent saved under `save_path`: the setting, unless the
     /// filesystem there can't take native names.
     async fn choose_naming(&self, save_path: &std::path::Path) -> u8 {
@@ -589,7 +740,21 @@ impl Core {
                 },
                 queued: !row.paused && self.queue_limited(),
                 naming: row.naming,
+                linked: row
+                    .linked
+                    .as_deref()
+                    .map(unpack_indices)
+                    .unwrap_or_default(),
             })?;
+        }
+        let superseded = self.db(|db| db.superseded()).await?;
+        {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            for (s, by) in superseded {
+                if let Some(e) = torrents.get_mut(&s) {
+                    e.superseded_by = Some(by);
+                }
+            }
         }
         tracing::info!(count, "torrents restored");
         self.refresh();
@@ -701,6 +866,9 @@ impl Core {
         })
         .await?;
         tracing::info!(%id, name = %torrent.info.name, "metadata fetched");
+        let linked = self
+            .link_from_library(id, &torrent, &p.save_path, p.naming, &prios)
+            .await;
         self.spawn_entry(Spawn {
             id: id.to_owned(),
             peers: fetched.peers,
@@ -719,6 +887,7 @@ impl Core {
             limits: TorrentLimits::default(),
             queued: !p.paused && self.queue_limited(),
             naming: p.naming,
+            linked,
         })?;
         self.apply_queue().await;
         self.refresh();
@@ -787,6 +956,7 @@ impl Core {
             max_connections: None,
             magnet: Some(uri.to_owned()),
             naming,
+            linked: None,
         };
         let (added_at, queue_position) = (row.added_at, row.queue_position);
         self.db(move |db| db.insert_torrent(&row)).await?;
@@ -837,6 +1007,7 @@ impl Core {
             limits,
             queued,
             naming,
+            linked,
         } = s;
         let file_paths = match naming_from_byte(naming) {
             Naming::Portable => None,
@@ -870,6 +1041,7 @@ impl Core {
                 limits: engine_limits(limits),
                 group: group.clone(),
                 file_paths,
+                linked,
                 ..AddTorrent::new(torrent.clone(), save_path.clone())
             })
             .map_err(|_| CoreError::Duplicate)?;
@@ -895,6 +1067,7 @@ impl Core {
                     queued,
                     group,
                     naming,
+                    superseded_by: None,
                 },
             );
         Ok(id)
@@ -983,11 +1156,15 @@ impl Core {
             max_connections: None,
             magnet: None,
             naming: self.choose_naming(&save_path).await,
+            linked: None,
         };
         let queue_position = row.queue_position;
         let naming = row.naming;
         let added_at = row.added_at;
         self.db(move |db| db.insert_torrent(&row)).await?;
+        let linked = self
+            .link_from_library(&id, &torrent, &save_path, naming, &prios)
+            .await;
         if let Err(e) = self.spawn_entry(Spawn {
             id: id.clone(),
             peers: Vec::new(),
@@ -1006,6 +1183,7 @@ impl Core {
             limits: TorrentLimits::default(),
             queued: !req.paused && self.queue_limited(),
             naming,
+            linked,
         }) {
             let id2 = id.clone();
             self.db(move |db| db.remove_torrent(&id2)).await?;
@@ -1332,10 +1510,12 @@ impl Core {
                 let placements = tokio::task::spawn_blocking(move || h.placements())
                     .await
                     .expect("placements task panicked");
+                let linked = pack_indices(&handle.linked());
                 rows.push(ResumeRow {
                     id,
                     have: have.as_bytes().to_vec(),
                     placements: placements.into_iter().map(placement_to_byte).collect(),
+                    linked,
                     downloaded_total: down + stats.downloaded,
                     uploaded_total: up + stats.uploaded,
                 });
@@ -1348,6 +1528,8 @@ impl Core {
         let mut refresh = tokio::time::interval(REFRESH);
         let mut save = tokio::time::interval(SAVE_EVERY);
         save.tick().await;
+        let mut retire = tokio::time::interval(RETIRE_EVERY);
+        retire.tick().await;
         loop {
             tokio::select! {
                 _ = refresh.tick() => {
@@ -1360,6 +1542,7 @@ impl Core {
                         tracing::error!(error = %e, "saving resume state failed");
                     }
                 }
+                _ = retire.tick() => self.retire_superseded().await,
                 () = self.inner.stop.notified() => break,
             }
         }
@@ -1438,6 +1621,7 @@ fn summarize(id: &str, e: &Entry) -> TorrentSummary {
         error: stats.error,
         queue_position: e.queue_position,
         group: e.group.clone(),
+        superseded_by: e.superseded_by.clone(),
     }
 }
 
@@ -1479,6 +1663,7 @@ fn summarize_pending(id: &str, p: &Pending) -> TorrentSummary {
         error: status.last_error,
         queue_position: p.queue_position,
         group: None,
+        superseded_by: None,
     }
 }
 
@@ -1524,6 +1709,22 @@ fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+fn pack_indices(indices: &[usize]) -> Vec<u8> {
+    indices
+        .iter()
+        .flat_map(|&i| u32::try_from(i).unwrap_or(u32::MAX).to_le_bytes())
+        .collect()
+}
+
+fn unpack_indices(bytes: &[u8]) -> Vec<usize> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c) as usize)
+        .collect()
 }
 
 fn naming_from_byte(b: u8) -> Naming {

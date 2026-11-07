@@ -148,6 +148,7 @@ mod tests {
             error: None,
             queue_position: 0,
             group: None,
+            superseded_by: None,
         }
     }
 

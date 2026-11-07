@@ -285,11 +285,24 @@ wants to see the file at a path of their own.
 In order of preference, when torrent B's visible layout needs file X that the library
 already has:
 
-1. **Read through the content item** (engine-internal). No link is needed for seeding.
-2. **Reflink / copy-on-write clone** (Btrfs, XFS, APFS, ReFS) for a user-visible path.
-3. **Hardlink** on the same volume (NTFS, ext4, APFS, …).
-4. **Symlink** (on Windows, only where the user has the privilege or Developer Mode).
-5. **Copy**, as the last resort, and only with the user's consent per root.
+1. **Hardlink** on the same volume (NTFS, ext4, APFS, …). Built: no extra space, and
+   each torrent keeps a normal file at its own path.
+2. **Reflink / copy-on-write clone** (Btrfs, XFS, APFS, ReFS). Planned.
+3. **Copy**, when the volumes differ and the library setting allows it (on by default:
+   reading a local disk beats downloading).
+
+Symlinks aren't used: on Windows they need a privilege, and a deleted target breaks them.
+
+**Linked files are copy-on-write in the engine.** Before writing into a linked file, the
+engine compares the bytes. Equal bytes are skipped. If anything would change, it first
+replaces its link with a private copy, so the other torrent's file is never modified
+through a link. That matters for v1 matches, where only the interior pieces were checked
+and the bookend bytes (an ID3 tag, say) can differ. The flag is stored per file and
+survives restarts.
+
+The design began with a shared "content item" that both torrents' storage would read
+through, so links wouldn't be needed for seeding. Hard links give the same sharing with
+far less machinery, and each torrent's directory is a real, complete set of files.
 
 ### Matching (the "pack" case)
 

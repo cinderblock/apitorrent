@@ -94,7 +94,9 @@ engine core stays in the main thread, because its pieces interlock.
   5. ~~Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing~~ (done)
   6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE ← current
   7. ~~v2 hash requests~~, ~~upload `cancel`~~, ~~webseeds (BEP 19)~~, ~~naming policy~~ (done)
-  8. Content library: matching, bookends, piece reuse, fingerprints, pack switchover ← current
+  8. Content library: ~~matching, linking, copy-on-write, pack switchover~~ (done); still
+     to do: piece-level reuse of partial matches, idle fingerprinting (v2 roots and SHA-256
+     of v1 files), reflinks, tracker-adapter plugin hook ← current
 - **Delegated streams:**
   - `apitorrent-dht`: BEP 5, 32 and 42 (evaluate rqbit's crate first)
   - `apitorrent-utp` (BEP 29) and `apitorrent-mse` (MSE/PE)
@@ -193,6 +195,9 @@ engine core stays in the main thread, because its pieces interlock.
 - A magnet link keeps the id it was added under (its v1 hash) even when the metadata
   turns out to be hybrid, whose own id would be the v2 hash. Core passes ids explicitly
   for this reason.
+- **Windows: `File::open(..).sync_all()` fails with "Access is denied"**, because
+  `FlushFileBuffers` needs write access. That broke the cross-volume move fallback and
+  unsharing linked files. Open with `.write(true)` to flush.
 - Known engine gaps: none blocking real-world use now that hash requests and cancels exist.
   Still missing: DHT/uTP/MSE wiring.
 - **Naming policy** (done): `sanitize::Naming` is Portable, Native or Verbatim, and
@@ -261,7 +266,12 @@ engine core stays in the main thread, because its pieces interlock.
 - [ ] DHT (delegated)
 - [ ] uTP and MSE (delegated)
 - [ ] M4 auth (delegated)
-- [ ] Content library and pack switchover
+- [x] Content library and pack switchover: `library.rs` (v2 root and v1 sampled matching,
+  hard link or copy, superseded detection, "unregistered" patterns), engine copy-on-write
+  for linked files, DB migration 6 (`linked`, `superseded` table), retirement every 60 s,
+  settings and UI. A season pack replacing two single episodes finished with nothing
+  downloaded (core test `a_pack_reuses_and_supersedes_single_episodes`)
+- [ ] Content library, next: piece-level reuse, fingerprints, reflinks, tracker adapters
 - [ ] M3.2, M7, M8, M9, TLS, M10
 
 ## Open questions for the user

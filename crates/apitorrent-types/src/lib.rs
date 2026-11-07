@@ -72,6 +72,8 @@ pub struct TorrentSummary {
     pub queue_position: u32,
     /// The group whose shared limits apply, chosen by label.
     pub group: Option<String>,
+    /// Another torrent holds all of this one's files (a pack that replaced it).
+    pub superseded_by: Option<TorrentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -190,6 +192,32 @@ pub struct Settings {
     /// How file names are made safe for new torrents. Existing torrents keep theirs.
     #[serde(default)]
     pub naming: NamingPolicy,
+    #[serde(default)]
+    pub library: LibrarySettings,
+}
+
+/// Reusing files that other torrents already have.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LibrarySettings {
+    /// Look for a new torrent's files among existing torrents before downloading them.
+    pub enabled: bool,
+    /// Copy matches that can't be hard-linked (another volume). Off means download them.
+    pub allow_copy: bool,
+    /// Remove a torrent whose files another torrent has fully taken over (a season pack
+    /// replacing single episodes) once its tracker says it is unregistered. Its files stay.
+    pub retire_superseded: bool,
+}
+
+impl Default for LibrarySettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_copy: true,
+            retire_superseded: true,
+        }
+    }
 }
 
 /// How torrent file names are turned into names on disk.
