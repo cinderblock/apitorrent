@@ -5,8 +5,9 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 
 > **Status: early development.** The engine downloads and seeds v1, v2 and hybrid
 > torrents from `.torrent` files and magnet links, finds peers through HTTP, HTTPS and UDP
-> trackers, the DHT and peer exchange, and can be driven from the web UI, with passkey
-> sign-in. uTP and encryption are being wired in; the desktop app is next. Don't point it at
+> trackers, the DHT, local discovery and peer exchange, over TCP or uTP with optional
+> encryption, and can be driven from the web UI, with passkey sign-in. The desktop app is
+> next. Don't point it at
 > anything you care about yet. See
 > [`plans/apitorrent-bootstrap.md`](plans/apitorrent-bootstrap.md) for progress, and
 > [`docs/architecture.md`](docs/architecture.md) for the design.

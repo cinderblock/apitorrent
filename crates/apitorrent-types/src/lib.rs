@@ -177,7 +177,8 @@ pub struct PeerInfo {
     #[ts(type = "number")]
     pub uploaded: u64,
     /// One letter each, like other clients show: `O` outbound, `C` we choke it, `I` we're
-    /// interested, `c` it chokes us, `i` it's interested, `P` on parole.
+    /// interested, `c` it chokes us, `i` it's interested, `P` on parole, `U` over uTP,
+    /// `E` encrypted.
     pub flags: String,
 }
 

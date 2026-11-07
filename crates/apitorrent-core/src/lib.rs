@@ -1974,6 +1974,8 @@ fn peer_info(p: apitorrent_engine::PeerInfo) -> apitorrent_types::PeerInfo {
         (p.peer_choking, 'c'),
         (p.peer_interested, 'i'),
         (p.on_parole, 'P'),
+        (p.utp, 'U'),
+        (p.encrypted, 'E'),
     ] {
         if on {
             flags.push(c);

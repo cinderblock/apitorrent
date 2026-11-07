@@ -19,6 +19,32 @@ use apitorrent_server::{AuthMode, ServerConfig, TrustedProxies};
 /// qBittorrent (8080) and the *arr apps.
 const DEFAULT_API: &str = "127.0.0.1:8742";
 
+/// Message stream encryption for peer connections.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum EncryptionArg {
+    /// Plain BitTorrent only.
+    Disabled,
+    /// Try encryption first and fall back to plain BitTorrent; accept both.
+    Enabled,
+    /// Like `enabled`, but when the peer offers both, only obfuscate the handshake and
+    /// leave the payload unencrypted (saves CPU).
+    PreferPlaintext,
+    /// Encrypted connections only. Many peers can't connect.
+    Required,
+}
+
+impl From<EncryptionArg> for apitorrent_mse::Policy {
+    fn from(e: EncryptionArg) -> Self {
+        use apitorrent_mse::{Policy, Preference};
+        match e {
+            EncryptionArg::Disabled => Policy::Disabled,
+            EncryptionArg::Enabled => Policy::Enabled(Preference::Rc4),
+            EncryptionArg::PreferPlaintext => Policy::Enabled(Preference::Plaintext),
+            EncryptionArg::Required => Policy::Required,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum PasswordArg {
     /// Passkeys only.
@@ -76,6 +102,24 @@ struct Args {
     /// uTP; peers learn it from our PORT messages.
     #[arg(long, env = "APITORRENT_DHT_PORT", default_value_t = 6882)]
     dht_port: u16,
+
+    /// Turn off uTP (BitTorrent over UDP on the peer port). Peers then connect over TCP only.
+    #[arg(long, env = "APITORRENT_NO_UTP")]
+    no_utp: bool,
+
+    /// Try TCP before uTP for outgoing connections (uTP is tried first by default, since it
+    /// yields to other traffic on the network).
+    #[arg(long, env = "APITORRENT_PREFER_TCP")]
+    prefer_tcp: bool,
+
+    /// Encryption for peer connections.
+    #[arg(
+        long,
+        env = "APITORRENT_ENCRYPTION",
+        value_enum,
+        default_value = "enabled"
+    )]
+    encryption: EncryptionArg,
 
     /// Most piece data held in memory at once, in MiB, across all torrents.
     #[arg(long, env = "APITORRENT_MEMORY_LIMIT_MIB", default_value_t = 256)]
@@ -284,6 +328,9 @@ async fn main() -> ExitCode {
                 ))),
                 ..apitorrent_dht::DhtConfig::default()
             }),
+            utp: !args.no_utp,
+            prefer_utp: !args.prefer_tcp,
+            encryption: args.encryption.into(),
             ..SessionConfig::default()
         },
     })

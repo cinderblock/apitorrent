@@ -11,6 +11,8 @@ repository.workspace = true
 [dependencies]
 apitorrent-bencode.workspace = true
 apitorrent-dht.workspace = true
+apitorrent-mse.workspace = true
+apitorrent-utp.workspace = true
 apitorrent-metainfo.workspace = true
 apitorrent-tracker.workspace = true
 apitorrent-wire.workspace = true

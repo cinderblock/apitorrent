@@ -177,7 +177,8 @@ impl WriteState {
 ///
 /// Reads yield the peer's payload in the clear, starting with anything that arrived during
 /// the handshake (for an accepted connection, the initiator's initial payload). Writes are
-/// encrypted when RC4 was selected. To split it without a lock (for example over
+/// encrypted when RC4 was selected. Like a TLS stream, an encrypting stream may accept a
+/// write before all of it is on the wire: flush to be sure it is sent. To split it without a lock (for example over
 /// `TcpStream::into_split`), take it apart with [`into_parts`](Self::into_parts) and wrap
 /// the halves in [`MseReadHalf`] and [`MseWriteHalf`].
 #[derive(Debug)]

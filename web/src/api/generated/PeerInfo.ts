@@ -10,6 +10,7 @@ export type PeerInfo = {
 address: string, client: string, progress: number, downloadRate: number, uploadRate: number, downloaded: number, uploaded: number, 
 /**
  * One letter each, like other clients show: `O` outbound, `C` we choke it, `I` we're
- * interested, `c` it chokes us, `i` it's interested, `P` on parole.
+ * interested, `c` it chokes us, `i` it's interested, `P` on parole, `U` over uTP,
+ * `E` encrypted.
  */
 flags: string, };

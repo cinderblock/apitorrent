@@ -205,7 +205,7 @@ function PeersTab({ detail }: { detail: TorrentDetail }) {
       </table>
       <p className="hint muted">
         Flags: O we connected to it, C we choke it, I we want its pieces, c it chokes us, i it wants ours, P on parole (suspected of bad data, given whole
-        pieces only).
+        pieces only), U over uTP, E encrypted.
       </p>
     </>
   );

@@ -1365,3 +1365,134 @@ async fn magnet_found_through_the_dht() {
     assert!(leecher.dht_stats().is_some());
     assert!(leecher.dht_state().await.is_some_and(|s| !s.is_empty()));
 }
+
+/// How a connection between a seeder and a leecher with these configurations ends up: the
+/// leecher's view and the seeder's view of (uTP, encrypted), after a full download. `None`
+/// when they never connect within `patience`.
+async fn link_between(
+    seed_config: SessionConfig,
+    leech_config: SessionConfig,
+    patience: Duration,
+) -> Option<((bool, bool), (bool, bool))> {
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    write_files(seed_dir.path(), &fx);
+    let seeder = Session::start(seed_config).await.unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent::new(
+            fx.torrent.clone(),
+            seed_dir.path().to_path_buf(),
+        ))
+        .unwrap();
+    seed.wait_finished().await;
+    let leecher = Session::start(leech_config).await.unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![seeder.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    // Both ends report the link while they are connected.
+    let views = tokio::time::timeout(patience, async {
+        loop {
+            let ours = leech.peers().await;
+            let theirs = seed.peers().await;
+            if let (Some(a), Some(b)) = (ours.first(), theirs.first()) {
+                return ((a.utp, a.encrypted), (b.utp, b.encrypted));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .ok();
+    if views.is_some() {
+        tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+            .await
+            .expect("download timed out");
+        assert!(leech.shutdown().await.unwrap().is_full());
+        assert_files(leech_dir.path(), &fx);
+    } else {
+        assert_eq!(leech.stats().pieces_have, 0);
+        leech.shutdown().await;
+    }
+    seed.shutdown().await;
+    views
+}
+
+const CONNECT_PATIENCE: Duration = Duration::from_secs(30);
+
+#[tokio::test]
+async fn default_links_are_encrypted_utp() {
+    let views = link_between(local_config(), local_config(), CONNECT_PATIENCE).await;
+    assert_eq!(views, Some(((true, true), (true, true))));
+}
+
+#[tokio::test]
+async fn tcp_when_utp_is_not_preferred() {
+    let leech = SessionConfig {
+        prefer_utp: false,
+        ..local_config()
+    };
+    let views = link_between(local_config(), leech, CONNECT_PATIENCE).await;
+    assert_eq!(views, Some(((false, true), (false, true))));
+}
+
+#[tokio::test]
+async fn falls_back_to_tcp_when_the_peer_has_no_utp() {
+    let seed = SessionConfig {
+        utp: false,
+        ..local_config()
+    };
+    let views = link_between(seed, local_config(), CONNECT_PATIENCE).await;
+    assert_eq!(views, Some(((false, true), (false, true))));
+}
+
+#[tokio::test]
+async fn plaintext_when_we_disable_encryption() {
+    let leech = SessionConfig {
+        encryption: apitorrent_mse::Policy::Disabled,
+        ..local_config()
+    };
+    let views = link_between(local_config(), leech, CONNECT_PATIENCE).await;
+    assert_eq!(views, Some(((true, false), (true, false))));
+}
+
+#[tokio::test]
+async fn retries_in_plaintext_when_the_peer_refuses_encryption() {
+    let seed = SessionConfig {
+        encryption: apitorrent_mse::Policy::Disabled,
+        ..local_config()
+    };
+    let views = link_between(seed, local_config(), CONNECT_PATIENCE).await;
+    assert_eq!(views, Some(((true, false), (true, false))));
+}
+
+#[tokio::test]
+async fn obfuscation_only_when_both_prefer_plaintext() {
+    let plain = || SessionConfig {
+        encryption: apitorrent_mse::Policy::Enabled(apitorrent_mse::Preference::Plaintext),
+        ..local_config()
+    };
+    let views = link_between(plain(), plain(), CONNECT_PATIENCE).await;
+    assert_eq!(views, Some(((true, false), (true, false))));
+}
+
+#[tokio::test]
+async fn required_encryption_refuses_plaintext_peers() {
+    let required = || SessionConfig {
+        encryption: apitorrent_mse::Policy::Required,
+        ..local_config()
+    };
+    let disabled = || SessionConfig {
+        encryption: apitorrent_mse::Policy::Disabled,
+        ..local_config()
+    };
+    let patience = Duration::from_secs(4);
+    assert_eq!(link_between(required(), disabled(), patience).await, None);
+    assert_eq!(link_between(disabled(), required(), patience).await, None);
+    let views = link_between(required(), local_config(), CONNECT_PATIENCE).await;
+    assert_eq!(views, Some(((true, true), (true, true))));
+}

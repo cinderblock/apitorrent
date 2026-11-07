@@ -92,7 +92,8 @@ engine core stays in the main thread, because its pieces interlock.
   3. ~~Memory budget (session and torrent)~~ (done; group limits come with step 5)
   4. ~~Bad-peer system~~ (done; v2 block proofs come with hash requests in step 7)
   5. ~~Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing~~ (done)
-  6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE ← current
+  6. ~~Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE~~ (done;
+     real-world uTP test waits on a firewall decision, see Open questions)
   7. ~~v2 hash requests~~, ~~upload `cancel`~~, ~~webseeds (BEP 19)~~, ~~naming policy~~ (done)
   8. Content library: ~~matching, linking, copy-on-write, pack switchover~~ (done); still
      to do: piece-level reuse of partial matches, idle fingerprinting (v2 roots and SHA-256
@@ -228,7 +229,30 @@ engine core stays in the main thread, because its pieces interlock.
   CPU contention.
 - After the fixes, three full workspace runs in a row were clean.
 - Known engine gaps: none blocking real-world use now that hash requests and cancels exist.
-  Still missing: uTP/MSE wiring.
+- **uTP and MSE wiring** (done): `SessionConfig.utp` (default on) binds a `UtpSocket` on
+  the peer port's UDP side; failing to bind only logs and leaves TCP. Outgoing connections
+  go through `peer::Dialer`: uTP first when `prefer_utp` (default, like libtorrent), TCP as
+  the fallback, each attempt covering connect, MSE and the BitTorrent handshake. uTP is
+  skipped for addresses its socket can't reach (other address family, or loopback-bound
+  socket to a non-loopback peer). `SessionConfig.encryption` is an `apitorrent_mse::Policy`
+  (default `Enabled(Rc4)`): outgoing tries MSE and retries in plaintext on a fresh
+  connection when the MSE handshake fails; incoming runs `MseStream::accept` (which passes
+  plain BitTorrent through) with a `SkeyTable` kept beside the torrent map, and rejects a
+  handshake naming a different torrent from the MSE SKEY. Peers carry a `Link` (uTP,
+  encrypted), shown as flags `U` and `E`. Daemon flags `--no-utp`, `--prefer-tcp`,
+  `--encryption disabled|enabled|prefer-plaintext|required`. Seven loopback tests cover
+  the combinations; every other loopback test now runs over encrypted uTP by default.
+- **Gotcha: an encrypting `MseStream` must be flushed.** It encrypts a write into its own
+  buffer and accepts it whole, sending what the socket takes; the rest goes out on the
+  next write or flush. The engine's writer never flushed (TCP and uTP have nothing to
+  flush), so over TCP the tail of a burst sat in the buffer and transfers stalled. uTP
+  accepts whole writes, which hid it. The writer and both handshake writes now flush.
+- **Gotcha: with port 0, the TCP port's UDP twin may be taken.** Under the full test suite
+  (many UDP sockets from DHT and uTP tests), a session sometimes got an ephemeral TCP port
+  whose UDP side was in use, so it ran without uTP and peers fell back to TCP (4–5 of the
+  new transport tests failed in 2 of 3 runs). `bind_peer_port` now retries a fresh TCP
+  port, up to 20 times, until UDP binds too; a fixed port with its UDP side taken runs
+  without uTP and logs a warning. Three full runs clean afterwards.
 - **DHT wiring** (done): `SessionConfig.dht` starts an `apitorrent_dht::Dht` on its own UDP
   port (daemon default 6882, `--dht-port`, `--no-dht`), leaving the peer port's UDP side
   for uTP. Handshakes set the DHT bit; peers with it get a PORT message (not on private
@@ -421,7 +445,13 @@ engine core stays in the main thread, because its pieces interlock.
 
 ## Open questions for the user
 
-*(none right now)*
+1. **Real-world uTP test needs the peer port's UDP side on a public address.** Binding
+   UDP on 0.0.0.0 would raise a Windows Firewall prompt (no rule exists for
+   `apitorrentd.exe`), so it hasn't been run. Options: (a) you add an inbound allow rule
+   for `target
+eleasepitorrentd.exe` (or approve one I'd add), (b) run the test from
+   WSL, which has no prompt. Recommendation: (a), since the daemon will need it anyway.
+   Encryption over TCP against the real swarm doesn't need this and is tested.
 
 ## How to run it
 

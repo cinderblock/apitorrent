@@ -59,8 +59,10 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 |---|---|
 | `crates/apitorrent-bencode` | A strict, depth-limited, zero-copy bencode codec. Fuzzed. |
 | `crates/apitorrent-metainfo` | `.torrent` and magnet parsing for v1, v2 and hybrid torrents. Info-hashes, file trees, merkle trees, path sanitising, torrent creation. |
-| `crates/apitorrent-wire` | The sans-IO peer wire protocol: handshake, messages, extension protocol, MSE/PE. Pure state machines, no sockets. |
-| `crates/apitorrent-engine` | The engine: session, peer manager, piece picker, choker, storage, announce scheduling, DHT/LSD/PEX, uTP, rate limiting. |
+| `crates/apitorrent-wire` | The sans-IO peer wire protocol: handshake, messages, extension protocol. Pure state machines, no sockets. |
+| `crates/apitorrent-mse` | Message Stream Encryption (MSE/PE): sans-IO initiator and receiver handshakes, and `MseStream` over any async byte stream. |
+| `crates/apitorrent-utp` | uTP (BEP 29) with LEDBAT congestion control: a sans-IO connection, a socket multiplexer and tokio streams. |
+| `crates/apitorrent-engine` | The engine: session, peer manager, piece picker, choker, storage, announce scheduling, LSD/PEX, rate limiting. Runs connections over TCP or uTP, encrypted or not, and drives the DHT. |
 | `crates/apitorrent-tracker` | Tracker clients: HTTP/HTTPS (strict TLS through the OS trust store) and UDP (BEP 15), announce and scrape. Pure codecs plus a shared async client. |
 | `crates/apitorrent-dht` | The Mainline DHT: BEP 5, 32 (IPv6), 33 (scrape), 42 (secure IDs) and 43 (read-only). A sans-IO node plus a tokio driver; persistence as opaque bytes the core stores. |
 | `crates/apitorrent-types` | Shared domain and API DTO types. Exported to TypeScript. |
@@ -88,7 +90,7 @@ In libtorrent that means a custom `disk_interface` written in C++, across an FFI
 |---|---|
 | libtorrent through cxx | Proven, but the storage work would be in C++ behind FFI, and the Windows build needs Boost. Rejected. |
 | Fork rqbit's `librqbit` | Its session and storage design is sequential-only, with no encryption and partial v2 support. We'd rewrite exactly the parts we forked it for. Rejected as a base. |
-| **Our own engine, reusing leaf crates** | We own the session, peer manager, picker, choker and storage. We depend on proven, separable crates (rqbit's DHT, uTP, UPnP and LSD crates, Apache-2.0) once each one passes evaluation. **Chosen.** |
+| **Our own engine, reusing leaf crates** | We own the session, peer manager, picker, choker and storage. We meant to depend on proven, separable crates (rqbit's DHT, uTP, UPnP and LSD crates, Apache-2.0) once each one passed evaluation; the DHT and uTP crates didn't (see the bootstrap plan's findings), so those are our own. **Chosen.** |
 
 Dependencies beat forks: we keep getting upstream fixes. If a leaf crate needs changes, we
 propose them upstream (each post needs the owner's approval), or vendor a fork with its

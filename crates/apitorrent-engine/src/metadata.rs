@@ -298,6 +298,7 @@ impl Fetcher {
                 2 * 1024 * 1024,
                 self.events_tx.clone(),
                 self.throttle.clone(),
+                self.shared.dialer.clone(),
             ));
         }
     }

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
 use apitorrent_metainfo::{InfoHashes, Sha1Hash};
@@ -53,6 +53,14 @@ pub struct SessionConfig {
     /// separate from the peer port (peers learn it from our PORT messages), which leaves
     /// the peer port's UDP side free for uTP.
     pub dht: Option<apitorrent_dht::DhtConfig>,
+    /// Accept and make uTP (BEP 29) connections, on the UDP side of the peer port.
+    pub utp: bool,
+    /// Try uTP before TCP for outgoing connections. Either way the other is the fallback.
+    /// uTP backs off when it sees queues building, so it keeps torrent traffic from
+    /// slowing the rest of the network.
+    pub prefer_utp: bool,
+    /// Message stream encryption for peer connections, both directions.
+    pub encryption: apitorrent_mse::Policy,
 }
 
 impl Default for SessionConfig {
@@ -73,6 +81,9 @@ impl Default for SessionConfig {
             pex_interval: std::time::Duration::from_secs(60),
             lsd: None,
             dht: None,
+            utp: true,
+            prefer_utp: true,
+            encryption: apitorrent_mse::Policy::default(),
         }
     }
 }
@@ -96,6 +107,7 @@ pub(crate) struct Shared {
     /// For web seeds: verified TLS, no proxies from the environment.
     pub(crate) http: apitorrent_tracker::reqwest::Client,
     pub(crate) dht: Option<apitorrent_dht::Dht>,
+    pub(crate) dialer: Arc<peer::Dialer>,
     pub(crate) download: Arc<Bucket>,
     pub(crate) upload: Arc<Bucket>,
     pub(crate) connections: Arc<Counter>,
@@ -105,6 +117,9 @@ pub(crate) struct Shared {
     listen_port: u16,
     next_key: AtomicU64,
     torrents: Mutex<HashMap<Sha1Hash, mpsc::Sender<ActorMsg>>>,
+    /// The wire info-hashes in `torrents`, by `HASH('req2', info_hash)`: how an incoming
+    /// encrypted connection names its torrent.
+    skeys: Mutex<apitorrent_mse::SkeyTable>,
     /// Wire info-hashes of torrents that aren't private: the ones LSD and DHT may announce
     /// and find peers for.
     public: Mutex<HashSet<Sha1Hash>>,
@@ -163,13 +178,16 @@ impl Shared {
     pub(crate) fn unregister(&self, hashes: &InfoHashes) {
         let mut map = self.torrents.lock().expect("torrent map poisoned");
         let mut public = self.public.lock().expect("public set poisoned");
+        let mut skeys = self.skeys.lock().expect("skey table poisoned");
         if let Some(v1) = hashes.get_v1() {
             map.remove(&v1);
             public.remove(&v1);
+            skeys.remove(&v1);
         }
         if let Some(v2) = hashes.get_v2() {
             map.remove(&v2.truncated());
             public.remove(&v2.truncated());
+            skeys.remove(&v2.truncated());
         }
     }
 
@@ -216,12 +234,13 @@ pub struct Session {
     shared: Arc<Shared>,
     listen_addr: SocketAddr,
     lsd_addr: Option<SocketAddr>,
+    utp_addr: Option<SocketAddr>,
 }
 
 impl Session {
     /// Bind the listen socket and start accepting peers.
     pub async fn start(config: SessionConfig) -> io::Result<Self> {
-        let listener = TcpListener::bind(config.listen).await?;
+        let (listener, utp) = bind_peer_port(&config).await?;
         let listen_addr = listener.local_addr()?;
         let version = version_digits();
         let peer_id = PeerId::azureus(*b"AT", version, rand::random());
@@ -240,6 +259,11 @@ impl Session {
             ),
             None => None,
         };
+        let dialer = Arc::new(peer::Dialer {
+            utp: utp.clone(),
+            prefer_utp: config.prefer_utp,
+            encryption: config.encryption,
+        });
         let memory = MemoryBudget::new(config.memory_limit);
         let filter = IpFilter::new(config.ban_policy);
         let shared = Arc::new(Shared {
@@ -255,14 +279,20 @@ impl Session {
             filter,
             http,
             dht,
+            dialer,
             peer_id,
             tracker,
             announce_key: rand::random(),
             listen_port: listen_addr.port(),
             next_key: AtomicU64::new(1),
             torrents: Mutex::new(HashMap::new()),
+            skeys: Mutex::new(apitorrent_mse::SkeyTable::new()),
         });
         tokio::spawn(accept_loop(listener, shared.clone()));
+        let utp_addr = utp.as_ref().map(apitorrent_utp::UtpSocket::local_addr);
+        if let Some(socket) = utp {
+            tokio::spawn(utp_accept_loop(socket, shared.clone()));
+        }
         if shared.dht.is_some() {
             tokio::spawn(dht_announcer(Arc::downgrade(&shared)));
         }
@@ -274,11 +304,17 @@ impl Session {
             shared,
             listen_addr,
             lsd_addr,
+            utp_addr,
         })
     }
 
     pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+
+    /// The uTP socket's address, when uTP is on.
+    pub fn utp_addr(&self) -> Option<SocketAddr> {
+        self.utp_addr
     }
 
     /// The LSD socket's address, when LSD is on.
@@ -434,8 +470,10 @@ impl Session {
         let (handle, keys) = TorrentActor::spawn(params, self.shared.clone());
         let mut map = self.shared.torrents.lock().expect("torrent map poisoned");
         let mut public = self.shared.public.lock().expect("public set poisoned");
+        let mut skeys = self.shared.skeys.lock().expect("skey table poisoned");
         for key in keys {
             map.insert(key, handle.tx.clone());
+            skeys.insert(key);
             if !private {
                 public.insert(key);
             }
@@ -469,7 +507,13 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
                     tracing::debug!(%addr, "refused a blocked peer");
                     continue;
                 }
-                tokio::spawn(route_incoming(stream, addr, shared.clone()));
+                let _ = stream.set_nodelay(true);
+                tokio::spawn(route_incoming(
+                    Box::new(stream),
+                    false,
+                    addr,
+                    shared.clone(),
+                ));
             }
             Err(e) => {
                 tracing::warn!(error = %e, "accept failed");
@@ -479,10 +523,104 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
     }
 }
 
-/// Read an incoming handshake and hand the connection to the torrent it names.
-async fn route_incoming(stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>) {
-    let _ = stream.set_nodelay(true);
-    let mut stream: peer::BoxIo = Box::new(stream);
+/// Bind the peer port: TCP, and the same port on UDP for uTP when it is on. When the
+/// configured port is 0, keep trying free TCP ports until one is also free on UDP, so the
+/// two always match (peers reach uTP on the port they learn for TCP). A fixed port whose
+/// UDP side is taken runs without uTP.
+async fn bind_peer_port(
+    config: &SessionConfig,
+) -> io::Result<(TcpListener, Option<apitorrent_utp::UtpSocket>)> {
+    const ATTEMPTS: usize = 20;
+    let utp_config = apitorrent_utp::Config {
+        connect_timeout: UTP_CONNECT_TIMEOUT,
+        ..apitorrent_utp::Config::default()
+    };
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let listener = TcpListener::bind(config.listen).await?;
+        if !config.utp {
+            return Ok((listener, None));
+        }
+        let addr = listener.local_addr()?;
+        match apitorrent_utp::UtpSocket::bind_with_config(addr, utp_config).await {
+            Ok(socket) => return Ok((listener, Some(socket))),
+            Err(e) if config.listen.port() == 0 && attempt < ATTEMPTS => {
+                tracing::debug!(%addr, error = %e, "UDP side taken, trying another port");
+            }
+            Err(e) => {
+                tracing::warn!(%addr, error = %e, "uTP is off: could not bind");
+                return Ok((listener, None));
+            }
+        }
+    }
+}
+
+/// How long an outgoing uTP connection keeps retrying its SYN before we fall back to TCP.
+/// With uTP's 1 s initial timeout doubling, that is three tries.
+const UTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn utp_accept_loop(socket: apitorrent_utp::UtpSocket, shared: Arc<Shared>) {
+    loop {
+        match socket.accept().await {
+            Ok((stream, addr)) => {
+                if shared.filter.is_blocked(addr.ip()) {
+                    tracing::debug!(%addr, "refused a blocked peer");
+                    continue;
+                }
+                tokio::spawn(route_incoming(Box::new(stream), true, addr, shared.clone()));
+            }
+            // The socket only fails like this once it has shut down.
+            Err(e) => {
+                tracing::debug!(error = %e, "uTP accept stopped");
+                return;
+            }
+        }
+    }
+}
+
+/// Finds a torrent for an incoming encrypted connection.
+struct SkeyIndex(Arc<Shared>);
+
+impl apitorrent_mse::SkeyLookup for SkeyIndex {
+    fn lookup(&self, req2: &[u8; 20]) -> Option<Sha1Hash> {
+        self.0
+            .skeys
+            .lock()
+            .expect("skey table poisoned")
+            .lookup(req2)
+    }
+}
+
+/// Run the encryption handshake if the peer starts one, read its BitTorrent handshake,
+/// and hand the connection to the torrent it names.
+async fn route_incoming(stream: peer::BoxIo, utp: bool, addr: SocketAddr, shared: Arc<Shared>) {
+    let policy = shared.config.encryption;
+    let (mut stream, link, named): (peer::BoxIo, peer::Link, Option<Sha1Hash>) = if policy
+        .accepts_mse()
+    {
+        let config = apitorrent_mse::MseConfig::new(policy);
+        match apitorrent_mse::MseStream::accept(stream, SkeyIndex(shared.clone()), config).await {
+            Ok(s) => {
+                let link = peer::Link {
+                    utp,
+                    encrypted: s.encryption().is_rc4(),
+                };
+                let named = s.info_hash();
+                (Box::new(s), link, named)
+            }
+            Err(e) => {
+                tracing::debug!(%addr, error = %e, "incoming connection rejected");
+                return;
+            }
+        }
+    } else {
+        let link = peer::Link {
+            utp,
+            encrypted: false,
+        };
+        (stream, link, None)
+    };
     let handshake = match peer::read_handshake(&mut stream).await {
         Ok(h) => h,
         Err(reason) => {
@@ -490,6 +628,11 @@ async fn route_incoming(stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>
             return;
         }
     };
+    // An encrypted connection already named its torrent; the handshake must agree.
+    if named.is_some_and(|h| h != handshake.info_hash) {
+        tracing::debug!(%addr, "incoming connection rejected: handshake names another torrent");
+        return;
+    }
     let tx = shared
         .torrents
         .lock()
@@ -501,6 +644,7 @@ async fn route_incoming(stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>
             .send(ActorMsg::Incoming {
                 stream,
                 handshake,
+                link,
                 addr,
             })
             .await;

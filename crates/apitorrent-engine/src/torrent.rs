@@ -125,6 +125,10 @@ pub struct PeerInfo {
     pub peer_interested: bool,
     /// Suspected of sending bad data: only given whole pieces of its own.
     pub on_parole: bool,
+    /// Connected over uTP rather than TCP.
+    pub utp: bool,
+    /// The payload is encrypted (MSE with RC4).
+    pub encrypted: bool,
 }
 
 /// What happens to a file that is deselected after some of it was downloaded.
@@ -213,6 +217,7 @@ pub(crate) enum ActorMsg {
     Incoming {
         stream: peer::BoxIo,
         handshake: Handshake,
+        link: peer::Link,
         addr: SocketAddr,
     },
     Checked(Bitfield),
@@ -418,6 +423,8 @@ struct Peer {
     extensions: Option<ExtensionHandshake>,
     /// Addresses we last told this peer about by PEX.
     pex_sent: HashSet<SocketAddr>,
+    /// The transport and encryption, once connected.
+    link: peer::Link,
     has: Bitfield,
     is_seed: bool,
     /// How many pieces the peer has that we still want.
@@ -456,6 +463,7 @@ impl Peer {
             v2: false,
             extensions: None,
             pex_sent: HashSet::new(),
+            link: peer::Link::default(),
             has: Bitfield::new(pieces),
             is_seed: false,
             wanted: 0,
@@ -1268,8 +1276,9 @@ impl TorrentActor {
             ActorMsg::Incoming {
                 stream,
                 handshake,
+                link,
                 addr,
-            } => self.accept(stream, handshake, addr),
+            } => self.accept(stream, handshake, link, addr),
             ActorMsg::Checked(have) => {
                 self.start(have);
                 self.publish_stats();
@@ -1443,6 +1452,7 @@ impl TorrentActor {
                 self.max_message,
                 self.peer_tx.clone(),
                 self.throttle.clone(),
+                self.shared.dialer.clone(),
             ));
         }
         self.candidates.extend(deferred);
@@ -1457,7 +1467,13 @@ impl TorrentActor {
         )
     }
 
-    fn accept(&mut self, stream: peer::BoxIo, handshake: Handshake, addr: SocketAddr) {
+    fn accept(
+        &mut self,
+        stream: peer::BoxIo,
+        handshake: Handshake,
+        link: peer::Link,
+        addr: SocketAddr,
+    ) {
         if self.paused || self.picker.is_none() || self.peers.len() >= self.max_peers() {
             return;
         }
@@ -1475,6 +1491,7 @@ impl TorrentActor {
         tokio::spawn(peer::run_inbound(
             stream,
             handshake,
+            link,
             ours,
             key,
             self.max_message,
@@ -1520,8 +1537,14 @@ impl TorrentActor {
             PeerEvent::Ready {
                 reserved,
                 peer_id,
+                link,
                 tx,
-            } => self.on_ready(key, reserved, peer_id, tx),
+            } => {
+                if let Some(p) = self.peers.get_mut(&key) {
+                    p.link = link;
+                }
+                self.on_ready(key, reserved, peer_id, tx);
+            }
             PeerEvent::Message(m) => {
                 if let Err(reason) = self.on_message(key, m) {
                     tracing::debug!(key, %reason, "dropping peer");
@@ -2311,6 +2334,8 @@ impl TorrentActor {
                     peer_choking: p.peer_choking,
                     peer_interested: p.peer_interested,
                     on_parole: self.reputation.on_parole(p.addr.ip()),
+                    utp: p.link.utp,
+                    encrypted: p.link.encrypted,
                 }
             })
             .collect();
