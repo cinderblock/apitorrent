@@ -87,8 +87,8 @@ parallel streams. Self-contained crates go to background agents working in workt
 engine core stays in the main thread, because its pieces interlock.
 
 - **Main thread (engine core), in order:**
-  1. Real-world interop test against the Ubuntu swarm ← current
-  2. Part store, unwanted-file handling, held area
+  1. ~~Real-world interop test against the Ubuntu swarm~~ (done, two bugs fixed)
+  2. Part store, unwanted-file handling, held area ← current
   3. Memory budget (session, group, torrent)
   4. Bad-peer system (attribution, smart ban, parole, trust, bans, blocklists)
   5. Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing
@@ -131,6 +131,24 @@ engine core stays in the main thread, because its pieces interlock.
   than silently changing TLS backend.
 - Tracker proxy environment variables are ignored on purpose (`no_proxy()`). Proxy
   support will be an explicit setting.
+- **First real-world test, 2026-11-06 9:47–9:55 PM PST (05:47–05:55Z)**, against the
+  Ubuntu 26.10 desktop ISO swarm (HTTPS tracker, 6.6 GB, 256 KiB pieces), with outbound
+  connections only. The peer listener was bound to loopback to avoid a Windows Firewall
+  prompt. Results:
+  - It interoperates: 13–14 real peers (11–12 of them seeds), 12–16 MB/s, 338 pieces
+    verified, no hash failures.
+  - **Bug: a save path with `/` failed every write on Windows.** The `\\?\` prefix turns
+    off normalisation, so `/` became part of the file name. Fixed: `long_path` now calls
+    `std::path::absolute` first. A regression test covers it.
+  - **Bug: a disk error didn't stop the torrent.** It downloaded about 500 MB that could
+    never be stored. Fixed: `fail()` now stops the torrent and disconnects peers, and
+    resume retries. A loopback test covers it.
+  - **Finding: in-flight memory.** 46 MB arrived before the first piece completed,
+    because requests were spread over many pieces at once. The memory budget and piece
+    affinity (step 3) must fix this.
+  - **Overshoot: the cap was 50 MB, but about 600 MB was downloaded in total** (500 MB in
+    the buggy first run, 110 MB in the second). 1-second polling can't stop at
+    15 MB/s with no rate limit. Next time, use a rate limit or a byte cap in the engine.
 - Known engine gaps, to fix before real-world use: no memory cap on in-flight piece
   buffers, no banning of peers that send bad data, a v2 `Unknown` verdict is treated as
   invalid (needs BEP 52 hash requests), upload `cancel` is ignored, no rate limiting.
@@ -160,7 +178,7 @@ engine core stays in the main thread, because its pieces interlock.
   (`d185833`); daemon serves it with CSP and other security headers (`f459ad6`)
 - [ ] M3.2 UI: per-tracker status (engine already reports it), peers tab, label
   editing, settings page, column chooser, embedding `web/dist` into release binaries
-- [ ] Real-world Ubuntu swarm test
+- [x] Real-world Ubuntu swarm test: interop works; two bugs fixed (see Findings)
 - [ ] Part store and unwanted files
 - [ ] Memory budget
 - [ ] Bad-peer system

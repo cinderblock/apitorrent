@@ -487,6 +487,8 @@ impl TorrentActor {
                     self.publish_stats();
                 }
                 Command::Resume => {
+                    // Resuming is also how the user retries after a disk error.
+                    self.error = None;
                     self.paused = false;
                     self.announce();
                     self.connect_more();
@@ -1010,7 +1012,7 @@ impl TorrentActor {
             Err(e) => {
                 tracing::error!(piece, error = %e, "disk error");
                 picker.piece_verified(piece, false);
-                self.error = Some(e);
+                self.fail(e);
             }
         }
         self.publish_stats();
@@ -1078,10 +1080,10 @@ impl TorrentActor {
             }
             Err(e) => {
                 tracing::error!(error = %e, "disk read error");
-                self.error = Some(e);
                 if peer.fast {
                     peer.send(Message::Reject(block));
                 }
+                self.fail(e);
             }
         }
     }
@@ -1173,12 +1175,29 @@ impl TorrentActor {
         self.last_uploaded = self.uploaded;
     }
 
+    /// Stops the torrent after a storage error: every further transfer would be wasted (or,
+    /// for uploads, fail too). It stays stopped until the user resumes it.
+    fn fail(&mut self, error: String) {
+        if self.error.is_some() {
+            return;
+        }
+        self.error = Some(error);
+        if !self.paused {
+            self.paused = true;
+            self.send_stopped();
+            self.shutdown_peers();
+        }
+        self.publish_stats();
+    }
+
     fn publish_stats(&self) {
         let (state, pieces_have) = match &self.picker {
-            _ if self.error.is_some() => (TorrentState::Error, 0),
+            None if self.error.is_some() => (TorrentState::Error, 0),
             None => (TorrentState::Checking, 0),
             Some(p) => {
-                let state = if self.paused {
+                let state = if self.error.is_some() {
+                    TorrentState::Error
+                } else if self.paused {
                     TorrentState::Paused
                 } else if p.is_finished() {
                     TorrentState::Seeding

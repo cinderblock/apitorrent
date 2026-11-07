@@ -174,18 +174,44 @@ impl Storage for FileStorage {
     }
 }
 
-/// On Windows, use the `\\?\` form for absolute paths so long paths work everywhere.
-fn long_path(p: &Path) -> PathBuf {
-    #[cfg(windows)]
+/// On Windows, use the verbatim `\\?\` form so paths longer than `MAX_PATH` work.
+///
+/// A verbatim path skips Windows' own normalisation, so the path is first made absolute
+/// and normalised: `/` becomes `\`, and `.` and `..` are resolved. Prefixing a path like
+/// `C:/downloads/x` as-is would make `/` part of a file name, and every open would fail.
+#[cfg(windows)]
+pub(crate) fn long_path(p: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let Ok(abs) = std::path::absolute(p) else {
+        return p.to_path_buf();
+    };
+    let wide: Vec<u16> = abs.as_os_str().encode_wide().collect();
+    let bs = u16::from(b'\\');
+    let (question, dot) = (u16::from(b'?'), u16::from(b'.'));
+    // Already verbatim (`\\?\`) or a device path (`\\.\`).
+    if wide.len() >= 4
+        && wide[0] == bs
+        && wide[1] == bs
+        && (wide[2] == question || wide[2] == dot)
+        && wide[3] == bs
     {
-        let s = p.as_os_str().to_string_lossy();
-        if p.is_absolute() && !s.starts_with(r"\\?\") {
-            if let Some(unc) = s.strip_prefix(r"\\") {
-                return PathBuf::from(format!(r"\\?\UNC\{unc}"));
-            }
-            return PathBuf::from(format!(r"\\?\{s}"));
-        }
+        return abs;
     }
+    let mut out: Vec<u16> = Vec::with_capacity(wide.len() + 8);
+    if wide.starts_with(&[bs, bs]) {
+        out.extend(r"\\?\UNC\".encode_utf16());
+        out.extend_from_slice(&wide[2..]);
+    } else {
+        out.extend(r"\\?\".encode_utf16());
+        out.extend_from_slice(&wide);
+    }
+    PathBuf::from(OsString::from_wide(&out))
+}
+
+#[cfg(not(windows))]
+pub(crate) fn long_path(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
@@ -291,6 +317,43 @@ mod tests {
         let sizes = s.file_sizes();
         assert_eq!(sizes[0], Some(20_000));
         assert_eq!(sizes[1], None, "the pad file is never created");
+    }
+
+    /// Found in the first real-world test: a save path written with `/` (as a web UI or
+    /// config file sends it) failed every write on Windows.
+    #[test]
+    fn save_path_with_forward_slashes_and_dot_dot() {
+        let bytes = TorrentBuilder::new("t.bin", Version::V1)
+            .piece_length(16 * 1024)
+            .file(FileSource::from_bytes(&[], vec![7; 1000]))
+            .build()
+            .unwrap();
+        let t = Torrent::from_bytes(&bytes).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let odd = format!("{}/sub/../sub", dir.path().display()).replace('\\', "/");
+        let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
+        let s = FileStorage::new(Path::new(&odd), Layout::from_info(&t.info), &rel);
+        s.write(0, &[7; 1000]).unwrap();
+        s.sync().unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("sub").join("t.bin")).unwrap(),
+            vec![7; 1000]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn long_path_forms() {
+        assert_eq!(
+            long_path(Path::new("C:/a/b/../c")),
+            Path::new(r"\\?\C:\a\c")
+        );
+        assert_eq!(
+            long_path(Path::new(r"\\server\share\x")),
+            Path::new(r"\\?\UNC\server\share\x")
+        );
+        assert_eq!(long_path(Path::new(r"\\?\C:\a")), Path::new(r"\\?\C:\a"));
     }
 
     #[test]

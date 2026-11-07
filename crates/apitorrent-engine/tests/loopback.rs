@@ -259,3 +259,66 @@ async fn skipped_files_are_not_downloaded() {
     );
     assert!(root.join("dir").join("empty").exists());
 }
+
+/// A storage error stops the torrent instead of downloading data that can't be stored. The
+/// first real-world test kept downloading (about 500 MB) after every write had failed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disk_error_stops_the_torrent() {
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    write_files(seed_dir.path(), &fx);
+    // A plain file where the torrent's directory should go, so every write fails.
+    std::fs::write(leech_dir.path().join("pack"), b"in the way").unwrap();
+
+    let seeder = Session::start(local_config()).await.unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent {
+            torrent: fx.torrent.clone(),
+            save_path: seed_dir.path().to_path_buf(),
+            have: None,
+            paused: false,
+            peers: Vec::new(),
+            file_priorities: None,
+        })
+        .unwrap();
+    seed.wait_finished().await;
+
+    let leecher = Session::start(local_config()).await.unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            torrent: fx.torrent.clone(),
+            save_path: leech_dir.path().to_path_buf(),
+            have: Some(Bitfield::new(pieces)),
+            paused: false,
+            peers: vec![seeder.listen_addr()],
+            file_priorities: None,
+        })
+        .unwrap();
+    let mut watch = leech.watch();
+    let stats = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let s = watch.borrow_and_update().clone();
+            if s.state == TorrentState::Error {
+                return s;
+            }
+            watch.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("torrent never reported the disk error");
+    assert!(stats.error.is_some());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let after = leech.stats();
+    assert_eq!(after.state, TorrentState::Error);
+    assert_eq!(after.peers, 0, "peers are disconnected");
+    let downloaded = after.downloaded;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        leech.stats().downloaded,
+        downloaded,
+        "nothing more is downloaded"
+    );
+    seed.shutdown().await;
+}
