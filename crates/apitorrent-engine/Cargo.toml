@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 apitorrent-bencode.workspace = true
+apitorrent-dht.workspace = true
 apitorrent-metainfo.workspace = true
 apitorrent-tracker.workspace = true
 apitorrent-wire.workspace = true
@@ -20,6 +21,7 @@ sha2.workspace = true
 socket2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+futures-util.workspace = true
 tracing.workspace = true
 url.workspace = true
 

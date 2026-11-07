@@ -208,6 +208,8 @@ pub struct SessionStats {
     pub banned: u32,
     /// The port peers connect to.
     pub peer_port: u16,
+    /// Nodes in the DHT's routing tables, or null when the DHT is off.
+    pub dht_nodes: Option<u32>,
 }
 
 /// A torrent's own limits. 0 or null means no limit of its own.

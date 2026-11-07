@@ -29,6 +29,7 @@ export function StatusBar() {
       <span>
         Piece memory {formatBytes(stats.memoryUsed) || "0 B"} of {formatBytes(stats.memoryLimit)}
       </span>
+      <span>{stats.dhtNodes === null ? "DHT off" : `DHT ${stats.dhtNodes} nodes`}</span>
       {stats.banned > 0 && <span>{stats.banned} banned</span>}
       <span>Peer port {stats.peerPort}</span>
     </footer>

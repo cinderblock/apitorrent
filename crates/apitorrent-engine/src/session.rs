@@ -49,6 +49,10 @@ pub struct SessionConfig {
     /// Local service discovery (BEP 14). Off unless set: listening on the LSD port makes
     /// some systems ask the user about firewall access.
     pub lsd: Option<crate::lsd::LsdConfig>,
+    /// The Mainline DHT (BEP 5). Off unless set, for the same reason. Its UDP port is
+    /// separate from the peer port (peers learn it from our PORT messages), which leaves
+    /// the peer port's UDP side free for uTP.
+    pub dht: Option<apitorrent_dht::DhtConfig>,
 }
 
 impl Default for SessionConfig {
@@ -68,6 +72,7 @@ impl Default for SessionConfig {
             connect_rate: 30,
             pex_interval: std::time::Duration::from_secs(60),
             lsd: None,
+            dht: None,
         }
     }
 }
@@ -90,6 +95,7 @@ pub(crate) struct Shared {
     pub(crate) filter: IpFilter,
     /// For web seeds: verified TLS, no proxies from the environment.
     pub(crate) http: apitorrent_tracker::reqwest::Client,
+    pub(crate) dht: Option<apitorrent_dht::Dht>,
     pub(crate) download: Arc<Bucket>,
     pub(crate) upload: Arc<Bucket>,
     pub(crate) connections: Arc<Counter>,
@@ -167,6 +173,14 @@ impl Shared {
         }
     }
 
+    /// The UDP port our DHT listens on, for PORT messages.
+    pub(crate) fn dht_port(&self) -> Option<u16> {
+        let dht = self.dht.as_ref()?;
+        dht.local_addr_v4()
+            .or_else(|| dht.local_addr_v6())
+            .map(|a| a.port())
+    }
+
     pub(crate) fn public_hashes(&self) -> HashSet<Sha1Hash> {
         self.public.lock().expect("public set poisoned").clone()
     }
@@ -218,6 +232,14 @@ impl Session {
             std::time::Duration::from_secs(15),
         )
         .map_err(io::Error::other)?;
+        let dht = match config.dht.clone() {
+            Some(cfg) => Some(
+                apitorrent_dht::Dht::start(cfg)
+                    .await
+                    .map_err(io::Error::other)?,
+            ),
+            None => None,
+        };
         let memory = MemoryBudget::new(config.memory_limit);
         let filter = IpFilter::new(config.ban_policy);
         let shared = Arc::new(Shared {
@@ -232,6 +254,7 @@ impl Session {
             memory,
             filter,
             http,
+            dht,
             peer_id,
             tracker,
             announce_key: rand::random(),
@@ -240,6 +263,9 @@ impl Session {
             torrents: Mutex::new(HashMap::new()),
         });
         tokio::spawn(accept_loop(listener, shared.clone()));
+        if shared.dht.is_some() {
+            tokio::spawn(dht_announcer(Arc::downgrade(&shared)));
+        }
         let lsd_addr = match shared.config.lsd.clone() {
             Some(cfg) => Some(crate::lsd::start(&shared, cfg)?),
             None => None,
@@ -371,6 +397,22 @@ impl Session {
         )
     }
 
+    /// The DHT's state, to save and pass back in [`SessionConfig::dht`] next time.
+    pub async fn dht_state(&self) -> Option<Vec<u8>> {
+        self.shared.dht.as_ref()?.export_state().await.ok()
+    }
+
+    /// The DHT's IPv4 socket address, when it runs.
+    pub fn dht_addr(&self) -> Option<SocketAddr> {
+        let dht = self.shared.dht.as_ref()?;
+        dht.local_addr_v4().or_else(|| dht.local_addr_v6())
+    }
+
+    /// The DHT's routing table and store, when it runs.
+    pub fn dht_stats(&self) -> Option<apitorrent_dht::DhtStats> {
+        self.shared.dht.as_ref().map(apitorrent_dht::Dht::stats)
+    }
+
     /// Whether connections to and from `ip` are refused.
     pub fn is_blocked(&self, ip: std::net::IpAddr) -> bool {
         self.shared.filter.is_blocked(ip)
@@ -462,5 +504,51 @@ async fn route_incoming(stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>
                 addr,
             })
             .await;
+    }
+}
+
+/// How often each public torrent is announced on the DHT.
+const DHT_ANNOUNCE_EVERY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Announce every public torrent on the DHT (BEP 5) when it appears and every 15 minutes,
+/// feeding the peers the lookups find to the torrent. Stops with the session.
+async fn dht_announcer(weak: std::sync::Weak<Shared>) {
+    use futures_util::StreamExt;
+    let mut last: HashMap<Sha1Hash, std::time::Instant> = HashMap::new();
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+    loop {
+        tick.tick().await;
+        let Some(shared) = weak.upgrade() else { return };
+        let Some(dht) = shared.dht.clone() else {
+            return;
+        };
+        // An announce made while the routing table is empty (just after start) reaches
+        // nobody and would wait 15 minutes to be retried. Wait for nodes first.
+        let stats = dht.stats();
+        let known = stats.ipv4.map_or(0, |t| t.nodes) + stats.ipv6.map_or(0, |t| t.nodes);
+        if known == 0 {
+            continue;
+        }
+        let now = std::time::Instant::now();
+        let public = shared.public_hashes();
+        last.retain(|h, _| public.contains(h));
+        for hash in public {
+            if last
+                .get(&hash)
+                .is_some_and(|t| now.duration_since(*t) < DHT_ANNOUNCE_EVERY)
+            {
+                continue;
+            }
+            last.insert(hash, now);
+            let port = shared.listen_port();
+            let weak = weak.clone();
+            let mut stream = dht.announce(*hash.as_bytes(), Some(port));
+            tokio::spawn(async move {
+                while let Some(peer) = stream.next().await {
+                    let Some(shared) = weak.upgrade() else { return };
+                    shared.discovered(&hash, vec![peer]).await;
+                }
+            });
+        }
     }
 }

@@ -152,6 +152,7 @@ version = "0.1.0"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-deluge",
+ "apitorrent-dht",
  "apitorrent-engine",
  "apitorrent-metainfo",
  "apitorrent-types",
@@ -196,10 +197,12 @@ name = "apitorrent-engine"
 version = "0.1.0"
 dependencies = [
  "apitorrent-bencode",
+ "apitorrent-dht",
  "apitorrent-metainfo",
  "apitorrent-tracker",
  "apitorrent-wire",
  "bytes",
+ "futures-util",
  "proptest",
  "rand 0.9.5",
  "sha1 0.10.7",
@@ -334,6 +337,7 @@ version = "0.1.0"
 dependencies = [
  "apitorrent-auth",
  "apitorrent-core",
+ "apitorrent-dht",
  "apitorrent-engine",
  "apitorrent-server",
  "clap",

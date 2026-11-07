@@ -33,6 +33,8 @@ const MAX_PEERS: usize = 30;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often to ask the trackers for more peers while still fetching.
 const ANNOUNCE_EVERY: Duration = Duration::from_secs(60);
+/// How often to ask the trackers and the DHT again while no peer has been found.
+const RETRY_WHEN_ALONE: Duration = Duration::from_secs(10);
 /// Our extension id for `ut_metadata` in handshakes we send.
 const OUR_UT_METADATA: u8 = 1;
 
@@ -189,10 +191,13 @@ impl Fetcher {
         let (announced_tx, mut announced_rx) = mpsc::unbounded_channel::<Vec<SocketAddr>>();
         loop {
             self.connect_more();
-            if self
-                .last_announce
-                .is_none_or(|t| t.elapsed() >= ANNOUNCE_EVERY)
-            {
+            // Ask again sooner while nobody has been found.
+            let every = if self.peers.is_empty() {
+                RETRY_WHEN_ALONE
+            } else {
+                ANNOUNCE_EVERY
+            };
+            if self.last_announce.is_none_or(|t| t.elapsed() >= every) {
                 self.last_announce = Some(Instant::now());
                 self.announce(&announced_tx);
             }
@@ -219,6 +224,20 @@ impl Fetcher {
     }
 
     fn announce(&self, out: &mpsc::UnboundedSender<Vec<SocketAddr>>) {
+        // The DHT finds peers for magnet links without trackers.
+        if let Some(dht) = self.shared.dht.clone() {
+            let mut stream = dht.get_peers(*self.wire_hash().as_bytes());
+            let out = out.clone();
+            tokio::spawn(async move {
+                use futures_util::StreamExt;
+                while let Some(peer) = stream.next().await {
+                    tracing::debug!(%peer, "metadata fetch: peer from the DHT");
+                    if out.send(vec![peer]).is_err() {
+                        return;
+                    }
+                }
+            });
+        }
         for url in self.trackers.clone() {
             let req = AnnounceRequest {
                 info_hash: self.wire_hash(),
@@ -270,6 +289,7 @@ impl Fetcher {
                 self.wire_hash(),
                 self.shared.peer_id,
                 self.hashes.get_v2().is_some(),
+                self.shared.dht.is_some(),
             );
             tokio::spawn(peer::run_outbound(
                 addr,
@@ -349,7 +369,8 @@ impl Fetcher {
                 return self.on_metadata(key, &payload);
             }
             PeerEvent::Message(_) => {}
-            PeerEvent::Closed { .. } => {
+            PeerEvent::Closed { reason } => {
+                tracing::debug!(key, %reason, "metadata fetch: peer closed");
                 if let Some(p) = self.peers.remove(&key)
                     && p.tx.is_none()
                 {
@@ -361,6 +382,11 @@ impl Fetcher {
     }
 
     fn on_metadata(&mut self, key: PeerKey, payload: &Bytes) -> Option<Bytes> {
+        tracing::debug!(
+            key,
+            len = payload.len(),
+            "metadata fetch: ut_metadata message"
+        );
         let Ok(msg) = MetadataMessage::decode(payload) else {
             self.drop_peer(key, true);
             return None;
@@ -475,6 +501,7 @@ impl Fetcher {
                 continue;
             };
             let piece = missing.remove(pos).expect("found");
+            tracing::debug!(key, piece, "metadata fetch: requesting");
             self.send_metadata(key, &MetadataMessage::Request { piece });
             if let Some(p) = self.peers.get_mut(&key) {
                 p.asked = Some((piece, now));
@@ -495,6 +522,7 @@ impl Fetcher {
 
     fn drop_peer(&mut self, key: PeerKey, bad: bool) {
         if let Some(p) = self.peers.remove(&key) {
+            tracing::debug!(key, addr = %p.addr, bad, "metadata fetch: dropping peer");
             if let Some(tx) = &p.tx {
                 let _ = tx.send(PeerCmd::Close);
             }

@@ -68,6 +68,15 @@ struct Args {
     #[arg(long, env = "APITORRENT_NO_LSD")]
     no_lsd: bool,
 
+    /// Turn off the DHT (finding peers without trackers).
+    #[arg(long, env = "APITORRENT_NO_DHT")]
+    no_dht: bool,
+
+    /// The UDP port for the DHT. It is separate from the peer port, whose UDP side is for
+    /// uTP; peers learn it from our PORT messages.
+    #[arg(long, env = "APITORRENT_DHT_PORT", default_value_t = 6882)]
+    dht_port: u16,
+
     /// Most piece data held in memory at once, in MiB, across all torrents.
     #[arg(long, env = "APITORRENT_MEMORY_LIMIT_MIB", default_value_t = 256)]
     memory_limit_mib: u64,
@@ -267,6 +276,14 @@ async fn main() -> ExitCode {
             listen: args.peer_listen,
             memory_limit: args.memory_limit_mib.saturating_mul(1024 * 1024),
             lsd: (!args.no_lsd).then(apitorrent_engine::lsd::LsdConfig::default),
+            dht: (!args.no_dht).then(|| apitorrent_dht::DhtConfig {
+                bind_v4: Some(SocketAddr::from(([0, 0, 0, 0], args.dht_port))),
+                bind_v6: Some(SocketAddr::from((
+                    std::net::Ipv6Addr::UNSPECIFIED,
+                    args.dht_port,
+                ))),
+                ..apitorrent_dht::DhtConfig::default()
+            }),
             ..SessionConfig::default()
         },
     })

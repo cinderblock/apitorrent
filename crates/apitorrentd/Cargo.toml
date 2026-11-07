@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 apitorrent-auth.workspace = true
 apitorrent-core.workspace = true
+apitorrent-dht.workspace = true
 apitorrent-engine.workspace = true
 apitorrent-server.workspace = true
 clap.workspace = true

@@ -1453,6 +1453,7 @@ impl TorrentActor {
             self.short_hash,
             self.shared.peer_id,
             self.info_hashes.get_v2().is_some(),
+            self.shared.dht.is_some(),
         )
     }
 
@@ -1571,6 +1572,14 @@ impl TorrentActor {
         peer.peer_id = Some(peer_id);
         peer.fast = reserved.fast();
         peer.v2 = reserved.v2();
+        // Tell DHT-capable peers where our DHT listens (BEP 5). Not for private torrents:
+        // their peers come only from the tracker.
+        if reserved.dht()
+            && !self.torrent.info.private
+            && let Some(port) = self.shared.dht_port()
+        {
+            peer.send(Message::Port(port));
+        }
         if reserved.extension_protocol() {
             let mut ext = ExtensionHandshake {
                 client: Some(self.shared.config.client_name.clone()),
@@ -1611,10 +1620,7 @@ impl TorrentActor {
             return Ok(());
         };
         match m {
-            Message::KeepAlive
-            | Message::Port(_)
-            | Message::Suggest(_)
-            | Message::Unknown { .. } => {}
+            Message::KeepAlive | Message::Suggest(_) | Message::Unknown { .. } => {}
             Message::Bitfield(bytes) => {
                 let has = Bitfield::from_bytes(&bytes, n).ok_or("invalid bitfield")?;
                 set_peer_has(picker, peer, has);
@@ -1691,6 +1697,14 @@ impl TorrentActor {
                 offset,
                 data,
             } => self.on_piece(key, piece, offset, &data),
+            Message::Port(port) => {
+                if let Some(dht) = &self.shared.dht
+                    && port != 0
+                    && !self.torrent.info.private
+                {
+                    dht.add_node(SocketAddr::new(peer.addr.ip(), port));
+                }
+            }
             Message::Extended { id: 0, payload } => {
                 let ext = ExtensionHandshake::decode(&payload)
                     .map_err(|e| format!("bad extension handshake: {e}"))?;

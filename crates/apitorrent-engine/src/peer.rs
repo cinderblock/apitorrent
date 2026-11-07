@@ -267,11 +267,17 @@ async fn write_loop(
 }
 
 /// The handshake we send for a torrent.
-pub(crate) fn our_handshake(info_hash: Sha1Hash, peer_id: PeerId, v2: bool) -> Handshake {
+pub(crate) fn our_handshake(
+    info_hash: Sha1Hash,
+    peer_id: PeerId,
+    v2: bool,
+    dht: bool,
+) -> Handshake {
     Handshake {
         reserved: Reserved::default()
             .with_extension_protocol(true)
             .with_fast(true)
+            .with_dht(dht)
             .with_v2(v2),
         info_hash,
         peer_id,

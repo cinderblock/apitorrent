@@ -1308,3 +1308,60 @@ async fn webseed_single_file() {
         bytes
     );
 }
+
+/// A magnet link with no trackers and no peers, found through the DHT: the seeder
+/// announces its torrent there, and the leecher's metadata fetch looks it up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn magnet_found_through_the_dht() {
+    use apitorrent_dht::{Dht, DhtConfig, NodeConfig};
+    use apitorrent_metainfo::Magnet;
+
+    let dht_config = |bootstrap: Vec<String>| DhtConfig {
+        bind_v4: Some("127.0.0.1:0".parse().unwrap()),
+        bind_v6: None,
+        bootstrap,
+        state: None,
+        node: NodeConfig {
+            query_timeout: Duration::from_secs(2),
+            ..NodeConfig::default()
+        },
+    };
+    // A plain DHT node that both sides bootstrap from, and that stores the announce.
+    let boot = Dht::start(dht_config(Vec::new())).await.unwrap();
+    let boot_addr = boot.local_addr_v4().unwrap().to_string();
+
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    write_files(seed_dir.path(), &fx);
+    let seeder = Session::start(SessionConfig {
+        dht: Some(dht_config(vec![boot_addr.clone()])),
+        ..local_config()
+    })
+    .await
+    .unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent::new(
+            fx.torrent.clone(),
+            seed_dir.path().to_path_buf(),
+        ))
+        .unwrap();
+    seed.wait_finished().await;
+
+    let leecher = Session::start(SessionConfig {
+        dht: Some(dht_config(vec![boot_addr])),
+        ..local_config()
+    })
+    .await
+    .unwrap();
+    let v1 = fx.torrent.info.info_hashes().get_v1().unwrap().to_hex();
+    let magnet = Magnet::parse(&format!("magnet:?xt=urn:btih:{v1}")).unwrap();
+    let mut fetch = leecher.fetch_metadata(&magnet);
+    let fetched = tokio::time::timeout(Duration::from_secs(60), fetch.wait())
+        .await
+        .unwrap_or_else(|_| panic!("no metadata via the DHT: {:?}", fetch.status()))
+        .expect("fetch finished");
+    assert_eq!(&fetched.info[..], fx.torrent.info.raw());
+    assert!(fetched.peers.contains(&seeder.listen_addr()));
+    assert!(leecher.dht_stats().is_some());
+    assert!(leecher.dht_state().await.is_some_and(|s| !s.is_empty()));
+}

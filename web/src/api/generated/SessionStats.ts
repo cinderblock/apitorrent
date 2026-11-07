@@ -7,4 +7,8 @@ export type SessionStats = { connections: number, memoryUsed: number, memoryLimi
 /**
  * The port peers connect to.
  */
-peerPort: number, };
+peerPort: number, 
+/**
+ * Nodes in the DHT's routing tables, or null when the DHT is off.
+ */
+dhtNodes: number | null, };

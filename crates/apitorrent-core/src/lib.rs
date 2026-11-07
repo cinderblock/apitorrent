@@ -174,6 +174,8 @@ struct Inner {
 }
 
 const SETTINGS_KEY: &str = "settings";
+/// The DHT's node id and good nodes, base64 of its own encoding.
+const DHT_STATE_KEY: &str = "dht_state";
 
 /// A running instance. Cheap to clone.
 #[derive(Clone)]
@@ -207,7 +209,16 @@ impl Core {
             }
             None => settings::defaults(&config.session),
         };
-        let session = Session::start(config.session.clone()).await?;
+        // The DHT starts from the nodes it knew last time, when there is saved state.
+        let mut session_config = config.session.clone();
+        if let Some(dht) = session_config.dht.as_mut()
+            && dht.state.is_none()
+            && let Some(saved) = db.meta(DHT_STATE_KEY)?
+            && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(saved)
+        {
+            dht.state = apitorrent_dht::PersistedState::from_bytes(&bytes).ok();
+        }
+        let session = Session::start(session_config).await?;
         tracing::info!(peer_port = session.listen_addr().port(), "engine started");
         let core = Core {
             inner: Arc::new(Inner {
@@ -1724,6 +1735,10 @@ impl Core {
             memory_limit: s.memory_limit(),
             banned: u32::try_from(s.bans().len()).unwrap_or(u32::MAX),
             peer_port: s.listen_addr().port(),
+            dht_nodes: s.dht_stats().map(|d| {
+                let n = d.ipv4.map_or(0, |t| t.nodes) + d.ipv6.map_or(0, |t| t.nodes);
+                u32::try_from(n).unwrap_or(u32::MAX)
+            }),
         }
     }
 
@@ -1774,7 +1789,13 @@ impl Core {
                 });
             }
         }
-        self.db(move |db| db.save_resume(&rows)).await
+        self.db(move |db| db.save_resume(&rows)).await?;
+        if let Some(state) = self.inner.session.dht_state().await {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(state);
+            self.db(move |db| db.set_meta(DHT_STATE_KEY, &encoded))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn background(self) {

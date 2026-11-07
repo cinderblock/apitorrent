@@ -228,7 +228,16 @@ engine core stays in the main thread, because its pieces interlock.
   CPU contention.
 - After the fixes, three full workspace runs in a row were clean.
 - Known engine gaps: none blocking real-world use now that hash requests and cancels exist.
-  Still missing: DHT/uTP/MSE wiring.
+  Still missing: uTP/MSE wiring.
+- **DHT wiring** (done): `SessionConfig.dht` starts an `apitorrent_dht::Dht` on its own UDP
+  port (daemon default 6882, `--dht-port`, `--no-dht`), leaving the peer port's UDP side
+  for uTP. Handshakes set the DHT bit; peers with it get a PORT message (not on private
+  torrents), and PORT from peers adds them as DHT nodes. A 5 s announcer announces each
+  public torrent every 15 min, but only once the routing table has nodes: an announce made
+  on an empty table finds nothing and would otherwise wait 15 min to retry. Magnet fetches
+  also run a DHT `get_peers`. State is saved in the meta table (`dht_state`, base64) and
+  restored at start. `/stats` reports `dhtNodes` (null when off), shown in the status bar.
+  Smoke scripts must pass `--no-dht` too (it binds 0.0.0.0 and can raise a firewall prompt).
 - **Naming policy** (done): `sanitize::Naming` is Portable, Native or Verbatim, and
   `Info::paths(naming)` re-parses the info dictionary under the chosen rules. Core picks a
   policy for each torrent when it is added. The `naming` setting is portable by default;
@@ -379,7 +388,8 @@ engine core stays in the main thread, because its pieces interlock.
   can trigger a firewall prompt)
 - [x] Step 7: BEP 52 hash requests, upload cancel, web seeds, naming policy
 - [x] DHT: `apitorrent-dht` crate, own implementation (BEP 5/32/33/42/43), built by a
-  background agent (`t3/mainline-dht-crate`, cherry-picked). Engine wiring is part of step 6
+  background agent (`t3/mainline-dht-crate`, cherry-picked). Wired into the engine,
+  core and daemon (announces, PORT, magnet lookups, saved state, `/stats`)
 - [x] uTP and MSE: `apitorrent-mse` and `apitorrent-utp`, built by a background agent
   (`t3/mse-and-utp-transport-crates`, cherry-picked); engine wiring is step 6. See
   `plans/transport-mse-utp.md`.
