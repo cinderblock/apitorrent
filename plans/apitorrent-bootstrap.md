@@ -98,7 +98,7 @@ engine core stays in the main thread, because its pieces interlock.
      to do: piece-level reuse of partial matches, idle fingerprinting (v2 roots and SHA-256
      of v1 files), reflinks, tracker-adapter plugin hook ← current
 - **Delegated streams:**
-  - `apitorrent-dht`: BEP 5, 32 and 42 (evaluate rqbit's crate first)
+  - `apitorrent-dht`: BEP 5, 32 and 42 ✅ done (own implementation, see Findings)
   - `apitorrent-utp` (BEP 29) and `apitorrent-mse` (MSE/PE)
   - M4 auth: passkeys, sessions, API tokens, so the API can leave loopback
 - **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
@@ -218,6 +218,46 @@ engine core stays in the main thread, because its pieces interlock.
   TLS, no environment proxies, no Referer, no HTTPS-to-HTTP redirects). Reuse it for
   feeds and plugins.
 
+- **DHT: rqbit's `librqbit-dht` 9.1 evaluated and rejected; we wrote our own**
+  (`crates/apitorrent-dht`, 2026-11-06). Reasons:
+  - No BEP 42 (no secure IDs, no `ip` key handling), no BEP 43 read-only mode, no BEP 33
+    scrape, and `implied_port` is always sent as 0.
+  - IPv6 shares one dual-stack socket (`librqbit-dualstack-sockets`) instead of BEP 32's
+    separate socket and table.
+  - Write tokens are random values kept in a 1000-entry queue, not rotating secrets, so
+    under load a valid token is evicted before it's used, and every `get_peers` costs
+    memory.
+  - It panics on input it doesn't expect: `.unwrap()` on decoded fields in
+    `bprotocol.rs`, and an `expect` on a malformed `DHT_QUERIES_PER_SECOND` env var.
+  - Dependency weight: `librqbit-core`, `anyhow`, `chrono`, `dashmap`, `serde_json`,
+    `backon`, `leaky-bucket`, `parking_lot`, `tokio-util`, and `rand` 0.10 (we use 0.9, so
+    two copies). Persistence is JSON files, where we want opaque bytes.
+  - Its API (`Arc<DhtState>`, a `RequestPeersStream` that announces when given a port)
+    is close to what we want, but wrapping it would still leave the gaps above.
+  Ours is about 4,400 lines (unit tests included) with five runtime deps we already have (bencode, sha1, rand,
+  tokio, futures-util) plus `socket2` for `IPV6_V6ONLY`.
+- DHT design: a sans-IO `Node` (datagrams and timers in, transmits and events out), one
+  routing table per family, a tokio `Dht` driver. Deterministic simulations of up to 200
+  nodes (with 10% packet loss) run in `cargo test`, alongside a 20-node loopback network.
+- DHT gotcha: BEP 42 ID changes break everyone's routing entries for that node (they hold
+  the old ID). Fix: a verified answer from an address we hold under another ID replaces
+  the entry, and a lookup still harvests nodes and peers from an answer whose ID doesn't
+  match. Without this, simulations lost most announces.
+- DHT gotcha: if every node enforces BEP 42 from the start, no table admits anyone (all
+  IDs begin random), so nobody gathers the votes to fix its ID. Enforcement is off by
+  default, as in libtorrent; the simulation runs half the nodes enforcing.
+- DHT gotcha: BEP 33's estimate formula clamps the zero-bit count to `m - 1`, so an empty
+  filter reads as 0.5. We return 0 for an empty filter. BEP 33 also counts IPs, not
+  ports: two peers on one IP are one.
+- DHT gotcha: a lookup started while the routing table is still empty (right after a
+  restart) must fall back to the saved nodes, not just the bootstrap routers.
+- DHT gotcha (Windows): an ICMP port-unreachable from an earlier send surfaces as a
+  `recv_from` error (`WSAECONNRESET`). The driver logs and ignores receive errors.
+  Disabling it with `SIO_UDP_CONNRESET` needs `unsafe`, which the workspace denies.
+- DHT limits worth knowing for wiring: `stats()` is a snapshot refreshed every 250 ms;
+  dropping a `get_peers` stream cancels its lookup, dropping an `announce` stream doesn't.
+  Responses (up to ~1 KB for a scrape) are capped at 500 a second to limit amplification.
+
 ## Progress log
 
 - [x] Research the engine options and prior art
@@ -270,7 +310,8 @@ engine core stays in the main thread, because its pieces interlock.
   daemon (`--no-lsd` to turn off), off in the engine default (it binds UDP 6771, which
   can trigger a firewall prompt)
 - [x] Step 7: BEP 52 hash requests, upload cancel, web seeds, naming policy
-- [ ] DHT (delegated)
+- [x] DHT: `apitorrent-dht` crate, own implementation (BEP 5/32/33/42/43), built by a
+  background agent (`t3/mainline-dht-crate`, cherry-picked). Engine wiring is part of step 6
 - [ ] uTP and MSE (delegated)
 - [ ] M4 auth (delegated)
 - [x] Content library and pack switchover: `library.rs` (v2 root and v1 sampled matching,

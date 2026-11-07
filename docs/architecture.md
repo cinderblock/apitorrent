@@ -62,6 +62,7 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `crates/apitorrent-wire` | The sans-IO peer wire protocol: handshake, messages, extension protocol, MSE/PE. Pure state machines, no sockets. |
 | `crates/apitorrent-engine` | The engine: session, peer manager, piece picker, choker, storage, announce scheduling, DHT/LSD/PEX, uTP, rate limiting. |
 | `crates/apitorrent-tracker` | Tracker clients: HTTP/HTTPS (strict TLS through the OS trust store) and UDP (BEP 15), announce and scrape. Pure codecs plus a shared async client. |
+| `crates/apitorrent-dht` | The Mainline DHT: BEP 5, 32 (IPv6), 33 (scrape), 42 (secure IDs) and 43 (read-only). A sans-IO node plus a tokio driver; persistence as opaque bytes the core stores. |
 | `crates/apitorrent-types` | Shared domain and API DTO types. Exported to TypeScript. |
 | `crates/apitorrent-core` | Orchestration: registry, persistence, queue, labels, rules, content library, feeds, the event store. |
 | `crates/apitorrent-auth` | Users, passkeys (WebAuthn), optional passwords (Argon2id), sessions, scoped API tokens, device pairing. |
