@@ -719,3 +719,125 @@ async fn blocklisted_peers_are_refused() {
         "nothing came from the blocked peer"
     );
 }
+
+/// A torrent download rate limit holds: about 2 MB at 1 MB/s takes most of 2 seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::cast_precision_loss)]
+async fn download_rate_limit_holds() {
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let (seeder, _seed) = seed_fixture(&fx, seed_dir.path()).await;
+    let leecher = Session::start(local_config()).await.unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let rate = 1_000_000;
+    let start = std::time::Instant::now();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![seeder.listen_addr()],
+            limits: apitorrent_engine::limits::TorrentLimits {
+                download_rate: rate,
+                ..Default::default()
+            },
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .expect("download timed out");
+    let elapsed = start.elapsed().as_secs_f64();
+    let size = fx.torrent.info.content_length() as f64;
+    // The burst lets a quarter second through for free.
+    let floor = size / rate as f64 - 0.3;
+    assert!(
+        elapsed >= floor,
+        "took {elapsed:.2}s, expected at least {floor:.2}s"
+    );
+    assert_files(leech_dir.path(), &fx);
+}
+
+/// A session upload limit on the seeder holds too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::cast_precision_loss)]
+async fn upload_rate_limit_holds() {
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    write_files(seed_dir.path(), &fx);
+    let rate = 1_000_000;
+    let seeder = Session::start(SessionConfig {
+        upload_rate: rate,
+        ..local_config()
+    })
+    .await
+    .unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent::new(
+            fx.torrent.clone(),
+            seed_dir.path().to_path_buf(),
+        ))
+        .unwrap();
+    seed.wait_finished().await;
+    let leecher = Session::start(local_config()).await.unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let start = std::time::Instant::now();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![seeder.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .expect("download timed out");
+    let elapsed = start.elapsed().as_secs_f64();
+    let floor = fx.torrent.info.content_length() as f64 / rate as f64 - 0.3;
+    assert!(
+        elapsed >= floor,
+        "took {elapsed:.2}s, expected at least {floor:.2}s"
+    );
+}
+
+/// With a session limit of one connection, two seeders are never connected at once, and
+/// the download still completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn connection_limit_holds() {
+    let fx = fixture(Version::V1);
+    let a_dir = tempfile::tempdir().unwrap();
+    let b_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let (a, _a) = seed_fixture(&fx, a_dir.path()).await;
+    let (b, _b) = seed_fixture(&fx, b_dir.path()).await;
+    let leecher = Session::start(SessionConfig {
+        max_connections: 1,
+        ..local_config()
+    })
+    .await
+    .unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![a.listen_addr(), b.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let sampler = {
+        let (leecher, peak) = (leecher.clone(), peak.clone());
+        tokio::spawn(async move {
+            loop {
+                peak.fetch_max(leecher.connections(), std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_micros(200)).await;
+            }
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .expect("download timed out");
+    sampler.abort();
+    assert_eq!(peak.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_files(leech_dir.path(), &fx);
+}

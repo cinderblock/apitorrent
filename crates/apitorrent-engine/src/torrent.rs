@@ -19,6 +19,7 @@ use crate::announce::{Announcer, Job, TrackerStatus};
 use crate::ban::BanReason;
 use crate::bitfield::Bitfield;
 use crate::layout::{BLOCK_LEN, Layout};
+use crate::limits::{Slot, Throttle, TorrentLimits};
 use crate::peer::{self, PeerCmd, PeerEvent};
 use crate::picker::{PeerKey, Picker, Received};
 use crate::reputation::Reputation;
@@ -92,8 +93,10 @@ pub struct AddTorrent {
     pub peers: Vec<SocketAddr>,
     /// One priority per file; `None` downloads everything at the default priority.
     pub file_priorities: Option<Vec<u8>>,
-    /// This torrent's own cap on piece data in memory, below the session's.
-    pub memory_limit: Option<u64>,
+    /// This torrent's own rate, connection and memory limits.
+    pub limits: TorrentLimits,
+    /// The group whose shared limits apply too (see [`crate::Session::set_group`]).
+    pub group: Option<String>,
 }
 
 impl AddTorrent {
@@ -109,7 +112,8 @@ impl AddTorrent {
             paused: false,
             peers: Vec::new(),
             file_priorities: None,
-            memory_limit: None,
+            limits: TorrentLimits::default(),
+            group: None,
         }
     }
 }
@@ -122,6 +126,8 @@ pub(crate) enum Command {
     /// One priority per file (0 = skip, up to [`crate::picker::MAX_PRIORITY`]).
     FilePriorities(Vec<u8>),
     SetUnwantedPolicy(UnwantedPolicy),
+    SetLimits(TorrentLimits),
+    SetGroup(Option<String>),
     /// Delete the held copies of these files.
     ReleaseHeld(Vec<usize>),
     Pause,
@@ -235,6 +241,22 @@ impl TorrentHandle {
         self.storage.placements()
     }
 
+    /// Change this torrent's own limits.
+    pub async fn set_limits(&self, limits: TorrentLimits) {
+        let _ = self
+            .tx
+            .send(ActorMsg::Command(Command::SetLimits(limits)))
+            .await;
+    }
+
+    /// Join a group (or leave it, with `None`). An unknown group name means no group.
+    pub async fn set_group(&self, group: Option<String>) {
+        let _ = self
+            .tx
+            .send(ActorMsg::Command(Command::SetGroup(group)))
+            .await;
+    }
+
     /// Choose what happens to files deselected from now on.
     pub async fn set_unwanted_policy(&self, policy: UnwantedPolicy) {
         let _ = self
@@ -314,10 +336,14 @@ struct Peer {
     last_down: u64,
     last_up: u64,
     optimistic: bool,
+    /// Units of the session's and group's connection counters, held while connected.
+    _slots: Vec<Slot>,
+    /// A half-open unit, held until the handshake completes.
+    half_open: Option<Slot>,
 }
 
 impl Peer {
-    fn new(addr: SocketAddr, pieces: u32, outbound: bool) -> Self {
+    fn new(addr: SocketAddr, pieces: u32, outbound: bool, slots: Vec<Slot>) -> Self {
         Self {
             addr,
             outbound,
@@ -341,6 +367,8 @@ impl Peer {
             last_down: 0,
             last_up: 0,
             optimistic: false,
+            _slots: slots,
+            half_open: None,
         }
     }
 
@@ -391,7 +419,8 @@ pub(crate) struct TorrentActor {
     unwanted: UnwantedPolicy,
     /// Files whose placement change is in flight.
     moving: HashSet<usize>,
-    memory_limit: Option<u64>,
+    limits: TorrentLimits,
+    throttle: Arc<Throttle>,
     /// Bytes this torrent has counted against the session's memory budget.
     memory_held: u64,
     /// Who sent each block of each piece in progress.
@@ -464,6 +493,12 @@ impl TorrentActor {
             keys.push(v2.truncated());
         }
         let max_message = Decoder::max_len_for(u64::from(layout.piece_count()));
+        let throttle = Arc::new(Throttle::new(
+            shared.download.clone(),
+            shared.upload.clone(),
+            params.group.as_deref().and_then(|g| shared.group(g)),
+            params.limits,
+        ));
         let mut actor = TorrentActor {
             info_hashes,
             short_hash: info_hashes.primary_short(),
@@ -495,7 +530,8 @@ impl TorrentActor {
             file_priorities: params.file_priorities,
             unwanted: params.unwanted,
             moving: HashSet::new(),
-            memory_limit: params.memory_limit,
+            limits: params.limits,
+            throttle,
             memory_held: 0,
             block_from: HashMap::new(),
             reputation: Reputation::default(),
@@ -751,6 +787,16 @@ impl TorrentActor {
                 }
                 Command::FilePriorities(prios) => self.set_file_priorities(&prios),
                 Command::SetUnwantedPolicy(policy) => self.unwanted = policy,
+                Command::SetLimits(limits) => {
+                    self.throttle.torrent_down.set_rate(limits.download_rate);
+                    self.throttle.torrent_up.set_rate(limits.upload_rate);
+                    self.limits = limits;
+                    self.connect_more();
+                }
+                Command::SetGroup(name) => {
+                    self.throttle
+                        .set_group(name.as_deref().and_then(|g| self.shared.group(g)));
+                }
                 Command::ReleaseHeld(files) => {
                     let placements = self.storage.placements();
                     let moves = files
@@ -880,11 +926,26 @@ impl TorrentActor {
         }
     }
 
+    fn max_peers(&self) -> usize {
+        self.limits
+            .max_connections
+            .unwrap_or(self.shared.config.max_peers_per_torrent)
+    }
+
+    /// Take a unit of the session's and group's connection counters, if both have room.
+    fn connection_slots(&self) -> Option<Vec<Slot>> {
+        let mut slots = vec![self.shared.connections.try_acquire()?];
+        if let Some(g) = self.throttle.group() {
+            slots.push(g.connections.try_acquire()?);
+        }
+        Some(slots)
+    }
+
     fn connect_more(&mut self) {
         if self.paused || self.picker.is_none() {
             return;
         }
-        let max = self.shared.config.max_peers_per_torrent;
+        let max = self.max_peers();
         let now = Instant::now();
         let mut deferred = Vec::new();
         while self.peers.len() < max {
@@ -906,9 +967,23 @@ impl TorrentActor {
                 deferred.push(addr);
                 continue;
             }
+            // Room under every connection limit, and the attempt rate allows one more?
+            let Some(slots) = self.connection_slots() else {
+                self.candidates.push_front(addr);
+                break;
+            };
+            let Some(half_open) = self.shared.half_open.try_acquire() else {
+                self.candidates.push_front(addr);
+                break;
+            };
+            if !self.shared.connect_rate.try_take(1) {
+                self.candidates.push_front(addr);
+                break;
+            }
             let key = self.shared.next_key();
-            self.peers
-                .insert(key, Peer::new(addr, self.layout.piece_count(), true));
+            let mut peer = Peer::new(addr, self.layout.piece_count(), true, slots);
+            peer.half_open = Some(half_open);
+            self.peers.insert(key, peer);
             let ours = self.our_handshake();
             tokio::spawn(peer::run_outbound(
                 addr,
@@ -916,6 +991,7 @@ impl TorrentActor {
                 key,
                 self.max_message,
                 self.peer_tx.clone(),
+                self.throttle.clone(),
             ));
         }
         self.candidates.extend(deferred);
@@ -930,15 +1006,17 @@ impl TorrentActor {
     }
 
     fn accept(&mut self, stream: TcpStream, handshake: Handshake, addr: SocketAddr) {
-        if self.paused
-            || self.picker.is_none()
-            || self.peers.len() >= self.shared.config.max_peers_per_torrent
-        {
+        if self.paused || self.picker.is_none() || self.peers.len() >= self.max_peers() {
             return;
         }
+        let Some(slots) = self.connection_slots() else {
+            return;
+        };
         let key = self.shared.next_key();
-        self.peers
-            .insert(key, Peer::new(addr, self.layout.piece_count(), false));
+        self.peers.insert(
+            key,
+            Peer::new(addr, self.layout.piece_count(), false, slots),
+        );
         // Answer with the hash the peer asked for: v1, or truncated v2 for a v2 swarm.
         let mut ours = self.our_handshake();
         ours.info_hash = handshake.info_hash;
@@ -949,6 +1027,7 @@ impl TorrentActor {
             key,
             self.max_message,
             self.peer_tx.clone(),
+            self.throttle.clone(),
         ));
     }
 
@@ -1037,6 +1116,7 @@ impl TorrentActor {
             return;
         };
         peer.tx = Some(tx);
+        peer.half_open = None;
         peer.peer_id = Some(peer_id);
         peer.fast = reserved.fast();
         if reserved.extension_protocol() {
@@ -1200,7 +1280,7 @@ impl TorrentActor {
             &self.layout,
             picker.pieces_in_progress(),
             self.shared.memory.available(),
-            self.memory_limit,
+            self.limits.memory,
         );
         let blocks = if self.reputation.on_parole(peer.addr.ip()) {
             picker.pick_exclusive(key, &peer.has, want, max_new)

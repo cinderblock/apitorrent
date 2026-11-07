@@ -4,6 +4,7 @@
 //! torrent's actor. Every protocol decision is made by the actor.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::BytesMut;
@@ -15,6 +16,7 @@ use tokio::sync::mpsc;
 use apitorrent_metainfo::Sha1Hash;
 use apitorrent_wire::{Decoder, HANDSHAKE_LEN, Handshake, Message, PeerId, Reserved};
 
+use crate::limits::{Direction, Throttle};
 use crate::picker::PeerKey;
 
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,6 +58,7 @@ pub(crate) async fn run_outbound(
     key: PeerKey,
     max_message: u32,
     events: EventTx,
+    throttle: Arc<Throttle>,
 ) {
     let result = async {
         let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
@@ -87,6 +90,7 @@ pub(crate) async fn run_outbound(
                 key,
                 max_message,
                 events,
+                throttle,
             )
             .await;
         }
@@ -104,6 +108,7 @@ pub(crate) async fn run_inbound(
     key: PeerKey,
     max_message: u32,
     events: EventTx,
+    throttle: Arc<Throttle>,
 ) {
     if theirs.peer_id == ours.peer_id {
         let reason = "connected to ourselves".to_owned();
@@ -122,6 +127,7 @@ pub(crate) async fn run_inbound(
         key,
         max_message,
         events,
+        throttle,
     )
     .await;
 }
@@ -143,6 +149,7 @@ async fn run_connected(
     key: PeerKey,
     max_message: u32,
     events: EventTx,
+    throttle: Arc<Throttle>,
 ) {
     let (read, write) = stream.into_split();
     let (tx, rx) = mpsc::unbounded_channel();
@@ -160,8 +167,8 @@ async fn run_connected(
     {
         return;
     }
-    let mut writer = tokio::spawn(write_loop(write, rx));
-    let reader = read_loop(read, key, max_message, &events);
+    let mut writer = tokio::spawn(write_loop(write, rx, throttle.clone()));
+    let reader = read_loop(read, key, max_message, &events, &throttle);
     let reason = tokio::select! {
         r = reader => r,
         w = &mut writer => match w {
@@ -179,6 +186,7 @@ async fn read_loop(
     key: PeerKey,
     max_message: u32,
     events: &EventTx,
+    throttle: &Throttle,
 ) -> String {
     let mut decoder = Decoder::new(max_message);
     loop {
@@ -200,7 +208,7 @@ async fn read_loop(
         match tokio::time::timeout(IDLE_TIMEOUT, read.read_buf(buf)).await {
             Err(_) => return "peer went silent".to_owned(),
             Ok(Ok(0)) => return "closed by peer".to_owned(),
-            Ok(Ok(_)) => {}
+            Ok(Ok(n)) => throttle.take(Direction::Download, n as u64).await,
             Ok(Err(e)) => return format!("read failed: {e}"),
         }
     }
@@ -209,6 +217,7 @@ async fn read_loop(
 async fn write_loop(
     mut write: OwnedWriteHalf,
     mut rx: mpsc::UnboundedReceiver<PeerCmd>,
+    throttle: Arc<Throttle>,
 ) -> Result<(), String> {
     let mut out = BytesMut::with_capacity(64 * 1024);
     loop {
@@ -239,6 +248,7 @@ async fn write_loop(
                 Err(_) => break,
             }
         }
+        throttle.take(Direction::Upload, out.len() as u64).await;
         write
             .write_all(&out)
             .await

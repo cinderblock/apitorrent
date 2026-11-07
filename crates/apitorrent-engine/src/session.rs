@@ -14,6 +14,7 @@ use apitorrent_tracker::TrackerClient;
 use apitorrent_wire::PeerId;
 
 use crate::ban::{BanInfo, BanPolicy, BanReason, Blocklist, IpFilter};
+use crate::limits::{Bucket, Counter, Group, GroupLimits};
 use crate::peer;
 use crate::torrent::{ActorMsg, AddTorrent, TorrentActor, TorrentHandle};
 
@@ -34,6 +35,15 @@ pub struct SessionConfig {
     pub memory_limit: u64,
     /// How long bans for bad data last.
     pub ban_policy: BanPolicy,
+    /// Session-wide rates in bytes per second, protocol overhead included. 0 is unlimited.
+    pub download_rate: u64,
+    pub upload_rate: u64,
+    /// Open peer connections across all torrents. 0 is unlimited.
+    pub max_connections: usize,
+    /// Outgoing connection attempts in progress at once. 0 is unlimited.
+    pub max_half_open: usize,
+    /// New outgoing connection attempts per second. 0 is unlimited.
+    pub connect_rate: u64,
 }
 
 impl Default for SessionConfig {
@@ -46,6 +56,11 @@ impl Default for SessionConfig {
             client_name: concat!("apitorrent ", env!("CARGO_PKG_VERSION")).to_owned(),
             memory_limit: 256 * 1024 * 1024,
             ban_policy: BanPolicy::default(),
+            download_rate: 0,
+            upload_rate: 0,
+            max_connections: 500,
+            max_half_open: 64,
+            connect_rate: 30,
         }
     }
 }
@@ -66,6 +81,12 @@ pub(crate) struct Shared {
     pub(crate) announce_key: u32,
     pub(crate) memory: MemoryBudget,
     pub(crate) filter: IpFilter,
+    pub(crate) download: Arc<Bucket>,
+    pub(crate) upload: Arc<Bucket>,
+    pub(crate) connections: Arc<Counter>,
+    pub(crate) half_open: Arc<Counter>,
+    pub(crate) connect_rate: Bucket,
+    groups: Mutex<HashMap<String, Arc<Group>>>,
     listen_port: u16,
     next_key: AtomicU64,
     torrents: Mutex<HashMap<Sha1Hash, mpsc::Sender<ActorMsg>>>,
@@ -113,6 +134,14 @@ impl Shared {
         self.listen_port
     }
 
+    pub(crate) fn group(&self, name: &str) -> Option<Arc<Group>> {
+        self.groups
+            .lock()
+            .expect("groups poisoned")
+            .get(name)
+            .cloned()
+    }
+
     pub(crate) fn unregister(&self, hashes: &InfoHashes) {
         let mut map = self.torrents.lock().expect("torrent map poisoned");
         if let Some(v1) = hashes.get_v1() {
@@ -142,6 +171,12 @@ impl Session {
         let memory = MemoryBudget::new(config.memory_limit);
         let filter = IpFilter::new(config.ban_policy);
         let shared = Arc::new(Shared {
+            download: Arc::new(Bucket::new(config.download_rate)),
+            upload: Arc::new(Bucket::new(config.upload_rate)),
+            connections: Counter::new(config.max_connections),
+            half_open: Counter::new(config.max_half_open),
+            connect_rate: Bucket::new(config.connect_rate),
+            groups: Mutex::new(HashMap::new()),
             config,
             memory,
             filter,
@@ -189,6 +224,65 @@ impl Session {
     /// Replace the IP blocklist. Connections from listed addresses close within a second.
     pub fn set_blocklist(&self, list: Blocklist) {
         self.shared.filter.set_blocklist(list);
+    }
+
+    /// Change the session-wide rates (bytes per second, 0 unlimited).
+    pub fn set_rate_limits(&self, download: u64, upload: u64) {
+        self.shared.download.set_rate(download);
+        self.shared.upload.set_rate(upload);
+    }
+
+    /// Change the connection limits (0 unlimited). Existing connections are kept; new
+    /// ones wait for room.
+    pub fn set_connection_limits(
+        &self,
+        max_connections: usize,
+        max_half_open: usize,
+        connect_rate: u64,
+    ) {
+        self.shared.connections.set_limit(max_connections);
+        self.shared.half_open.set_limit(max_half_open);
+        self.shared.connect_rate.set_rate(connect_rate);
+    }
+
+    /// Open peer connections right now, across all torrents.
+    pub fn connections(&self) -> usize {
+        self.shared.connections.used()
+    }
+
+    /// Create a group, or change its limits. Torrents join with
+    /// [`TorrentHandle::set_group`] or [`AddTorrent::group`].
+    pub fn set_group(&self, name: &str, limits: GroupLimits) {
+        let mut groups = self.shared.groups.lock().expect("groups poisoned");
+        match groups.get(name) {
+            Some(g) => g.set(limits),
+            None => {
+                groups.insert(name.to_owned(), Group::new(limits));
+            }
+        }
+    }
+
+    /// Remove a group. Its torrents keep its limits until they leave it.
+    pub fn remove_group(&self, name: &str) -> bool {
+        self.shared
+            .groups
+            .lock()
+            .expect("groups poisoned")
+            .remove(name)
+            .is_some()
+    }
+
+    pub fn groups(&self) -> Vec<(String, GroupLimits)> {
+        let mut out: Vec<(String, GroupLimits)> = self
+            .shared
+            .groups
+            .lock()
+            .expect("groups poisoned")
+            .iter()
+            .map(|(n, g)| (n.clone(), g.limits()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     /// Whether connections to and from `ip` are refused.

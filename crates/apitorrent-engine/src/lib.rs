@@ -8,6 +8,7 @@ mod announce;
 pub mod ban;
 pub mod bitfield;
 pub mod layout;
+pub mod limits;
 pub mod parts;
 mod peer;
 pub mod picker;
