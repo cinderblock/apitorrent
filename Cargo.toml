@@ -19,6 +19,7 @@ apitorrent-tracker = { path = "crates/apitorrent-tracker" }
 apitorrent-types = { path = "crates/apitorrent-types" }
 apitorrent-core = { path = "crates/apitorrent-core" }
 apitorrent-server = { path = "crates/apitorrent-server" }
+apitorrent-deluge = { path = "crates/apitorrent-deluge" }
 
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }
