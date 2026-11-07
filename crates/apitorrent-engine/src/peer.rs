@@ -8,9 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::BytesMut;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 
 use apitorrent_metainfo::Sha1Hash;
@@ -51,6 +50,14 @@ pub(crate) enum PeerCmd {
 
 pub(crate) type EventTx = mpsc::Sender<(PeerKey, PeerEvent)>;
 
+/// Any byte stream a peer connection can run over: TCP, uTP, or either wrapped in
+/// encryption.
+pub(crate) trait PeerIo: AsyncRead + AsyncWrite + Send + Unpin + 'static {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin + 'static> PeerIo for T {}
+
+/// A connection's stream, whatever it is underneath.
+pub(crate) type BoxIo = Box<dyn PeerIo>;
+
 /// Connect to `addr`, handshake, and run the connection until it closes.
 pub(crate) async fn run_outbound(
     addr: SocketAddr,
@@ -84,7 +91,7 @@ pub(crate) async fn run_outbound(
     match result {
         Ok((stream, theirs)) => {
             run_connected(
-                stream,
+                Box::new(stream),
                 theirs.reserved,
                 theirs.peer_id,
                 key,
@@ -102,7 +109,7 @@ pub(crate) async fn run_outbound(
 
 /// Run an accepted connection whose handshake has already been read; ours is sent here.
 pub(crate) async fn run_inbound(
-    mut stream: TcpStream,
+    mut stream: BoxIo,
     theirs: Handshake,
     ours: Handshake,
     key: PeerKey,
@@ -133,7 +140,9 @@ pub(crate) async fn run_inbound(
 }
 
 /// Read a full handshake, with a timeout.
-pub(crate) async fn read_handshake(stream: &mut TcpStream) -> Result<Handshake, String> {
+pub(crate) async fn read_handshake<S: AsyncRead + Unpin + ?Sized>(
+    stream: &mut S,
+) -> Result<Handshake, String> {
     let mut buf = [0u8; HANDSHAKE_LEN];
     tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut buf))
         .await
@@ -143,7 +152,7 @@ pub(crate) async fn read_handshake(stream: &mut TcpStream) -> Result<Handshake, 
 }
 
 async fn run_connected(
-    stream: TcpStream,
+    stream: BoxIo,
     reserved: Reserved,
     peer_id: PeerId,
     key: PeerKey,
@@ -151,7 +160,7 @@ async fn run_connected(
     events: EventTx,
     throttle: Arc<Throttle>,
 ) {
-    let (read, write) = stream.into_split();
+    let (read, write) = tokio::io::split(stream);
     let (tx, rx) = mpsc::unbounded_channel();
     if events
         .send((
@@ -182,7 +191,7 @@ async fn run_connected(
 }
 
 async fn read_loop(
-    mut read: OwnedReadHalf,
+    mut read: ReadHalf<BoxIo>,
     key: PeerKey,
     max_message: u32,
     events: &EventTx,
@@ -215,7 +224,7 @@ async fn read_loop(
 }
 
 async fn write_loop(
-    mut write: OwnedWriteHalf,
+    mut write: WriteHalf<BoxIo>,
     mut rx: mpsc::UnboundedReceiver<PeerCmd>,
     throttle: Arc<Throttle>,
 ) -> Result<(), String> {

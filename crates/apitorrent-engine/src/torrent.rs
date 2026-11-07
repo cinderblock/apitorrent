@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use apitorrent_metainfo::{InfoHashes, Sha1Hash, Torrent};
@@ -149,7 +148,7 @@ pub(crate) enum Command {
 pub(crate) enum ActorMsg {
     Command(Command),
     Incoming {
-        stream: TcpStream,
+        stream: peer::BoxIo,
         handshake: Handshake,
         addr: SocketAddr,
     },
@@ -342,6 +341,8 @@ struct Peer {
     requests: Vec<BlockRef>,
     /// Block reads in flight for the peer's requests.
     uploads: usize,
+    /// Requests the peer cancelled while their read was in flight: not sent when it ends.
+    cancelled: HashSet<BlockRef>,
     downloaded: u64,
     uploaded: u64,
     rate_down: u64,
@@ -374,6 +375,7 @@ impl Peer {
             peer_interested: false,
             requests: Vec::new(),
             uploads: 0,
+            cancelled: HashSet::new(),
             downloaded: 0,
             uploaded: 0,
             rate_down: 0,
@@ -1022,7 +1024,7 @@ impl TorrentActor {
         )
     }
 
-    fn accept(&mut self, stream: TcpStream, handshake: Handshake, addr: SocketAddr) {
+    fn accept(&mut self, stream: peer::BoxIo, handshake: Handshake, addr: SocketAddr) {
         if self.paused || self.picker.is_none() || self.peers.len() >= self.max_peers() {
             return;
         }
@@ -1234,7 +1236,13 @@ impl TorrentActor {
                 peer.peer_interested = false;
             }
             Message::Request(block) => self.on_request(key, block)?,
-            Message::Cancel(_) => {}
+            Message::Cancel(block) => {
+                // Only reads still in flight can be cancelled; anything already sent is
+                // gone. The set is bounded by the upload queue.
+                if peer.uploads > 0 && peer.cancelled.len() < MAX_PEER_UPLOAD_QUEUE as usize {
+                    peer.cancelled.insert(block);
+                }
+            }
             Message::Reject(block) => {
                 if !peer.fast {
                     return Err("reject without the fast extension".into());
@@ -1675,9 +1683,13 @@ impl TorrentActor {
             return;
         };
         peer.uploads = peer.uploads.saturating_sub(1);
+        let cancelled = peer.cancelled.remove(&block);
+        if peer.uploads == 0 {
+            peer.cancelled.clear();
+        }
         match result {
             Ok(data) => {
-                if peer.am_choking {
+                if peer.am_choking || cancelled {
                     return;
                 }
                 peer.uploaded += data.len() as u64;

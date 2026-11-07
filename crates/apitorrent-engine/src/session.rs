@@ -424,8 +424,9 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
 }
 
 /// Read an incoming handshake and hand the connection to the torrent it names.
-async fn route_incoming(mut stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>) {
+async fn route_incoming(stream: TcpStream, addr: SocketAddr, shared: Arc<Shared>) {
     let _ = stream.set_nodelay(true);
+    let mut stream: peer::BoxIo = Box::new(stream);
     let handshake = match peer::read_handshake(&mut stream).await {
         Ok(h) => h,
         Err(reason) => {
