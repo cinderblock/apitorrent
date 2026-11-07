@@ -257,6 +257,47 @@ engine core stays in the main thread, because its pieces interlock.
 - DHT limits worth knowing for wiring: `stats()` is a snapshot refreshed every 250 ms;
   dropping a `get_peers` stream cancels its lookup, dropping an `announce` stream doesn't.
   Responses (up to ~1 KB for a scrape) are capped at 500 a second to limit amplification.
+- **uTP: rqbit's `librqbit-utp` 0.7.0 rejected; we wrote `apitorrent-utp`.** Evaluated
+  2026-11-06 (Apache-2.0, 12k lines, smoltcp-derived). Against it: the only congestion
+  controller is CUBIC (`lib.rs`: "TODO: LEDBAT congestion control"), and LEDBAT is the
+  point of uTP; its own TODO lists "connect: need to retry SYN packets" as open; it pulls
+  in libc, socket2, dontfrag, librqbit-dualstack-sockets, bitvec, ringbuf, parking_lot,
+  lazy_static and tokio-util; one tokio task per connection. For it: SACK, RFC 6298 RTO,
+  MTU probing with the don't-fragment bit, a `Transport` trait. The API would have fit.
+- uTP gotcha: an acceptor's STATE carries its *next* sequence number, which the initiator
+  takes as where the stream starts. If the acceptor sends data first, a later STATE (say,
+  answering a retransmitted SYN) points past that data and the initiator silently skips
+  it. Our acceptor sends no data until the initiator's first post-SYN packet, and the
+  initiator ACKs as soon as it connects. Found by the simulation: 4 packets lost under
+  reordering.
+- uTP gotcha: RFC 6817's linear decrease (at most about 1 MSS per RTT) can't drain the
+  queue slow start builds; the mean queuing delay sat at 157 ms against a 100 ms target. A
+  LEDBAT++-style multiplicative decrease (halve per RTT at twice the target) gives a mean
+  of 89 ms and 95% link use in the simulated bottleneck test.
+- uTP: no path-MTU probing. Without the don't-fragment bit, an oversized probe is
+  fragmented and still arrives, which looks like success; tokio doesn't expose DF, and
+  setting it needs unsafe FFI (denied workspace-wide). Packets are 1400 bytes by default,
+  configurable from 1232 to 1472.
+- Windows: `recv_from` on a UDP socket returns `ConnectionReset` after an ICMP port
+  unreachable for an earlier send. The uTP receive loop ignores it; any other UDP loop
+  (the DHT's, if it owns the port) must too.
+- uTP and DHT on one port: `UtpSocket::bind` hands non-uTP datagrams (a bencoded `d...`
+  never parses as uTP) to `take_unrecognized()` and sends with `send_to()`; or the DHT
+  owns the socket and feeds uTP datagrams to `UtpSocket::handle_datagram()` over
+  `with_transport()`.
+- MSE: chose `crypto-bigint` 0.7 (constant-time, fixed-width Montgomery modpow) over
+  `num-bigint` (already in the tree, but variable-time). RustCrypto `rc4`'s cipher is not
+  `Clone`, so the initiator derives its VC sync marker from a second cipher instance. The
+  known-answer transcript comes from an independent Python reference whose RC4 matches
+  the classic `Key`/`Plaintext` vector; no published MSE test vectors were found.
+- MSE gotcha: a handshake driver that writes, then reads, deadlocks when both sides' writes
+  block (a 13-byte pipe in tests; can't happen with real TCP buffers, but still a bug).
+  `MseStream` reads and writes concurrently.
+- MSE policy for the engine: `Policy::initiates_mse()` decides whether to open with MSE;
+  under `Enabled` a failed MSE attempt may be retried as plain BitTorrent
+  (`retry_plaintext()`), which is the engine's job. Pass our BitTorrent handshake as the
+  initial payload to save a round trip. An accepted plaintext stream replays its first
+  bytes, so the engine reads the BitTorrent handshake from the `MseStream` either way.
 
 ## Progress log
 
@@ -312,7 +353,9 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] Step 7: BEP 52 hash requests, upload cancel, web seeds, naming policy
 - [x] DHT: `apitorrent-dht` crate, own implementation (BEP 5/32/33/42/43), built by a
   background agent (`t3/mainline-dht-crate`, cherry-picked). Engine wiring is part of step 6
-- [ ] uTP and MSE (delegated)
+- [x] uTP and MSE: `apitorrent-mse` and `apitorrent-utp`, built by a background agent
+  (`t3/mse-and-utp-transport-crates`, cherry-picked); engine wiring is step 6. See
+  `plans/transport-mse-utp.md`.
 - [ ] M4 auth (delegated)
 - [x] Content library and pack switchover: `library.rs` (v2 root and v1 sampled matching,
   hard link or copy, superseded detection, "unregistered" patterns), engine copy-on-write

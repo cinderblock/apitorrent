@@ -32,21 +32,36 @@ streams"). The main thread wires them in; this stream does not touch the engine.
 ## Plan / steps
 
 1. MSE crate: crypto, sans-IO initiator and receiver, `MseStream`, tests, KAT from an
-   independent Python reference. ← current
-2. uTP crate: packet codec, sans-IO connection (SACK, LEDBAT, RTO, MTU), multiplexer,
-   tokio driver, tests with a lossy proxy.
-3. Record findings in the bootstrap plan, tick its progress line, commit, report.
+   independent Python reference. Done, `c59737a`.
+2. uTP crate: packet codec, sans-IO connection (SACK, LEDBAT, RTO), multiplexer, tokio
+   driver, tests with a simulated network and a lossy proxy. Done, `7733245`.
+3. Record findings in the bootstrap plan, tick its progress line, commit, report. Done.
+
+Wiring into the engine is the main thread's job. What it needs:
+
+- MSE: `MseStream::connect(tcp, info_hash, &our_handshake, MseConfig::new(policy))` for
+  outgoing; `MseStream::accept(tcp, &skey_table, config)` for incoming, then read the
+  BitTorrent handshake from the stream as now. Keep an `SkeyTable` (or implement
+  `SkeyLookup` over the torrent map). Split with `into_parts` plus `MseReadHalf` and
+  `MseWriteHalf` over `TcpStream::into_split`.
+- uTP: one `UtpSocket` on the listen port; `connect`/`accept` give `UtpStream`s, which
+  split with `into_split`. MSE wraps a `UtpStream` the same way it wraps TCP.
+- `docs/architecture.md` still places MSE in `apitorrent-wire` and uTP in the engine; the
+  crate table needs the two new crates (left to the main thread, which owns the doc).
 
 ## Findings / gotchas
 
-- `librqbit-utp` 0.7.0 evaluation: see the bootstrap plan.
+All recorded in the bootstrap plan's Findings: the `librqbit-utp` verdict, the uTP STATE
+sequence-number trap, LEDBAT's slow linear decrease, path MTU and the don't-fragment bit,
+Windows UDP `ConnectionReset`, port sharing, the MSE crypto choices and the handshake
+deadlock.
 
 ## Progress log
 
 - [x] Evaluate `librqbit-utp` (rejected)
-- [ ] MSE crate
-- [ ] uTP crate
-- [ ] Bootstrap plan updated
+- [x] MSE crate (`c59737a`)
+- [x] uTP crate (`7733245`)
+- [x] Bootstrap plan updated
 
 ## Things not to do
 
