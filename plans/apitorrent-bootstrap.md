@@ -253,6 +253,15 @@ engine core stays in the main thread, because its pieces interlock.
   new transport tests failed in 2 of 3 runs). `bind_peer_port` now retries a fresh TCP
   port, up to 20 times, until UDP binds too; a fixed port with its UDP side taken runs
   without uTP and logs a warning. Three full runs clean afterwards.
+- **Real-world encryption test** (2026-11-07 1:49–2:00 AM PST (09:49–10:00Z), Ubuntu 26.10
+  desktop swarm, peer port bound to 127.0.0.1 so uTP was skipped for internet peers):
+  encryption `enabled` reached 28–29 of 32–34 peers encrypted (Transmission 4.1.x,
+  qBittorrent 4.5 to 5.3, libtorrent/rtorrent 0.13.8, Freebox), 53–58 MiB in about 5 s,
+  no verification failures. Plaintext baseline: 44 MiB in 3.6 s from 33 peers.
+  **Unexplained:** the very first encrypted run got only 2 peers and 1 MiB in 90 s; two
+  later encrypted runs were normal. The info log showed no errors and the run didn't
+  capture tracker state. If it recurs, capture `trackers` from the detail endpoint and
+  run with `apitorrent_engine=debug`.
 - **DHT wiring** (done): `SessionConfig.dht` starts an `apitorrent_dht::Dht` on its own UDP
   port (daemon default 6882, `--dht-port`, `--no-dht`), leaving the peer port's UDP side
   for uTP. Handshakes set the DHT bit; peers with it get a PORT message (not on private
@@ -451,7 +460,7 @@ engine core stays in the main thread, because its pieces interlock.
    for `target
 eleasepitorrentd.exe` (or approve one I'd add), (b) run the test from
    WSL, which has no prompt. Recommendation: (a), since the daemon will need it anyway.
-   Encryption over TCP against the real swarm doesn't need this and is tested.
+   Encryption over TCP against the real swarm doesn't need this and passed (see Findings).
 
 ## How to run it
 
