@@ -131,6 +131,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
  "url",
  "uuid",
@@ -247,16 +248,22 @@ dependencies = [
 name = "apitorrent-server"
 version = "0.1.0"
 dependencies = [
+ "apitorrent-auth",
  "apitorrent-core",
  "apitorrent-engine",
  "apitorrent-metainfo",
  "apitorrent-types",
  "axum",
  "base64 0.23.1",
+ "data-encoding",
  "futures-util",
+ "getrandom 0.3.4",
  "http-body-util",
+ "ipnet",
+ "p256",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -264,6 +271,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -324,6 +332,7 @@ dependencies = [
 name = "apitorrentd"
 version = "0.1.0"
 dependencies = [
+ "apitorrent-auth",
  "apitorrent-core",
  "apitorrent-engine",
  "apitorrent-server",
@@ -332,6 +341,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

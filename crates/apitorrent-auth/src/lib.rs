@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use rusqlite::Connection;
 use serde_json::Value;
 use url::Url;
@@ -320,6 +322,8 @@ struct Inner {
     setup: Mutex<SetupState>,
     limiter: limit::Limiter,
     gate: password::Gate,
+    /// Bumped whenever a session or token ends early, so open sockets re-check at once.
+    revoked: watch::Sender<u64>,
 }
 
 /// The auth service. Cheap to clone.
@@ -521,6 +525,7 @@ impl Auth {
                 ceremonies: Mutex::new(HashMap::new()),
                 setup: Mutex::new(SetupState::default()),
                 gate: password::Gate::new(2),
+                revoked: watch::Sender::new(0),
             }),
         };
         auth.tick()?;
@@ -533,6 +538,16 @@ impl Auth {
 
     fn db(&self) -> MutexGuard<'_, Connection> {
         self.inner.db.lock().expect("auth db lock")
+    }
+
+    /// Changes whenever a session or token is revoked, replaced or signed out. Long-lived
+    /// connections watch it and re-check their credential with [`Auth::still_valid`].
+    pub fn revocations(&self) -> watch::Receiver<u64> {
+        self.inner.revoked.subscribe()
+    }
+
+    fn bump_revocations(&self) {
+        self.inner.revoked.send_modify(|v| *v = v.wrapping_add(1));
     }
 
     pub fn password_mode(&self) -> PasswordMode {
@@ -760,6 +775,7 @@ impl Auth {
         let now = self.now();
         if let Some(old) = replaces.and_then(Principal::session) {
             store::delete_session(conn, &old.hash)?;
+            self.bump_revocations();
         }
         store::delete_expired_sessions(conn, now, ms(self.inner.session_idle))?;
         let secret = secret::token256();
@@ -1253,6 +1269,7 @@ impl Auth {
         if let Some(s) = p.session() {
             let conn = self.db();
             store::delete_session(&conn, &s.hash)?;
+            self.bump_revocations();
             self.log_with(&conn, "logout", Some(&p.user.id), meta, "");
         }
         Ok(())
@@ -1586,6 +1603,7 @@ impl Auth {
         if !store::delete_token(&conn, &p.user.id, id)? {
             return Err(AuthError::NotFound);
         }
+        self.bump_revocations();
         self.log_with(&conn, "token_revoked", Some(&p.user.id), meta, id);
         Ok(())
     }
@@ -1609,6 +1627,7 @@ impl Auth {
         if !store::delete_session_by_public_id(&conn, &p.user.id, id)? {
             return Err(AuthError::NotFound);
         }
+        self.bump_revocations();
         self.log_with(&conn, "session_revoked", Some(&p.user.id), meta, id);
         Ok(())
     }

@@ -9,10 +9,12 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+apitorrent-auth.workspace = true
 apitorrent-core.workspace = true
 apitorrent-types.workspace = true
 axum.workspace = true
 futures-util.workspace = true
+ipnet = "2"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -21,6 +23,12 @@ tower-http.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+data-encoding.workspace = true
+getrandom = "0.3"
+# The software authenticator in the tests; the same version webauthn-rs uses.
+p256 = "0.14"
+sha2.workspace = true
+url.workspace = true
 apitorrent-engine.workspace = true
 apitorrent-metainfo.workspace = true
 base64.workspace = true

@@ -3,10 +3,11 @@
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
+use crate::authn::is_websocket;
 use crate::routes::error;
 
 #[derive(Debug, Clone)]
@@ -35,14 +36,46 @@ impl Guard {
     }
 
     fn allows_origin(&self, origin: &str) -> bool {
-        let Some((scheme, rest)) = origin.split_once("://") else {
-            return false;
-        };
-        if scheme != "http" && scheme != "https" {
-            return false;
-        }
-        self.allows_authority(rest.trim_end_matches('/'))
+        origin_authority(origin).is_some_and(|a| self.allows_authority(&a))
     }
+
+    /// The page's origin is this very server: an allowed host, and the same host and port
+    /// the request was sent to. Other ports on the same host are other sites' pages (and
+    /// count as `same-site` to browsers, so `SameSite` cookies alone don't stop them).
+    fn same_origin(&self, origin: &str, host: &str) -> bool {
+        self.allows_origin(origin)
+            && origin_authority(origin).is_some_and(|a| a == normalize_host(host))
+    }
+}
+
+/// `scheme://authority` → the authority, lowercased, without the scheme's default port.
+fn origin_authority(origin: &str) -> Option<String> {
+    let (scheme, rest) = origin.split_once("://")?;
+    let default = match scheme.to_ascii_lowercase().as_str() {
+        "http" => ":80",
+        "https" => ":443",
+        _ => return None,
+    };
+    let authority = rest.trim_end_matches('/').to_ascii_lowercase();
+    if authority.is_empty() || authority.contains('/') {
+        return None;
+    }
+    Some(
+        authority
+            .strip_suffix(default)
+            .map_or(authority.clone(), str::to_owned),
+    )
+}
+
+/// A `Host` header, lowercased, without a default port.
+fn normalize_host(host: &str) -> String {
+    let h = host.trim().to_ascii_lowercase();
+    for default in [":80", ":443"] {
+        if let Some(stripped) = h.strip_suffix(default) {
+            return stripped.to_owned();
+        }
+    }
+    h
 }
 
 /// Remove a trailing `:port`, leaving bracketed IPv6 literals intact.
@@ -53,13 +86,6 @@ fn strip_port(authority: &str) -> &str {
             .map_or(authority, |end| &authority[..=end]);
     }
     authority.split(':').next().unwrap_or(authority)
-}
-
-fn is_websocket(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
 pub(crate) async fn check(State(guard): State<Guard>, req: Request, next: Next) -> Response {
@@ -81,10 +107,15 @@ pub(crate) async fn check(State(guard): State<Guard>, req: Request, next: Next) 
         .into_response();
     }
 
+    let host = host.unwrap_or_default();
+    // Browsers never attach an `Authorization` header to a cross-site request by themselves
+    // (it would need a CORS preflight, which this server never grants), so bearer requests
+    // can't be forged by another site and skip the CSRF checks.
+    let bearer = headers.contains_key(header::AUTHORIZATION);
     let changes_state = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if changes_state || is_websocket(headers) {
+    if !bearer && (changes_state || is_websocket(headers)) {
         if let Some(origin) = headers.get(header::ORIGIN) {
-            let ok = origin.to_str().is_ok_and(|o| guard.allows_origin(o));
+            let ok = origin.to_str().is_ok_and(|o| guard.same_origin(o, host));
             if !ok {
                 return error(
                     StatusCode::FORBIDDEN,
@@ -97,7 +128,7 @@ pub(crate) async fn check(State(guard): State<Guard>, req: Request, next: Next) 
         let cross_site = headers
             .get("sec-fetch-site")
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v == "cross-site");
+            .is_some_and(|v| v == "cross-site" || v == "same-site");
         if cross_site {
             return error(
                 StatusCode::FORBIDDEN,
@@ -130,5 +161,13 @@ mod tests {
         assert!(!g.allows_origin("https://evil.example.com"));
         assert!(!g.allows_origin("null"));
         assert!(!g.allows_origin("file:///x"));
+
+        assert!(g.same_origin("http://localhost:8742", "localhost:8742"));
+        assert!(g.same_origin("https://torrents.example.com", "Torrents.Example.com"));
+        assert!(g.same_origin("https://torrents.example.com:443", "torrents.example.com"));
+        // Another port on the same host is another site's page.
+        assert!(!g.same_origin("http://localhost:5173", "localhost:8742"));
+        assert!(!g.same_origin("http://localhost", "localhost:8742"));
+        assert!(!g.same_origin("https://evil.example.com", "evil.example.com"));
     }
 }

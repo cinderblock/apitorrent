@@ -61,7 +61,11 @@ pub(crate) async fn info() -> Json<ServerInfo> {
     Json(ServerInfo {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         api_version: API_VERSION,
-        capabilities: vec!["sync".to_owned(), "file-priorities".to_owned()],
+        capabilities: vec![
+            "sync".to_owned(),
+            "file-priorities".to_owned(),
+            "auth".to_owned(),
+        ],
     })
 }
 

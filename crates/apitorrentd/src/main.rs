@@ -3,20 +3,45 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
+use apitorrent_auth::{Auth, AuthConfig, Clock, PasswordMode, SetupToken, SystemClock};
 use apitorrent_core::{Core, CoreConfig};
 use apitorrent_engine::SessionConfig;
-use apitorrent_server::ServerConfig;
+use apitorrent_server::{AuthMode, ServerConfig, TrustedProxies};
 
 /// The default API port. Chosen to avoid the ports of Deluge (8112), Transmission (9091),
 /// qBittorrent (8080) and the *arr apps.
 const DEFAULT_API: &str = "127.0.0.1:8742";
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PasswordArg {
+    /// Passkeys only.
+    Off,
+    /// A password alone may sign in (for browsers or hosts without passkeys).
+    Fallback,
+    /// Users who set a password must enter it after their passkey.
+    SecondFactor,
+}
+
+impl From<PasswordArg> for PasswordMode {
+    fn from(p: PasswordArg) -> Self {
+        match p {
+            PasswordArg::Off => Self::Off,
+            PasswordArg::Fallback => Self::Fallback,
+            PasswordArg::SecondFactor => Self::SecondFactor,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(version, about = "The apitorrent daemon")]
+#[allow(clippy::struct_excessive_bools)]
 struct Args {
     /// Where the database and state live. Defaults to the platform's app data directory.
     #[arg(long, env = "APITORRENT_DATA_DIR")]
@@ -26,7 +51,8 @@ struct Args {
     #[arg(long, env = "APITORRENT_DOWNLOAD_DIR")]
     download_dir: Option<PathBuf>,
 
-    /// Address for the HTTP API and web UI. Loopback only until authentication lands.
+    /// Address for the HTTP API and web UI. A non-loopback address needs --trusted-proxy
+    /// (the expected setup: a TLS reverse proxy in front) or --allow-insecure-lan.
     #[arg(long, env = "APITORRENT_API", default_value = DEFAULT_API)]
     api: SocketAddr,
 
@@ -57,6 +83,54 @@ struct Args {
         value_delimiter = ','
     )]
     public_hosts: Vec<String>,
+
+    /// The https:// URL browsers use to reach the UI, such as
+    /// `https://torrents.example.com`. Its host becomes a passkey relying party and an
+    /// accepted host name. Repeatable.
+    #[arg(
+        long = "public-url",
+        env = "APITORRENT_PUBLIC_URLS",
+        value_delimiter = ','
+    )]
+    public_urls: Vec<Url>,
+
+    /// Reverse proxies (addresses or networks) whose X-Forwarded-For and X-Forwarded-Proto
+    /// headers are believed. Repeatable.
+    #[arg(
+        long = "trusted-proxy",
+        env = "APITORRENT_TRUSTED_PROXIES",
+        value_delimiter = ','
+    )]
+    trusted_proxies: Vec<String>,
+
+    /// Serve plain HTTP on a non-loopback address without a trusted proxy. Session cookies,
+    /// tokens and passwords then cross the network unencrypted, and browsers won't offer
+    /// passkeys on a plain-HTTP LAN address.
+    #[arg(long, env = "APITORRENT_ALLOW_INSECURE_LAN")]
+    allow_insecure_lan: bool,
+
+    /// Whether passwords may be used, and how.
+    #[arg(long, env = "APITORRENT_PASSWORDS", value_enum, default_value = "off")]
+    passwords: PasswordArg,
+
+    /// Sign-in sessions end after this many hours without activity.
+    #[arg(long, env = "APITORRENT_SESSION_IDLE_HOURS", default_value_t = 7 * 24)]
+    session_idle_hours: u64,
+
+    /// Sign-in sessions end this many days after signing in, however active.
+    #[arg(long, env = "APITORRENT_SESSION_LIFETIME_DAYS", default_value_t = 30)]
+    session_lifetime_days: u64,
+
+    /// While no user exists, also write the setup token to `<data dir>/setup-token`
+    /// (readable only by the daemon's user on Unix). The file is deleted once used.
+    #[arg(long, env = "APITORRENT_WRITE_SETUP_TOKEN")]
+    write_setup_token: bool,
+
+    /// DEVELOPMENT ONLY: no sign-in for requests from this machine. Refused with a
+    /// non-loopback --api or with --trusted-proxy. Every local program and user gets full
+    /// control.
+    #[arg(long)]
+    insecure_no_auth_loopback: bool,
 }
 
 fn default_dirs() -> Option<(PathBuf, PathBuf)> {
@@ -88,6 +162,27 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
+/// Print the setup token where only someone at the console (or reading its log) sees it.
+/// The token goes in the URL fragment, which browsers never send to the server, so it
+/// can't end up in an access log.
+fn print_setup_token(token: &SetupToken, urls: &[String], now_ms: i64) {
+    use std::fmt::Write as _;
+    let minutes = ((token.expires_at - now_ms).max(0) + 59_999) / 60_000;
+    let line = "=".repeat(72);
+    let mut msg =
+        format!("\n{line}\n apitorrent has no users yet. To create the first admin, open\n\n");
+    for url in urls {
+        let _ = writeln!(msg, "   {url}/setup#token={}", token.token);
+    }
+    let _ = write!(
+        msg,
+        "\n or enter this setup token on the setup page:\n\n   {}\n\n It works once and \
+         expires in {minutes} minutes; a new one is printed then.\n{line}\n",
+        token.token
+    );
+    eprintln!("{msg}");
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     tracing_subscriber::fmt()
@@ -107,6 +202,63 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
     tracing::info!(data_dir = %data_dir.display(), download_dir = %download_dir.display(), "starting");
+
+    let trusted_proxies = match TrustedProxies::parse(&args.trusted_proxies) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("--trusted-proxy: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut public_hosts = args.public_hosts;
+    public_hosts.extend(
+        args.public_urls
+            .iter()
+            .filter_map(|u| u.host_str().map(str::to_owned)),
+    );
+
+    let auth = if args.insecure_no_auth_loopback {
+        AuthMode::DisabledOnLoopback
+    } else {
+        let mut urls: Vec<String> = args
+            .public_urls
+            .iter()
+            .map(|u| u.as_str().trim_end_matches('/').to_owned())
+            .collect();
+        urls.push(format!("http://localhost:{}", args.api.port()));
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let hook_clock = clock.clone();
+        let mut config = AuthConfig::new(data_dir.join("auth.db"));
+        config.public_urls = args.public_urls;
+        config.password_mode = args.passwords.into();
+        config.session_idle = Duration::from_secs(args.session_idle_hours.max(1) * 3600);
+        config.session_lifetime =
+            Duration::from_secs(args.session_lifetime_days.max(1) * 24 * 3600);
+        config.setup_token_file = args.write_setup_token.then(|| data_dir.join("setup-token"));
+        config.on_setup_token = Some(Arc::new(move |t: &SetupToken| {
+            print_setup_token(t, &urls, hook_clock.now_ms());
+        }));
+        config.clock = clock;
+        match Auth::open(config) {
+            Ok(a) => AuthMode::Enabled(a),
+            Err(e) => {
+                tracing::error!(error = %e, "could not open the auth database");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+    if let AuthMode::Enabled(a) = &auth {
+        let a = a.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                every.tick().await;
+                if let Err(e) = a.tick() {
+                    tracing::warn!(error = %e, "auth housekeeping failed");
+                }
+            }
+        });
+    }
 
     let core = match Core::start(CoreConfig {
         data_dir,
@@ -148,8 +300,11 @@ async fn main() -> ExitCode {
 
     let server = ServerConfig {
         listen: args.api,
-        public_hosts: args.public_hosts,
+        public_hosts,
         web_root: args.web_root,
+        auth,
+        trusted_proxies,
+        allow_insecure_lan: args.allow_insecure_lan,
     };
     let result = apitorrent_server::serve(core.clone(), server, shutdown_signal()).await;
     if let Err(e) = core.shutdown().await {
