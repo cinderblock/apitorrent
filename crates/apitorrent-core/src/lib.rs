@@ -266,6 +266,7 @@ impl Core {
         let s = self.settings();
         let session = &self.inner.session;
         session.set_rate_limits(s.download_rate, s.upload_rate);
+        session.set_encryption(settings::encryption_policy(s.encryption));
         session.set_connection_limits(
             s.max_connections as usize,
             s.max_half_open as usize,

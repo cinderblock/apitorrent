@@ -20,6 +20,31 @@ pub fn defaults(session: &SessionConfig) -> Settings {
         groups: Vec::new(),
         naming: apitorrent_types::NamingPolicy::Portable,
         library: apitorrent_types::LibrarySettings::default(),
+        encryption: encryption_setting(session.encryption),
+    }
+}
+
+/// The engine's policy for an encryption setting.
+pub fn encryption_policy(e: apitorrent_types::EncryptionPolicy) -> apitorrent_mse::Policy {
+    use apitorrent_mse::{Policy, Preference};
+    use apitorrent_types::EncryptionPolicy as E;
+    match e {
+        E::Disabled => Policy::Disabled,
+        E::Enabled => Policy::Enabled(Preference::Rc4),
+        E::PreferPlaintext => Policy::Enabled(Preference::Plaintext),
+        E::Required => Policy::Required,
+    }
+}
+
+/// The setting for an engine policy.
+pub fn encryption_setting(p: apitorrent_mse::Policy) -> apitorrent_types::EncryptionPolicy {
+    use apitorrent_mse::{Policy, Preference};
+    use apitorrent_types::EncryptionPolicy as E;
+    match p {
+        Policy::Disabled => E::Disabled,
+        Policy::Enabled(Preference::Rc4) => E::Enabled,
+        Policy::Enabled(Preference::Plaintext) => E::PreferPlaintext,
+        Policy::Required => E::Required,
     }
 }
 

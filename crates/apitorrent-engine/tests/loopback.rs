@@ -1496,3 +1496,40 @@ async fn required_encryption_refuses_plaintext_peers() {
     let views = link_between(required(), local_config(), CONNECT_PATIENCE).await;
     assert_eq!(views, Some(((true, true), (true, true))));
 }
+
+#[tokio::test]
+async fn encryption_can_change_while_running() {
+    // A running seeder switched to required encryption shuts out a plaintext-only peer...
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let (seeder, seed) = seed_fixture(&fx, seed_dir.path()).await;
+    seeder.set_encryption(apitorrent_mse::Policy::Required);
+    assert_eq!(seeder.encryption(), apitorrent_mse::Policy::Required);
+    let leech_dir = tempfile::tempdir().unwrap();
+    let leecher = Session::start(SessionConfig {
+        encryption: apitorrent_mse::Policy::Disabled,
+        ..local_config()
+    })
+    .await
+    .unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let add = |dir: &Path| AddTorrent {
+        have: Some(Bitfield::new(pieces)),
+        peers: vec![seeder.listen_addr()],
+        ..AddTorrent::new(fx.torrent.clone(), dir.to_path_buf())
+    };
+    let leech = leecher.add_torrent(add(leech_dir.path())).unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(seed.peers().await.is_empty());
+    assert_eq!(leech.stats().pieces_have, 0);
+    leech.shutdown().await;
+    // ...and switched back, lets the next one in.
+    seeder.set_encryption(apitorrent_mse::Policy::default());
+    let leech_dir2 = tempfile::tempdir().unwrap();
+    let leech = leecher.add_torrent(add(leech_dir2.path())).unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .expect("download timed out");
+    assert!(leech.shutdown().await.unwrap().is_full());
+    seed.shutdown().await;
+}

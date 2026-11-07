@@ -79,10 +79,25 @@ pub(crate) struct Dialer {
     pub(crate) utp: Option<UtpSocket>,
     /// Try uTP before TCP. Either way the other is the fallback.
     pub(crate) prefer_utp: bool,
-    pub(crate) encryption: Policy,
+    /// Changeable while running; connections already open keep what they settled on.
+    pub(crate) encryption: std::sync::Mutex<Policy>,
 }
 
 impl Dialer {
+    pub(crate) fn encryption(&self) -> Policy {
+        *self
+            .encryption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn set_encryption(&self, policy: Policy) {
+        *self
+            .encryption
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+    }
+
     /// The transports to try for `addr`, in order: `true` is uTP.
     fn order(&self, addr: SocketAddr) -> &'static [bool] {
         let utp = self
@@ -124,7 +139,7 @@ impl Dialer {
         ours: &Handshake,
         utp: bool,
     ) -> Result<(BoxIo, Handshake, Link), String> {
-        let policy = self.encryption;
+        let policy = self.encryption();
         let mut io = self.open(addr, utp).await?;
         if policy.initiates_mse() {
             let config = MseConfig::new(policy);

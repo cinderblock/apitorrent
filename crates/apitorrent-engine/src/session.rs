@@ -262,7 +262,7 @@ impl Session {
         let dialer = Arc::new(peer::Dialer {
             utp: utp.clone(),
             prefer_utp: config.prefer_utp,
-            encryption: config.encryption,
+            encryption: std::sync::Mutex::new(config.encryption),
         });
         let memory = MemoryBudget::new(config.memory_limit);
         let filter = IpFilter::new(config.ban_policy);
@@ -367,6 +367,16 @@ impl Session {
         self.shared.connections.set_limit(max_connections);
         self.shared.half_open.set_limit(max_half_open);
         self.shared.connect_rate.set_rate(connect_rate);
+    }
+
+    /// Change the encryption policy. New connections use it; open ones keep theirs.
+    pub fn set_encryption(&self, policy: apitorrent_mse::Policy) {
+        self.shared.dialer.set_encryption(policy);
+    }
+
+    /// The encryption policy new connections use.
+    pub fn encryption(&self) -> apitorrent_mse::Policy {
+        self.shared.dialer.encryption()
     }
 
     /// The session-wide memory budget for piece data.
@@ -595,7 +605,7 @@ impl apitorrent_mse::SkeyLookup for SkeyIndex {
 /// Run the encryption handshake if the peer starts one, read its BitTorrent handshake,
 /// and hand the connection to the torrent it names.
 async fn route_incoming(stream: peer::BoxIo, utp: bool, addr: SocketAddr, shared: Arc<Shared>) {
-    let policy = shared.config.encryption;
+    let policy = shared.dialer.encryption();
     let (mut stream, link, named): (peer::BoxIo, peer::Link, Option<Sha1Hash>) = if policy
         .accepts_mse()
     {

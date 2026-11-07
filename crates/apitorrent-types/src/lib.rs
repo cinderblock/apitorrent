@@ -252,6 +252,29 @@ pub struct Settings {
     pub naming: NamingPolicy,
     #[serde(default)]
     pub library: LibrarySettings,
+    /// Encryption for peer connections. New connections use a change; open ones keep
+    /// theirs.
+    #[serde(default)]
+    pub encryption: EncryptionPolicy,
+}
+
+/// Message stream encryption (MSE) for peer connections. It hides BitTorrent traffic from
+/// passive inspection (and ISP throttling); it doesn't authenticate the peer. Data
+/// integrity never depends on it: every piece is checked against the torrent's hashes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum EncryptionPolicy {
+    /// Plain BitTorrent only.
+    Disabled,
+    /// Encrypt when the peer can, fall back to plain BitTorrent otherwise. The default.
+    #[default]
+    Enabled,
+    /// Like `Enabled`, but only obfuscate the handshake when the peer allows it, leaving
+    /// the payload unencrypted.
+    PreferPlaintext,
+    /// Encrypted connections only; peers without encryption are refused.
+    Required,
 }
 
 /// Reusing files that other torrents already have.

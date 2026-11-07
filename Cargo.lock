@@ -155,6 +155,7 @@ dependencies = [
  "apitorrent-dht",
  "apitorrent-engine",
  "apitorrent-metainfo",
+ "apitorrent-mse",
  "apitorrent-types",
  "base64 0.23.1",
  "rusqlite",

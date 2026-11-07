@@ -136,6 +136,20 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
                 <NumberField label="Connecting at once" value={settings.maxHalfOpen} onChange={(v) => update({ maxHalfOpen: v })} />
                 <NumberField label="New connections" hint="per second" value={settings.connectRate} onChange={(v) => update({ connectRate: v })} />
               </div>
+              <label className="field">
+                <span>Encryption</span>
+                <select value={settings.encryption} onChange={(e) => update({ encryption: e.target.value as Settings["encryption"] })}>
+                  <option value="enabled">Encrypt when the peer can</option>
+                  <option value="preferPlaintext">Obfuscate the handshake only, when the peer allows it</option>
+                  <option value="required">Encrypted peers only</option>
+                  <option value="disabled">Never encrypt</option>
+                </select>
+              </label>
+              <p className="hint muted">
+                Encryption hides BitTorrent traffic from network inspection and ISP throttling. It doesn&apos;t verify who the peer is, so it won&apos;t stop
+                someone in the middle; your data is safe either way, since every piece is checked against the torrent&apos;s hashes. Requiring it shuts out
+                peers that can&apos;t encrypt. Open connections keep theirs.
+              </p>
             </fieldset>
             <fieldset className="settings-section">
               <legend>Queue</legend>

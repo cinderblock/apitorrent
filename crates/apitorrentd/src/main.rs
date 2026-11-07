@@ -112,7 +112,8 @@ struct Args {
     #[arg(long, env = "APITORRENT_PREFER_TCP")]
     prefer_tcp: bool,
 
-    /// Encryption for peer connections.
+    /// Encryption for peer connections, until it is changed in the settings (which then
+    /// take precedence).
     #[arg(
         long,
         env = "APITORRENT_ENCRYPTION",

@@ -93,7 +93,7 @@ engine core stays in the main thread, because its pieces interlock.
   4. ~~Bad-peer system~~ (done; v2 block proofs come with hash requests in step 7)
   5. ~~Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing~~ (done)
   6. ~~Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE~~ (done;
-     real-world uTP test waits on a firewall decision, see Open questions)
+     real-world uTP and encryption tests passed)
   7. ~~v2 hash requests~~, ~~upload `cancel`~~, ~~webseeds (BEP 19)~~, ~~naming policy~~ (done)
   8. Content library: ~~matching, linking, copy-on-write, pack switchover~~ (done); still
      to do: piece-level reuse of partial matches, idle fingerprinting (v2 roots and SHA-256
@@ -262,6 +262,16 @@ engine core stays in the main thread, because its pieces interlock.
   later encrypted runs were normal. The info log showed no errors and the run didn't
   capture tracker state. If it recurs, capture `trackers` from the detail endpoint and
   run with `apitorrent_engine=debug`.
+- **Real-world uTP test** (2026-11-07 ~2:15 AM PST (~10:15Z), peer port on 0.0.0.0 under a
+  temporary Windows Firewall rule the user approved for testing, removed afterwards): 12
+  of 20 peers over uTP, 18 of 20 encrypted (Deluge 2.2 / libtorrent 2.0.10, Transmission
+  4.0 to 4.1, qBittorrent 5.x, rtorrent), 45 MiB in 3.6 s, no verification failures.
+- **Encryption is a live setting** (`Settings.encryption`, the settings dialog's
+  Connections section; `Session::set_encryption`). New connections use a change, open ones
+  keep theirs. The daemon's `--encryption` is only the starting value. The UI says plainly
+  what MSE is worth: it hides traffic from passive inspection and throttling but doesn't
+  authenticate peers, so it doesn't stop a man in the middle; integrity comes from the
+  piece hashes either way.
 - **DHT wiring** (done): `SessionConfig.dht` starts an `apitorrent_dht::Dht` on its own UDP
   port (daemon default 6882, `--dht-port`, `--no-dht`), leaving the peer port's UDP side
   for uTP. Handshakes set the DHT bit; peers with it get a PORT message (not on private
@@ -454,13 +464,7 @@ engine core stays in the main thread, because its pieces interlock.
 
 ## Open questions for the user
 
-1. **Real-world uTP test needs the peer port's UDP side on a public address.** Binding
-   UDP on 0.0.0.0 would raise a Windows Firewall prompt (no rule exists for
-   `apitorrentd.exe`), so it hasn't been run. Options: (a) you add an inbound allow rule
-   for `target
-eleasepitorrentd.exe` (or approve one I'd add), (b) run the test from
-   WSL, which has no prompt. Recommendation: (a), since the daemon will need it anyway.
-   Encryption over TCP against the real swarm doesn't need this and passed (see Findings).
+*(none right now)*
 
 ## How to run it
 
