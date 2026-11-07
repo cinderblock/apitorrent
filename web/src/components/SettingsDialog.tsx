@@ -1,9 +1,65 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ApiRequestError, api } from "../api/client";
+import type { Ban } from "../api/generated/Ban";
 import type { GroupSettings } from "../api/generated/GroupSettings";
 import type { Settings } from "../api/generated/Settings";
-import { fromKiB, toKiB } from "../format";
+import { formatDateTime, fromKiB, toKiB } from "../format";
+
+const BAN_REASONS: Record<Ban["reason"], string> = {
+  badData: "sent data that failed verification",
+  untrusted: "in too many failed pieces",
+  manual: "banned by hand",
+};
+
+function BansSection() {
+  const [bans, setBans] = useState<Ban[] | null>(null);
+  const [ip, setIp] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const load = () => {
+    api.bans().then(setBans, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  };
+  useEffect(load, []);
+  return (
+    <fieldset className="settings-section">
+      <legend>Banned peers</legend>
+      {bans && bans.length === 0 && <p className="hint muted">Nobody is banned.</p>}
+      {bans && bans.length > 0 && (
+        <ul className="outcomes">
+          {bans.map((b) => (
+            <li key={b.ip}>
+              <code>{b.ip}</code> {BAN_REASONS[b.reason]}
+              {b.count > 1 && ` (${b.count} times)`}, until {formatDateTime(b.until)}{" "}
+              <button type="button" className="link" onClick={() => void api.unban(b.ip).then(load)}>
+                Unban
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="inline-edit">
+        <input aria-label="Address to ban" value={ip} placeholder="IP address" onChange={(e) => setIp(e.target.value)} />
+        <button
+          type="button"
+          disabled={ip.trim() === ""}
+          onClick={() =>
+            void api.ban(ip.trim()).then(
+              () => {
+                setIp("");
+                setError(null);
+                load();
+              },
+              (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
+            )
+          }
+        >
+          Ban
+        </button>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+    </fieldset>
+  );
+}
 
 /** A number input that edits a non-negative integer; empty means 0. */
 function NumberField({ label, value, onChange, hint }: { label: string; value: number; onChange: (v: number) => void; hint?: string }) {
@@ -94,6 +150,7 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
                 <NumberField label="Active in total" value={settings.queue.maxActive} onChange={(v) => update({ queue: { ...settings.queue, maxActive: v } })} />
               </div>
             </fieldset>
+            <BansSection />
             <fieldset className="settings-section">
               <legend>Library</legend>
               <label className="check">

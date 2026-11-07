@@ -2,6 +2,8 @@
 // the daemon, and in production the daemon serves this UI itself.
 
 import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
+import type { Ban } from "./generated/Ban";
+import type { SessionStats } from "./generated/SessionStats";
 import type { AddTorrentResponse } from "./generated/AddTorrentResponse";
 import type { ApiError } from "./generated/ApiError";
 import type { FilePriority } from "./generated/FilePriority";
@@ -60,6 +62,10 @@ export const api = {
   setFilePriorities: (id: string, priorities: FilePriority[]) =>
     request<void>("PUT", `/torrents/${enc(id)}/files/priorities`, { priorities }),
   settings: () => request<Settings>("GET", "/settings"),
+  stats: () => request<SessionStats>("GET", "/stats"),
+  bans: () => request<Ban[]>("GET", "/bans"),
+  ban: (ip: string) => request<void>("POST", "/bans", { ip }),
+  unban: (ip: string) => request<void>("DELETE", `/bans/${enc(ip)}`),
   importDeluge: (req: ImportDelugeRequest) => request<ImportReport>("POST", "/import/deluge", req),
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),
   setLimits: (id: string, limits: TorrentLimits) => request<void>("PUT", `/torrents/${enc(id)}/limits`, limits),

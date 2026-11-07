@@ -6,6 +6,7 @@ import { AddTorrent } from "./components/AddTorrent";
 import { ConfirmRemove } from "./components/ConfirmRemove";
 import { DetailPane } from "./components/DetailPane";
 import { ImportDeluge } from "./components/ImportDeluge";
+import { StatusBar } from "./components/StatusBar";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentTable } from "./components/TorrentTable";
@@ -204,6 +205,7 @@ export function App() {
         />
         {focused && <DetailPane summary={focused} />}
       </main>
+      <StatusBar />
       {adding && <AddTorrent initialFiles={adding} onClose={() => setAdding(null)} />}
       {settingsOpen && (
         <SettingsDialog

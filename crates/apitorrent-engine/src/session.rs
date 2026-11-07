@@ -307,6 +307,11 @@ impl Session {
         self.shared.connect_rate.set_rate(connect_rate);
     }
 
+    /// The session-wide memory budget for piece data.
+    pub fn memory_limit(&self) -> u64 {
+        self.shared.config.memory_limit
+    }
+
     /// Open peer connections right now, across all torrents.
     pub fn connections(&self) -> usize {
         self.shared.connections.used()

@@ -153,6 +153,59 @@ pub struct TorrentDetail {
     pub limits: TorrentLimits,
     /// The naming the torrent's files were laid out with.
     pub naming: NamingPolicy,
+    pub peers: Vec<PeerInfo>,
+    pub tracker_status: Vec<TrackerInfo>,
+}
+
+/// A connected peer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PeerInfo {
+    /// `ip:port`.
+    pub address: String,
+    pub client: String,
+    pub progress: f64,
+    #[ts(type = "number")]
+    pub download_rate: u64,
+    #[ts(type = "number")]
+    pub upload_rate: u64,
+    #[ts(type = "number")]
+    pub downloaded: u64,
+    #[ts(type = "number")]
+    pub uploaded: u64,
+    /// One letter each, like other clients show: `O` outbound, `C` we choke it, `I` we're
+    /// interested, `c` it chokes us, `i` it's interested, `P` on parole.
+    pub flags: String,
+}
+
+/// A tracker and how its last announce went.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TrackerInfo {
+    pub url: String,
+    pub tier: u32,
+    pub peers: Option<u32>,
+    pub seeders: Option<u32>,
+    pub leechers: Option<u32>,
+    pub error: Option<String>,
+    pub warning: Option<String>,
+}
+
+/// Session-wide numbers for a status bar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SessionStats {
+    pub connections: u32,
+    #[ts(type = "number")]
+    pub memory_used: u64,
+    #[ts(type = "number")]
+    pub memory_limit: u64,
+    pub banned: u32,
+    /// The port peers connect to.
+    pub peer_port: u16,
 }
 
 /// A torrent's own limits. 0 or null means no limit of its own.

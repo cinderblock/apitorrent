@@ -180,6 +180,9 @@ engine core stays in the main thread, because its pieces interlock.
   mixed failures with one liar.
 - Loopback tests can give each session its own IP (127.0.0.2, 127.0.0.3), which works on
   Windows. That's how the ban tests tell the liar from the honest seeder.
+- **The daemon turns LSD on by default, which binds UDP 0.0.0.0:6771.** On Windows that
+  can raise a firewall prompt, so smoke tests pass `--no-lsd` (and bind the peer port to
+  loopback).
 - Daemon command-line limits (`--memory-limit-mib` aside) only seed the *first* settings;
   after that the stored settings win. Memory isn't a live setting yet (the budget is
   fixed at session start).
@@ -284,7 +287,12 @@ engine core stays in the main thread, because its pieces interlock.
   limits, totals and edited trackers. `POST /import/deluge`, and a UI dialog under
   Settings
 - [ ] M9 rest: rules and retention, distribution channels
-- [ ] M3.2, M7, M8, TLS, M10
+- [x] M3.2 (part): Peers tab (client, progress, rates, flags with a legend), Trackers tab
+  with live status, status bar (`GET /stats`), bans list in Settings, wanted-piece
+  progress
+- [ ] M3.2 rest: column chooser, embedding `web/dist` in release binaries, "slow
+  torrents don't count" queue option
+- [ ] M7, M8, TLS, M10
 
 ## Open questions for the user
 

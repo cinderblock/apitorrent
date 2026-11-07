@@ -8,7 +8,9 @@ import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
 import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, toKiB } from "../format";
 
-type Tab = "general" | "files" | "trackers";
+type Tab = "general" | "files" | "peers" | "trackers";
+
+const TAB_NAMES: Record<Tab, string> = { general: "General", files: "Files", peers: "Peers", trackers: "Trackers" };
 
 const PRIORITIES: Array<[number, string]> = [
   [0, "Skip"],
@@ -167,6 +169,87 @@ function LimitsEditor({ id, limits, refetch }: { id: string; limits: TorrentLimi
   );
 }
 
+function PeersTab({ detail }: { detail: TorrentDetail }) {
+  if (detail.peers.length === 0) {
+    return <p className="muted">No peers connected.</p>;
+  }
+  return (
+    <>
+      <table className="files">
+        <thead>
+          <tr>
+            <th>Address</th>
+            <th>Client</th>
+            <th>Progress</th>
+            <th className="end">Down</th>
+            <th className="end">Up</th>
+            <th>Flags</th>
+          </tr>
+        </thead>
+        <tbody>
+          {detail.peers.map((p) => (
+            <tr key={p.address}>
+              <td className="cell-path">
+                <code>{p.address}</code>
+              </td>
+              <td>{p.client || <span className="muted">unknown</span>}</td>
+              <td>{formatPercent(p.progress)}</td>
+              <td className="end">{formatRate(p.downloadRate)}</td>
+              <td className="end">{formatRate(p.uploadRate)}</td>
+              <td>
+                <code>{p.flags}</code>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="hint muted">
+        Flags: O we connected to it, C we choke it, I we want its pieces, c it chokes us, i it wants ours, P on parole (suspected of bad data, given whole
+        pieces only).
+      </p>
+    </>
+  );
+}
+
+function TrackersTab({ detail }: { detail: TorrentDetail }) {
+  if (detail.trackerStatus.length === 0) {
+    return <p className="muted">No trackers. Peers come from other sources.</p>;
+  }
+  return (
+    <table className="files">
+      <thead>
+        <tr>
+          <th>Tier</th>
+          <th>Tracker</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {detail.trackerStatus.map((t) => (
+          <tr key={`${t.tier}-${t.url}`}>
+            <td>{t.tier + 1}</td>
+            <td className="cell-path">
+              <code>{t.url}</code>
+            </td>
+            <td>
+              {t.error ? (
+                <span className="error-text">{t.error}</span>
+              ) : t.peers != null ? (
+                <span className="ok-text">
+                  {t.peers} peers{t.seeders != null && `, ${t.seeders} seeds, ${t.leechers ?? 0} leechers`}
+                </span>
+              ) : (
+                <span className="muted">Not announced yet</span>
+              )}
+              {t.warning && <div className="muted">{t.warning}</div>}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detail: TorrentDetail; refetch: () => void }) {
   const held = detail.files.filter((f) => f.placement === "held");
   const heldBytes = held.reduce((n, f) => n + f.length, 0);
@@ -241,9 +324,9 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
   return (
     <section className="detail" aria-label={`Details of ${summary.name}`}>
       <div className="tabs" role="tablist">
-        {(["general", "files", "trackers"] as const).map((t) => (
+        {(["general", "files", "peers", "trackers"] as const).map((t) => (
           <button key={t} type="button" role="tab" aria-selected={tab === t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
-            {t === "general" ? "General" : t === "files" ? "Files" : "Trackers"}
+            {TAB_NAMES[t]}
           </button>
         ))}
       </div>
@@ -288,24 +371,8 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
           <p className="muted">The file list arrives with the metadata, which is being fetched from peers{summary.peers > 0 ? ` (${summary.peers} connected)` : ""}.</p>
         )}
         {tab === "files" && detail && summary.state !== "metadata" && <FilesTab summary={summary} detail={detail} refetch={refetch} />}
-        {tab === "trackers" && detail && (
-          detail.trackers.length === 0 ? (
-            <p className="muted">No trackers. Peers come from other sources.</p>
-          ) : (
-            <ol className="tiers">
-              {detail.trackers.map((tier, i) => (
-                <li key={i}>
-                  <span className="muted">Tier {i + 1}</span>
-                  <ul>
-                    {tier.map((url) => (
-                      <li key={url}><code>{url}</code></li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ol>
-          )
-        )}
+        {tab === "peers" && detail && <PeersTab detail={detail} />}
+        {tab === "trackers" && detail && <TrackersTab detail={detail} />}
       </div>
     </section>
   );

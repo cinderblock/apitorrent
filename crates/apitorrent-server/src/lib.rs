@@ -89,6 +89,7 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
             "/settings",
             get(routes::get_settings).put(routes::put_settings),
         )
+        .route("/stats", get(routes::stats))
         .route("/torrents/{id}/limits", put(routes::set_limits))
         .route("/torrents/{id}/label", put(routes::set_label))
         .route("/torrents/{id}/queue", post(routes::queue_move))

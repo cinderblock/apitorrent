@@ -10,8 +10,8 @@ use apitorrent_core::CoreError;
 use apitorrent_types::{
     API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, Ban, BanRequest,
     ImportDelugeRequest, ImportReport, QueueMoveRequest, ReleaseHeldRequest, ServerInfo,
-    SetFilePrioritiesRequest, SetLabelRequest, SetUnwantedPolicyRequest, Settings, TorrentDetail,
-    TorrentLimits, TorrentSummary,
+    SessionStats, SetFilePrioritiesRequest, SetLabelRequest, SetUnwantedPolicyRequest, Settings,
+    TorrentDetail, TorrentLimits, TorrentSummary,
 };
 
 use crate::AppState;
@@ -125,6 +125,10 @@ pub(crate) async fn release_held(
 ) -> ApiResult<StatusCode> {
     s.core.release_held(&id, req.files).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn stats(State(s): State<AppState>) -> Json<SessionStats> {
+    Json(s.core.session_stats())
 }
 
 pub(crate) async fn get_settings(State(s): State<AppState>) -> Json<Settings> {

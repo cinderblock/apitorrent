@@ -1630,6 +1630,8 @@ impl Core {
                 unwanted_policy,
                 limits: TorrentLimits::default(),
                 naming: policy_of(naming),
+                peers: Vec::new(),
+                tracker_status: Vec::new(),
             });
         }
         let (torrent, handle, prios, unwanted_policy, limits, naming) = {
@@ -1695,7 +1697,34 @@ impl Core {
             unwanted_policy,
             limits,
             naming: policy_of(naming),
+            peers: handle.peers().await.into_iter().map(peer_info).collect(),
+            tracker_status: handle
+                .trackers()
+                .await
+                .into_iter()
+                .map(|t| apitorrent_types::TrackerInfo {
+                    url: t.url,
+                    tier: u32::try_from(t.tier).unwrap_or(u32::MAX),
+                    peers: t.peers,
+                    seeders: t.seeders,
+                    leechers: t.leechers,
+                    error: t.error,
+                    warning: t.warning,
+                })
+                .collect(),
         })
+    }
+
+    /// Session-wide numbers for a status bar.
+    pub fn session_stats(&self) -> apitorrent_types::SessionStats {
+        let s = &self.inner.session;
+        apitorrent_types::SessionStats {
+            connections: u32::try_from(s.connections()).unwrap_or(u32::MAX),
+            memory_used: s.memory_used(),
+            memory_limit: s.memory_limit(),
+            banned: u32::try_from(s.bans().len()).unwrap_or(u32::MAX),
+            peer_port: s.listen_addr().port(),
+        }
     }
 
     /// Rebuild every summary from the engine and publish the changes.
@@ -1913,6 +1942,32 @@ fn select_only_priorities(
             if chosen { 4 } else { 0 }
         })
         .collect()
+}
+
+fn peer_info(p: apitorrent_engine::PeerInfo) -> apitorrent_types::PeerInfo {
+    let mut flags = String::new();
+    for (on, c) in [
+        (p.outbound, 'O'),
+        (p.am_choking, 'C'),
+        (p.am_interested, 'I'),
+        (p.peer_choking, 'c'),
+        (p.peer_interested, 'i'),
+        (p.on_parole, 'P'),
+    ] {
+        if on {
+            flags.push(c);
+        }
+    }
+    apitorrent_types::PeerInfo {
+        address: p.addr.to_string(),
+        client: p.client,
+        progress: p.progress,
+        download_rate: p.download_rate,
+        upload_rate: p.upload_rate,
+        downloaded: p.downloaded,
+        uploaded: p.uploaded,
+        flags,
+    }
 }
 
 fn engine_limits(l: TorrentLimits) -> apitorrent_engine::limits::TorrentLimits {

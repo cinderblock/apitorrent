@@ -103,6 +103,30 @@ pub struct TorrentStats {
     pub error: Option<String>,
 }
 
+/// One connected peer, for display. The flags are the protocol's own state.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct PeerInfo {
+    pub addr: SocketAddr,
+    /// The client, from its peer id or its extension handshake.
+    pub client: String,
+    /// Fraction of the torrent it has, 0 to 1.
+    pub progress: f64,
+    /// Bytes per second over the last tick.
+    pub download_rate: u64,
+    pub upload_rate: u64,
+    pub downloaded: u64,
+    pub uploaded: u64,
+    /// We connected to it (rather than it to us).
+    pub outbound: bool,
+    pub am_choking: bool,
+    pub am_interested: bool,
+    pub peer_choking: bool,
+    pub peer_interested: bool,
+    /// Suspected of sending bad data: only given whole pieces of its own.
+    pub on_parole: bool,
+}
+
 /// What happens to a file that is deselected after some of it was downloaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UnwantedPolicy {
@@ -171,6 +195,7 @@ pub(crate) enum Command {
     /// The pieces we have right now, for resume data.
     Have(oneshot::Sender<Bitfield>),
     Trackers(oneshot::Sender<Vec<TrackerStatus>>),
+    Peers(oneshot::Sender<Vec<PeerInfo>>),
     /// One priority per file (0 = skip, up to [`crate::picker::MAX_PRIORITY`]).
     FilePriorities(Vec<u8>),
     SetUnwantedPolicy(UnwantedPolicy),
@@ -343,6 +368,20 @@ impl TorrentHandle {
         tokio::task::spawn_blocking(move || storage.delete(save_files))
             .await
             .map_err(std::io::Error::other)?
+    }
+
+    /// The connected peers.
+    pub async fn peers(&self) -> Vec<PeerInfo> {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(ActorMsg::Command(Command::Peers(tx)))
+            .await
+            .is_err()
+        {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
     }
 
     /// Stop the torrent, returning the pieces it had (for resume data).
@@ -1220,6 +1259,9 @@ impl TorrentActor {
                 }
                 Command::Trackers(reply) => {
                     let _ = reply.send(self.announcer.status());
+                }
+                Command::Peers(reply) => {
+                    let _ = reply.send(self.peer_infos());
                 }
                 Command::Shutdown(_) => unreachable!("handled in run"),
             },
@@ -2221,6 +2263,49 @@ impl TorrentActor {
             self.shutdown_peers();
         }
         self.publish_stats();
+    }
+
+    fn peer_infos(&self) -> Vec<PeerInfo> {
+        let total = f64::from(self.layout.piece_count().max(1));
+        let mut out: Vec<PeerInfo> = self
+            .peers
+            .values()
+            .filter(|p| p.tx.is_some())
+            .map(|p| {
+                let client = p
+                    .extensions
+                    .as_ref()
+                    .and_then(|e| e.client.clone())
+                    .or_else(|| p.peer_id.map(|id| id.client()))
+                    .unwrap_or_default();
+                let have = if p.is_seed {
+                    total
+                } else {
+                    f64::from(p.has.count_ones())
+                };
+                PeerInfo {
+                    addr: p.addr,
+                    client,
+                    progress: have / total,
+                    download_rate: p.rate_down,
+                    upload_rate: p.rate_up,
+                    downloaded: p.downloaded,
+                    uploaded: p.uploaded,
+                    outbound: p.outbound,
+                    am_choking: p.am_choking,
+                    am_interested: p.am_interested,
+                    peer_choking: p.peer_choking,
+                    peer_interested: p.peer_interested,
+                    on_parole: self.reputation.on_parole(p.addr.ip()),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.download_rate
+                .cmp(&a.download_rate)
+                .then(a.addr.cmp(&b.addr))
+        });
+        out
     }
 
     fn publish_stats(&self) {
