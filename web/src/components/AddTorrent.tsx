@@ -33,6 +33,7 @@ export function AddTorrent({ initialFiles, onClose }: Props) {
     label: label.trim() || null,
     savePath: savePath.trim() || null,
     filePriorities: null,
+    unwantedPolicy: "hold" as const,
   };
 
   async function submit(e: React.FormEvent) {

@@ -80,6 +80,11 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
             "/torrents/{id}/files/priorities",
             put(routes::set_priorities),
         )
+        .route(
+            "/torrents/{id}/unwanted-policy",
+            put(routes::set_unwanted_policy),
+        )
+        .route("/torrents/{id}/held/release", post(routes::release_held))
         .route("/sync", get(sync::handler))
         .fallback(routes::not_found);
     let mut app = Router::new().nest("/api/v1", api);

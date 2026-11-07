@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import type { TorrentDetail } from "../api/generated/TorrentDetail";
+import type { TorrentFile } from "../api/generated/TorrentFile";
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
+import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
 import { formatBytes, formatDateTime, formatPercent, formatRatio, formatUtc } from "../format";
 
 type Tab = "general" | "files" | "trackers";
@@ -18,6 +20,8 @@ const PRIORITIES: Array<[number, string]> = [
 function useDetail(id: string, revision: unknown) {
   const [detail, setDetail] = useState<TorrentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped after an action whose effect (a file moving, say) doesn't change the summary.
+  const [nudge, setNudge] = useState(0);
   useEffect(() => {
     let cancelled = false;
     api.detail(id).then(
@@ -35,15 +39,29 @@ function useDetail(id: string, revision: unknown) {
       cancelled = true;
     };
     // Re-fetch whenever the torrent's summary changes; the server pushes those live.
-  }, [id, revision]);
-  return { detail, error };
+  }, [id, revision, nudge]);
+  /** Re-fetch now and again shortly, since file moves finish in the background. */
+  const refetch = () => {
+    setNudge((n) => n + 1);
+    setTimeout(() => setNudge((n) => n + 1), 600);
+  };
+  return { detail, error, refetch };
 }
 
-function Row({ label, value, title }: { label: string; value: React.ReactNode; title?: string }) {
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <>
       <dt>{label}</dt>
-      <dd title={title}>{value}</dd>
+      <dd>{value}</dd>
+    </>
+  );
+}
+
+/** A local time with UTC beside it in smaller text. */
+function When({ ms }: { ms: number }) {
+  return (
+    <>
+      {formatDateTime(ms)} <small className="muted">{formatUtc(ms)}</small>
     </>
   );
 }
@@ -52,9 +70,87 @@ function copy(text: string) {
   void navigator.clipboard?.writeText(text);
 }
 
+/** What the location column says about a file that isn't simply in the save directory. */
+function location(f: TorrentFile): React.ReactNode {
+  if (f.placement === "held") {
+    return <span className="chip chip-held">Held</span>;
+  }
+  if (f.placement === "parts") {
+    return <span className="chip">Not in folder</span>;
+  }
+  return null;
+}
+
+function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detail: TorrentDetail; refetch: () => void }) {
+  const held = detail.files.filter((f) => f.placement === "held");
+  const heldBytes = held.reduce((n, f) => n + f.length, 0);
+  const anyNotInFolder = detail.files.some((f) => f.placement !== "save");
+  const setPolicy = (policy: UnwantedPolicy) => {
+    void api.setUnwantedPolicy(summary.id, policy).then(refetch);
+  };
+  return (
+    <>
+      <div className="files-bar">
+        <label className="inline-field">
+          <span>Deselected files with data:</span>
+          <select aria-label="What happens to deselected files" value={detail.unwantedPolicy} onChange={(e) => setPolicy(e.target.value as UnwantedPolicy)}>
+            <option value="hold">Move to the held area</option>
+            <option value="delete">Delete</option>
+          </select>
+        </label>
+        {held.length > 0 && (
+          <button type="button" onClick={() => void api.releaseHeld(summary.id).then(refetch)}>
+            Delete held files ({held.length}, {formatBytes(heldBytes)})
+          </button>
+        )}
+      </div>
+      {anyNotInFolder && (
+        <p className="hint muted">
+          Deselected files are never in the save folder. <strong>Held</strong> files are kept by apitorrent and come back instantly when selected again.{" "}
+          <strong>Not in folder</strong> files keep only the bytes they share with wanted files.
+        </p>
+      )}
+      <table className="files">
+        <thead>
+          <tr>
+            <th>File</th>
+            <th className="end">Size</th>
+            <th>Progress</th>
+            <th>Location</th>
+            <th>Priority</th>
+          </tr>
+        </thead>
+        <tbody>
+          {detail.files.map((f) => (
+            <tr key={f.index}>
+              <td className="cell-path">{f.path}</td>
+              <td className="end">{formatBytes(f.length)}</td>
+              <td>{formatPercent(f.progress)}</td>
+              <td>{location(f)}</td>
+              <td>
+                <select
+                  aria-label={`Priority of ${f.path}`}
+                  value={PRIORITIES.reduce((best, [p]) => (Math.abs(p - f.priority) < Math.abs(best - f.priority) ? p : best), 4)}
+                  onChange={(e) => {
+                    void api.setFilePriorities(summary.id, [{ index: f.index, priority: Number(e.target.value) }]).then(refetch);
+                  }}
+                >
+                  {PRIORITIES.map(([p, name]) => (
+                    <option key={p} value={p}>{name}</option>
+                  ))}
+                </select>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
 export function DetailPane({ summary }: { summary: TorrentSummary }) {
   const [tab, setTab] = useState<Tab>("general");
-  const { detail, error } = useDetail(summary.id, summary);
+  const { detail, error, refetch } = useDetail(summary.id, summary);
 
   return (
     <section className="detail" aria-label={`Details of ${summary.name}`}>
@@ -70,21 +166,20 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
         {tab === "general" && (
           <dl className="facts">
             <Row label="Name" value={summary.name} />
-            <Row label="Status" value={summary.error ? `Error: ${summary.error}` : summary.state} />
+            <Row label="Status" value={summary.error ? <span className="error-text">Error: {summary.error}</span> : summary.state} />
             <Row label="Progress" value={`${formatPercent(summary.progress)} (${summary.piecesHave} of ${summary.piecesTotal} pieces)`} />
             <Row label="Size" value={formatBytes(summary.size)} />
+            <Row label="Peers" value={`${summary.peers} connected, ${summary.seeds} of them seeds`} />
             <Row label="Downloaded" value={formatBytes(summary.downloaded)} />
             <Row label="Uploaded" value={`${formatBytes(summary.uploaded)} (ratio ${formatRatio(summary.uploaded, summary.downloaded)})`} />
             <Row label="Save path" value={<code>{summary.savePath}</code>} />
-            <Row label="Added" value={formatDateTime(summary.addedAt)} title={formatUtc(summary.addedAt)} />
+            <Row label="Added" value={<When ms={summary.addedAt} />} />
             {summary.infoHashV1 && <Row label="Info-hash v1" value={<code>{summary.infoHashV1}</code>} />}
             {summary.infoHashV2 && <Row label="Info-hash v2" value={<code>{summary.infoHashV2}</code>} />}
             {summary.private && <Row label="Private" value="Yes: trackers only" />}
             {detail?.comment && <Row label="Comment" value={detail.comment} />}
             {detail?.createdBy && <Row label="Created by" value={detail.createdBy} />}
-            {detail?.creationDate != null && (
-              <Row label="Created" value={formatDateTime(detail.creationDate * 1000)} title={formatUtc(detail.creationDate * 1000)} />
-            )}
+            {detail?.creationDate != null && <Row label="Created" value={<When ms={detail.creationDate * 1000} />} />}
             {detail && (
               <Row
                 label="Magnet"
@@ -97,40 +192,7 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
             )}
           </dl>
         )}
-        {tab === "files" && detail && (
-          <table className="files">
-            <thead>
-              <tr>
-                <th>File</th>
-                <th className="end">Size</th>
-                <th>Progress</th>
-                <th>Priority</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.files.map((f) => (
-                <tr key={f.index}>
-                  <td className="cell-name" title={f.path}>{f.path}</td>
-                  <td className="end">{formatBytes(f.length)}</td>
-                  <td>{formatPercent(f.progress)}</td>
-                  <td>
-                    <select
-                      aria-label={`Priority of ${f.path}`}
-                      value={PRIORITIES.reduce((best, [p]) => (Math.abs(p - f.priority) < Math.abs(best - f.priority) ? p : best), 4)}
-                      onChange={(e) => {
-                        void api.setFilePriorities(summary.id, [{ index: f.index, priority: Number(e.target.value) }]);
-                      }}
-                    >
-                      {PRIORITIES.map(([p, name]) => (
-                        <option key={p} value={p}>{name}</option>
-                      ))}
-                    </select>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        {tab === "files" && detail && <FilesTab summary={summary} detail={detail} refetch={refetch} />}
         {tab === "trackers" && detail && (
           detail.trackers.length === 0 ? (
             <p className="muted">No trackers. Peers come from other sources.</p>

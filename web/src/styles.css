@@ -474,6 +474,48 @@ code {
   text-align: right;
 }
 
+.files th:nth-child(4) {
+  width: 7rem;
+}
+
+.cell-path {
+  overflow-wrap: anywhere;
+}
+
+.files-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-bottom: 8px;
+}
+
+.inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.chip {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chip-held {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .tiers {
   margin: 0;
   padding-left: 0;

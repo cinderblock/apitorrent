@@ -2,7 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRef, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
-import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio, formatUtc } from "../format";
+import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio } from "../format";
 import type { Sort, SortKey } from "../state/torrents";
 
 const ROW_HEIGHT = 30;
@@ -13,7 +13,6 @@ interface Column {
   width: string;
   align?: "end";
   render: (t: TorrentSummary) => React.ReactNode;
-  title?: (t: TorrentSummary) => string;
 }
 
 const STATE_LABEL: Record<TorrentSummary["state"], string> = {
@@ -36,7 +35,6 @@ const COLUMNS: Column[] = [
     label: "Name",
     width: "minmax(10rem, 1fr)",
     render: (t) => <span className="cell-name">{t.name}</span>,
-    title: (t) => t.name,
   },
   { key: "size", label: "Size", width: "6.5rem", align: "end", render: (t) => formatBytes(t.size) },
   {
@@ -55,17 +53,16 @@ const COLUMNS: Column[] = [
     label: "Status",
     width: "6.5rem",
     render: (t) => <span className={`state state-${t.state}`}>{STATE_LABEL[t.state]}</span>,
-    title: (t) => t.error ?? STATE_LABEL[t.state],
   },
   { key: "downloadRate", label: "Down", width: "5.75rem", align: "end", render: (t) => formatRate(t.downloadRate) },
   { key: "uploadRate", label: "Up", width: "5.75rem", align: "end", render: (t) => formatRate(t.uploadRate) },
   {
     key: "peers",
-    label: "Peers",
-    width: "3.5rem",
+    label: "Peers (seeds)",
+    width: "6.5rem",
     align: "end",
-    render: (t) => (t.peers > 0 ? `${t.peers}` : ""),
-    title: (t) => `${t.peers} connected, ${t.seeds} of them seeds`,
+    // Connected peers, with how many of them are seeds.
+    render: (t) => (t.peers > 0 ? `${t.peers} (${t.seeds})` : ""),
   },
   { key: "ratio", label: "Ratio", width: "3.5rem", align: "end", render: (t) => formatRatio(t.uploaded, t.downloaded) },
   {
@@ -73,7 +70,6 @@ const COLUMNS: Column[] = [
     label: "Added",
     width: "9.5rem",
     render: (t) => formatDateTime(t.addedAt),
-    title: (t) => formatUtc(t.addedAt),
   },
 ];
 
@@ -174,7 +170,7 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
                   onDoubleClick={() => onOpen(t.id)}
                 >
                   {COLUMNS.map((c) => (
-                    <div key={c.key} role="gridcell" className={`td ${c.align === "end" ? "end" : ""}`} title={c.title?.(t)}>
+                    <div key={c.key} role="gridcell" className={`td ${c.align === "end" ? "end" : ""}`}>
                       {c.render(t)}
                     </div>
                   ))}

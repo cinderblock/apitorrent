@@ -78,6 +78,50 @@ pub struct TorrentFile {
     pub priority: u8,
     /// Fraction of the file's pieces downloaded, 0 to 1.
     pub progress: f64,
+    pub placement: FilePlacement,
+}
+
+/// Where a file's data is kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum FilePlacement {
+    /// In the save directory.
+    Save,
+    /// Deselected, and kept in the torrent's held area so it can come back without a
+    /// download.
+    Held,
+    /// Not in the save directory. Only bytes that share pieces with wanted files are kept,
+    /// in the torrent's part store.
+    Parts,
+}
+
+/// What happens to a file that is deselected after some of it was downloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum UnwantedPolicy {
+    /// Move it to the held area (the default).
+    #[default]
+    Hold,
+    /// Delete it.
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetUnwantedPolicyRequest {
+    pub policy: UnwantedPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ReleaseHeldRequest {
+    /// [`TorrentFile::index`] of each file to release. Omit to release every held file.
+    #[serde(default)]
+    pub files: Option<Vec<u32>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -94,6 +138,7 @@ pub struct TorrentDetail {
     #[ts(type = "number")]
     pub piece_length: u64,
     pub magnet: String,
+    pub unwanted_policy: UnwantedPolicy,
 }
 
 /// Where a new torrent comes from.
@@ -125,6 +170,8 @@ pub struct AddTorrentRequest {
     /// One per file. Omit to download everything.
     #[serde(default)]
     pub file_priorities: Option<Vec<u8>>,
+    #[serde(default)]
+    pub unwanted_policy: UnwantedPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

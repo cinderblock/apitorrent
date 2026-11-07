@@ -17,16 +17,18 @@ use tokio::sync::{Notify, broadcast};
 
 use apitorrent_engine::bitfield::Bitfield;
 use apitorrent_engine::layout::Layout;
+use apitorrent_engine::storage::Placement;
 use apitorrent_engine::{
     AddTorrent, Session, SessionConfig, TorrentHandle, TorrentState as EngineState,
+    UnwantedPolicy as EnginePolicy,
 };
 use apitorrent_metainfo::{Magnet, Torrent};
 use apitorrent_types::{
-    AddSource, AddTorrentRequest, FilePriority, TorrentDetail, TorrentFile, TorrentId,
-    TorrentState, TorrentSummary,
+    AddSource, AddTorrentRequest, FilePlacement, FilePriority, TorrentDetail, TorrentFile,
+    TorrentId, TorrentState, TorrentSummary, UnwantedPolicy,
 };
 
-use crate::db::{Database, TorrentRow};
+use crate::db::{Database, ResumeRow, TorrentRow};
 pub use crate::store::{Patch, Snapshot, Store};
 
 /// How often summaries are refreshed from the engine.
@@ -83,9 +85,25 @@ struct Entry {
     added_at: i64,
     paused: bool,
     file_priorities: Vec<u8>,
+    unwanted: UnwantedPolicy,
     /// Totals from previous sessions; the engine's counters start at zero each run.
     downloaded_base: u64,
     uploaded_base: u64,
+}
+
+/// Everything needed to start a torrent in the engine and track it.
+struct Spawn {
+    torrent: Arc<Torrent>,
+    save_path: PathBuf,
+    held_path: PathBuf,
+    have: Option<Bitfield>,
+    placements: Option<Vec<Placement>>,
+    paused: bool,
+    file_priorities: Vec<u8>,
+    unwanted: UnwantedPolicy,
+    label: Option<String>,
+    added_at: i64,
+    totals: (u64, u64),
 }
 
 struct Inner {
@@ -182,45 +200,68 @@ impl Core {
                 .clone()
                 .filter(|p| p.len() == files)
                 .unwrap_or_else(|| vec![4; files]);
-            self.spawn_entry(
+            let placements = row
+                .placements
+                .as_deref()
+                .filter(|p| p.len() == files)
+                .map(|p| p.iter().map(|&b| placement_from_byte(b)).collect());
+            let save_path = PathBuf::from(&row.save_path);
+            let held_path = row.held_path.as_ref().map_or_else(
+                || held_path_for(&self.inner.config.data_dir, &save_path, &row.id),
+                PathBuf::from,
+            );
+            self.spawn_entry(Spawn {
                 torrent,
-                PathBuf::from(&row.save_path),
+                save_path,
+                held_path,
                 have,
-                row.paused,
-                prios,
-                row.label,
-                row.added_at,
-                (row.downloaded_total, row.uploaded_total),
-            )?;
+                placements,
+                paused: row.paused,
+                file_priorities: prios,
+                unwanted: policy_from_byte(row.unwanted_policy),
+                label: row.label,
+                added_at: row.added_at,
+                totals: (row.downloaded_total, row.uploaded_total),
+            })?;
         }
         tracing::info!(count, "torrents restored");
         self.refresh();
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn spawn_entry(
-        &self,
-        torrent: Arc<Torrent>,
-        save_path: PathBuf,
-        have: Option<Bitfield>,
-        paused: bool,
-        file_priorities: Vec<u8>,
-        label: Option<String>,
-        added_at: i64,
-        (downloaded_base, uploaded_base): (u64, u64),
-    ) -> Result<TorrentId, CoreError> {
+    fn spawn_entry(&self, s: Spawn) -> Result<TorrentId, CoreError> {
+        let Spawn {
+            torrent,
+            save_path,
+            held_path,
+            have,
+            placements,
+            paused,
+            file_priorities,
+            unwanted,
+            label,
+            added_at,
+            totals: (downloaded_base, uploaded_base),
+        } = s;
         let id = torrent.info.info_hashes().id_string();
+        let parts_path = self
+            .inner
+            .config
+            .data_dir
+            .join("parts")
+            .join(format!("{id}.parts"));
         let handle = self
             .inner
             .session
             .add_torrent(AddTorrent {
-                torrent: torrent.clone(),
-                save_path: save_path.clone(),
+                held_path: Some(held_path),
+                parts_path: Some(parts_path),
                 have,
+                placements,
+                unwanted: engine_policy(unwanted),
                 paused,
-                peers: Vec::new(),
                 file_priorities: Some(file_priorities.clone()),
+                ..AddTorrent::new(torrent.clone(), save_path.clone())
             })
             .map_err(|_| CoreError::Duplicate)?;
         self.inner
@@ -237,6 +278,7 @@ impl Core {
                     added_at,
                     paused,
                     file_priorities,
+                    unwanted,
                     downloaded_base,
                     uploaded_base,
                 },
@@ -291,6 +333,16 @@ impl Core {
             ));
         }
         let hashes = torrent.info.info_hashes();
+        let held_path = {
+            let (data, save, id) = (
+                self.inner.config.data_dir.clone(),
+                save_path.clone(),
+                id.clone(),
+            );
+            tokio::task::spawn_blocking(move || held_path_for(&data, &save, &id))
+                .await
+                .expect("held path probe panicked")
+        };
         let row = TorrentRow {
             id: id.clone(),
             info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
@@ -305,19 +357,25 @@ impl Core {
             file_priorities: Some(prios.clone()),
             downloaded_total: 0,
             uploaded_total: 0,
+            placements: None,
+            held_path: Some(held_path.to_string_lossy().into_owned()),
+            unwanted_policy: policy_to_byte(req.unwanted_policy),
         };
         let added_at = row.added_at;
         self.db(move |db| db.insert_torrent(&row)).await?;
-        if let Err(e) = self.spawn_entry(
+        if let Err(e) = self.spawn_entry(Spawn {
             torrent,
             save_path,
-            None,
-            req.paused,
-            prios,
-            req.label,
+            held_path,
+            have: None,
+            placements: None,
+            paused: req.paused,
+            file_priorities: prios,
+            unwanted: req.unwanted_policy,
+            label: req.label,
             added_at,
-            (0, 0),
-        ) {
+            totals: (0, 0),
+        }) {
             let id2 = id.clone();
             self.db(move |db| db.remove_torrent(&id2)).await?;
             return Err(e);
@@ -415,7 +473,39 @@ impl Core {
         Ok(())
     }
 
-    /// Remove a torrent, and optionally its downloaded files.
+    /// Choose what happens to files of this torrent that are deselected from now on.
+    pub async fn set_unwanted_policy(
+        &self,
+        id: &str,
+        policy: UnwantedPolicy,
+    ) -> Result<(), CoreError> {
+        let handle = self.handle(id)?;
+        let key = id.to_owned();
+        self.db(move |db| db.set_unwanted_policy(&key, policy_to_byte(policy)))
+            .await?;
+        if let Some(e) = self
+            .inner
+            .torrents
+            .write()
+            .expect("torrents lock poisoned")
+            .get_mut(id)
+        {
+            e.unwanted = policy;
+        }
+        handle.set_unwanted_policy(engine_policy(policy)).await;
+        Ok(())
+    }
+
+    /// Delete held copies of deselected files (all of them when `files` is `None`).
+    pub async fn release_held(&self, id: &str, files: Option<Vec<u32>>) -> Result<(), CoreError> {
+        let handle = self.handle(id)?;
+        let files = files.map(|f| f.into_iter().map(|i| i as usize).collect());
+        handle.release_held(files).await;
+        Ok(())
+    }
+
+    /// Remove a torrent, and optionally its downloaded files. Its held copies and part
+    /// store are always deleted: they only exist for the torrent's sake.
     pub async fn remove(&self, id: &str, delete_files: bool) -> Result<(), CoreError> {
         let entry = self
             .inner
@@ -427,8 +517,8 @@ impl Core {
         entry.handle.shutdown().await;
         let key = id.to_owned();
         self.db(move |db| db.remove_torrent(&key)).await?;
-        if delete_files {
-            delete_torrent_files(&entry.torrent, &entry.save_path);
+        if let Err(e) = entry.handle.delete_data(delete_files).await {
+            tracing::warn!(%id, error = %e, "could not delete all of the torrent's data");
         }
         self.inner.store.apply(Vec::new(), vec![id.to_owned()]);
         tracing::info!(%id, delete_files, "torrent removed");
@@ -440,14 +530,21 @@ impl Core {
     }
 
     pub async fn detail(&self, id: &str) -> Result<TorrentDetail, CoreError> {
-        let (torrent, handle, prios) = {
+        let (torrent, handle, prios, unwanted_policy) = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let e = torrents.get(id).ok_or(CoreError::NotFound)?;
             (
                 e.torrent.clone(),
                 e.handle.clone(),
                 e.file_priorities.clone(),
+                e.unwanted,
             )
+        };
+        let placements = {
+            let h = handle.clone();
+            tokio::task::spawn_blocking(move || h.placements())
+                .await
+                .expect("placements task panicked")
         };
         let summary = self.inner.store.get(id).ok_or(CoreError::NotFound)?;
         let have = handle
@@ -471,6 +568,11 @@ impl Core {
                     length: f.length,
                     priority: prios.get(i).copied().unwrap_or(4),
                     progress: if total == 0 { 1.0 } else { ratio(done, total) },
+                    placement: match placements.get(i) {
+                        Some(Placement::Held) => FilePlacement::Held,
+                        Some(Placement::Parts) => FilePlacement::Parts,
+                        _ => FilePlacement::Save,
+                    },
                 }
             })
             .collect();
@@ -486,6 +588,7 @@ impl Core {
             creation_date: torrent.creation_date,
             piece_length: torrent.info.piece_length,
             magnet: magnet.to_uri(),
+            unwanted_policy,
         })
     }
 
@@ -517,12 +620,17 @@ impl Core {
         for (id, handle, down, up) in entries {
             if let Some(have) = handle.have().await {
                 let stats = handle.stats();
-                rows.push((
+                let h = handle.clone();
+                let placements = tokio::task::spawn_blocking(move || h.placements())
+                    .await
+                    .expect("placements task panicked");
+                rows.push(ResumeRow {
                     id,
-                    have.as_bytes().to_vec(),
-                    down + stats.downloaded,
-                    up + stats.uploaded,
-                ));
+                    have: have.as_bytes().to_vec(),
+                    placements: placements.into_iter().map(placement_to_byte).collect(),
+                    downloaded_total: down + stats.downloaded,
+                    uploaded_total: up + stats.uploaded,
+                });
             }
         }
         self.db(move |db| db.save_resume(&rows)).await
@@ -619,31 +727,68 @@ fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// Delete a torrent's files, then any directories that are left empty. Only paths that
-/// belong to the torrent are touched.
-fn delete_torrent_files(torrent: &Torrent, save_path: &std::path::Path) {
-    let mut dirs = std::collections::BTreeSet::new();
-    for f in torrent.info.files.iter().filter(|f| !f.is_pad()) {
-        let mut p = save_path.to_path_buf();
-        for c in &f.path {
-            p.push(c);
-        }
-        if let Err(e) = std::fs::remove_file(&p)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            tracing::warn!(path = %p.display(), error = %e, "could not delete file");
-        }
-        let mut dir = p.parent().map(std::path::Path::to_path_buf);
-        while let Some(d) = dir {
-            if d == save_path {
-                break;
-            }
-            dirs.insert(d.clone());
-            dir = d.parent().map(std::path::Path::to_path_buf);
-        }
+fn placement_to_byte(p: Placement) -> u8 {
+    match p {
+        Placement::Save => 0,
+        Placement::Held => 1,
+        Placement::Parts => 2,
     }
-    // Deepest first; remove_dir fails harmlessly on directories that aren't empty.
-    for d in dirs.iter().rev() {
-        let _ = std::fs::remove_dir(d);
+}
+
+fn placement_from_byte(b: u8) -> Placement {
+    match b {
+        1 => Placement::Held,
+        2 => Placement::Parts,
+        _ => Placement::Save,
+    }
+}
+
+fn policy_to_byte(p: UnwantedPolicy) -> u8 {
+    match p {
+        UnwantedPolicy::Hold => 0,
+        UnwantedPolicy::Delete => 1,
+    }
+}
+
+fn policy_from_byte(b: u8) -> UnwantedPolicy {
+    if b == 1 {
+        UnwantedPolicy::Delete
+    } else {
+        UnwantedPolicy::Hold
+    }
+}
+
+fn engine_policy(p: UnwantedPolicy) -> EnginePolicy {
+    match p {
+        UnwantedPolicy::Hold => EnginePolicy::Hold,
+        UnwantedPolicy::Delete => EnginePolicy::Delete,
+    }
+}
+
+/// Choose a torrent's held area: inside the data directory when that is on the same volume
+/// as the save path (holding a file is then a rename), otherwise a hidden directory in the
+/// save path. The volume test is a real rename, which is the only check that works the same
+/// on every platform and filesystem (mount points, junctions, network shares).
+fn held_path_for(data_dir: &std::path::Path, save_path: &std::path::Path, id: &str) -> PathBuf {
+    let preferred = data_dir.join("held").join(id);
+    let fallback = save_path.join(".apitorrent-held").join(id);
+    let probe = || -> std::io::Result<bool> {
+        std::fs::create_dir_all(data_dir.join("held"))?;
+        std::fs::create_dir_all(save_path)?;
+        let name = format!(".apitorrent-probe-{id}");
+        let from = save_path.join(&name);
+        let to = data_dir.join("held").join(&name);
+        std::fs::write(&from, b"")?;
+        let moved = std::fs::rename(&from, &to).is_ok();
+        let _ = std::fs::remove_file(if moved { &to } else { &from });
+        Ok(moved)
+    };
+    match probe() {
+        Ok(true) => preferred,
+        Ok(false) => fallback,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not probe the save path's volume");
+            fallback
+        }
     }
 }

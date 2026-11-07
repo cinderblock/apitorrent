@@ -7,6 +7,7 @@
 mod announce;
 pub mod bitfield;
 pub mod layout;
+pub mod parts;
 mod peer;
 pub mod picker;
 mod session;
@@ -16,4 +17,4 @@ pub mod verify;
 
 pub use announce::TrackerStatus;
 pub use session::{AddError, Session, SessionConfig};
-pub use torrent::{AddTorrent, TorrentHandle, TorrentState, TorrentStats};
+pub use torrent::{AddTorrent, TorrentHandle, TorrentState, TorrentStats, UnwantedPolicy};

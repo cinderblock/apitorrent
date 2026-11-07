@@ -88,8 +88,8 @@ engine core stays in the main thread, because its pieces interlock.
 
 - **Main thread (engine core), in order:**
   1. ~~Real-world interop test against the Ubuntu swarm~~ (done, two bugs fixed)
-  2. Part store, unwanted-file handling, held area ← current
-  3. Memory budget (session, group, torrent)
+  2. ~~Part store, unwanted-file handling, held area~~ (done)
+  3. Memory budget (session, group, torrent) ← current
   4. Bad-peer system (attribution, smart ban, parole, trust, bans, blocklists)
   5. Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing
   6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE
@@ -149,6 +149,20 @@ engine core stays in the main thread, because its pieces interlock.
   - **Overshoot: the cap was 50 MB, but about 600 MB was downloaded in total** (500 MB in
     the buggy first run, 110 MB in the second). 1-second polling can't stop at
     15 MB/s with no rate limit. Next time, use a rate limit or a byte cap in the engine.
+- **Peers dropped by a pause or a clean close were never redialled** (found while
+  testing re-selection). The `known` set also blocked trackers from re-adding them.
+  Fixed: outbound peers are requeued with a retry time (10 s after a normal close, 60 s
+  after a failed connect, at once after a pause). Seeds are skipped while we have
+  everything, and become eligible again when files are reselected.
+- Held area placement: `data_dir/held/<id>` when a test rename from the save path
+  succeeds (same volume), otherwise `<save path>/.apitorrent-held/<id>`. The choice is
+  stored per torrent, so it never changes under existing held files. Part stores live in
+  `data_dir/parts/<id>.parts`.
+- **No `title=` tooltips in the web UI** (user rule from the `tooltips` skill: invisible
+  on touch devices). Information goes inline. Existing uses were removed.
+- Bash heredocs in this environment fail on some content ("unexpected EOF"). Write
+  scripts and test snippets to the scratchpad with the Write tool, then run or append
+  them.
 - Known engine gaps, to fix before real-world use: no memory cap on in-flight piece
   buffers, no banning of peers that send bad data, a v2 `Unknown` verdict is treated as
   invalid (needs BEP 52 hash requests), upload `cancel` is ignored, no rate limiting.
@@ -177,9 +191,13 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] M3.1 web UI: live table, filters, details, file priorities, add/remove, drag-drop
   (`d185833`); daemon serves it with CSP and other security headers (`f459ad6`)
 - [ ] M3.2 UI: per-tracker status (engine already reports it), peers tab, label
-  editing, settings page, column chooser, embedding `web/dist` into release binaries
+  editing, settings page, column chooser, embedding `web/dist` into release binaries,
+  progress measured against *wanted* pieces (a finished torrent with skipped files
+  shows 47.8% today)
 - [x] Real-world Ubuntu swarm test: interop works; two bugs fixed (see Findings)
-- [ ] Part store and unwanted files
+- [x] Part store and unwanted files: `parts.rs` (per-torrent slot file), per-file
+  placements (save, held, parts) in `FileStorage`, hold or delete on deselect, release
+  held, data deletion, placements persisted (DB migration 2), API and Files tab
 - [ ] Memory budget
 - [ ] Bad-peer system
 - [ ] Limits and queueing

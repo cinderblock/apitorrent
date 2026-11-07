@@ -21,12 +21,14 @@ use crate::layout::Layout;
 use crate::peer::{self, PeerCmd, PeerEvent};
 use crate::picker::{PeerKey, Picker, Received};
 use crate::session::Shared;
-use crate::storage::{FileStorage, Storage};
+use crate::storage::{FileStorage, Placement, Storage, StoragePaths};
 use crate::verify::{PieceHashes, Verdict};
 
 const TICK: Duration = Duration::from_secs(1);
 const CHOKE_EVERY: u32 = 10;
 const OPTIMISTIC_EVERY: u32 = 3;
+/// How long to wait before reconnecting to a peer whose connection ended normally.
+const RECONNECT_AFTER: Duration = Duration::from_secs(10);
 /// How long to wait before retrying a peer we failed to reach.
 const RETRY_AFTER: Duration = Duration::from_secs(60);
 /// Most outstanding block reads we'll do for one peer.
@@ -58,18 +60,53 @@ pub struct TorrentStats {
     pub error: Option<String>,
 }
 
-/// Parameters for adding a torrent.
+/// What happens to a file that is deselected after some of it was downloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnwantedPolicy {
+    /// Move it to the torrent's held area, so selecting it again needs no download.
+    #[default]
+    Hold,
+    /// Delete it, keeping only the boundary bytes the torrent's wanted files still need.
+    Delete,
+}
+
+/// Parameters for adding a torrent. Start from [`AddTorrent::new`].
 #[derive(Debug, Clone)]
 pub struct AddTorrent {
     pub torrent: Arc<Torrent>,
     pub save_path: PathBuf,
+    /// The torrent's held area. Defaults to `.apitorrent/held/<id>` in the save path.
+    pub held_path: Option<PathBuf>,
+    /// The torrent's part store. Defaults to `.apitorrent/<id>.parts` in the save path.
+    pub parts_path: Option<PathBuf>,
     /// Pieces known to be on disk (resume data). `None` means check the files.
     pub have: Option<Bitfield>,
+    /// Each file's placement (resume data). `None` derives them from the priorities:
+    /// files with priority 0 live in the part store, the rest in the save path.
+    pub placements: Option<Vec<Placement>>,
+    pub unwanted: UnwantedPolicy,
     pub paused: bool,
     /// Peers to try straight away.
     pub peers: Vec<SocketAddr>,
     /// One priority per file; `None` downloads everything at the default priority.
     pub file_priorities: Option<Vec<u8>>,
+}
+
+impl AddTorrent {
+    pub fn new(torrent: Arc<Torrent>, save_path: impl Into<PathBuf>) -> Self {
+        Self {
+            torrent,
+            save_path: save_path.into(),
+            held_path: None,
+            parts_path: None,
+            have: None,
+            placements: None,
+            unwanted: UnwantedPolicy::default(),
+            paused: false,
+            peers: Vec::new(),
+            file_priorities: None,
+        }
+    }
 }
 
 pub(crate) enum Command {
@@ -79,6 +116,9 @@ pub(crate) enum Command {
     Trackers(oneshot::Sender<Vec<TrackerStatus>>),
     /// One priority per file (0 = skip, up to [`crate::picker::MAX_PRIORITY`]).
     FilePriorities(Vec<u8>),
+    SetUnwantedPolicy(UnwantedPolicy),
+    /// Delete the held copies of these files.
+    ReleaseHeld(Vec<usize>),
     Pause,
     Resume,
     Shutdown(oneshot::Sender<Bitfield>),
@@ -105,6 +145,11 @@ pub(crate) enum ActorMsg {
         job: Job,
         result: Result<apitorrent_tracker::AnnounceResponse, String>,
     },
+    /// A batch of placement changes finished.
+    Moved {
+        files: Vec<usize>,
+        result: Result<(), String>,
+    },
 }
 
 /// Handle to a running torrent.
@@ -113,6 +158,7 @@ pub struct TorrentHandle {
     pub(crate) info_hashes: InfoHashes,
     pub(crate) tx: mpsc::Sender<ActorMsg>,
     pub(crate) stats: watch::Receiver<TorrentStats>,
+    pub(crate) storage: Arc<dyn Storage>,
 }
 
 impl TorrentHandle {
@@ -175,6 +221,41 @@ impl TorrentHandle {
             .tx
             .send(ActorMsg::Command(Command::FilePriorities(priorities)))
             .await;
+    }
+
+    /// Where each file's bytes are (for resume data). Waits for a move in progress.
+    pub fn placements(&self) -> Vec<Placement> {
+        self.storage.placements()
+    }
+
+    /// Choose what happens to files deselected from now on.
+    pub async fn set_unwanted_policy(&self, policy: UnwantedPolicy) {
+        let _ = self
+            .tx
+            .send(ActorMsg::Command(Command::SetUnwantedPolicy(policy)))
+            .await;
+    }
+
+    /// Delete the held copies of these files (all held files when `None`). Their boundary
+    /// bytes stay in the part store while wanted files need them.
+    pub async fn release_held(&self, files: Option<Vec<usize>>) {
+        let files = files.unwrap_or_else(|| {
+            let p = self.storage.placements();
+            (0..p.len()).filter(|&i| p[i] == Placement::Held).collect()
+        });
+        let _ = self
+            .tx
+            .send(ActorMsg::Command(Command::ReleaseHeld(files)))
+            .await;
+    }
+
+    /// Delete the torrent's held copies and part store, and its downloaded files too when
+    /// `save_files` is set. Call it after [`TorrentHandle::shutdown`].
+    pub async fn delete_data(&self, save_files: bool) -> std::io::Result<()> {
+        let storage = self.storage.clone();
+        tokio::task::spawn_blocking(move || storage.delete(save_files))
+            .await
+            .map_err(std::io::Error::other)?
     }
 
     /// Stop the torrent, returning the pieces it had (for resume data).
@@ -285,7 +366,10 @@ pub(crate) struct TorrentActor {
     peers: HashMap<PeerKey, Peer>,
     buffers: HashMap<u32, Vec<u8>>,
     candidates: VecDeque<SocketAddr>,
-    failed: HashMap<SocketAddr, Instant>,
+    /// Candidates we shouldn't dial before the given time.
+    retry_at: HashMap<SocketAddr, Instant>,
+    /// Addresses we know to be seeds. They aren't dialled while we have every piece.
+    seed_addrs: HashSet<SocketAddr>,
     known: HashSet<SocketAddr>,
     stats: watch::Sender<TorrentStats>,
     paused: bool,
@@ -297,6 +381,9 @@ pub(crate) struct TorrentActor {
     ticks: u32,
     max_message: u32,
     file_priorities: Option<Vec<u8>>,
+    unwanted: UnwantedPolicy,
+    /// Files whose placement change is in flight.
+    moving: HashSet<usize>,
     announcer: Announcer,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
@@ -309,10 +396,32 @@ impl TorrentActor {
         let info_hashes = info.info_hashes();
         let layout = Layout::from_info(info);
         let relative: Vec<Vec<String>> = info.files.iter().map(|f| f.path.clone()).collect();
+        let id = info_hashes.id_string();
+        let internal = params.save_path.join(".apitorrent");
+        let paths = StoragePaths {
+            save: params.save_path.clone(),
+            held: params
+                .held_path
+                .clone()
+                .unwrap_or_else(|| internal.join("held").join(&id)),
+            parts: params
+                .parts_path
+                .clone()
+                .unwrap_or_else(|| internal.join(format!("{id}.parts"))),
+        };
+        let placements = params.placements.clone().unwrap_or_else(|| {
+            (0..info.files.len())
+                .map(|i| match &params.file_priorities {
+                    Some(p) if p.get(i) == Some(&0) => Placement::Parts,
+                    _ => Placement::Save,
+                })
+                .collect()
+        });
         let storage: Arc<dyn Storage> = Arc::new(FileStorage::new(
-            &params.save_path,
+            &paths,
             layout.clone(),
             &relative,
+            Some(&placements),
         ));
         let hashes = Arc::new(PieceHashes::new(&torrent));
         let (tx, rx) = mpsc::channel(1024);
@@ -358,7 +467,8 @@ impl TorrentActor {
             peers: HashMap::new(),
             buffers: HashMap::new(),
             candidates: VecDeque::new(),
-            failed: HashMap::new(),
+            retry_at: HashMap::new(),
+            seed_addrs: HashSet::new(),
             known: HashSet::new(),
             stats: stats_tx,
             paused: params.paused,
@@ -370,6 +480,8 @@ impl TorrentActor {
             ticks: 0,
             max_message,
             file_priorities: params.file_priorities,
+            unwanted: params.unwanted,
+            moving: HashSet::new(),
             announcer: Announcer::new(&torrent.trackers, &keys, Instant::now()),
             finished: false,
         };
@@ -382,12 +494,14 @@ impl TorrentActor {
             }
             None => actor.check_files(),
         }
+        let storage = actor.storage.clone();
         tokio::spawn(actor.run());
         (
             TorrentHandle {
                 info_hashes,
                 tx,
                 stats: stats_rx,
+                storage,
             },
             keys,
         )
@@ -427,6 +541,7 @@ impl TorrentActor {
             return;
         }
         self.file_priorities = Some(prios.to_vec());
+        self.place_files();
         if let Some(picker) = self.picker.as_mut() {
             picker.set_priorities(&piece_priorities(&self.layout, prios));
             for peer in self.peers.values_mut() {
@@ -444,6 +559,121 @@ impl TorrentActor {
             }
             self.publish_stats();
         }
+        // Newly wanted pieces may need the seeds we let go once we had everything.
+        if self.picker.as_ref().is_some_and(|p| !p.have().is_full()) {
+            for addr in &self.seed_addrs {
+                self.retry_at.remove(addr);
+            }
+        }
+        self.connect_more();
+    }
+
+    /// Bring each file's placement in line with its priority: wanted files go to the save
+    /// path, deselected ones to the held area or the part store.
+    fn place_files(&mut self) {
+        let Some(prios) = self.file_priorities.clone() else {
+            return;
+        };
+        let current = self.storage.placements();
+        let sizes = self.storage.file_sizes();
+        let mut moves = Vec::new();
+        for (i, f) in self.layout.files().iter().enumerate() {
+            if f.pad || self.moving.contains(&i) {
+                continue;
+            }
+            let target = match (prios[i], current[i]) {
+                (0, Placement::Save) => {
+                    let has_data = sizes[i].is_some_and(|n| n > 0);
+                    if has_data && self.unwanted == UnwantedPolicy::Hold {
+                        Placement::Held
+                    } else {
+                        Placement::Parts
+                    }
+                }
+                (0, other) => other,
+                (_, _) => Placement::Save,
+            };
+            if target != current[i] {
+                moves.push((i, target));
+            }
+        }
+        self.start_moves(moves);
+    }
+
+    /// Run placement changes on a disk thread. Pieces whose data is about to be deleted are
+    /// dropped first, so nothing tries to read them meanwhile.
+    fn start_moves(&mut self, moves: Vec<(usize, Placement)>) {
+        if moves.is_empty() {
+            return;
+        }
+        let prios = self.file_priorities.clone();
+        let wanted_file = |file: usize| prios.as_ref().is_none_or(|p| p[file] > 0);
+        let mut jobs = Vec::new();
+        for (file, to) in moves {
+            let mut keep = Vec::new();
+            if to == Placement::Parts {
+                for piece in self.layout.file_pieces(file) {
+                    let have = self.picker.as_ref().is_some_and(|p| p.have().get(piece));
+                    if !have || self.storage.in_parts(piece) {
+                        continue;
+                    }
+                    let shared_with_wanted = self
+                        .layout
+                        .segments(
+                            self.layout.piece_offset(piece),
+                            self.layout.piece_size(piece) as usize,
+                        )
+                        .iter()
+                        .any(|s| s.file != file && !s.pad && wanted_file(s.file));
+                    if shared_with_wanted {
+                        keep.push(piece);
+                    } else if let Some(picker) = self.picker.as_mut() {
+                        picker.mark_missing(piece);
+                    }
+                }
+            }
+            self.moving.insert(file);
+            jobs.push((file, to, keep));
+        }
+        let storage = self.storage.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let files: Vec<usize> = jobs.iter().map(|j| j.0).collect();
+            let result = jobs
+                .iter()
+                .try_for_each(|(file, to, keep)| storage.set_placement(*file, *to, keep))
+                .map_err(|e| format!("moving files failed: {e}"));
+            let _ = tx.blocking_send(ActorMsg::Moved { files, result });
+        });
+    }
+
+    fn on_moved(&mut self, files: &[usize], result: Result<(), String>) {
+        for f in files {
+            self.moving.remove(f);
+        }
+        // A piece that finished while its file was moving may have been written to the
+        // old place. Drop any piece whose part-store bytes aren't there.
+        let placements = self.storage.placements();
+        if let Some(picker) = self.picker.as_mut() {
+            for &file in files {
+                if placements[file] != Placement::Parts {
+                    continue;
+                }
+                for piece in self.layout.file_pieces(file) {
+                    if picker.have().get(piece) && !self.storage.in_parts(piece) {
+                        picker.mark_missing(piece);
+                    }
+                }
+            }
+        }
+        if let Err(e) = result {
+            tracing::error!(error = %e, "placement change failed");
+            self.fail(e);
+            return;
+        }
+        // Priorities may have changed again while the move ran.
+        self.place_files();
+        self.publish_stats();
     }
 
     async fn run(mut self) {
@@ -502,6 +732,19 @@ impl TorrentActor {
                     let _ = reply.send(have);
                 }
                 Command::FilePriorities(prios) => self.set_file_priorities(&prios),
+                Command::SetUnwantedPolicy(policy) => self.unwanted = policy,
+                Command::ReleaseHeld(files) => {
+                    let placements = self.storage.placements();
+                    let moves = files
+                        .into_iter()
+                        .filter(|&f| {
+                            placements.get(f) == Some(&Placement::Held) && !self.moving.contains(&f)
+                        })
+                        .map(|f| (f, Placement::Parts))
+                        .collect();
+                    self.start_moves(moves);
+                    self.publish_stats();
+                }
                 Command::Trackers(reply) => {
                     let _ = reply.send(self.announcer.status());
                 }
@@ -524,6 +767,7 @@ impl TorrentActor {
                 result,
             } => self.on_block_read(peer, block, result),
             ActorMsg::Announced { job, result } => self.on_announced(&job, result),
+            ActorMsg::Moved { files, result } => self.on_moved(&files, result),
         }
     }
 
@@ -628,8 +872,9 @@ impl TorrentActor {
             if self.peers.values().any(|p| p.addr == addr) {
                 continue;
             }
-            if let Some(&when) = self.failed.get(&addr)
-                && now.duration_since(when) < RETRY_AFTER
+            let complete = self.picker.as_ref().is_some_and(|p| p.have().is_full());
+            if self.retry_at.get(&addr).is_some_and(|&at| now < at)
+                || (complete && self.seed_addrs.contains(&addr))
             {
                 deferred.push(addr);
                 continue;
@@ -680,11 +925,17 @@ impl TorrentActor {
         ));
     }
 
+    /// Close every connection. Outbound peers stay candidates, so resuming dials them
+    /// again straight away.
     fn shutdown_peers(&mut self) {
         let keys: Vec<PeerKey> = self.peers.keys().copied().collect();
         for key in keys {
             if let Some(p) = self.peers.get(&key) {
                 p.close();
+                if p.outbound {
+                    self.retry_at.remove(&p.addr);
+                    self.candidates.push_back(p.addr);
+                }
             }
             self.drop_peer(key);
         }
@@ -725,8 +976,14 @@ impl TorrentActor {
             PeerEvent::Closed { reason } => {
                 if let Some(p) = self.peers.get(&key) {
                     tracing::debug!(key, addr = %p.addr, %reason, "peer closed");
-                    if p.outbound && p.tx.is_none() {
-                        self.failed.insert(p.addr, Instant::now());
+                    if p.outbound {
+                        // Never reached: back off longer than after a normal close.
+                        let wait = if p.tx.is_none() {
+                            RETRY_AFTER
+                        } else {
+                            RECONNECT_AFTER
+                        };
+                        self.retry_at.insert(p.addr, Instant::now() + wait);
                         self.candidates.push_back(p.addr);
                     }
                 }
@@ -897,6 +1154,8 @@ impl TorrentActor {
             && picker.have().is_full()
             && peer.is_seed
         {
+            // Kept as a candidate: if files are selected again, we'll want it back.
+            self.seed_addrs.insert(peer.addr);
             peer.close();
         }
     }
@@ -1275,6 +1534,7 @@ fn validate_resume(storage: &dyn Storage, layout: &Layout, mut have: Bitfield) -
         return Bitfield::new(layout.piece_count());
     }
     let sizes = storage.file_sizes();
+    let placements = storage.placements();
     let pieces: Vec<u32> = have.iter_ones().collect();
     for piece in pieces {
         let ok = layout
@@ -1283,7 +1543,14 @@ fn validate_resume(storage: &dyn Storage, layout: &Layout, mut have: Bitfield) -
                 layout.piece_size(piece) as usize,
             )
             .iter()
-            .all(|s| s.pad || sizes[s.file].is_some_and(|len| len >= s.file_offset + s.len as u64));
+            .all(|s| {
+                s.pad
+                    || if placements[s.file] == Placement::Parts {
+                        storage.in_parts(piece)
+                    } else {
+                        sizes[s.file].is_some_and(|len| len >= s.file_offset + s.len as u64)
+                    }
+            });
         if !ok {
             have.clear(piece);
         }
@@ -1295,6 +1562,7 @@ fn validate_resume(storage: &dyn Storage, layout: &Layout, mut have: Bitfield) -
 fn check_existing(storage: &dyn Storage, hashes: &PieceHashes, layout: &Layout) -> Bitfield {
     let mut have = Bitfield::new(layout.piece_count());
     let sizes = storage.file_sizes();
+    let placements = storage.placements();
     let files = layout.files();
     let mut buf = Vec::new();
     for piece in 0..layout.piece_count() {
@@ -1303,8 +1571,12 @@ fn check_existing(storage: &dyn Storage, hashes: &PieceHashes, layout: &Layout) 
         // Skip the read when any file under the piece is missing or too short.
         let present = layout.segments(offset, size).iter().all(|s| {
             s.pad
-                || sizes[s.file].is_some_and(|len| len >= s.file_offset + s.len as u64)
                 || files[s.file].length == 0
+                || if placements[s.file] == Placement::Parts {
+                    storage.in_parts(piece)
+                } else {
+                    sizes[s.file].is_some_and(|len| len >= s.file_offset + s.len as u64)
+                }
         });
         if !present {
             continue;

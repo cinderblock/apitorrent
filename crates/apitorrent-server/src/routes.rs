@@ -8,8 +8,8 @@ use serde::Deserialize;
 
 use apitorrent_core::CoreError;
 use apitorrent_types::{
-    API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, ServerInfo,
-    SetFilePrioritiesRequest, TorrentDetail, TorrentSummary,
+    API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, ReleaseHeldRequest, ServerInfo,
+    SetFilePrioritiesRequest, SetUnwantedPolicyRequest, TorrentDetail, TorrentSummary,
 };
 
 use crate::AppState;
@@ -104,6 +104,24 @@ pub(crate) async fn set_priorities(
     Json(req): Json<SetFilePrioritiesRequest>,
 ) -> ApiResult<StatusCode> {
     s.core.set_file_priorities(&id, &req.priorities).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_unwanted_policy(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetUnwantedPolicyRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_unwanted_policy(&id, req.policy).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn release_held(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ReleaseHeldRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.release_held(&id, req.files).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

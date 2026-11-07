@@ -23,6 +23,10 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
   - Strict TLS: a certificate is trusted through a CA or a key pinned at pairing, never
     accepted unverified.
   - Plugins are sandboxed and get only the capabilities you grant them.
+- **Skipped files stay out of your folders.** A deselected file is never in the save
+  directory, not even partly: bytes it shares with wanted files go to an internal part
+  store, and a file deselected after downloading moves to a held area (or is deleted), so
+  selecting it again needs no download.
 - **A content library.** A file can belong to several torrents. A new pack reuses the files
   you already have, and the old torrents keep seeding them.
 - **Automation.** Plugins watch sources such as feeds, Ubuntu releases and Raspberry Pi

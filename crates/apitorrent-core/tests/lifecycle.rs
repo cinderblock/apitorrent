@@ -5,7 +5,9 @@ use std::time::Duration;
 use apitorrent_core::{Core, CoreConfig, CoreError};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
-use apitorrent_types::{AddSource, AddTorrentRequest, TorrentState};
+use apitorrent_types::{
+    AddSource, AddTorrentRequest, FilePlacement, FilePriority, TorrentState, UnwantedPolicy,
+};
 use base64::Engine as _;
 
 fn config(root: &std::path::Path) -> CoreConfig {
@@ -62,6 +64,7 @@ async fn add_restart_remove() {
         paused: false,
         label: Some("test".into()),
         file_priorities: None,
+        unwanted_policy: UnwantedPolicy::Hold,
     };
     let id = core.add(req.clone()).await.unwrap();
     assert!(matches!(core.add(req).await, Err(CoreError::Duplicate)));
@@ -76,6 +79,46 @@ async fn add_restart_remove() {
             .all(|f| (f.progress - 1.0).abs() < f64::EPSILON)
     );
     assert!(detail.magnet.starts_with("magnet:?xt=urn:btih:"));
+    assert!(
+        detail
+            .files
+            .iter()
+            .all(|f| f.placement == FilePlacement::Save)
+    );
+
+    // Deselecting b.bin moves it to the held area in the data directory.
+    let b = detail
+        .files
+        .iter()
+        .find(|f| f.path.ends_with("b.bin"))
+        .unwrap()
+        .index;
+    core.set_file_priorities(
+        &id,
+        &[FilePriority {
+            index: b,
+            priority: 0,
+        }],
+    )
+    .await
+    .unwrap();
+    let held = cfg
+        .data_dir
+        .join("held")
+        .join(&id)
+        .join("payload")
+        .join("b.bin");
+    for _ in 0..200 {
+        if held.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(held.exists(), "b.bin is held");
+    assert!(
+        !dir.join("b.bin").exists(),
+        "and gone from the save directory"
+    );
 
     core.pause(&id).await.unwrap();
     wait_for(&core, &id, TorrentState::Paused).await;
@@ -88,12 +131,20 @@ async fn add_restart_remove() {
     assert_eq!(s.state, TorrentState::Paused);
     assert_eq!(s.label.as_deref(), Some("test"));
     assert_eq!(s.pieces_have, s.pieces_total);
+    let detail = core.detail(&id).await.unwrap();
+    let held_file = detail.files.iter().find(|f| f.index == b).unwrap();
+    assert_eq!(
+        held_file.placement,
+        FilePlacement::Held,
+        "placements survive a restart"
+    );
     core.resume(&id).await.unwrap();
     wait_for(&core, &id, TorrentState::Seeding).await;
 
     core.remove(&id, true).await.unwrap();
     assert!(core.store().get(&id).is_none());
     assert!(!dir.exists(), "files and the emptied directory are deleted");
+    assert!(!held.exists(), "held copies are deleted with the torrent");
     assert!(matches!(core.pause(&id).await, Err(CoreError::NotFound)));
     core.shutdown().await.unwrap();
 }
@@ -108,6 +159,7 @@ async fn bad_input_is_rejected() {
         paused: false,
         label: None,
         file_priorities: None,
+        unwanted_policy: UnwantedPolicy::Hold,
     };
     let e = core
         .add(bad(AddSource::TorrentFile { data: "!!!".into() }))

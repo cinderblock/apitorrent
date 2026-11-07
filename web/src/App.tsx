@@ -143,8 +143,8 @@ export function App() {
           onChange={(e) => setView({ ...view, search: e.target.value })}
         />
         <div className="rates" aria-label="Total transfer rates">
-          <span title="Download">↓ {formatRate(totals.down) || "0 B/s"}</span>
-          <span title="Upload">↑ {formatRate(totals.up) || "0 B/s"}</span>
+          <span aria-label="Download rate">↓ {formatRate(totals.down) || "0 B/s"}</span>
+          <span aria-label="Upload rate">↑ {formatRate(totals.up) || "0 B/s"}</span>
         </div>
         <span className={`conn conn-${status}`} role="status">
           {status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}

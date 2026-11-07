@@ -29,6 +29,12 @@ const MIGRATIONS: &[&str] = &[
         value TEXT NOT NULL
     );
     ",
+    // 2: where each file's data lives (save, held, part store), and the held area.
+    "
+    ALTER TABLE torrents ADD COLUMN placements BLOB;
+    ALTER TABLE torrents ADD COLUMN held_path TEXT;
+    ALTER TABLE torrents ADD COLUMN unwanted_policy INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// A torrent as stored.
@@ -46,6 +52,21 @@ pub struct TorrentRow {
     /// The resume bitfield in wire format, with the piece count implied by the torrent.
     pub have: Option<Vec<u8>>,
     pub file_priorities: Option<Vec<u8>>,
+    pub downloaded_total: u64,
+    pub uploaded_total: u64,
+    /// One byte per file: 0 save, 1 held, 2 part store.
+    pub placements: Option<Vec<u8>>,
+    pub held_path: Option<String>,
+    /// 0 hold, 1 delete.
+    pub unwanted_policy: u8,
+}
+
+/// Resume state saved periodically for one torrent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeRow {
+    pub id: String,
+    pub have: Vec<u8>,
+    pub placements: Vec<u8>,
     pub downloaded_total: u64,
     pub uploaded_total: u64,
 }
@@ -104,8 +125,9 @@ impl Database {
     pub fn insert_torrent(&self, row: &TorrentRow) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
-                 label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
+                 placements, held_path, unwanted_policy)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -120,6 +142,9 @@ impl Database {
                 row.file_priorities,
                 to_i64(row.downloaded_total),
                 to_i64(row.uploaded_total),
+                row.placements,
+                row.held_path,
+                row.unwanted_policy,
             ],
         )?;
         Ok(())
@@ -135,7 +160,8 @@ impl Database {
     pub fn torrents(&self) -> rusqlite::Result<Vec<TorrentRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
-                    paused, have, file_priorities, downloaded_total, uploaded_total
+                    paused, have, file_priorities, downloaded_total, uploaded_total,
+                    placements, held_path, unwanted_policy
              FROM torrents ORDER BY added_at",
         )?;
         stmt.query_map([], |r| {
@@ -153,24 +179,42 @@ impl Database {
                 file_priorities: r.get(10)?,
                 downloaded_total: from_i64(r.get(11)?),
                 uploaded_total: from_i64(r.get(12)?),
+                placements: r.get(13)?,
+                held_path: r.get(14)?,
+                unwanted_policy: r.get(15)?,
             })
         })?
         .collect()
     }
 
     /// Save resume state for many torrents in one transaction.
-    pub fn save_resume(&mut self, rows: &[(String, Vec<u8>, u64, u64)]) -> rusqlite::Result<()> {
+    pub fn save_resume(&mut self, rows: &[ResumeRow]) -> rusqlite::Result<()> {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "UPDATE torrents SET have = ?2, downloaded_total = ?3, uploaded_total = ?4
+                "UPDATE torrents SET have = ?2, placements = ?3, downloaded_total = ?4,
+                     uploaded_total = ?5
                  WHERE id = ?1",
             )?;
-            for (id, have, down, up) in rows {
-                stmt.execute(params![id, have, to_i64(*down), to_i64(*up)])?;
+            for r in rows {
+                stmt.execute(params![
+                    r.id,
+                    r.have,
+                    r.placements,
+                    to_i64(r.downloaded_total),
+                    to_i64(r.uploaded_total)
+                ])?;
             }
         }
         tx.commit()
+    }
+
+    pub fn set_unwanted_policy(&self, id: &str, policy: u8) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE torrents SET unwanted_policy = ?2 WHERE id = ?1",
+            params![id, policy],
+        )?;
+        Ok(())
     }
 
     pub fn set_paused(&self, id: &str, paused: bool) -> rusqlite::Result<()> {
@@ -247,6 +291,9 @@ mod tests {
             file_priorities: None,
             downloaded_total: 0,
             uploaded_total: 0,
+            placements: None,
+            held_path: Some("/data/held/a".into()),
+            unwanted_policy: 0,
         }
     }
 
@@ -259,12 +306,23 @@ mod tests {
         assert!(db.insert_torrent(&row("a")).is_err(), "ids are unique");
         assert!(db.contains("a").unwrap());
 
-        db.save_resume(&[("a".into(), vec![0xff], 10, 20)]).unwrap();
+        db.save_resume(&[ResumeRow {
+            id: "a".into(),
+            have: vec![0xff],
+            placements: vec![0, 2],
+            downloaded_total: 10,
+            uploaded_total: 20,
+        }])
+        .unwrap();
+        db.set_unwanted_policy("b", 1).unwrap();
         db.set_paused("b", true).unwrap();
         db.set_label("b", Some("linux")).unwrap();
         let rows = db.torrents().unwrap();
         assert_eq!(rows[0].have.as_deref(), Some(&[0xff][..]));
         assert_eq!((rows[0].downloaded_total, rows[0].uploaded_total), (10, 20));
+        assert_eq!(rows[0].placements.as_deref(), Some(&[0, 2][..]));
+        assert_eq!(rows[0].held_path.as_deref(), Some("/data/held/a"));
+        assert_eq!(rows[1].unwanted_policy, 1);
         assert!(rows[1].paused);
         assert_eq!(rows[1].label.as_deref(), Some("linux"));
 

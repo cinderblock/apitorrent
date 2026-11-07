@@ -3,13 +3,32 @@
 //! The engine only ever writes a piece after it has been verified, so a file never holds
 //! bytes that failed a hash check. That rule is what makes it safe for several torrents to
 //! share one file (see the content library in `docs/architecture.md`).
+//!
+//! Each file has a [`Placement`]. Wanted files live in the save directory. Unwanted files
+//! never do: the bytes of theirs that arrive inside boundary pieces go to the torrent's
+//! [part store](crate::parts), and a file the user deselects after it has data moves to
+//! the torrent's held area, or is deleted.
 
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::layout::{Layout, Segment};
+use crate::parts::PartFile;
+
+/// Where one file's bytes live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Placement {
+    /// In the save directory: a file the user wants.
+    #[default]
+    Save,
+    /// In the torrent's held area: deselected, but kept, so selecting it again needs no
+    /// download.
+    Held,
+    /// Not a file on disk. Its bytes inside pieces the torrent keeps are in the part store.
+    Parts,
+}
 
 /// Storage for one torrent's piece space. Implementations must be safe to call from several
 /// disk threads at once.
@@ -20,9 +39,24 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
     /// Write a verified piece.
     fn write(&self, offset: u64, data: &[u8]) -> io::Result<()>;
 
-    /// The current size of each file on disk, or `None` where a file doesn't exist. Used for
-    /// a quick check of resume data without hashing.
+    /// The current size of each file at its placement, or `None` where it doesn't exist
+    /// (always `None` for [`Placement::Parts`]). Used for a quick check of resume data
+    /// without hashing.
     fn file_sizes(&self) -> Vec<Option<u64>>;
+
+    /// Each file's placement.
+    fn placements(&self) -> Vec<Placement>;
+
+    /// Whether the part store holds a slot for `piece`.
+    fn in_parts(&self, piece: u32) -> bool;
+
+    /// Move file `file` to a new placement, carrying its data along.
+    ///
+    /// Moving to [`Placement::Parts`] deletes the file. Beforehand, its bytes within each
+    /// piece in `keep` are copied to the part store; pass the boundary pieces the torrent
+    /// has and still needs. Moving out of the part store writes the file's bytes from
+    /// there back into a file.
+    fn set_placement(&self, file: usize, to: Placement, keep: &[u32]) -> io::Result<()>;
 
     /// Flush written data to stable storage.
     fn sync(&self) -> io::Result<()>;
@@ -30,48 +64,116 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
     /// Create the torrent's zero-length files. They hold no pieces, so no write ever
     /// creates them.
     fn create_empty_files(&self) -> io::Result<()>;
+
+    /// Delete the torrent's held area and part store, and its files in the save directory
+    /// too when `save_files` is set.
+    fn delete(&self, save_files: bool) -> io::Result<()>;
+}
+
+/// Where a torrent's files go.
+#[derive(Debug, Clone)]
+pub struct StoragePaths {
+    /// The save directory; the torrent's file paths are relative to it.
+    pub save: PathBuf,
+    /// The held area for this torrent. It should be on the same volume as `save`, so that
+    /// holding a file is a rename.
+    pub held: PathBuf,
+    /// The part store file.
+    pub parts: PathBuf,
+}
+
+#[derive(Debug)]
+struct FileSlot {
+    /// Held for reading during every I/O on the file, and for writing while it moves.
+    placement: RwLock<Placement>,
+    handle: Mutex<Option<Arc<File>>>,
 }
 
 /// Plain files under a download directory.
 #[derive(Debug)]
 pub struct FileStorage {
     layout: Layout,
-    paths: Vec<PathBuf>,
-    handles: Vec<Mutex<Option<Arc<File>>>>,
+    save_root: PathBuf,
+    held_root: PathBuf,
+    save_paths: Vec<PathBuf>,
+    held_paths: Vec<PathBuf>,
+    files: Vec<FileSlot>,
+    parts: PartFile,
+    /// Placement changes run one at a time.
+    moving: Mutex<()>,
 }
 
 impl FileStorage {
     /// `relative` holds each file's path components, as in
     /// [`apitorrent_metainfo::FileEntry::path`]. They must already be sanitised.
-    pub fn new(root: &Path, layout: Layout, relative: &[Vec<String>]) -> Self {
-        let paths = relative
-            .iter()
-            .map(|components| {
-                let mut p = root.to_path_buf();
-                for c in components {
-                    p.push(c);
-                }
-                long_path(&p)
+    /// `placements` defaults to [`Placement::Save`] for every file.
+    pub fn new(
+        paths: &StoragePaths,
+        layout: Layout,
+        relative: &[Vec<String>],
+        placements: Option<&[Placement]>,
+    ) -> Self {
+        let join = |root: &Path, components: &[String]| {
+            let mut p = root.to_path_buf();
+            for c in components {
+                p.push(c);
+            }
+            long_path(&p)
+        };
+        let save_paths: Vec<PathBuf> = relative.iter().map(|c| join(&paths.save, c)).collect();
+        let held_paths: Vec<PathBuf> = relative.iter().map(|c| join(&paths.held, c)).collect();
+        let files = (0..relative.len())
+            .map(|i| FileSlot {
+                placement: RwLock::new(
+                    placements
+                        .and_then(|p| p.get(i).copied())
+                        .unwrap_or_default(),
+                ),
+                handle: Mutex::new(None),
             })
-            .collect::<Vec<_>>();
-        let handles = paths.iter().map(|_| Mutex::new(None)).collect();
+            .collect();
+        let parts = PartFile::open(&paths.parts, layout.piece_length(), layout.piece_count());
         Self {
             layout,
-            paths,
-            handles,
+            save_root: long_path(&paths.save),
+            held_root: long_path(&paths.held),
+            save_paths,
+            held_paths,
+            files,
+            parts,
+            moving: Mutex::new(()),
         }
     }
 
-    pub fn path(&self, file: usize) -> &Path {
-        &self.paths[file]
+    /// Where file `file` is at `placement` (`None` for the part store).
+    fn path_at(&self, file: usize, placement: Placement) -> Option<&Path> {
+        match placement {
+            Placement::Save => Some(&self.save_paths[file]),
+            Placement::Held => Some(&self.held_paths[file]),
+            Placement::Parts => None,
+        }
     }
 
-    fn handle(&self, file: usize, create: bool) -> io::Result<Option<Arc<File>>> {
-        let mut slot = self.handles[file].lock().expect("handle lock poisoned");
+    fn root_of(&self, placement: Placement) -> &Path {
+        match placement {
+            Placement::Held => &self.held_root,
+            _ => &self.save_root,
+        }
+    }
+
+    /// The path file `file` has in the save directory.
+    pub fn path(&self, file: usize) -> &Path {
+        &self.save_paths[file]
+    }
+
+    fn handle(&self, file: usize, path: &Path, create: bool) -> io::Result<Option<Arc<File>>> {
+        let mut slot = self.files[file]
+            .handle
+            .lock()
+            .expect("handle lock poisoned");
         if let Some(h) = slot.as_ref() {
             return Ok(Some(h.clone()));
         }
-        let path = &self.paths[file];
         let opened = if create {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
@@ -96,11 +198,50 @@ impl FileStorage {
         }
     }
 
+    fn close(&self, file: usize) {
+        *self.files[file]
+            .handle
+            .lock()
+            .expect("handle lock poisoned") = None;
+    }
+
     /// Close every open file, for example before moving the download.
     pub fn close_all(&self) {
-        for h in &self.handles {
-            *h.lock().expect("handle lock poisoned") = None;
+        for i in 0..self.files.len() {
+            self.close(i);
         }
+    }
+
+    /// Run `f` over the parts of a piece-space segment, split at piece boundaries:
+    /// `(piece, offset in piece, range in the segment)`.
+    fn per_piece(
+        &self,
+        piece_space: u64,
+        len: usize,
+        mut f: impl FnMut(u32, u64, std::ops::Range<usize>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let pl = self.layout.piece_length();
+        let mut done = 0usize;
+        while done < len {
+            let at = piece_space + done as u64;
+            let piece = u32::try_from(at / pl).expect("piece fits u32");
+            let in_piece = at % pl;
+            let n = usize::try_from((pl - in_piece).min((len - done) as u64)).expect("fits");
+            f(piece, in_piece, done..done + n)?;
+            done += n;
+        }
+        Ok(())
+    }
+
+    /// The segments of file `file` within `piece`.
+    fn file_in_piece(&self, file: usize, piece: u32) -> Option<Segment> {
+        self.layout
+            .segments(
+                self.layout.piece_offset(piece),
+                self.layout.piece_size(piece) as usize,
+            )
+            .into_iter()
+            .find(|s| s.file == file)
     }
 }
 
@@ -119,14 +260,23 @@ impl Storage for FileStorage {
                 dst.fill(0);
                 continue;
             }
-            match self.handle(file, false)? {
-                Some(f) => read_exact_at(&f, dst, file_offset)?,
-                None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("{} does not exist", self.paths[file].display()),
-                    ));
-                }
+            let placement = self.files[file]
+                .placement
+                .read()
+                .expect("placement lock poisoned");
+            match self.path_at(file, *placement) {
+                Some(path) => match self.handle(file, path, false)? {
+                    Some(f) => read_exact_at(&f, dst, file_offset)?,
+                    None => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("{} does not exist", path.display()),
+                        ));
+                    }
+                },
+                None => self.per_piece(offset + buf_offset as u64, len, |piece, at, range| {
+                    self.parts.read(piece, at, &mut dst[range])
+                })?,
             }
         }
         Ok(())
@@ -137,40 +287,229 @@ impl Storage for FileStorage {
             if seg.pad {
                 continue;
             }
-            let f = self.handle(seg.file, true)?.expect("created");
-            write_all_at(
-                &f,
-                &data[seg.buf_offset..seg.buf_offset + seg.len],
-                seg.file_offset,
-            )?;
+            let src = &data[seg.buf_offset..seg.buf_offset + seg.len];
+            let placement = self.files[seg.file]
+                .placement
+                .read()
+                .expect("placement lock poisoned");
+            match self.path_at(seg.file, *placement) {
+                Some(path) => {
+                    let f = self.handle(seg.file, path, true)?.expect("created");
+                    write_all_at(&f, src, seg.file_offset)?;
+                }
+                None => self.per_piece(
+                    offset + seg.buf_offset as u64,
+                    seg.len,
+                    |piece, at, range| self.parts.write(piece, at, &src[range]),
+                )?,
+            }
         }
         Ok(())
     }
 
     fn file_sizes(&self) -> Vec<Option<u64>> {
-        self.paths
-            .iter()
-            .map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
+        (0..self.files.len())
+            .map(|i| {
+                let placement = *self.files[i]
+                    .placement
+                    .read()
+                    .expect("placement lock poisoned");
+                self.path_at(i, placement)
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map(|m| m.len())
+            })
             .collect()
+    }
+
+    fn placements(&self) -> Vec<Placement> {
+        self.files
+            .iter()
+            .map(|f| *f.placement.read().expect("placement lock poisoned"))
+            .collect()
+    }
+
+    fn in_parts(&self, piece: u32) -> bool {
+        self.parts.contains(piece)
+    }
+
+    fn set_placement(&self, file: usize, to: Placement, keep: &[u32]) -> io::Result<()> {
+        let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
+        let mut placement = self.files[file]
+            .placement
+            .write()
+            .expect("placement lock poisoned");
+        let from = *placement;
+        if from == to || self.layout.files()[file].pad {
+            *placement = to;
+            return Ok(());
+        }
+        self.close(file);
+        match (self.path_at(file, from), self.path_at(file, to)) {
+            // Save <-> held: a move.
+            (Some(src), Some(dst)) => {
+                move_file(src, dst)?;
+                prune_empty_dirs(src, self.root_of(from));
+            }
+            // Into the part store: keep the boundary bytes, then delete the file.
+            (Some(src), None) => {
+                if let Ok(f) = File::open(src) {
+                    for &piece in keep {
+                        let Some(seg) = self.file_in_piece(file, piece) else {
+                            continue;
+                        };
+                        let mut buf = vec![0u8; seg.len];
+                        read_exact_at(&f, &mut buf, seg.file_offset)?;
+                        self.parts.write(piece, seg.buf_offset as u64, &buf)?;
+                    }
+                    self.parts.sync()?;
+                    drop(f);
+                    std::fs::remove_file(src)?;
+                    prune_empty_dirs(src, self.root_of(from));
+                }
+            }
+            // Out of the part store: write what it holds into the file.
+            (None, Some(dst)) => {
+                let pieces: Vec<(u32, Segment)> = self
+                    .parts
+                    .pieces()
+                    .into_iter()
+                    .filter_map(|p| self.file_in_piece(file, p).map(|s| (p, s)))
+                    .collect();
+                if !pieces.is_empty() {
+                    if let Some(dir) = dst.parent() {
+                        std::fs::create_dir_all(dir)?;
+                    }
+                    let f = OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .open(dst)?;
+                    for &(piece, seg) in &pieces {
+                        let mut buf = vec![0u8; seg.len];
+                        self.parts.read(piece, seg.buf_offset as u64, &mut buf)?;
+                        write_all_at(&f, &buf, seg.file_offset)?;
+                    }
+                    f.sync_data()?;
+                }
+                *placement = to;
+                drop(placement);
+                // Drop slots no other part-store file still needs.
+                for (piece, _) in pieces {
+                    let needed = self
+                        .layout
+                        .segments(
+                            self.layout.piece_offset(piece),
+                            self.layout.piece_size(piece) as usize,
+                        )
+                        .iter()
+                        .any(|s| {
+                            s.file != file
+                                && !s.pad
+                                && *self.files[s.file]
+                                    .placement
+                                    .read()
+                                    .expect("placement lock poisoned")
+                                    == Placement::Parts
+                        });
+                    if !needed {
+                        self.parts.remove(piece)?;
+                    }
+                }
+                return Ok(());
+            }
+            (None, None) => {}
+        }
+        *placement = to;
+        Ok(())
     }
 
     fn create_empty_files(&self) -> io::Result<()> {
         for (i, f) in self.layout.files().iter().enumerate() {
-            if f.length == 0 && !f.pad && !self.paths[i].exists() {
-                self.handle(i, true)?;
+            if f.length != 0 || f.pad {
+                continue;
+            }
+            let placement = *self.files[i]
+                .placement
+                .read()
+                .expect("placement lock poisoned");
+            if let Some(path) = self.path_at(i, placement)
+                && placement == Placement::Save
+                && !path.exists()
+            {
+                self.handle(i, path, true)?;
             }
         }
         Ok(())
     }
 
     fn sync(&self) -> io::Result<()> {
-        for h in &self.handles {
-            let f = h.lock().expect("handle lock poisoned").clone();
-            if let Some(f) = f {
-                f.sync_data()?;
+        for f in &self.files {
+            let h = f.handle.lock().expect("handle lock poisoned").clone();
+            if let Some(h) = h {
+                h.sync_data()?;
             }
         }
-        Ok(())
+        self.parts.sync()
+    }
+
+    fn delete(&self, save_files: bool) -> io::Result<()> {
+        let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
+        let mut first_error = None;
+        for i in 0..self.files.len() {
+            let _guard = self.files[i]
+                .placement
+                .write()
+                .expect("placement lock poisoned");
+            self.close(i);
+            let save = save_files.then_some((&self.save_paths[i], &self.save_root));
+            let held = Some((&self.held_paths[i], &self.held_root));
+            for (path, root) in [save, held].into_iter().flatten() {
+                match std::fs::remove_file(path) {
+                    Ok(()) => prune_empty_dirs(path, root),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_dir(&self.held_root);
+        if let Err(e) = self.parts.delete() {
+            first_error.get_or_insert(e);
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+/// Move a file, falling back to copy and delete across volumes. A missing source is not
+/// an error: there is nothing to move.
+fn move_file(src: &Path, dst: &Path) -> io::Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    if let Some(dir) = dst.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            // Cross-volume (EXDEV, ERROR_NOT_SAME_DEVICE) or similar: copy, then delete.
+            std::fs::copy(src, dst).map_err(|_| rename_error)?;
+            File::open(dst)?.sync_all()?;
+            std::fs::remove_file(src)
+        }
+    }
+}
+
+/// Remove the now-empty directories between `path` and `root` (both excluded).
+fn prune_empty_dirs(path: &Path, root: &Path) {
+    let mut dir = path.parent();
+    while let Some(d) = dir {
+        if d == root || !d.starts_with(root) || std::fs::remove_dir(d).is_err() {
+            break;
+        }
+        dir = d.parent();
     }
 }
 
@@ -216,19 +555,19 @@ pub(crate) fn long_path(p: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn read_exact_at(f: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
+pub(crate) fn read_exact_at(f: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     f.read_exact_at(buf, offset)
 }
 
 #[cfg(unix)]
-fn write_all_at(f: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+pub(crate) fn write_all_at(f: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     f.write_all_at(buf, offset)
 }
 
 #[cfg(windows)]
-fn read_exact_at(f: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
+pub(crate) fn read_exact_at(f: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         match f.seek_read(buf, offset) {
@@ -245,7 +584,7 @@ fn read_exact_at(f: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result<()
 }
 
 #[cfg(windows)]
-fn write_all_at(f: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+pub(crate) fn write_all_at(f: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
     use std::os::windows::fs::FileExt;
     while !buf.is_empty() {
         match f.seek_write(buf, offset) {
@@ -266,6 +605,14 @@ mod tests {
     use super::*;
     use apitorrent_metainfo::{FileSource, Torrent, TorrentBuilder, Version};
 
+    fn paths(save: &Path) -> StoragePaths {
+        StoragePaths {
+            save: save.to_path_buf(),
+            held: save.join(".held"),
+            parts: save.join(".parts"),
+        }
+    }
+
     #[test]
     fn write_then_read_across_files_and_pads() {
         let bytes = TorrentBuilder::new("t", Version::Hybrid)
@@ -278,7 +625,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let layout = Layout::from_info(&t.info);
         let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
-        let s = FileStorage::new(dir.path(), layout.clone(), &rel);
+        let s = FileStorage::new(&paths(dir.path()), layout.clone(), &rel, None);
 
         // Write the whole piece space, pads included (their bytes are skipped).
         let mut space = vec![0u8; usize::try_from(layout.total_length()).unwrap()];
@@ -333,7 +680,12 @@ mod tests {
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let odd = format!("{}/sub/../sub", dir.path().display()).replace('\\', "/");
         let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
-        let s = FileStorage::new(Path::new(&odd), Layout::from_info(&t.info), &rel);
+        let s = FileStorage::new(
+            &paths(Path::new(&odd)),
+            Layout::from_info(&t.info),
+            &rel,
+            None,
+        );
         s.write(0, &[7; 1000]).unwrap();
         s.sync().unwrap();
         assert_eq!(
@@ -366,7 +718,7 @@ mod tests {
         let t = Torrent::from_bytes(&bytes).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
-        let s = FileStorage::new(dir.path(), Layout::from_info(&t.info), &rel);
+        let s = FileStorage::new(&paths(dir.path()), Layout::from_info(&t.info), &rel, None);
         let mut buf = [0u8; 100];
         assert_eq!(
             s.read(0, &mut buf).unwrap_err().kind(),

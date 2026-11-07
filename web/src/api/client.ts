@@ -7,6 +7,7 @@ import type { ApiError } from "./generated/ApiError";
 import type { FilePriority } from "./generated/FilePriority";
 import type { ServerInfo } from "./generated/ServerInfo";
 import type { TorrentDetail } from "./generated/TorrentDetail";
+import type { UnwantedPolicy } from "./generated/UnwantedPolicy";
 
 const BASE = "/api/v1";
 
@@ -53,6 +54,11 @@ export const api = {
     request<void>("DELETE", `/torrents/${enc(id)}?deleteFiles=${deleteFiles}`),
   setFilePriorities: (id: string, priorities: FilePriority[]) =>
     request<void>("PUT", `/torrents/${enc(id)}/files/priorities`, { priorities }),
+  setUnwantedPolicy: (id: string, policy: UnwantedPolicy) =>
+    request<void>("PUT", `/torrents/${enc(id)}/unwanted-policy`, { policy }),
+  /** Delete held copies of deselected files; all of them when `files` is omitted. */
+  releaseHeld: (id: string, files?: number[]) =>
+    request<void>("POST", `/torrents/${enc(id)}/held/release`, { files: files ?? null }),
 };
 
 /** Read a File as base64, for `AddSource.torrentFile`. */

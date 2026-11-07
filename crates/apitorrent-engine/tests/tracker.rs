@@ -120,12 +120,11 @@ async fn peers_meet_through_a_tracker() {
     let seeder = Session::start(config()).await.unwrap();
     let seed = seeder
         .add_torrent(AddTorrent {
-            torrent: torrent.clone(),
-            save_path: seed_dir.path().to_path_buf(),
             have: None,
             paused: false,
             peers: Vec::new(),
             file_priorities: None,
+            ..AddTorrent::new(torrent.clone(), seed_dir.path().to_path_buf())
         })
         .unwrap();
     seed.wait_finished().await;
@@ -135,12 +134,11 @@ async fn peers_meet_through_a_tracker() {
     let pieces = u32::try_from(torrent.info.piece_count()).unwrap();
     let leech = leecher
         .add_torrent(AddTorrent {
-            torrent: torrent.clone(),
-            save_path: leech_dir.path().to_path_buf(),
             have: Some(Bitfield::new(pieces)),
             paused: false,
             peers: Vec::new(),
             file_priorities: None,
+            ..AddTorrent::new(torrent.clone(), leech_dir.path().to_path_buf())
         })
         .unwrap();
     // The seeder announced as soon as its check finished, so the leecher's first announce
