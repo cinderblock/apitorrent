@@ -679,6 +679,31 @@ impl Connection {
     }
 
     fn fail(&mut self, e: ConnError) {
+        // Everything we sent has been acknowledged except our FIN, and the peer's FIN has
+        // arrived: both directions are complete. The peer may simply have forgotten the
+        // connection (its linger ended) before our FIN retransmission reached it, so it
+        // answers with a reset, or not at all. That's a clean close, not a failure.
+        let only_fin_unacked = self.fin_sent
+            && self
+                .in_flight
+                .iter()
+                .all(|p| p.ty == PacketType::Fin || p.sacked);
+        if self.eof
+            && only_fin_unacked
+            && matches!(e, ConnError::TimedOut | ConnError::Reset)
+            && self.state == State::Connected
+        {
+            self.fin_acked = true;
+            self.in_flight.clear();
+            self.flight_bytes = 0;
+            self.flight_payload = 0;
+            self.state = State::Closed;
+            self.rto_deadline = None;
+            self.connect_deadline = None;
+            self.linger_until = None;
+            self.released = true;
+            return;
+        }
         self.state = State::Failed(e);
         self.rto_deadline = None;
         self.connect_deadline = None;

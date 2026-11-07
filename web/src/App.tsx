@@ -183,11 +183,9 @@ export function App({ status: auth }: { status: AuthStatus }) {
           {status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
         </span>
         {auth.authDisabled && (
-          <span className="badge badge-warn" title="Started with --insecure-no-auth-loopback">
-            No sign-in
-          </span>
+          <span className="badge badge-warn">No sign-in (development mode)</span>
         )}
-        <button type="button" className="account-button" onClick={() => navigate("/account")} title="Account">
+        <button type="button" className="account-button" onClick={() => navigate("/account")}>
           {auth.user?.displayName ?? "Account"}
         </button>
       </header>

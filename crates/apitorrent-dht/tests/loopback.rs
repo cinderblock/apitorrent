@@ -34,8 +34,9 @@ async fn network() -> Vec<Dht> {
         nodes.push(dht);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    // Wait for every routing table to hold a handful of nodes.
-    for _ in 0..200 {
+    // Wait for every routing table to hold a handful of nodes. Usually a second or two;
+    // a busy machine can take longer, and sparse tables re-bootstrap after 30 s.
+    for _ in 0..900 {
         let ready = nodes
             .iter()
             .all(|d| d.stats().ipv4.is_some_and(|t| t.nodes >= 4));

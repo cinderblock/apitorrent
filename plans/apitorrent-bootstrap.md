@@ -206,6 +206,27 @@ engine core stays in the main thread, because its pieces interlock.
   machine, and the user's Deluge is presumably on a server I must not touch. Ask for a
   copy of a real `~/.config/deluge` (it can be from a stopped Deluge) to test before
   relying on it.
+- **Merged the three agent branches** (2026-11-07 ~1 AM PST) by cherry-picking onto
+  master: DHT (2 commits), uTP/MSE (3), auth (5). Conflicts were only in `Cargo.toml`
+  (union, one duplicate `socket2` removed), the lockfile (regenerated), the plan, the
+  README, `client.ts` and `styles.css` (unions). My bans API test was rewritten on the
+  auth test helpers. Backup branch `backup/pre-merge-20261107` holds the old tip.
+- **uTP close race** (found as a flaky socket test after the merge, 2 of 3 full runs): if
+  the peer forgets a finished connection before our FIN retransmission reaches it, we got
+  a reset or timeout although every byte was delivered. Fixed: with all data acked and
+  the peer's FIN received, a missing FIN ack is a clean close. A deterministic sim test
+  covers it (verified to fail without the fix).
+- The auth UI had `title=` tooltips; replaced with visible text per the tooltip rule.
+- **MSE handshake could drop its final message** (flaky `a_tiny_pipe...` test, about 1 in
+  6 runs): when the machine finished while an older output buffer was still being
+  written, the driver returned without taking the output of the last feed, so the
+  initiator timed out waiting. Fixed in `drive` (take output again before finishing; also
+  re-feed partially consumed input). 0 failures in 80 runs after.
+- **DHT nodes with sparse tables never re-bootstrapped** (only empty ones did), so a node
+  that joined a busy network with 1–3 neighbours stayed poorly connected for ~15 min.
+  Now tables under 8 nodes re-bootstrap every 30 s. Found as a flaky loopback test under
+  CPU contention.
+- After the fixes, three full workspace runs in a row were clean.
 - Known engine gaps: none blocking real-world use now that hash requests and cancels exist.
   Still missing: DHT/uTP/MSE wiring.
 - **Naming policy** (done): `sanitize::Naming` is Portable, Native or Verbatim, and

@@ -58,8 +58,12 @@ const MAX_VALUES_PER_RESPONSE: usize = 50;
 const MAINTENANCE_EVERY: Duration = Duration::from_secs(1);
 /// How often expired peers are dropped from the store.
 const STORE_EXPIRE_EVERY: Duration = Duration::from_secs(60);
-/// How long to wait before bootstrapping again when a table is still empty.
+/// How long to wait before bootstrapping again when a table is still sparse.
 const BOOTSTRAP_RETRY: Duration = Duration::from_secs(30);
+/// A table with fewer nodes than this (one full bucket) bootstraps again. A node that
+/// joined while the network was busy may have learned only a few neighbours, and bucket
+/// refresh alone would take many minutes to fill the rest.
+const SPARSE_TABLE: usize = 8;
 /// Strangers we pinged recently, so a chatty querier isn't pinged on every query.
 const MAX_RECENT_VERIFY: usize = 1024;
 const VERIFY_AGAIN_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -1370,11 +1374,11 @@ impl Node {
                 .retain(|_, at| now.saturating_duration_since(*at) < VERIFY_AGAIN_AFTER);
         }
 
-        // Re-bootstrap a family whose table is empty.
+        // Re-bootstrap a family whose table is empty or sparse.
         let need_bootstrap = (0..2).any(|fam| {
             self.tables[fam]
                 .as_ref()
-                .is_some_and(RoutingTable::is_empty)
+                .is_some_and(|t| t.len() < SPARSE_TABLE)
                 && self.last_bootstrap[fam]
                     .is_none_or(|t| now.saturating_duration_since(t) >= BOOTSTRAP_RETRY)
                 && (!self.bootstrap_addrs.is_empty() || !self.saved_nodes.is_empty())

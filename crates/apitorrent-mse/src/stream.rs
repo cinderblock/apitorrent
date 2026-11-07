@@ -367,7 +367,10 @@ where
     let mut out = Vec::new();
     let mut out_pos = 0;
     let mut buf = [0u8; HANDSHAKE_READ];
-    let mut rest = Vec::new();
+    // Bytes read but not yet consumed. A machine may take only part of what arrived (it
+    // stops at a stage boundary), so the remainder is fed again; once the handshake is
+    // done, whatever is left belongs to the stream after it.
+    let mut inbox: Vec<u8> = Vec::new();
     std::future::poll_fn(|cx| {
         loop {
             let mut progressed = false;
@@ -390,8 +393,24 @@ where
                 if out_pos < out.len() {
                     return Poll::Pending;
                 }
+                // The last feed may have produced output after the buffer we were still
+                // writing was taken: send it before declaring the handshake done.
+                let more = machine.take_output();
+                if !more.is_empty() {
+                    out = more;
+                    out_pos = 0;
+                    continue;
+                }
                 ready!(Pin::new(&mut *io).poll_flush(cx))?;
-                return Poll::Ready(Ok(std::mem::take(&mut rest)));
+                return Poll::Ready(Ok(std::mem::take(&mut inbox)));
+            }
+            // Feed what's waiting before reading more.
+            if !inbox.is_empty() {
+                let used = machine.feed(&inbox)?;
+                if used > 0 {
+                    inbox.drain(..used);
+                    continue;
+                }
             }
             let mut rb = ReadBuf::new(&mut buf);
             match Pin::new(&mut *io).poll_read(cx, &mut rb) {
@@ -400,8 +419,7 @@ where
                     if n == 0 {
                         return Poll::Ready(Err(MseError::Closed));
                     }
-                    let used = machine.feed(&buf[..n])?;
-                    rest.extend_from_slice(&buf[used..n]);
+                    inbox.extend_from_slice(&buf[..n]);
                     progressed = true;
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),

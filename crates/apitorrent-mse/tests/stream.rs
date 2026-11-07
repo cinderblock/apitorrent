@@ -316,7 +316,9 @@ async fn a_tiny_pipe_forces_partial_reads_and_writes() {
     for policy in [Policy::Required, PLAIN_FIRST] {
         let ia = bt_handshake(&hash(3));
         let (a, b) = pair_with(13, policy, policy, hash(3), &ia).await;
-        let mut b = b.unwrap();
+        let a_state = a.as_ref().map(|_| ()).map_err(|e| format!("{e:?}"));
+        let mut b =
+            b.unwrap_or_else(|e| panic!("accept: {e:?} (connect: {a_state:?}) with {policy:?}"));
         let mut got = vec![0u8; ia.len()];
         b.read_exact(&mut got).await.unwrap();
         assert_eq!(got, ia);

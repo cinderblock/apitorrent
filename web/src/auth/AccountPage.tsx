@@ -22,7 +22,11 @@ interface Props {
 
 function When({ ms, empty = "–" }: { ms: number | null; empty?: string }) {
   if (ms === null) return <>{empty}</>;
-  return <time title={formatUtc(ms)}>{formatDateTime(ms)}</time>;
+  return (
+    <>
+      <time>{formatDateTime(ms)}</time> <small className="muted">{formatUtc(ms)}</small>
+    </>
+  );
 }
 
 const METHOD_LABEL = {
@@ -482,7 +486,7 @@ function SessionsSection({ sessions, busy, change }: { sessions: SessionInfo[]; 
         <tbody>
           {sessions.map((s) => (
             <tr key={s.id}>
-              <td title={s.userAgent ?? undefined}>
+              <td>
                 {describeUserAgent(s.userAgent)} {s.current && <span className="badge">this device</span>}
               </td>
               <td>{s.ip ?? "–"}</td>

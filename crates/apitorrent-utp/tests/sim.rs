@@ -470,3 +470,49 @@ fn zero_window_recovers_when_the_reader_drains() {
     }
     assert!(got == data, "corrupted");
 }
+
+/// Both sides have finished, but our FIN's acknowledgement never arrives: the peer
+/// forgot the connection after its linger, so the retransmissions go unanswered. With
+/// every byte delivered both ways, that is a clean close, not a timeout. (Found as a flaky
+/// socket test under a lossy proxy.)
+#[test]
+fn a_lost_final_ack_still_closes_cleanly() {
+    let mut sim = Sim::new(21, Link::clean(), fast_rto());
+    while sim.b.is_none() || !sim.a.is_connected() {
+        sim.step();
+    }
+    sim.a.write(&[1; 5_000]).unwrap();
+    // B sends everything and closes; A reads it all, up to B's FIN.
+    sim.b.as_mut().unwrap().write(&[2; 3_000]).unwrap();
+    sim.b.as_mut().unwrap().close();
+    let mut buf = vec![0u8; 8192];
+    let mut got = 0;
+    while !sim.a.is_read_closed() {
+        assert!(sim.step());
+        while let Ok(Some(n)) = sim.a.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            got += n;
+        }
+    }
+    assert_eq!(got, 3_000);
+    // Let A's data be acknowledged, then the link dies just as A closes.
+    for _ in 0..200 {
+        sim.step();
+    }
+    sim.net.link.loss = 1.0;
+    sim.a.close();
+    let mut steps = 0;
+    while !sim.a.is_finished() {
+        assert!(sim.step());
+        steps += 1;
+        assert!(steps < 100_000);
+    }
+    assert_eq!(
+        sim.a.error(),
+        None,
+        "a clean close, not {:?}",
+        sim.a.error()
+    );
+}

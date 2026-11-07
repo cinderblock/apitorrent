@@ -89,8 +89,11 @@ export function SetupPage({ status, onSignedIn }: Props) {
               autoComplete="username"
               required
               pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}"
-              title="Letters, digits, '.', '_' or '-', starting with a letter or digit"
+              aria-describedby="username-hint"
             />
+            <small id="username-hint" className="muted">
+              Letters, digits, ., _ or -, starting with a letter or digit
+            </small>
           </label>
           <label className="field grow">
             <span>Display name (optional)</span>

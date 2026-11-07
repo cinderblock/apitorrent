@@ -359,44 +359,35 @@ async fn serves_the_ui_with_security_headers() {
 async fn bans() {
     let root = tempfile::tempdir().unwrap();
     let core = core(root.path()).await;
-    let app = router(core.clone(), &config());
-    let host = "127.0.0.1:8742";
-    let send = |r| app.clone().oneshot(r);
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let token = f.admin_token();
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
 
-    let resp = send(req("GET", "/api/v1/bans", host, None, None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(json::<Vec<apitorrent_types::Ban>>(resp).await.is_empty());
+    let resp = send(&app, Req::get("/api/v1/bans").bearer(&token)).await;
+    assert_eq!(resp.status, StatusCode::OK);
+    assert!(resp.typed::<Vec<apitorrent_types::Ban>>().is_empty());
 
-    let body = serde_json::json!({ "ip": "203.0.113.9" }).to_string();
-    let resp = send(req("POST", "/api/v1/bans", host, None, Some(body)))
+    let ban = serde_json::json!({ "ip": "203.0.113.9" });
+    let resp = send(&app, Req::post("/api/v1/bans").bearer(&token).json(&ban)).await;
+    assert_eq!(resp.status, StatusCode::NO_CONTENT);
+    let bans: Vec<apitorrent_types::Ban> = send(&app, Req::get("/api/v1/bans").bearer(&token))
         .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-    let bans: Vec<apitorrent_types::Ban> = json(
-        send(req("GET", "/api/v1/bans", host, None, None))
-            .await
-            .unwrap(),
-    )
-    .await;
+        .typed();
     assert_eq!(bans.len(), 1);
     assert_eq!(bans[0].ip, "203.0.113.9");
     assert_eq!(bans[0].reason, apitorrent_types::BanReason::Manual);
 
-    let bad = serde_json::json!({ "ip": "not-an-ip" }).to_string();
-    let resp = send(req("POST", "/api/v1/bans", host, None, Some(bad)))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let bad = serde_json::json!({ "ip": "not-an-ip" });
+    let resp = send(&app, Req::post("/api/v1/bans").bearer(&token).json(&bad)).await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST);
 
-    let resp = send(req("DELETE", "/api/v1/bans/203.0.113.9", host, None, None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-    let resp = send(req("DELETE", "/api/v1/bans/203.0.113.9", host, None, None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    // Without credentials, nothing.
+    let resp = send(&app, Req::get("/api/v1/bans")).await;
+    assert_eq!(resp.status, StatusCode::UNAUTHORIZED);
+
+    let unban = Req::new("DELETE", "/api/v1/bans/203.0.113.9").bearer(&token);
+    assert_eq!(send(&app, unban).await.status, StatusCode::NO_CONTENT);
+    let unban = Req::new("DELETE", "/api/v1/bans/203.0.113.9").bearer(&token);
+    assert_eq!(send(&app, unban).await.status, StatusCode::NOT_FOUND);
     core.shutdown().await.unwrap();
 }
