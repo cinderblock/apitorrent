@@ -21,6 +21,7 @@ apitorrent-types = { path = "crates/apitorrent-types" }
 apitorrent-core = { path = "crates/apitorrent-core" }
 apitorrent-server = { path = "crates/apitorrent-server" }
 apitorrent-deluge = { path = "crates/apitorrent-deluge" }
+apitorrent-mse = { path = "crates/apitorrent-mse" }
 
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }
@@ -49,6 +50,10 @@ proptest = "1"
 rand = "0.9"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "fs"] }
 tracing = "0.1"
+# Transport: MSE crypto. crypto-bigint gives a constant-time, fixed-width modpow.
+crypto-bigint = { version = "0.7", default-features = false }
+rc4 = "0.2"
+num-bigint = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 url = "2"
