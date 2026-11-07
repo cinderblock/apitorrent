@@ -27,6 +27,8 @@ pub enum TorrentState {
     /// Every wanted piece is downloaded; uploading to others.
     Seeding,
     Paused,
+    /// Waiting for a free slot in the queue (see [`QueueSettings`]).
+    Queued,
     Error,
 }
 
@@ -39,7 +41,8 @@ pub struct TorrentSummary {
     pub info_hash_v1: Option<String>,
     pub info_hash_v2: Option<String>,
     pub state: TorrentState,
-    /// Fraction of pieces downloaded, 0 to 1.
+    /// Fraction of the *wanted* pieces downloaded, 0 to 1. Skipped files don't count, so
+    /// a finished torrent shows 1 even when some files are skipped.
     pub progress: f64,
     /// Total size of the torrent's files.
     #[ts(type = "number")]
@@ -63,6 +66,10 @@ pub struct TorrentSummary {
     pub save_path: String,
     pub private: bool,
     pub error: Option<String>,
+    /// Position in the queue; lower runs first.
+    pub queue_position: u32,
+    /// The group whose shared limits apply, chosen by label.
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -139,6 +146,95 @@ pub struct TorrentDetail {
     pub piece_length: u64,
     pub magnet: String,
     pub unwanted_policy: UnwantedPolicy,
+    pub limits: TorrentLimits,
+}
+
+/// A torrent's own limits. 0 or null means no limit of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TorrentLimits {
+    /// Bytes per second.
+    #[ts(type = "number")]
+    #[serde(default)]
+    pub download_rate: u64,
+    #[ts(type = "number")]
+    #[serde(default)]
+    pub upload_rate: u64,
+    /// Peers at once; null uses the server's default.
+    #[serde(default)]
+    pub max_connections: Option<u32>,
+}
+
+/// Instance-wide settings. Rates are bytes per second; 0 means unlimited throughout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Settings {
+    #[ts(type = "number")]
+    pub download_rate: u64,
+    #[ts(type = "number")]
+    pub upload_rate: u64,
+    /// Open peer connections across all torrents.
+    pub max_connections: u32,
+    /// Outgoing connection attempts in progress at once.
+    pub max_half_open: u32,
+    /// New outgoing connection attempts per second.
+    pub connect_rate: u32,
+    pub queue: QueueSettings,
+    pub groups: Vec<GroupSettings>,
+}
+
+/// How many torrents run at once. The rest wait, in queue order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct QueueSettings {
+    /// Torrents still downloading.
+    pub max_active_downloads: u32,
+    /// Finished torrents that are seeding.
+    pub max_active_seeds: u32,
+    /// Both together.
+    pub max_active: u32,
+}
+
+/// Limits shared by every torrent whose label is in `labels`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct GroupSettings {
+    pub name: String,
+    pub labels: Vec<String>,
+    #[ts(type = "number")]
+    pub download_rate: u64,
+    #[ts(type = "number")]
+    pub upload_rate: u64,
+    pub max_connections: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetLabelRequest {
+    pub label: Option<String>,
+}
+
+/// Where to move a torrent in the queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum QueueMove {
+    Top,
+    Up,
+    Down,
+    Bottom,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct QueueMoveRequest {
+    pub to: QueueMove,
 }
 
 /// Where a new torrent comes from.

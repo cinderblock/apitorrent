@@ -25,6 +25,8 @@ function t(id: string, over: Partial<TorrentSummary> = {}): TorrentSummary {
     savePath: "/d",
     private: false,
     error: null,
+    queuePosition: 0,
+    group: null,
     ...over,
   };
 }
@@ -95,4 +97,13 @@ describe("visibleTorrents", () => {
     expect(c.seeding).toBe(1);
     expect(c.paused).toBe(1);
   });
+});
+
+test("queued torrents are counted and sort by queue position", () => {
+  const map = new Map(
+    [t("b", { queuePosition: 1, state: "queued" }), t("a", { queuePosition: 2 }), t("c", { queuePosition: 0 })].map((x) => [x.id, x]),
+  );
+  expect(countByFilter(map).queued).toBe(1);
+  const rows = visibleTorrents(map, { filter: "all", label: null, search: "", sort: { key: "queuePosition", descending: false } });
+  expect(rows.map((r) => r.id)).toEqual(["c", "b", "a"]);
 });

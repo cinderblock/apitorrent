@@ -5,6 +5,7 @@
 //! layer over [`Core`].
 
 pub mod db;
+pub mod settings;
 pub mod store;
 
 use std::collections::HashMap;
@@ -24,8 +25,8 @@ use apitorrent_engine::{
 };
 use apitorrent_metainfo::{Magnet, Torrent};
 use apitorrent_types::{
-    AddSource, AddTorrentRequest, FilePlacement, FilePriority, TorrentDetail, TorrentFile,
-    TorrentId, TorrentState, TorrentSummary, UnwantedPolicy,
+    AddSource, AddTorrentRequest, FilePlacement, FilePriority, QueueMove, Settings, TorrentDetail,
+    TorrentFile, TorrentId, TorrentLimits, TorrentState, TorrentSummary, UnwantedPolicy,
 };
 
 use crate::db::{Database, ResumeRow, TorrentRow};
@@ -89,6 +90,11 @@ struct Entry {
     /// Totals from previous sessions; the engine's counters start at zero each run.
     downloaded_base: u64,
     uploaded_base: u64,
+    queue_position: u32,
+    limits: TorrentLimits,
+    /// Paused by the queue (not by the user) until a slot frees up.
+    queued: bool,
+    group: Option<String>,
 }
 
 /// Everything needed to start a torrent in the engine and track it.
@@ -104,6 +110,10 @@ struct Spawn {
     label: Option<String>,
     added_at: i64,
     totals: (u64, u64),
+    queue_position: u32,
+    limits: TorrentLimits,
+    /// Start paused by the queue; the next queue pass decides.
+    queued: bool,
 }
 
 struct Inner {
@@ -113,7 +123,10 @@ struct Inner {
     torrents: RwLock<HashMap<TorrentId, Entry>>,
     store: Store,
     stop: Notify,
+    settings: RwLock<Settings>,
 }
+
+const SETTINGS_KEY: &str = "settings";
 
 /// A running instance. Cheap to clone.
 #[derive(Clone)]
@@ -138,6 +151,15 @@ impl Core {
         let db = tokio::task::spawn_blocking(move || Database::open(&db_path))
             .await
             .expect("database open panicked")?;
+        let stored = db.meta(SETTINGS_KEY)?;
+        let settings = match stored.as_deref().map(serde_json::from_str::<Settings>) {
+            Some(Ok(s)) => s,
+            Some(Err(e)) => {
+                tracing::warn!(error = %e, "stored settings don't parse; using defaults");
+                settings::defaults(&config.session)
+            }
+            None => settings::defaults(&config.session),
+        };
         let session = Session::start(config.session.clone()).await?;
         tracing::info!(peer_port = session.listen_addr().port(), "engine started");
         let core = Core {
@@ -148,11 +170,225 @@ impl Core {
                 torrents: RwLock::new(HashMap::new()),
                 store: Store::new(),
                 stop: Notify::new(),
+                settings: RwLock::new(settings),
             }),
         };
+        core.apply_session_settings();
         core.restore().await?;
+        core.apply_queue().await;
         tokio::spawn(core.clone().background());
         Ok(core)
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.inner
+            .settings
+            .read()
+            .expect("settings lock poisoned")
+            .clone()
+    }
+
+    /// Replace the instance settings. They are stored, and apply at once: rates,
+    /// connection limits, groups (torrents are regrouped by label) and the queue.
+    pub async fn set_settings(&self, new: Settings) -> Result<(), CoreError> {
+        settings::validate(&new).map_err(CoreError::InvalidRequest)?;
+        let json = serde_json::to_string(&new).expect("settings serialize");
+        self.db(move |db| db.set_meta(SETTINGS_KEY, &json)).await?;
+        *self.inner.settings.write().expect("settings lock poisoned") = new;
+        self.apply_session_settings();
+        self.regroup().await;
+        self.apply_queue().await;
+        self.refresh();
+        Ok(())
+    }
+
+    /// Push the settings' rates, connection limits and groups into the engine.
+    fn apply_session_settings(&self) {
+        let s = self.settings();
+        let session = &self.inner.session;
+        session.set_rate_limits(s.download_rate, s.upload_rate);
+        session.set_connection_limits(
+            s.max_connections as usize,
+            s.max_half_open as usize,
+            u64::from(s.connect_rate),
+        );
+        for (name, _) in session.groups() {
+            if !s.groups.iter().any(|g| g.name == name) {
+                session.remove_group(&name);
+            }
+        }
+        for g in &s.groups {
+            session.set_group(&g.name, settings::group_limits(g));
+        }
+    }
+
+    /// Put every torrent in the group its label selects.
+    async fn regroup(&self) {
+        let s = self.settings();
+        let changes: Vec<(TorrentHandle, Option<String>)> = {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            torrents
+                .values_mut()
+                .filter_map(|e| {
+                    let group = settings::group_for(&s, e.label.as_deref()).map(str::to_owned);
+                    (group != e.group).then(|| {
+                        e.group.clone_from(&group);
+                        (e.handle.clone(), group)
+                    })
+                })
+                .collect()
+        };
+        for (handle, group) in changes {
+            handle.set_group(group).await;
+        }
+    }
+
+    /// Let the queue decide which torrents run: pause the ones over the limits, resume
+    /// the ones that now fit. Torrents paused by the user or in error don't take part.
+    async fn apply_queue(&self) {
+        let q = self.settings().queue;
+        let mut actions = Vec::new();
+        {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            let items: Vec<settings::QueueItem> = torrents
+                .iter()
+                .filter(|(_, e)| !e.paused && e.handle.stats().error.is_none())
+                .map(|(id, e)| settings::QueueItem {
+                    id: id.clone(),
+                    position: e.queue_position,
+                    finished: e.handle.stats().finished,
+                })
+                .collect();
+            let active = settings::plan(&items, &q);
+            for item in &items {
+                let e = torrents.get_mut(&item.id).expect("listed above");
+                let run = active.contains(&item.id);
+                if run && e.queued {
+                    e.queued = false;
+                    actions.push((e.handle.clone(), true));
+                } else if !run && !e.queued {
+                    e.queued = true;
+                    actions.push((e.handle.clone(), false));
+                }
+            }
+        }
+        for (handle, run) in actions {
+            if run {
+                handle.resume().await;
+            } else {
+                handle.pause().await;
+            }
+        }
+    }
+
+    /// Change a torrent's own rate and connection limits.
+    pub async fn set_torrent_limits(
+        &self,
+        id: &str,
+        limits: TorrentLimits,
+    ) -> Result<(), CoreError> {
+        let handle = self.handle(id)?;
+        let key = id.to_owned();
+        self.db(move |db| {
+            db.set_limits(
+                &key,
+                limits.download_rate,
+                limits.upload_rate,
+                limits.max_connections,
+            )
+        })
+        .await?;
+        if let Some(e) = self
+            .inner
+            .torrents
+            .write()
+            .expect("torrents lock poisoned")
+            .get_mut(id)
+        {
+            e.limits = limits;
+        }
+        handle.set_limits(engine_limits(limits)).await;
+        Ok(())
+    }
+
+    /// Change a torrent's label, which also picks its group.
+    pub async fn set_label(&self, id: &str, label: Option<String>) -> Result<(), CoreError> {
+        self.handle(id)?;
+        let label = label.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
+        let key = id.to_owned();
+        let stored = label.clone();
+        self.db(move |db| db.set_label(&key, stored.as_deref()))
+            .await?;
+        if let Some(e) = self
+            .inner
+            .torrents
+            .write()
+            .expect("torrents lock poisoned")
+            .get_mut(id)
+        {
+            e.label = label;
+        }
+        self.regroup().await;
+        self.refresh();
+        Ok(())
+    }
+
+    /// Move a torrent in the queue. Positions are renumbered from 0.
+    pub async fn queue_move(&self, id: &str, to: QueueMove) -> Result<(), CoreError> {
+        let positions = {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            if !torrents.contains_key(id) {
+                return Err(CoreError::NotFound);
+            }
+            let mut order: Vec<(u32, String)> = torrents
+                .iter()
+                .map(|(k, e)| (e.queue_position, k.clone()))
+                .collect();
+            order.sort();
+            let mut ids: Vec<String> = order.into_iter().map(|(_, k)| k).collect();
+            let from = ids.iter().position(|k| k == id).expect("present");
+            let item = ids.remove(from);
+            let dest = match to {
+                QueueMove::Top => 0,
+                QueueMove::Up => from.saturating_sub(1),
+                QueueMove::Down => (from + 1).min(ids.len()),
+                QueueMove::Bottom => ids.len(),
+            };
+            ids.insert(dest, item);
+            let positions: Vec<(String, u32)> = ids
+                .into_iter()
+                .enumerate()
+                .map(|(i, k)| (k, u32::try_from(i).unwrap_or(u32::MAX)))
+                .collect();
+            for (k, pos) in &positions {
+                if let Some(e) = torrents.get_mut(k) {
+                    e.queue_position = *pos;
+                }
+            }
+            positions
+        };
+        self.db(move |db| db.set_queue_positions(&positions))
+            .await?;
+        self.apply_queue().await;
+        self.refresh();
+        Ok(())
+    }
+
+    fn next_queue_position(&self) -> u32 {
+        self.inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .values()
+            .map(|e| e.queue_position + 1)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether any queue limit is set, so new and restored torrents should wait for the
+    /// queue's decision rather than start at once.
+    fn queue_limited(&self) -> bool {
+        self.settings().queue != apitorrent_types::QueueSettings::default()
     }
 
     pub fn store(&self) -> &Store {
@@ -270,6 +506,13 @@ impl Core {
                 label: row.label,
                 added_at: row.added_at,
                 totals: (row.downloaded_total, row.uploaded_total),
+                queue_position: row.queue_position,
+                limits: TorrentLimits {
+                    download_rate: row.download_rate,
+                    upload_rate: row.upload_rate,
+                    max_connections: row.max_connections,
+                },
+                queued: !row.paused && self.queue_limited(),
             })?;
         }
         tracing::info!(count, "torrents restored");
@@ -290,7 +533,11 @@ impl Core {
             label,
             added_at,
             totals: (downloaded_base, uploaded_base),
+            queue_position,
+            limits,
+            queued,
         } = s;
+        let group = settings::group_for(&self.settings(), label.as_deref()).map(str::to_owned);
         let id = torrent.info.info_hashes().id_string();
         let parts_path = self
             .inner
@@ -307,8 +554,10 @@ impl Core {
                 have,
                 placements,
                 unwanted: engine_policy(unwanted),
-                paused,
+                paused: paused || queued,
                 file_priorities: Some(file_priorities.clone()),
+                limits: engine_limits(limits),
+                group: group.clone(),
                 ..AddTorrent::new(torrent.clone(), save_path.clone())
             })
             .map_err(|_| CoreError::Duplicate)?;
@@ -329,6 +578,10 @@ impl Core {
                     unwanted,
                     downloaded_base,
                     uploaded_base,
+                    queue_position,
+                    limits,
+                    queued,
+                    group,
                 },
             );
         Ok(id)
@@ -408,7 +661,12 @@ impl Core {
             placements: None,
             held_path: Some(held_path.to_string_lossy().into_owned()),
             unwanted_policy: policy_to_byte(req.unwanted_policy),
+            queue_position: self.next_queue_position(),
+            download_rate: 0,
+            upload_rate: 0,
+            max_connections: None,
         };
+        let queue_position = row.queue_position;
         let added_at = row.added_at;
         self.db(move |db| db.insert_torrent(&row)).await?;
         if let Err(e) = self.spawn_entry(Spawn {
@@ -423,12 +681,16 @@ impl Core {
             label: req.label,
             added_at,
             totals: (0, 0),
+            queue_position,
+            limits: TorrentLimits::default(),
+            queued: !req.paused && self.queue_limited(),
         }) {
             let id2 = id.clone();
             self.db(move |db| db.remove_torrent(&id2)).await?;
             return Err(e);
         }
         tracing::info!(%id, "torrent added");
+        self.apply_queue().await;
         self.refresh();
         Ok(id)
     }
@@ -463,12 +725,14 @@ impl Core {
             .get_mut(id)
         {
             e.paused = paused;
+            e.queued = false;
         }
         if paused {
             handle.pause().await;
         } else {
             handle.resume().await;
         }
+        self.apply_queue().await;
         self.refresh();
         Ok(())
     }
@@ -578,7 +842,7 @@ impl Core {
     }
 
     pub async fn detail(&self, id: &str) -> Result<TorrentDetail, CoreError> {
-        let (torrent, handle, prios, unwanted_policy) = {
+        let (torrent, handle, prios, unwanted_policy, limits) = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let e = torrents.get(id).ok_or(CoreError::NotFound)?;
             (
@@ -586,6 +850,7 @@ impl Core {
                 e.handle.clone(),
                 e.file_priorities.clone(),
                 e.unwanted,
+                e.limits,
             )
         };
         let placements = {
@@ -637,6 +902,7 @@ impl Core {
             piece_length: torrent.info.piece_length,
             magnet: magnet.to_uri(),
             unwanted_policy,
+            limits,
         })
     }
 
@@ -690,7 +956,11 @@ impl Core {
         save.tick().await;
         loop {
             tokio::select! {
-                _ = refresh.tick() => self.refresh(),
+                _ = refresh.tick() => {
+                    // Torrents that finish move from the download limit to the seed limit.
+                    self.apply_queue().await;
+                    self.refresh();
+                }
                 _ = save.tick() => {
                     if let Err(e) = self.save_resume().await {
                         tracing::error!(error = %e, "saving resume state failed");
@@ -739,13 +1009,15 @@ fn summarize(id: &str, e: &Entry) -> TorrentSummary {
         info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
         state: if e.paused {
             TorrentState::Paused
+        } else if e.queued && stats.error.is_none() {
+            TorrentState::Queued
         } else {
             state
         },
-        progress: if stats.pieces_total == 0 {
+        progress: if stats.wanted_total == 0 {
             1.0
         } else {
-            ratio(stats.pieces_have as usize, stats.pieces_total as usize)
+            ratio(stats.wanted_have as usize, stats.wanted_total as usize)
         },
         size: info.content_length(),
         pieces_have: stats.pieces_have,
@@ -761,6 +1033,17 @@ fn summarize(id: &str, e: &Entry) -> TorrentSummary {
         save_path: e.save_path.to_string_lossy().into_owned(),
         private: info.private,
         error: stats.error,
+        queue_position: e.queue_position,
+        group: e.group.clone(),
+    }
+}
+
+fn engine_limits(l: TorrentLimits) -> apitorrent_engine::limits::TorrentLimits {
+    apitorrent_engine::limits::TorrentLimits {
+        download_rate: l.download_rate,
+        upload_rate: l.upload_rate,
+        max_connections: l.max_connections.map(|n| n as usize),
+        memory: None,
     }
 }
 

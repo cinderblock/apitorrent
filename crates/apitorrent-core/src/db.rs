@@ -35,6 +35,18 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE torrents ADD COLUMN held_path TEXT;
     ALTER TABLE torrents ADD COLUMN unwanted_policy INTEGER NOT NULL DEFAULT 0;
     ",
+    // 3: queue order and per-torrent limits. Existing torrents queue in the order added.
+    "
+    ALTER TABLE torrents ADD COLUMN queue_position INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE torrents ADD COLUMN download_rate INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE torrents ADD COLUMN upload_rate INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE torrents ADD COLUMN max_connections INTEGER;
+    UPDATE torrents SET queue_position = (
+        SELECT COUNT(*) FROM torrents AS t
+        WHERE t.added_at < torrents.added_at
+           OR (t.added_at = torrents.added_at AND t.id < torrents.id)
+    );
+    ",
 ];
 
 /// A torrent as stored.
@@ -59,6 +71,10 @@ pub struct TorrentRow {
     pub held_path: Option<String>,
     /// 0 hold, 1 delete.
     pub unwanted_policy: u8,
+    pub queue_position: u32,
+    pub download_rate: u64,
+    pub upload_rate: u64,
+    pub max_connections: Option<u32>,
 }
 
 /// Resume state saved periodically for one torrent.
@@ -126,8 +142,10 @@ impl Database {
         self.conn.execute(
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
-                 placements, held_path, unwanted_policy)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                 placements, held_path, unwanted_policy, queue_position, download_rate,
+                 upload_rate, max_connections)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                 ?17, ?18, ?19, ?20)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -145,6 +163,10 @@ impl Database {
                 row.placements,
                 row.held_path,
                 row.unwanted_policy,
+                row.queue_position,
+                to_i64(row.download_rate),
+                to_i64(row.upload_rate),
+                row.max_connections,
             ],
         )?;
         Ok(())
@@ -161,8 +183,9 @@ impl Database {
         let mut stmt = self.conn.prepare(
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
                     paused, have, file_priorities, downloaded_total, uploaded_total,
-                    placements, held_path, unwanted_policy
-             FROM torrents ORDER BY added_at",
+                    placements, held_path, unwanted_policy, queue_position, download_rate,
+                    upload_rate, max_connections
+             FROM torrents ORDER BY queue_position, added_at",
         )?;
         stmt.query_map([], |r| {
             Ok(TorrentRow {
@@ -182,6 +205,10 @@ impl Database {
                 placements: r.get(13)?,
                 held_path: r.get(14)?,
                 unwanted_policy: r.get(15)?,
+                queue_position: r.get(16)?,
+                download_rate: from_i64(r.get(17)?),
+                upload_rate: from_i64(r.get(18)?),
+                max_connections: r.get(19)?,
             })
         })?
         .collect()
@@ -207,6 +234,37 @@ impl Database {
             }
         }
         tx.commit()
+    }
+
+    pub fn set_queue_positions(&mut self, positions: &[(String, u32)]) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare("UPDATE torrents SET queue_position = ?2 WHERE id = ?1")?;
+            for (id, pos) in positions {
+                stmt.execute(params![id, pos])?;
+            }
+        }
+        tx.commit()
+    }
+
+    pub fn set_limits(
+        &self,
+        id: &str,
+        download_rate: u64,
+        upload_rate: u64,
+        max_connections: Option<u32>,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE torrents SET download_rate = ?2, upload_rate = ?3, max_connections = ?4
+             WHERE id = ?1",
+            params![
+                id,
+                to_i64(download_rate),
+                to_i64(upload_rate),
+                max_connections
+            ],
+        )?;
+        Ok(())
     }
 
     pub fn set_unwanted_policy(&self, id: &str, policy: u8) -> rusqlite::Result<()> {
@@ -294,6 +352,10 @@ mod tests {
             placements: None,
             held_path: Some("/data/held/a".into()),
             unwanted_policy: 0,
+            queue_position: 0,
+            download_rate: 0,
+            upload_rate: 0,
+            max_connections: None,
         }
     }
 
@@ -315,16 +377,29 @@ mod tests {
         }])
         .unwrap();
         db.set_unwanted_policy("b", 1).unwrap();
+        db.set_queue_positions(&[("a".into(), 5), ("b".into(), 2)])
+            .unwrap();
+        db.set_limits("a", 1000, 2000, Some(30)).unwrap();
         db.set_paused("b", true).unwrap();
         db.set_label("b", Some("linux")).unwrap();
         let rows = db.torrents().unwrap();
-        assert_eq!(rows[0].have.as_deref(), Some(&[0xff][..]));
-        assert_eq!((rows[0].downloaded_total, rows[0].uploaded_total), (10, 20));
-        assert_eq!(rows[0].placements.as_deref(), Some(&[0, 2][..]));
-        assert_eq!(rows[0].held_path.as_deref(), Some("/data/held/a"));
-        assert_eq!(rows[1].unwanted_policy, 1);
-        assert!(rows[1].paused);
-        assert_eq!(rows[1].label.as_deref(), Some("linux"));
+        assert_eq!(rows[1].have.as_deref(), Some(&[0xff][..]));
+        assert_eq!((rows[1].downloaded_total, rows[1].uploaded_total), (10, 20));
+        // Rows come back in queue order: b (2) before a (5).
+        assert_eq!(rows[0].id, "b");
+        assert_eq!(rows[1].placements.as_deref(), Some(&[0, 2][..]));
+        assert_eq!(rows[1].held_path.as_deref(), Some("/data/held/a"));
+        assert_eq!(rows[0].unwanted_policy, 1);
+        assert_eq!(
+            (
+                rows[1].download_rate,
+                rows[1].upload_rate,
+                rows[1].max_connections
+            ),
+            (1000, 2000, Some(30))
+        );
+        assert!(rows[0].paused);
+        assert_eq!(rows[0].label.as_deref(), Some("linux"));
 
         db.remove_torrent("a").unwrap();
         assert_eq!(db.torrents().unwrap().len(), 1);

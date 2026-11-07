@@ -650,16 +650,20 @@ async fn a_peer_sending_bad_data_is_banned() {
     let leech = leecher
         .add_torrent(AddTorrent {
             have: Some(Bitfield::new(pieces)),
-            peers: vec![liar.listen_addr(), good.listen_addr()],
+            peers: vec![liar.listen_addr()],
             ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
         })
         .unwrap();
+    // Alone, the liar sends whole pieces, which fail: proof enough for a ban. Only then
+    // does the honest seeder join, so the test doesn't depend on who answers first.
+    let liar_ip: std::net::IpAddr = "127.0.0.2".parse().unwrap();
+    let honest_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    wait_for("the liar to be banned", || leecher.is_blocked(liar_ip)).await;
+    leech.add_peers(vec![good.listen_addr()]).await;
     tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
         .await
         .unwrap_or_else(|_| panic!("download timed out: {:?}", leech.stats()));
     assert_files(leech_dir.path(), &fx);
-    let liar_ip: std::net::IpAddr = "127.0.0.2".parse().unwrap();
-    let honest_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
     assert!(
         leecher.is_blocked(liar_ip),
         "the liar is banned: {:?}",

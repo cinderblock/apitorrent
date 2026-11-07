@@ -96,6 +96,9 @@ pub struct Picker {
     bucket_start: Vec<u32>,
     sequential: bool,
     rng: StdRng,
+    /// Pieces with priority above 0, and how many of those we have.
+    wanted_total: u32,
+    wanted_have: u32,
 }
 
 impl Picker {
@@ -115,8 +118,11 @@ impl Picker {
             bucket_start: vec![0; KEY_COUNT + 1],
             sequential: false,
             rng: StdRng::seed_from_u64(seed),
+            wanted_total: 0,
+            wanted_have: 0,
         };
         p.rebuild_order();
+        p.recount();
         p
     }
 
@@ -139,7 +145,31 @@ impl Picker {
 
     /// Whether every piece with non-zero priority is complete.
     pub fn is_finished(&self) -> bool {
-        (0..self.layout.piece_count()).all(|p| !self.is_wanted(p))
+        self.wanted_have == self.wanted_total
+    }
+
+    /// Pieces with priority above 0, and how many of them we have.
+    pub fn wanted(&self) -> (u32, u32) {
+        (self.wanted_total, self.wanted_have)
+    }
+
+    fn recount(&mut self) {
+        let (mut total, mut have) = (0, 0);
+        for p in 0..self.layout.piece_count() {
+            if self.priority[p as usize] > 0 {
+                total += 1;
+                have += u32::from(self.have.get(p));
+            }
+        }
+        self.wanted_total = total;
+        self.wanted_have = have;
+    }
+
+    /// Record that `piece` is now had.
+    fn gained(&mut self, piece: u32) {
+        if self.have.set(piece) && self.priority[piece as usize] > 0 {
+            self.wanted_have += 1;
+        }
     }
 
     /// Whether a peer with `has` has anything we want.
@@ -161,7 +191,20 @@ impl Picker {
             return;
         }
         self.remove_from_order(piece);
+        let was_wanted = self.priority[piece as usize] > 0;
         self.priority[piece as usize] = prio;
+        let had = u32::from(self.have.get(piece));
+        match (was_wanted, prio > 0) {
+            (false, true) => {
+                self.wanted_total += 1;
+                self.wanted_have += had;
+            }
+            (true, false) => {
+                self.wanted_total -= 1;
+                self.wanted_have -= had;
+            }
+            _ => {}
+        }
         self.insert_into_order(piece);
     }
 
@@ -172,6 +215,7 @@ impl Picker {
             *p = v.min(MAX_PRIORITY);
         }
         self.rebuild_order();
+        self.recount();
     }
 
     // ----- availability -------------------------------------------------------------
@@ -429,7 +473,7 @@ impl Picker {
     pub fn piece_verified(&mut self, piece: u32, valid: bool) {
         self.partial.remove(&piece);
         if valid {
-            self.have.set(piece);
+            self.gained(piece);
         } else {
             self.insert_into_order(piece);
         }
@@ -440,12 +484,15 @@ impl Picker {
     pub fn mark_have(&mut self, piece: u32) {
         self.partial.remove(&piece);
         self.remove_from_order(piece);
-        self.have.set(piece);
+        self.gained(piece);
     }
 
     /// Drop a piece we had (it failed a recheck).
     pub fn mark_missing(&mut self, piece: u32) {
         if self.have.clear(piece) {
+            if self.priority[piece as usize] > 0 {
+                self.wanted_have -= 1;
+            }
             self.insert_into_order(piece);
         }
     }
@@ -676,6 +723,26 @@ mod tests {
             [blocks[0]],
             "a missing block of a started piece is still picked"
         );
+    }
+
+    #[test]
+    fn wanted_counts_track_priorities_and_pieces() {
+        let mut p = picker(4);
+        assert_eq!(p.wanted(), (4, 0));
+        p.mark_have(1);
+        assert_eq!(p.wanted(), (4, 1));
+        p.set_priority(1, 0);
+        p.set_priority(2, 0);
+        assert_eq!(p.wanted(), (2, 0));
+        p.set_priority(1, 4);
+        assert_eq!(p.wanted(), (3, 1));
+        p.mark_missing(1);
+        assert_eq!(p.wanted(), (3, 0));
+        p.set_priorities(&[0, 0, 0, 7]);
+        assert_eq!(p.wanted(), (1, 0));
+        assert!(!p.is_finished());
+        p.mark_have(3);
+        assert!(p.is_finished());
     }
 
     /// A paroled peer's pieces are its own: nobody else is asked for them, and it isn't

@@ -6,6 +6,7 @@ const FILTERS: Array<[StateFilter, string]> = [
   ["downloading", "Downloading"],
   ["seeding", "Seeding"],
   ["paused", "Paused"],
+  ["queued", "Queued"],
   ["checking", "Checking"],
   ["error", "Errors"],
 ];

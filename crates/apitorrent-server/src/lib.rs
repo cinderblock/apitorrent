@@ -85,6 +85,13 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
             put(routes::set_unwanted_policy),
         )
         .route("/torrents/{id}/held/release", post(routes::release_held))
+        .route(
+            "/settings",
+            get(routes::get_settings).put(routes::put_settings),
+        )
+        .route("/torrents/{id}/limits", put(routes::set_limits))
+        .route("/torrents/{id}/label", put(routes::set_label))
+        .route("/torrents/{id}/queue", post(routes::queue_move))
         .route("/bans", get(routes::bans).post(routes::ban))
         .route("/bans/{ip}", delete(routes::unban))
         .route("/sync", get(sync::handler))

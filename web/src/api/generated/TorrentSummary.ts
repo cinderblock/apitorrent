@@ -3,7 +3,8 @@ import type { TorrentState } from "./TorrentState";
 
 export type TorrentSummary = { id: string, name: string, infoHashV1: string | null, infoHashV2: string | null, state: TorrentState, 
 /**
- * Fraction of pieces downloaded, 0 to 1.
+ * Fraction of the *wanted* pieces downloaded, 0 to 1. Skipped files don't count, so
+ * a finished torrent shows 1 even when some files are skipped.
  */
 progress: number, 
 /**
@@ -13,4 +14,12 @@ size: number, piecesHave: number, piecesTotal: number,
 /**
  * All-time totals, including previous sessions.
  */
-downloaded: number, uploaded: number, downloadRate: number, uploadRate: number, peers: number, seeds: number, addedAt: number, label: string | null, savePath: string, private: boolean, error: string | null, };
+downloaded: number, uploaded: number, downloadRate: number, uploadRate: number, peers: number, seeds: number, addedAt: number, label: string | null, savePath: string, private: boolean, error: string | null, 
+/**
+ * Position in the queue; lower runs first.
+ */
+queuePosition: number, 
+/**
+ * The group whose shared limits apply, chosen by label.
+ */
+group: string | null, };

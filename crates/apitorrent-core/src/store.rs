@@ -146,6 +146,8 @@ mod tests {
             save_path: String::new(),
             private: false,
             error: None,
+            queue_position: 0,
+            group: None,
         }
     }
 

@@ -6,7 +6,8 @@ use apitorrent_core::{Core, CoreConfig, CoreError};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
 use apitorrent_types::{
-    AddSource, AddTorrentRequest, FilePlacement, FilePriority, TorrentState, UnwantedPolicy,
+    AddSource, AddTorrentRequest, FilePlacement, FilePriority, QueueMove, TorrentState,
+    UnwantedPolicy,
 };
 use base64::Engine as _;
 
@@ -180,5 +181,106 @@ async fn bad_input_is_rejected() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), "unsupported");
+    core.shutdown().await.unwrap();
+}
+
+fn small_torrent(name: &str, fill: u8) -> Vec<u8> {
+    TorrentBuilder::new(name, Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&[], vec![fill; 40_000]))
+        .build()
+        .unwrap()
+}
+
+fn add_req(bytes: &[u8], label: Option<&str>) -> AddTorrentRequest {
+    AddTorrentRequest {
+        source: AddSource::TorrentFile {
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
+        save_path: None,
+        paused: false,
+        label: label.map(str::to_owned),
+        file_priorities: None,
+        unwanted_policy: UnwantedPolicy::Hold,
+    }
+}
+
+/// The queue lets only the first downloads run, follows queue moves, settings persist, and
+/// labels pick groups.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queue_settings_and_groups() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+
+    let mut settings = core.settings();
+    settings.queue.max_active_downloads = 1;
+    settings.download_rate = 5 * 1024 * 1024;
+    settings.groups.push(apitorrent_types::GroupSettings {
+        name: "linux".into(),
+        labels: vec!["iso".into()],
+        download_rate: 1024 * 1024,
+        upload_rate: 0,
+        max_connections: 10,
+    });
+    core.set_settings(settings.clone()).await.unwrap();
+
+    // Neither has peers, so both stay downloading; only the first may run.
+    let a = core
+        .add(add_req(&small_torrent("a", 1), Some("iso")))
+        .await
+        .unwrap();
+    let b = core
+        .add(add_req(&small_torrent("b", 2), None))
+        .await
+        .unwrap();
+    wait_for(&core, &b, TorrentState::Queued).await;
+    wait_for(&core, &a, TorrentState::Downloading).await;
+    assert_eq!(
+        core.store().get(&a).unwrap().group.as_deref(),
+        Some("linux")
+    );
+    assert_eq!(core.store().get(&b).unwrap().group, None);
+
+    // Moving b to the top swaps them.
+    core.queue_move(&b, QueueMove::Top).await.unwrap();
+    wait_for(&core, &a, TorrentState::Queued).await;
+    wait_for(&core, &b, TorrentState::Downloading).await;
+    assert_eq!(core.store().get(&b).unwrap().queue_position, 0);
+
+    // Relabelling moves a torrent between groups.
+    core.set_label(&b, Some("iso".into())).await.unwrap();
+    assert_eq!(
+        core.store().get(&b).unwrap().group.as_deref(),
+        Some("linux")
+    );
+
+    // A user pause takes a torrent out of the queue, freeing its slot.
+    core.pause(&b).await.unwrap();
+    wait_for(&core, &a, TorrentState::Downloading).await;
+    wait_for(&core, &b, TorrentState::Paused).await;
+
+    // Per-torrent limits are stored.
+    let limits = apitorrent_types::TorrentLimits {
+        download_rate: 1000,
+        upload_rate: 2000,
+        max_connections: Some(5),
+    };
+    core.set_torrent_limits(&a, limits).await.unwrap();
+    core.shutdown().await.unwrap();
+    drop(core);
+
+    // Everything survives a restart.
+    let core = Core::start(cfg).await.unwrap();
+    assert_eq!(core.settings(), settings);
+    assert_eq!(core.detail(&a).await.unwrap().limits, limits);
+    assert_eq!(core.store().get(&b).unwrap().queue_position, 0);
+    assert_eq!(core.store().get(&b).unwrap().state, TorrentState::Paused);
+    wait_for(&core, &a, TorrentState::Downloading).await;
+
+    // Invalid settings are refused.
+    let mut bad = core.settings();
+    bad.groups.push(bad.groups[0].clone());
+    assert!(core.set_settings(bad).await.is_err());
     core.shutdown().await.unwrap();
 }

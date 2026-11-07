@@ -20,6 +20,7 @@ const STATE_LABEL: Record<TorrentSummary["state"], string> = {
   downloading: "Downloading",
   seeding: "Seeding",
   paused: "Paused",
+  queued: "Queued",
   error: "Error",
 };
 
@@ -30,17 +31,19 @@ function eta(t: TorrentSummary): string {
 }
 
 const COLUMNS: Column[] = [
+  // Queue order: lower numbers get the free slots first.
+  { key: "queuePosition", label: "#", width: "2.5rem", align: "end", render: (t) => `${t.queuePosition + 1}` },
   {
     key: "name",
     label: "Name",
-    width: "minmax(10rem, 1fr)",
+    width: "minmax(8rem, 1fr)",
     render: (t) => <span className="cell-name">{t.name}</span>,
   },
-  { key: "size", label: "Size", width: "6.5rem", align: "end", render: (t) => formatBytes(t.size) },
+  { key: "size", label: "Size", width: "5.5rem", align: "end", render: (t) => formatBytes(t.size) },
   {
     key: "progress",
     label: "Progress",
-    width: "8rem",
+    width: "7rem",
     render: (t) => (
       <div className={`progress progress-${t.state}`} role="progressbar" aria-valuenow={Math.round(t.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
         <div className="progress-fill" style={{ width: `${t.progress * 100}%` }} />
@@ -51,15 +54,15 @@ const COLUMNS: Column[] = [
   {
     key: "state",
     label: "Status",
-    width: "6.5rem",
+    width: "6rem",
     render: (t) => <span className={`state state-${t.state}`}>{STATE_LABEL[t.state]}</span>,
   },
-  { key: "downloadRate", label: "Down", width: "5.75rem", align: "end", render: (t) => formatRate(t.downloadRate) },
-  { key: "uploadRate", label: "Up", width: "5.75rem", align: "end", render: (t) => formatRate(t.uploadRate) },
+  { key: "downloadRate", label: "Down", width: "5.25rem", align: "end", render: (t) => formatRate(t.downloadRate) },
+  { key: "uploadRate", label: "Up", width: "5.25rem", align: "end", render: (t) => formatRate(t.uploadRate) },
   {
     key: "peers",
     label: "Peers (seeds)",
-    width: "6.5rem",
+    width: "6.25rem",
     align: "end",
     // Connected peers, with how many of them are seeds.
     render: (t) => (t.peers > 0 ? `${t.peers} (${t.seeds})` : ""),
@@ -68,12 +71,12 @@ const COLUMNS: Column[] = [
   {
     key: "addedAt",
     label: "Added",
-    width: "9.5rem",
+    width: "8.75rem",
     render: (t) => formatDateTime(t.addedAt),
   },
 ];
 
-const TEMPLATE = `${COLUMNS.map((c) => c.width).join(" ")} 4rem`;
+const TEMPLATE = `${COLUMNS.map((c) => c.width).join(" ")} 3.5rem`;
 
 interface Props {
   rows: TorrentSummary[];

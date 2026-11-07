@@ -253,7 +253,7 @@ code {
 .tr {
   display: grid;
   align-items: center;
-  column-gap: 10px;
+  column-gap: 8px;
   padding: 0 12px;
 }
 
@@ -526,6 +526,44 @@ code {
   margin: 2px 0 8px;
 }
 
+.button-group {
+  display: inline-flex;
+}
+
+.button-group button {
+  border-radius: 0;
+  margin-left: -1px;
+  min-width: 2rem;
+}
+
+.button-group button:first-child {
+  border-radius: 6px 0 0 6px;
+  margin-left: 0;
+}
+
+.button-group button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.state-queued {
+  color: var(--muted);
+}
+
+.inline-edit {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.inline-edit input {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  width: 9rem;
+}
+
 /* Dialogs */
 
 .dialog {
@@ -591,4 +629,50 @@ code {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.dialog.wide {
+  width: min(46rem, 94vw);
+}
+
+.settings-section {
+  border: none;
+  margin: 0 0 14px;
+  padding: 0;
+}
+
+.settings-section legend {
+  font-weight: 600;
+  margin-bottom: 6px;
+  padding: 0;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: 8px 12px;
+}
+
+.group-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 5.5rem 5.5rem 5.5rem auto;
+  gap: 6px;
+  align-items: end;
+  margin-bottom: 6px;
+}
+
+.group-row .field {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.group-row input {
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .group-row {
+    grid-template-columns: 1fr 1fr;
+  }
 }

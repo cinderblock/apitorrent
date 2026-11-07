@@ -9,8 +9,8 @@ use serde::Deserialize;
 use apitorrent_core::CoreError;
 use apitorrent_types::{
     API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, Ban, BanRequest,
-    ReleaseHeldRequest, ServerInfo, SetFilePrioritiesRequest, SetUnwantedPolicyRequest,
-    TorrentDetail, TorrentSummary,
+    QueueMoveRequest, ReleaseHeldRequest, ServerInfo, SetFilePrioritiesRequest, SetLabelRequest,
+    SetUnwantedPolicyRequest, Settings, TorrentDetail, TorrentLimits, TorrentSummary,
 };
 
 use crate::AppState;
@@ -123,6 +123,45 @@ pub(crate) async fn release_held(
     Json(req): Json<ReleaseHeldRequest>,
 ) -> ApiResult<StatusCode> {
     s.core.release_held(&id, req.files).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn get_settings(State(s): State<AppState>) -> Json<Settings> {
+    Json(s.core.settings())
+}
+
+pub(crate) async fn put_settings(
+    State(s): State<AppState>,
+    Json(req): Json<Settings>,
+) -> ApiResult<StatusCode> {
+    s.core.set_settings(req).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_limits(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<TorrentLimits>,
+) -> ApiResult<StatusCode> {
+    s.core.set_torrent_limits(&id, req).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_label(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<SetLabelRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_label(&id, req.label).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn queue_move(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<QueueMoveRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.queue_move(&id, req.to).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

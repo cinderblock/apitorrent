@@ -52,6 +52,12 @@ pub struct TorrentStats {
     pub state: TorrentState,
     pub pieces_have: u32,
     pub pieces_total: u32,
+    /// Pieces of the files the user wants (priority above 0), and how many of those we
+    /// have. Progress means `wanted_have / wanted_total`.
+    pub wanted_total: u32,
+    pub wanted_have: u32,
+    /// Every wanted piece is here. Stays accurate while paused.
+    pub finished: bool,
     /// Payload bytes received and sent in this session.
     pub downloaded: u64,
     pub uploaded: u64,
@@ -476,6 +482,9 @@ impl TorrentActor {
             },
             pieces_have: 0,
             pieces_total: layout.piece_count(),
+            wanted_total: layout.piece_count(),
+            wanted_have: 0,
+            finished: false,
             downloaded: 0,
             uploaded: 0,
             download_rate: 0,
@@ -1683,6 +1692,10 @@ impl TorrentActor {
         };
         let ready = self.peers.values().filter(|p| p.tx.is_some());
         let (peers, seeds) = ready.fold((0, 0), |(n, s), p| (n + 1, s + u32::from(p.is_seed)));
+        let (wanted_total, wanted_have) = self
+            .picker
+            .as_ref()
+            .map_or((self.layout.piece_count(), 0), Picker::wanted);
         let stats = TorrentStats {
             state,
             pieces_have: self
@@ -1690,6 +1703,9 @@ impl TorrentActor {
                 .as_ref()
                 .map_or(pieces_have, |p| p.have().count_ones()),
             pieces_total: self.layout.piece_count(),
+            wanted_total,
+            wanted_have,
+            finished: self.picker.is_some() && wanted_have == wanted_total,
             downloaded: self.downloaded,
             uploaded: self.uploaded,
             download_rate: self.downloaded - self.last_downloaded,

@@ -91,8 +91,8 @@ engine core stays in the main thread, because its pieces interlock.
   2. ~~Part store, unwanted-file handling, held area~~ (done)
   3. ~~Memory budget (session and torrent)~~ (done; group limits come with step 5)
   4. ~~Bad-peer system~~ (done; v2 block proofs come with hash requests in step 7)
-  5. Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing ← current
-  6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE
+  5. ~~Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing~~ (done)
+  6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE ← current
   7. v2 hash requests, webseeds (BEP 19), upload `cancel`, naming policy
   8. Content library: matching, bookends, piece reuse, fingerprints, pack switchover
 - **Delegated streams:**
@@ -178,8 +178,11 @@ engine core stays in the main thread, because its pieces interlock.
   mixed failures with one liar.
 - Loopback tests can give each session its own IP (127.0.0.2, 127.0.0.3), which works on
   Windows. That's how the ban tests tell the liar from the honest seeder.
+- Daemon command-line limits (`--memory-limit-mib` aside) only seed the *first* settings;
+  after that the stored settings win. Memory isn't a live setting yet (the budget is
+  fixed at session start).
 - Known engine gaps, to fix before real-world use: a v2 `Unknown` verdict is treated as
-  invalid (needs BEP 52 hash requests), upload `cancel` is ignored, no rate limiting.
+  invalid (needs BEP 52 hash requests), upload `cancel` is ignored.
 
 ## Progress log
 
@@ -205,9 +208,9 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] M3.1 web UI: live table, filters, details, file priorities, add/remove, drag-drop
   (`d185833`); daemon serves it with CSP and other security headers (`f459ad6`)
 - [ ] M3.2 UI: per-tracker status (engine already reports it), peers tab, label
-  editing, settings page, column chooser, embedding `web/dist` into release binaries,
-  progress measured against *wanted* pieces (a finished torrent with skipped files
-  shows 47.8% today)
+  editing, column chooser (the table is tight at 1280 px), embedding `web/dist` into
+  release binaries, bans list, session stats (memory, connections), "slow torrents
+  don't count" queue option like Deluge's
 - [x] Real-world Ubuntu swarm test: interop works; two bugs fixed (see Findings)
 - [x] Part store and unwanted files: `parts.rs` (per-torrent slot file), per-file
   placements (save, held, parts) in `FileStorage`, hold or delete on deselect, release
@@ -219,7 +222,12 @@ engine core stays in the main thread, because its pieces interlock.
   parole with exclusive pieces, trust only lost on repeated failures), `ban.rs`
   (escalating session-wide IP bans; P2P, DAT and CIDR blocklists), `--blocklist`,
   `GET/POST /bans`, `DELETE /bans/{ip}`
-- [ ] Limits and queueing
+- [x] Limits and queueing: `limits.rs` (GCRA buckets per session/group/torrent, applied
+  in the peer I/O tasks; connection, half-open and connect-rate counters), wanted-piece
+  progress and `finished` in stats, core settings (stored in `meta`), groups chosen by
+  label, per-torrent limits, a queue with download/seed/total limits and moves (DB
+  migration 3), API (`/settings`, `/torrents/{id}/limits|label|queue`), UI (Settings
+  dialog, queue column and buttons, label and limits editing)
 - [ ] Magnets, PEX, LSD
 - [ ] DHT (delegated)
 - [ ] uTP and MSE (delegated)

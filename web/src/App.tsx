@@ -5,6 +5,7 @@ import { SyncClient } from "./api/sync";
 import { AddTorrent } from "./components/AddTorrent";
 import { ConfirmRemove } from "./components/ConfirmRemove";
 import { DetailPane } from "./components/DetailPane";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentTable } from "./components/TorrentTable";
 import { formatRate } from "./format";
@@ -41,6 +42,7 @@ export function App() {
   const [adding, setAdding] = useState<File[] | null>(null);
   const [removing, setRemoving] = useState<string[] | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const rows = useMemo(() => visibleTorrents(state.torrents, view), [state.torrents, view]);
   const counts = useMemo(() => countByFilter(state.torrents), [state.torrents]);
@@ -72,6 +74,15 @@ export function App() {
     },
     [state.torrents],
   );
+
+  /** Move the selection in the queue, keeping its order: going up, the top one moves first. */
+  function queueMove(to: "top" | "up" | "down" | "bottom") {
+    const ids = [...selection].sort((a, b) => (state.torrents.get(a)?.queuePosition ?? 0) - (state.torrents.get(b)?.queuePosition ?? 0));
+    const ordered = to === "down" || to === "top" ? ids.reverse() : ids;
+    void (async () => {
+      for (const id of ordered) await api.queueMove(id, to);
+    })();
+  }
 
   function onSort(key: SortKey) {
     setView((v) => ({
@@ -134,6 +145,23 @@ export function App() {
         <button type="button" disabled={selection.length === 0} onClick={() => setRemoving(selection)}>
           Remove
         </button>
+        <div className="button-group" role="group" aria-label="Queue">
+          <button type="button" disabled={selection.length === 0} aria-label="Move to the top of the queue" onClick={() => queueMove("top")}>
+            ⤒
+          </button>
+          <button type="button" disabled={selection.length === 0} aria-label="Move up the queue" onClick={() => queueMove("up")}>
+            ↑
+          </button>
+          <button type="button" disabled={selection.length === 0} aria-label="Move down the queue" onClick={() => queueMove("down")}>
+            ↓
+          </button>
+          <button type="button" disabled={selection.length === 0} aria-label="Move to the bottom of the queue" onClick={() => queueMove("bottom")}>
+            ⤓
+          </button>
+        </div>
+        <button type="button" onClick={() => setSettingsOpen(true)}>
+          Settings
+        </button>
         <input
           type="search"
           className="search"
@@ -175,6 +203,7 @@ export function App() {
         {focused && <DetailPane summary={focused} />}
       </main>
       {adding && <AddTorrent initialFiles={adding} onClose={() => setAdding(null)} />}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       {removing && (
         <ConfirmRemove
           count={removing.length}

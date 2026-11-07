@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
 import type { TorrentDetail } from "../api/generated/TorrentDetail";
+import type { TorrentLimits } from "../api/generated/TorrentLimits";
 import type { TorrentFile } from "../api/generated/TorrentFile";
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
-import { formatBytes, formatDateTime, formatPercent, formatRatio, formatUtc } from "../format";
+import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, toKiB } from "../format";
 
 type Tab = "general" | "files" | "trackers";
 
@@ -79,6 +80,75 @@ function location(f: TorrentFile): React.ReactNode {
     return <span className="chip">Not in folder</span>;
   }
   return null;
+}
+
+function LabelEditor({ id, label }: { id: string; label: string | null }) {
+  const [value, setValue] = useState(label ?? "");
+  useEffect(() => setValue(label ?? ""), [label]);
+  const dirty = value.trim() !== (label ?? "");
+  return (
+    <form
+      className="inline-edit"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void api.setLabel(id, value.trim() || null);
+      }}
+    >
+      <input aria-label="Label" value={value} placeholder="none" onChange={(e) => setValue(e.target.value)} />
+      {dirty && <button type="submit">Save</button>}
+    </form>
+  );
+}
+
+function describeLimits(l: TorrentLimits): string {
+  const parts = [];
+  if (l.downloadRate > 0) parts.push(`↓ ${formatRate(l.downloadRate)}`);
+  if (l.uploadRate > 0) parts.push(`↑ ${formatRate(l.uploadRate)}`);
+  if (l.maxConnections != null) parts.push(`${l.maxConnections} peers`);
+  return parts.length > 0 ? parts.join(", ") : "None of its own";
+}
+
+function LimitsEditor({ id, limits, refetch }: { id: string; limits: TorrentLimits; refetch: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [down, setDown] = useState(toKiB(limits.downloadRate));
+  const [up, setUp] = useState(toKiB(limits.uploadRate));
+  const [peers, setPeers] = useState(limits.maxConnections == null ? "" : String(limits.maxConnections));
+  if (!editing) {
+    return (
+      <span className="inline-edit">
+        {describeLimits(limits)}
+        <button type="button" className="link" onClick={() => setEditing(true)}>
+          Change
+        </button>
+      </span>
+    );
+  }
+  return (
+    <form
+      className="inline-edit"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const maxConnections = peers.trim() === "" ? null : Math.max(1, Math.floor(Number(peers) || 1));
+        void api.setLimits(id, { downloadRate: fromKiB(down), uploadRate: fromKiB(up), maxConnections }).then(refetch);
+        setEditing(false);
+      }}
+    >
+      <label>
+        ↓ <input type="number" min={0} aria-label="Download limit in KiB/s" value={down || ""} placeholder="KiB/s" onChange={(e) => setDown(Number(e.target.value) || 0)} />
+      </label>
+      <label>
+        ↑ <input type="number" min={0} aria-label="Upload limit in KiB/s" value={up || ""} placeholder="KiB/s" onChange={(e) => setUp(Number(e.target.value) || 0)} />
+      </label>
+      <label>
+        Peers <input type="number" min={1} aria-label="Most peers" value={peers} placeholder="default" onChange={(e) => setPeers(e.target.value)} />
+      </label>
+      <button type="submit">Save</button>
+      <button type="button" onClick={() => setEditing(false)}>
+        Cancel
+      </button>
+      <span className="muted">Rates in KiB/s; empty means no limit of its own.</span>
+    </form>
+  );
 }
 
 function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detail: TorrentDetail; refetch: () => void }) {
@@ -173,6 +243,10 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
             <Row label="Downloaded" value={formatBytes(summary.downloaded)} />
             <Row label="Uploaded" value={`${formatBytes(summary.uploaded)} (ratio ${formatRatio(summary.uploaded, summary.downloaded)})`} />
             <Row label="Save path" value={<code>{summary.savePath}</code>} />
+            <Row label="Label" value={<LabelEditor id={summary.id} label={summary.label} />} />
+            <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings)</span>} />
+            <Row label="Queue" value={`Position ${summary.queuePosition + 1}`} />
+            {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} />} />}
             <Row label="Added" value={<When ms={summary.addedAt} />} />
             {summary.infoHashV1 && <Row label="Info-hash v1" value={<code>{summary.infoHashV1}</code>} />}
             {summary.infoHashV2 && <Row label="Info-hash v2" value={<code>{summary.infoHashV2}</code>} />}

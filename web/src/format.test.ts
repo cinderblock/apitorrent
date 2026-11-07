@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { formatBytes, formatEta, formatPercent, formatRatio } from "./format";
+import { formatBytes, formatEta, formatPercent, formatRatio, fromKiB, toKiB } from "./format";
 
 test("bytes", () => {
   expect(formatBytes(0)).toBe("0 B");
@@ -27,4 +27,12 @@ test("ratio", () => {
   expect(formatRatio(0, 0)).toBe("0.00");
   expect(formatRatio(10, 0)).toBe("∞");
   expect(formatRatio(3, 2)).toBe("1.50");
+});
+
+test("KiB conversions round-trip", () => {
+  expect(toKiB(0)).toBe(0);
+  expect(fromKiB(0)).toBe(0);
+  expect(fromKiB(500)).toBe(512000);
+  expect(toKiB(fromKiB(1234))).toBe(1234);
+  expect(fromKiB(-3)).toBe(0);
 });

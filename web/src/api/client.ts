@@ -5,6 +5,9 @@ import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
 import type { AddTorrentResponse } from "./generated/AddTorrentResponse";
 import type { ApiError } from "./generated/ApiError";
 import type { FilePriority } from "./generated/FilePriority";
+import type { QueueMove } from "./generated/QueueMove";
+import type { Settings } from "./generated/Settings";
+import type { TorrentLimits } from "./generated/TorrentLimits";
 import type { ServerInfo } from "./generated/ServerInfo";
 import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { UnwantedPolicy } from "./generated/UnwantedPolicy";
@@ -54,6 +57,11 @@ export const api = {
     request<void>("DELETE", `/torrents/${enc(id)}?deleteFiles=${deleteFiles}`),
   setFilePriorities: (id: string, priorities: FilePriority[]) =>
     request<void>("PUT", `/torrents/${enc(id)}/files/priorities`, { priorities }),
+  settings: () => request<Settings>("GET", "/settings"),
+  saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),
+  setLimits: (id: string, limits: TorrentLimits) => request<void>("PUT", `/torrents/${enc(id)}/limits`, limits),
+  setLabel: (id: string, label: string | null) => request<void>("PUT", `/torrents/${enc(id)}/label`, { label }),
+  queueMove: (id: string, to: QueueMove) => request<void>("POST", `/torrents/${enc(id)}/queue`, { to }),
   setUnwantedPolicy: (id: string, policy: UnwantedPolicy) =>
     request<void>("PUT", `/torrents/${enc(id)}/unwanted-policy`, { policy }),
   /** Delete held copies of deselected files; all of them when `files` is omitted. */

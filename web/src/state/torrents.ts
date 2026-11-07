@@ -52,6 +52,7 @@ export type StateFilter =
   | "downloading"
   | "seeding"
   | "paused"
+  | "queued"
   | "checking"
   | "error"
   | "active";
@@ -68,6 +69,7 @@ export function matchesFilter(t: TorrentSummary, filter: StateFilter): boolean {
 }
 
 export type SortKey =
+  | "queuePosition"
   | "name"
   | "size"
   | "progress"
@@ -136,6 +138,7 @@ export function countByFilter(torrents: TorrentMap): Record<StateFilter, number>
     downloading: 0,
     seeding: 0,
     paused: 0,
+    queued: 0,
     checking: 0,
     error: 0,
     active: 0,

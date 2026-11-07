@@ -58,3 +58,13 @@ export function formatDateTime(ms: number): string {
 export function formatUtc(ms: number): string {
   return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")}Z`;
 }
+
+/** Bytes per second to whole KiB/s, for rate inputs (0 stays 0: unlimited). */
+export function toKiB(bytesPerSecond: number): number {
+  return Math.round(bytesPerSecond / 1024);
+}
+
+/** Whole KiB/s from a rate input to bytes per second. */
+export function fromKiB(kib: number): number {
+  return Math.max(0, Math.round(kib)) * 1024;
+}
