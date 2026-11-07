@@ -1029,7 +1029,7 @@ impl Auth {
                 name,
                 passkey: serde_json::to_string(&passkey).map_err(internal)?,
                 created_at: now,
-                last_used_at: Some(now),
+                last_used_at: None,
             },
             passkey.cred_id().as_ref(),
         )?;

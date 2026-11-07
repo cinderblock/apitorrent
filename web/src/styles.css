@@ -694,3 +694,165 @@ code {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* Sign-in, setup and account */
+
+.auth-page {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+}
+
+.auth-card {
+  width: min(30rem, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 22px;
+}
+
+.auth-card h2 {
+  margin: 4px 0 12px;
+  font-size: 16px;
+}
+
+.auth-card .brand {
+  margin: 0;
+}
+
+.auth-alt {
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.auth-alt legend {
+  color: var(--muted);
+  padding: 0;
+}
+
+.actions.start {
+  justify-content: flex-start;
+  margin: 8px 0;
+}
+
+button.wide {
+  width: 100%;
+  padding: 8px 10px;
+}
+
+.banner-warn {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.badge-warn {
+  background: color-mix(in srgb, var(--warn) 20%, transparent);
+}
+
+.account-button {
+  margin-left: 4px;
+}
+
+.account {
+  height: 100%;
+  overflow: auto;
+}
+
+.account-toolbar .spacer {
+  flex: 1;
+}
+
+.account-section {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 12px 16px;
+}
+
+.account-section h2 {
+  margin: 8px 0 2px;
+  font-size: 18px;
+}
+
+.account-section h3 {
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+.account > .error-text,
+.account > .banner-warn {
+  max-width: 60rem;
+  margin: 8px auto;
+}
+
+.list {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 10px;
+}
+
+.list th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  padding: 4px 8px;
+}
+
+.list td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--surface-2);
+  vertical-align: middle;
+}
+
+.list td.end {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-form input,
+.inline-form select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+button.link.danger-text {
+  color: var(--err);
+}
+
+.token-box {
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+@media (max-width: 640px) {
+  .list th:nth-child(n + 3),
+  .list td:nth-child(n + 3):not(.end) {
+    display: none;
+  }
+}

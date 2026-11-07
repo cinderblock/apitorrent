@@ -1,18 +1,29 @@
 // The REST half of the API. Every call is same-origin: in development Vite proxies /api to
-// the daemon, and in production the daemon serves this UI itself.
+// the daemon, and in production the daemon serves this UI itself. The session cookie is
+// HttpOnly and SameSite=Strict, so the browser attaches it and scripts never see it.
 
+import type { AddPasskeyFinishRequest } from "./generated/AddPasskeyFinishRequest";
 import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
 import type { Ban } from "./generated/Ban";
 import type { SessionStats } from "./generated/SessionStats";
 import type { AddTorrentResponse } from "./generated/AddTorrentResponse";
 import type { ApiError } from "./generated/ApiError";
+import type { ApiTokenInfo } from "./generated/ApiTokenInfo";
+import type { AuthStatus } from "./generated/AuthStatus";
+import type { CeremonyStart } from "./generated/CeremonyStart";
+import type { CreatedToken } from "./generated/CreatedToken";
+import type { CreateTokenRequest } from "./generated/CreateTokenRequest";
 import type { FilePriority } from "./generated/FilePriority";
 import type { ImportDelugeRequest } from "./generated/ImportDelugeRequest";
 import type { ImportReport } from "./generated/ImportReport";
 import type { QueueMove } from "./generated/QueueMove";
 import type { Settings } from "./generated/Settings";
 import type { TorrentLimits } from "./generated/TorrentLimits";
+import type { PasskeyInfo } from "./generated/PasskeyInfo";
 import type { ServerInfo } from "./generated/ServerInfo";
+import type { SessionInfo } from "./generated/SessionInfo";
+import type { SetupPasswordRequest } from "./generated/SetupPasswordRequest";
+import type { SetupStartRequest } from "./generated/SetupStartRequest";
 import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { UnwantedPolicy } from "./generated/UnwantedPolicy";
 
@@ -29,8 +40,22 @@ export class ApiRequestError extends Error {
   }
 }
 
+// Errors that mean "you're not (fully) signed in any more": the UI re-checks its status.
+const AUTH_LOST = new Set(["unauthenticated", "second_factor_required"]);
+const authLostListeners = new Set<() => void>();
+
+/** Called when a request shows the session has ended (expired, revoked, signed out). */
+export function onAuthLost(listener: () => void): () => void {
+  authLostListeners.add(listener);
+  return () => authLostListeners.delete(listener);
+}
+
+export function notifyAuthLost(): void {
+  for (const l of authLostListeners) l();
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const init: RequestInit = { method, headers: {} };
+  const init: RequestInit = { method, headers: {}, credentials: "same-origin" };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
     init.headers = { "content-type": "application/json" };
@@ -43,6 +68,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       // Not a JSON error body (a proxy error page, say); keep the status line.
     }
+    if (AUTH_LOST.has(err.code)) notifyAuthLost();
     throw new ApiRequestError(resp.status, err.code, err.message);
   }
   if (resp.status === 204) return undefined as T;
@@ -76,6 +102,45 @@ export const api = {
   /** Delete held copies of deselected files; all of them when `files` is omitted. */
   releaseHeld: (id: string, files?: number[]) =>
     request<void>("POST", `/torrents/${enc(id)}/held/release`, { files: files ?? null }),
+};
+
+/** `/api/v1/auth`. Sign-in calls answer with the new status and set the session cookie. */
+export const authApi = {
+  status: () => request<AuthStatus>("GET", "/auth/status"),
+
+  setupStart: (req: SetupStartRequest) => request<CeremonyStart>("POST", "/auth/setup/start", req),
+  setupFinish: (ceremonyId: string, credential: unknown, passkeyName: string | null) =>
+    request<AuthStatus>("POST", "/auth/setup/finish", { ceremonyId, credential, passkeyName }),
+  setupPassword: (req: SetupPasswordRequest) => request<AuthStatus>("POST", "/auth/setup/password", req),
+
+  loginStart: () => request<CeremonyStart>("POST", "/auth/login/passkey/start"),
+  loginFinish: (ceremonyId: string, credential: unknown) =>
+    request<AuthStatus>("POST", "/auth/login/passkey/finish", { ceremonyId, credential }),
+  /** A password sign-in, or the password step after a passkey (second-factor mode). */
+  loginPassword: (username: string | null, password: string) =>
+    request<AuthStatus>("POST", "/auth/login/password", { username, password }),
+  logout: () => request<void>("POST", "/auth/logout"),
+
+  reauthStart: () => request<CeremonyStart>("POST", "/auth/reauth/passkey/start"),
+  reauthFinish: (ceremonyId: string, credential: unknown) =>
+    request<AuthStatus>("POST", "/auth/reauth/passkey/finish", { ceremonyId, credential }),
+  reauthPassword: (password: string) => request<AuthStatus>("POST", "/auth/reauth/password", { password }),
+
+  passkeys: () => request<PasskeyInfo[]>("GET", "/auth/passkeys"),
+  passkeyStart: () => request<CeremonyStart>("POST", "/auth/passkeys/start"),
+  passkeyFinish: (req: AddPasskeyFinishRequest) => request<PasskeyInfo>("POST", "/auth/passkeys/finish", req),
+  renamePasskey: (id: string, name: string) => request<void>("PATCH", `/auth/passkeys/${enc(id)}`, { name }),
+  removePasskey: (id: string) => request<void>("DELETE", `/auth/passkeys/${enc(id)}`),
+
+  setPassword: (password: string) => request<void>("PUT", "/auth/password", { password }),
+  removePassword: () => request<void>("DELETE", "/auth/password"),
+
+  tokens: () => request<ApiTokenInfo[]>("GET", "/auth/tokens"),
+  createToken: (req: CreateTokenRequest) => request<CreatedToken>("POST", "/auth/tokens", req),
+  revokeToken: (id: string) => request<void>("DELETE", `/auth/tokens/${enc(id)}`),
+
+  sessions: () => request<SessionInfo[]>("GET", "/auth/sessions"),
+  revokeSession: (id: string) => request<void>("DELETE", `/auth/sessions/${enc(id)}`),
 };
 
 /** Read a File as base64, for `AddSource.torrentFile`. */

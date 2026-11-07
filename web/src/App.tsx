@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 
 import { api } from "./api/client";
+import type { AuthStatus } from "./api/generated/AuthStatus";
 import { SyncClient } from "./api/sync";
 import { AddTorrent } from "./components/AddTorrent";
 import { ConfirmRemove } from "./components/ConfirmRemove";
@@ -11,6 +12,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentTable } from "./components/TorrentTable";
 import { formatRate } from "./format";
+import { navigate } from "./router";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
 
 const sync = SyncClient.forCurrentPage();
@@ -26,7 +28,7 @@ const DESCENDING_FIRST: ReadonlySet<SortKey> = new Set([
   "addedAt",
 ]);
 
-export function App() {
+export function App({ status: auth }: { status: AuthStatus }) {
   useEffect(() => {
     sync.start();
     return () => sync.stop();
@@ -180,6 +182,14 @@ export function App() {
         <span className={`conn conn-${status}`} role="status">
           {status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
         </span>
+        {auth.authDisabled && (
+          <span className="badge badge-warn" title="Started with --insecure-no-auth-loopback">
+            No sign-in
+          </span>
+        )}
+        <button type="button" className="account-button" onClick={() => navigate("/account")} title="Account">
+          {auth.user?.displayName ?? "Account"}
+        </button>
       </header>
       <Sidebar
         filter={view.filter}

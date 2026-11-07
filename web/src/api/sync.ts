@@ -1,6 +1,7 @@
 // The live half of the API: a WebSocket that delivers a snapshot, then patches. The client
 // reconnects with backoff and resynchronises from a fresh snapshot after any gap.
 
+import { notifyAuthLost } from "./client";
 import type { SyncMessage } from "./generated/SyncMessage";
 import { applySync, initialSyncState, type SyncState } from "../state/torrents";
 
@@ -14,6 +15,9 @@ export interface SyncSnapshot {
 type Listener = () => void;
 
 const MAX_BACKOFF_MS = 10_000;
+
+/** The server closed the socket because its credential ended (signed out, revoked, expired). */
+export const CLOSE_UNAUTHORIZED = 4401;
 
 export class SyncClient {
   private snapshot: SyncSnapshot = { state: initialSyncState, status: "connecting" };
@@ -76,8 +80,11 @@ export class SyncClient {
         ws.close();
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (this.socket !== ws) return;
+      // The session may have ended, or just been replaced by a newer one (after re-signing
+      // in). Let the app re-check; reconnecting below picks up a newer session's cookie.
+      if (event.code === CLOSE_UNAUTHORIZED) notifyAuthLost();
       this.socket = null;
       if (this.stopped) return;
       this.set({ status: "reconnecting" });
