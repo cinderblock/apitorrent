@@ -1154,3 +1154,157 @@ async fn v2_magnet_chunked_layers() {
     )
     .await;
 }
+
+/// A minimal HTTP/1.1 file server with `Range` support, for web seed tests. One request
+/// per connection.
+async fn serve_files(root: std::path::PathBuf) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn decode(path: &str) -> String {
+        let bytes = path.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap();
+                out.push(u8::from_str_radix(hex, 16).unwrap());
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let root = root.clone();
+            tokio::spawn(async move {
+                let mut req = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        return;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                }
+                let text = String::from_utf8_lossy(&req).into_owned();
+                let mut lines = text.lines();
+                let path = lines.next().unwrap().split(' ').nth(1).unwrap().to_owned();
+                let range = lines
+                    .find_map(|l| {
+                        l.strip_prefix("range: ")
+                            .or_else(|| l.strip_prefix("Range: "))
+                    })
+                    .map(|r| r.trim_start_matches("bytes=").to_owned());
+                let mut file = root.clone();
+                for c in decode(&path).trim_start_matches('/').split('/') {
+                    file.push(c);
+                }
+                let Ok(data) = std::fs::read(&file) else {
+                    let _ = sock
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .await;
+                    return;
+                };
+                let (start, end) = match range {
+                    Some(r) => {
+                        let (a, b) = r.split_once('-').unwrap();
+                        (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap())
+                    }
+                    None => (0, data.len() - 1),
+                };
+                let body = &data[start..=end];
+                let head = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {start}-{end}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    data.len(),
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            });
+        }
+    });
+    addr
+}
+
+/// A multi-file torrent downloaded from a web seed alone (its URL is a directory).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webseed_multi_file() {
+    let files: Vec<(Vec<String>, Vec<u8>)> = vec![
+        (vec!["big.bin".into()], data(700_000, 21)),
+        (vec!["dir".into(), "a file.txt".into()], data(50_000, 22)),
+    ];
+    let seed_dir = tempfile::tempdir().unwrap();
+    for (path, bytes) in &files {
+        let mut p = seed_dir.path().join("pack");
+        for c in path {
+            p.push(c);
+        }
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, bytes).unwrap();
+    }
+    let server = serve_files(seed_dir.path().to_path_buf()).await;
+    let mut b = TorrentBuilder::new("pack", Version::V1)
+        .piece_length(64 * 1024)
+        .web_seed(format!("http://{server}/"));
+    for (path, bytes) in &files {
+        let p: Vec<&str> = path.iter().map(String::as_str).collect();
+        b = b.file(FileSource::from_bytes(&p, bytes.clone()));
+    }
+    let torrent = Arc::new(Torrent::from_bytes(&b.build().unwrap()).unwrap());
+    let fx = Fixture { torrent, files };
+
+    let leech_dir = tempfile::tempdir().unwrap();
+    let leecher = Session::start(local_config()).await.unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .unwrap_or_else(|_| panic!("web seed download timed out: {:?}", leech.stats()));
+    assert_files(leech_dir.path(), &fx);
+}
+
+/// A single-file torrent whose web seed URL names the file itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn webseed_single_file() {
+    let bytes = data(300_000, 31);
+    let seed_dir = tempfile::tempdir().unwrap();
+    std::fs::write(seed_dir.path().join("mirror.iso"), &bytes).unwrap();
+    let server = serve_files(seed_dir.path().to_path_buf()).await;
+    let torrent_bytes = TorrentBuilder::new("linux.iso", Version::V1)
+        .piece_length(32 * 1024)
+        .web_seed(format!("http://{server}/mirror.iso"))
+        .file(FileSource::from_bytes(&[], bytes.clone()))
+        .build()
+        .unwrap();
+    let torrent = Arc::new(Torrent::from_bytes(&torrent_bytes).unwrap());
+    let leech_dir = tempfile::tempdir().unwrap();
+    let leecher = Session::start(local_config()).await.unwrap();
+    let pieces = u32::try_from(torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            ..AddTorrent::new(torrent, leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .unwrap_or_else(|_| panic!("web seed download timed out: {:?}", leech.stats()));
+    assert_eq!(
+        std::fs::read(leech_dir.path().join("linux.iso")).unwrap(),
+        bytes
+    );
+}

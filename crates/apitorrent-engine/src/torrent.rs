@@ -28,6 +28,7 @@ use crate::reputation::Reputation;
 use crate::session::Shared;
 use crate::storage::{FileStorage, Placement, Storage, StoragePaths};
 use crate::verify::{PieceHashes, Verdict};
+use crate::webseed::{self, WebSeedEvent, WebSeedTorrent};
 
 const TICK: Duration = Duration::from_secs(1);
 const CHOKE_EVERY: u32 = 10;
@@ -38,6 +39,21 @@ const RECONNECT_AFTER: Duration = Duration::from_secs(10);
 const RETRY_AFTER: Duration = Duration::from_secs(60);
 /// How long to wait for a hash request to be answered before asking another peer.
 const HASH_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A web seed failing this many times in a row, or sending this many bad pieces, is
+/// dropped.
+const WEBSEED_MAX_FAILURES: u32 = 10;
+const WEBSEED_MAX_BAD_PIECES: u32 = 3;
+
+/// Our view of one web seed.
+struct WebSeed {
+    url: String,
+    /// The piece it is fetching.
+    piece: Option<u32>,
+    failures: u32,
+    bad_pieces: u32,
+    disabled: bool,
+}
 
 /// A piece layer being fetched from peers (BEP 52).
 struct LayerFetch {
@@ -461,6 +477,11 @@ pub(crate) struct TorrentActor {
     reputation: Reputation,
     /// Piece layers still to fetch, by `pieces root`.
     layer_fetches: HashMap<Sha256Hash, LayerFetch>,
+    webseeds: HashMap<PeerKey, WebSeed>,
+    /// Which web seed supplied each piece being verified.
+    webseed_pieces: HashMap<u32, PeerKey>,
+    webseed_tx: mpsc::Sender<WebSeedEvent>,
+    webseed_rx: mpsc::Receiver<WebSeedEvent>,
     announcer: Announcer,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
@@ -531,6 +552,7 @@ impl TorrentActor {
             keys.push(v2.truncated());
         }
         let max_message = Decoder::max_len_for(u64::from(layout.piece_count()));
+        let (webseed_tx, webseed_rx) = mpsc::channel(64);
         let throttle = Arc::new(Throttle::new(
             shared.download.clone(),
             shared.upload.clone(),
@@ -574,6 +596,10 @@ impl TorrentActor {
             block_from: HashMap::new(),
             reputation: Reputation::default(),
             layer_fetches: HashMap::new(),
+            webseeds: HashMap::new(),
+            webseed_pieces: HashMap::new(),
+            webseed_tx,
+            webseed_rx,
             announcer: Announcer::new(&torrent.trackers, &keys, Instant::now()),
             finished: false,
         };
@@ -620,6 +646,7 @@ impl TorrentActor {
         self.picker = Some(picker);
         self.apply_holds();
         self.finished = self.picker.as_ref().is_some_and(Picker::is_finished);
+        self.start_webseeds();
         if let Err(e) = self.storage.create_empty_files() {
             tracing::warn!(error = %e, "could not create empty files");
         }
@@ -688,6 +715,143 @@ impl TorrentActor {
                 self.update_interest(key);
             }
             self.publish_stats();
+        }
+    }
+
+    // ----- web seeds (BEP 19) ------------------------------------------------------------
+
+    fn start_webseeds(&mut self) {
+        if self.torrent.web_seeds.is_empty() || !self.webseeds.is_empty() {
+            return;
+        }
+        let info = &self.torrent.info;
+        let shape = Arc::new(WebSeedTorrent {
+            layout: self.layout.clone(),
+            paths: info.files.iter().map(|f| f.path.clone()).collect(),
+            name: info.name.clone(),
+            single_file: info.is_single_file(),
+        });
+        for url in self.torrent.web_seeds.clone() {
+            let key = self.shared.next_key();
+            self.webseeds.insert(
+                key,
+                WebSeed {
+                    url: url.clone(),
+                    piece: None,
+                    failures: 0,
+                    bad_pieces: 0,
+                    disabled: false,
+                },
+            );
+            webseed::spawn(
+                url,
+                key,
+                shape.clone(),
+                self.shared.http.clone(),
+                self.throttle.clone(),
+                self.webseed_tx.clone(),
+            );
+        }
+    }
+
+    fn on_webseed(&mut self, event: WebSeedEvent) {
+        match event {
+            WebSeedEvent::Want { key, reply } => {
+                let _ = reply.send(self.webseed_pick(key));
+            }
+            WebSeedEvent::Piece { key, piece, data } => {
+                if let Some(ws) = self.webseeds.get_mut(&key) {
+                    ws.piece = None;
+                    ws.failures = 0;
+                }
+                self.downloaded += data.len() as u64;
+                let blocks = self.layout.blocks_in_piece(piece);
+                let size = self.layout.piece_size(piece) as usize;
+                let Some(picker) = self.picker.as_mut() else {
+                    return;
+                };
+                let mut complete = false;
+                for b in 0..blocks {
+                    let block = BlockRef {
+                        piece,
+                        offset: b * BLOCK_LEN,
+                        length: self.layout.block_size(piece, b),
+                    };
+                    if let Received::New { piece_complete, .. } = picker.block_received(key, &block)
+                    {
+                        let start = block.offset as usize;
+                        let end = start + block.length as usize;
+                        let buf = self.buffers.entry(piece).or_insert_with(|| vec![0u8; size]);
+                        buf[start..end].copy_from_slice(&data[start..end]);
+                        complete |= piece_complete;
+                    }
+                }
+                if complete {
+                    let full = self.buffers.remove(&piece).expect("buffer exists");
+                    self.webseed_pieces.insert(piece, key);
+                    self.verify_and_write(piece, full, false);
+                }
+            }
+            WebSeedEvent::Failed { key, piece, error } => {
+                if let Some(picker) = self.picker.as_mut() {
+                    picker.peer_gone(key);
+                }
+                if let Some(ws) = self.webseeds.get_mut(&key) {
+                    ws.piece = None;
+                    ws.failures += 1;
+                    if ws.failures >= WEBSEED_MAX_FAILURES && !ws.disabled {
+                        ws.disabled = true;
+                        tracing::warn!(url = %ws.url, piece, %error, "giving up on a web seed");
+                    }
+                }
+                self.sync_memory();
+            }
+        }
+    }
+
+    /// The next piece for a web seed to fetch: a whole piece of its own.
+    fn webseed_pick(&mut self, key: PeerKey) -> Option<u32> {
+        if self.paused || self.error.is_some() {
+            return None;
+        }
+        let ws = self.webseeds.get(&key)?;
+        if ws.disabled || ws.piece.is_some() {
+            return None;
+        }
+        let picker = self.picker.as_mut()?;
+        let max_new = new_piece_room(
+            &self.layout,
+            picker.pieces_in_progress(),
+            self.shared.memory.available(),
+            self.limits.memory,
+        )
+        .min(1);
+        let everything = Bitfield::full(self.layout.piece_count());
+        let blocks = picker.pick_exclusive(
+            key,
+            &everything,
+            self.layout.blocks_in_piece(0) as usize,
+            max_new,
+        );
+        let piece = blocks.first()?.piece;
+        if let Some(ws) = self.webseeds.get_mut(&key) {
+            ws.piece = Some(piece);
+        }
+        self.sync_memory();
+        Some(piece)
+    }
+
+    /// A piece from a web seed failed verification: count it against the seed.
+    fn webseed_piece_failed(&mut self, piece: u32) {
+        let Some(key) = self.webseed_pieces.remove(&piece) else {
+            return;
+        };
+        if let Some(ws) = self.webseeds.get_mut(&key) {
+            ws.bad_pieces += 1;
+            if ws.bad_pieces >= WEBSEED_MAX_BAD_PIECES && !ws.disabled {
+                ws.disabled = true;
+                tracing::warn!(url = %ws.url, "web seed sent pieces that don't verify; dropped");
+            }
         }
     }
 
@@ -972,6 +1136,7 @@ impl TorrentActor {
                     self.handle(msg);
                 }
                 Some((key, event)) = self.peer_rx.recv() => self.handle_peer(key, event),
+                Some(event) = self.webseed_rx.recv() => self.on_webseed(event),
                 _ = tick.tick() => self.on_tick(),
             }
         }
@@ -1798,8 +1963,14 @@ impl TorrentActor {
         // Disk errors say nothing about the peers.
         if let Ok(verdict) = &result {
             self.judge_piece(piece, *verdict == Verdict::Valid, digests);
+            if *verdict == Verdict::Valid {
+                self.webseed_pieces.remove(&piece);
+            } else {
+                self.webseed_piece_failed(piece);
+            }
         } else {
             self.block_from.remove(&piece);
+            self.webseed_pieces.remove(&piece);
         }
         let Some(picker) = self.picker.as_mut() else {
             return;

@@ -93,7 +93,7 @@ engine core stays in the main thread, because its pieces interlock.
   4. ~~Bad-peer system~~ (done; v2 block proofs come with hash requests in step 7)
   5. ~~Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing~~ (done)
   6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE ← current
-  7. ~~v2 hash requests~~, ~~upload `cancel`~~, webseeds (BEP 19), naming policy
+  7. ~~v2 hash requests~~, ~~upload `cancel`~~, ~~webseeds (BEP 19)~~, naming policy ← current
   8. Content library: matching, bookends, piece reuse, fingerprints, pack switchover
 - **Delegated streams:**
   - `apitorrent-dht`: BEP 5, 32 and 42 (evaluate rqbit's crate first)
@@ -194,7 +194,13 @@ engine core stays in the main thread, because its pieces interlock.
   turns out to be hybrid, whose own id would be the v2 hash. Core passes ids explicitly
   for this reason.
 - Known engine gaps: none blocking real-world use now that hash requests and cancels exist.
-  Still missing: webseeds, DHT/uTP/MSE wiring, naming policy.
+  Still missing: DHT/uTP/MSE wiring, naming policy.
+- Web seeds (`webseed.rs`) request files by their *sanitised* paths. If sanitising changed
+  a name (a `:` on Windows, say), the server's real name differs and that file 404s. Fix
+  with the naming-policy work: keep the original torrent path for URLs.
+- `apitorrent_tracker::strict_http_client` is the one way to make HTTP requests (verified
+  TLS, no environment proxies, no Referer, no HTTPS-to-HTTP redirects). Reuse it for
+  feeds and plugins.
 
 ## Progress log
 

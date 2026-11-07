@@ -88,6 +88,8 @@ pub(crate) struct Shared {
     pub(crate) announce_key: u32,
     pub(crate) memory: MemoryBudget,
     pub(crate) filter: IpFilter,
+    /// For web seeds: verified TLS, no proxies from the environment.
+    pub(crate) http: apitorrent_tracker::reqwest::Client,
     pub(crate) download: Arc<Bucket>,
     pub(crate) upload: Arc<Bucket>,
     pub(crate) connections: Arc<Counter>,
@@ -210,6 +212,12 @@ impl Session {
         let version = version_digits();
         let peer_id = PeerId::azureus(*b"AT", version, rand::random());
         let tracker = TrackerClient::new().map_err(io::Error::other)?;
+        let http = apitorrent_tracker::strict_http_client(
+            &config.client_name,
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(15),
+        )
+        .map_err(io::Error::other)?;
         let memory = MemoryBudget::new(config.memory_limit);
         let filter = IpFilter::new(config.ban_policy);
         let shared = Arc::new(Shared {
@@ -223,6 +231,7 @@ impl Session {
             config,
             memory,
             filter,
+            http,
             peer_id,
             tracker,
             announce_key: rand::random(),

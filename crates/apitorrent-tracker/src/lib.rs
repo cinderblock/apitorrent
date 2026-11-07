@@ -26,8 +26,10 @@ mod tls;
 mod types;
 pub mod udp;
 
-pub use client::{TrackerClient, TrackerConfig};
+pub use client::{TrackerClient, TrackerConfig, strict_http_client};
 pub use error::TrackerError;
+/// Re-exported so users of [`strict_http_client`] share the exact same version.
+pub use reqwest;
 pub use types::{
     AnnounceEvent, AnnounceRequest, AnnounceResponse, MAX_PEERS, MAX_SCRAPE_HASHES, ScrapeResponse,
     ScrapeStats,

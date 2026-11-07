@@ -98,6 +98,27 @@ fn redirect_policy(max: usize) -> redirect::Policy {
     })
 }
 
+/// A general HTTP client with the same safety rules as tracker requests: certificates
+/// verified against the OS trust store (never skippable), no proxies from the environment,
+/// no `Referer`, and redirects only between HTTP(S) URLs and never down from HTTPS. Used
+/// for web seeds and anything else that fetches over HTTP.
+pub fn strict_http_client(
+    user_agent: &str,
+    timeout: std::time::Duration,
+    connect_timeout: std::time::Duration,
+) -> Result<reqwest::Client, TrackerError> {
+    reqwest::Client::builder()
+        .tls_backend_preconfigured(tls::client_config()?)
+        .redirect(redirect_policy(5))
+        .referer(false)
+        .no_proxy()
+        .user_agent(user_agent)
+        .timeout(timeout)
+        .connect_timeout(connect_timeout)
+        .build()
+        .map_err(TrackerError::network)
+}
+
 impl TrackerClient {
     /// A client with the default [`TrackerConfig`].
     pub fn new() -> Result<Self, TrackerError> {

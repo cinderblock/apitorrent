@@ -20,6 +20,7 @@ mod session;
 pub mod storage;
 mod torrent;
 pub mod verify;
+mod webseed;
 
 pub use announce::TrackerStatus;
 pub use session::{AddError, Session, SessionConfig};
