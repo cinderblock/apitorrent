@@ -1,6 +1,6 @@
 //! The session: our identity on the network, the listen socket, and the set of torrents.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,6 +46,9 @@ pub struct SessionConfig {
     pub connect_rate: u64,
     /// How often to send peer exchange messages. BEP 11 asks for at most once a minute.
     pub pex_interval: std::time::Duration,
+    /// Local service discovery (BEP 14). Off unless set: listening on the LSD port makes
+    /// some systems ask the user about firewall access.
+    pub lsd: Option<crate::lsd::LsdConfig>,
 }
 
 impl Default for SessionConfig {
@@ -64,6 +67,7 @@ impl Default for SessionConfig {
             max_half_open: 64,
             connect_rate: 30,
             pex_interval: std::time::Duration::from_secs(60),
+            lsd: None,
         }
     }
 }
@@ -93,6 +97,9 @@ pub(crate) struct Shared {
     listen_port: u16,
     next_key: AtomicU64,
     torrents: Mutex<HashMap<Sha1Hash, mpsc::Sender<ActorMsg>>>,
+    /// Wire info-hashes of torrents that aren't private: the ones LSD and DHT may announce
+    /// and find peers for.
+    public: Mutex<HashSet<Sha1Hash>>,
 }
 
 /// The session's memory budget for piece data. Torrents reserve and release whole pieces;
@@ -147,11 +154,42 @@ impl Shared {
 
     pub(crate) fn unregister(&self, hashes: &InfoHashes) {
         let mut map = self.torrents.lock().expect("torrent map poisoned");
+        let mut public = self.public.lock().expect("public set poisoned");
         if let Some(v1) = hashes.get_v1() {
             map.remove(&v1);
+            public.remove(&v1);
         }
         if let Some(v2) = hashes.get_v2() {
             map.remove(&v2.truncated());
+            public.remove(&v2.truncated());
+        }
+    }
+
+    pub(crate) fn public_hashes(&self) -> HashSet<Sha1Hash> {
+        self.public.lock().expect("public set poisoned").clone()
+    }
+
+    /// Peers found by a discovery service (LSD, DHT) for a wire info-hash. Only public
+    /// torrents get them.
+    pub(crate) async fn discovered(&self, hash: &Sha1Hash, peers: Vec<SocketAddr>) {
+        if !self
+            .public
+            .lock()
+            .expect("public set poisoned")
+            .contains(hash)
+        {
+            return;
+        }
+        let tx = self
+            .torrents
+            .lock()
+            .expect("torrent map poisoned")
+            .get(hash)
+            .cloned();
+        if let Some(tx) = tx {
+            let _ = tx
+                .send(ActorMsg::Command(crate::torrent::Command::AddPeers(peers)))
+                .await;
         }
     }
 }
@@ -161,6 +199,7 @@ impl Shared {
 pub struct Session {
     shared: Arc<Shared>,
     listen_addr: SocketAddr,
+    lsd_addr: Option<SocketAddr>,
 }
 
 impl Session {
@@ -180,6 +219,7 @@ impl Session {
             half_open: Counter::new(config.max_half_open),
             connect_rate: Bucket::new(config.connect_rate),
             groups: Mutex::new(HashMap::new()),
+            public: Mutex::new(HashSet::new()),
             config,
             memory,
             filter,
@@ -191,14 +231,24 @@ impl Session {
             torrents: Mutex::new(HashMap::new()),
         });
         tokio::spawn(accept_loop(listener, shared.clone()));
+        let lsd_addr = match shared.config.lsd.clone() {
+            Some(cfg) => Some(crate::lsd::start(&shared, cfg)?),
+            None => None,
+        };
         Ok(Self {
             shared,
             listen_addr,
+            lsd_addr,
         })
     }
 
     pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+
+    /// The LSD socket's address, when LSD is on.
+    pub fn lsd_addr(&self) -> Option<SocketAddr> {
+        self.lsd_addr
     }
 
     pub fn peer_id(&self) -> PeerId {
@@ -324,10 +374,15 @@ impl Session {
                 return Err(AddError::Duplicate);
             }
         }
+        let private = params.torrent.info.private;
         let (handle, keys) = TorrentActor::spawn(params, self.shared.clone());
         let mut map = self.shared.torrents.lock().expect("torrent map poisoned");
+        let mut public = self.shared.public.lock().expect("public set poisoned");
         for key in keys {
             map.insert(key, handle.tx.clone());
+            if !private {
+                public.insert(key);
+            }
         }
         Ok(handle)
     }

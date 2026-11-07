@@ -38,6 +38,10 @@ struct Args {
     #[arg(long, env = "APITORRENT_BLOCKLIST")]
     blocklist: Option<PathBuf>,
 
+    /// Turn off local service discovery (finding peers on the LAN by multicast).
+    #[arg(long, env = "APITORRENT_NO_LSD")]
+    no_lsd: bool,
+
     /// Most piece data held in memory at once, in MiB, across all torrents.
     #[arg(long, env = "APITORRENT_MEMORY_LIMIT_MIB", default_value_t = 256)]
     memory_limit_mib: u64,
@@ -110,6 +114,7 @@ async fn main() -> ExitCode {
         session: SessionConfig {
             listen: args.peer_listen,
             memory_limit: args.memory_limit_mib.saturating_mul(1024 * 1024),
+            lsd: (!args.no_lsd).then(apitorrent_engine::lsd::LsdConfig::default),
             ..SessionConfig::default()
         },
     })

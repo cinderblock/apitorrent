@@ -238,7 +238,9 @@ engine core stays in the main thread, because its pieces interlock.
   bad senders dropped), torrents serve `ut_metadata`, PEX (BEP 11, not for private
   torrents), core pending entries ("Fetching metadata" state, DB migration 4, `so` file
   selection, survives restarts, pause and remove)
-- [ ] LSD (BEP 14)
+- [x] LSD (BEP 14): `lsd.rs` codec and multicast service, public torrents only, on in the
+  daemon (`--no-lsd` to turn off), off in the engine default (it binds UDP 6771, which
+  can trigger a firewall prompt)
 - [ ] DHT (delegated)
 - [ ] uTP and MSE (delegated)
 - [ ] M4 auth (delegated)

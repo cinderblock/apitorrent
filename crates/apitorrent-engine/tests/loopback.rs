@@ -983,3 +983,61 @@ async fn pex_spreads_peers() {
         .expect("B's download timed out");
     assert_files(b_dir.path(), &fx);
 }
+
+/// LSD: the session announces its torrent, and connects to a peer it hears about. A plain
+/// UDP socket on loopback stands in for the multicast group and the other client.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_service_discovery() {
+    use apitorrent_engine::lsd::{self, LsdConfig};
+
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let (seeder, _seed) = seed_fixture(&fx, seed_dir.path()).await;
+
+    let other = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let leecher = Session::start(SessionConfig {
+        lsd: Some(LsdConfig {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            target: other.local_addr().unwrap(),
+            group: None,
+        }),
+        ..local_config()
+    })
+    .await
+    .unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    let hash = fx.torrent.info.info_hashes().get_v1().unwrap();
+
+    // The session announces the new torrent within a few seconds.
+    let mut buf = [0u8; 1500];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(15), other.recv_from(&mut buf))
+        .await
+        .expect("no LSD announce")
+        .unwrap();
+    let announce = lsd::decode(&buf[..n]).expect("a valid announce");
+    assert_eq!(announce.info_hashes, [hash]);
+    assert_eq!(announce.port, leecher.listen_addr().port());
+
+    // Another client announces the same torrent, at the seeder's port.
+    let msg = lsd::encode(
+        other.local_addr().unwrap(),
+        seeder.listen_addr().port(),
+        &[hash],
+        "someone-else",
+    );
+    other
+        .send_to(&msg, leecher.lsd_addr().unwrap())
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .unwrap_or_else(|_| panic!("download via LSD timed out: {:?}", leech.stats()));
+    assert_files(leech_dir.path(), &fx);
+}

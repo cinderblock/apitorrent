@@ -9,6 +9,7 @@ pub mod ban;
 pub mod bitfield;
 pub mod layout;
 pub mod limits;
+pub mod lsd;
 pub mod metadata;
 pub mod parts;
 mod peer;

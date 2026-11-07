@@ -99,6 +99,7 @@ dependencies = [
  "rand 0.9.5",
  "sha1 0.10.7",
  "sha2",
+ "socket2",
  "tempfile",
  "thiserror",
  "tokio",
