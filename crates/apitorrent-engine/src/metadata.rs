@@ -74,6 +74,11 @@ impl MetadataFetch {
         self.status.borrow().clone()
     }
 
+    /// A receiver that changes whenever the status does.
+    pub fn watch(&self) -> watch::Receiver<FetchStatus> {
+        self.status.clone()
+    }
+
     pub fn add_peers(&self, peers: Vec<SocketAddr>) {
         let _ = self.cmd.send(Cmd::AddPeers(peers));
     }

@@ -47,6 +47,10 @@ const MIGRATIONS: &[&str] = &[
            OR (t.added_at = torrents.added_at AND t.id < torrents.id)
     );
     ",
+    // 4: magnet links. Until the metadata arrives, `torrent` is empty.
+    "
+    ALTER TABLE torrents ADD COLUMN magnet TEXT;
+    ",
 ];
 
 /// A torrent as stored.
@@ -75,6 +79,8 @@ pub struct TorrentRow {
     pub download_rate: u64,
     pub upload_rate: u64,
     pub max_connections: Option<u32>,
+    /// The magnet link it was added from, if any.
+    pub magnet: Option<String>,
 }
 
 /// Resume state saved periodically for one torrent.
@@ -143,9 +149,9 @@ impl Database {
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
                  placements, held_path, unwanted_policy, queue_position, download_rate,
-                 upload_rate, max_connections)
+                 upload_rate, max_connections, magnet)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20)",
+                 ?17, ?18, ?19, ?20, ?21)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -167,6 +173,7 @@ impl Database {
                 to_i64(row.download_rate),
                 to_i64(row.upload_rate),
                 row.max_connections,
+                row.magnet,
             ],
         )?;
         Ok(())
@@ -184,7 +191,7 @@ impl Database {
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
                     paused, have, file_priorities, downloaded_total, uploaded_total,
                     placements, held_path, unwanted_policy, queue_position, download_rate,
-                    upload_rate, max_connections
+                    upload_rate, max_connections, magnet
              FROM torrents ORDER BY queue_position, added_at",
         )?;
         stmt.query_map([], |r| {
@@ -209,6 +216,7 @@ impl Database {
                 download_rate: from_i64(r.get(17)?),
                 upload_rate: from_i64(r.get(18)?),
                 max_connections: r.get(19)?,
+                magnet: r.get(20)?,
             })
         })?
         .collect()
@@ -291,6 +299,32 @@ impl Database {
         Ok(())
     }
 
+    /// Store the metadata fetched for a magnet link.
+    pub fn set_metadata(
+        &self,
+        id: &str,
+        torrent: &[u8],
+        name: &str,
+        info_hash_v1: Option<&str>,
+        info_hash_v2: Option<&str>,
+        file_priorities: &[u8],
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE torrents SET torrent = ?2, name = ?3, info_hash_v1 = ?4, info_hash_v2 = ?5,
+                 file_priorities = ?6
+             WHERE id = ?1",
+            params![
+                id,
+                torrent,
+                name,
+                info_hash_v1,
+                info_hash_v2,
+                file_priorities
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn set_label(&self, id: &str, label: Option<&str>) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE torrents SET label = ?2 WHERE id = ?1",
@@ -356,6 +390,7 @@ mod tests {
             download_rate: 0,
             upload_rate: 0,
             max_connections: None,
+            magnet: None,
         }
     }
 

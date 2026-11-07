@@ -9,15 +9,17 @@ pub mod settings;
 pub mod store;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::{Notify, broadcast, oneshot, watch};
 
 use apitorrent_engine::bitfield::Bitfield;
 use apitorrent_engine::layout::Layout;
+use apitorrent_engine::metadata::FetchStatus;
 use apitorrent_engine::storage::Placement;
 use apitorrent_engine::{
     AddTorrent, Session, SessionConfig, TorrentHandle, TorrentState as EngineState,
@@ -97,8 +99,26 @@ struct Entry {
     group: Option<String>,
 }
 
+/// A magnet link waiting for its metadata.
+struct Pending {
+    magnet: Magnet,
+    uri: String,
+    save_path: PathBuf,
+    held_path: PathBuf,
+    label: Option<String>,
+    added_at: i64,
+    paused: bool,
+    unwanted: UnwantedPolicy,
+    queue_position: u32,
+    /// Progress of the fetch, and a way to cancel it; `None` while paused.
+    fetch: Option<(watch::Receiver<FetchStatus>, oneshot::Sender<()>)>,
+}
+
 /// Everything needed to start a torrent in the engine and track it.
 struct Spawn {
+    id: TorrentId,
+    /// Peers to try straight away (found while fetching a magnet's metadata).
+    peers: Vec<SocketAddr>,
     torrent: Arc<Torrent>,
     save_path: PathBuf,
     held_path: PathBuf,
@@ -121,6 +141,7 @@ struct Inner {
     db: Arc<Mutex<Database>>,
     session: Session,
     torrents: RwLock<HashMap<TorrentId, Entry>>,
+    pending: RwLock<HashMap<TorrentId, Pending>>,
     store: Store,
     stop: Notify,
     settings: RwLock<Settings>,
@@ -168,6 +189,7 @@ impl Core {
                 db: Arc::new(Mutex::new(db)),
                 session,
                 torrents: RwLock::new(HashMap::new()),
+                pending: RwLock::new(HashMap::new()),
                 store: Store::new(),
                 stop: Notify::new(),
                 settings: RwLock::new(settings),
@@ -313,8 +335,18 @@ impl Core {
 
     /// Change a torrent's label, which also picks its group.
     pub async fn set_label(&self, id: &str, label: Option<String>) -> Result<(), CoreError> {
-        self.handle(id)?;
         let label = label.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
+        if let Some(p) = self
+            .inner
+            .pending
+            .write()
+            .expect("pending lock poisoned")
+            .get_mut(id)
+        {
+            p.label.clone_from(&label);
+        } else {
+            self.handle(id)?;
+        }
         let key = id.to_owned();
         let stored = label.clone();
         self.db(move |db| db.set_label(&key, stored.as_deref()))
@@ -337,12 +369,14 @@ impl Core {
     pub async fn queue_move(&self, id: &str, to: QueueMove) -> Result<(), CoreError> {
         let positions = {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
-            if !torrents.contains_key(id) {
+            let mut pending = self.inner.pending.write().expect("pending lock poisoned");
+            if !torrents.contains_key(id) && !pending.contains_key(id) {
                 return Err(CoreError::NotFound);
             }
             let mut order: Vec<(u32, String)> = torrents
                 .iter()
                 .map(|(k, e)| (e.queue_position, k.clone()))
+                .chain(pending.iter().map(|(k, p)| (p.queue_position, k.clone())))
                 .collect();
             order.sort();
             let mut ids: Vec<String> = order.into_iter().map(|(_, k)| k).collect();
@@ -364,6 +398,9 @@ impl Core {
                 if let Some(e) = torrents.get_mut(k) {
                     e.queue_position = *pos;
                 }
+                if let Some(p) = pending.get_mut(k) {
+                    p.queue_position = *pos;
+                }
             }
             positions
         };
@@ -375,12 +412,12 @@ impl Core {
     }
 
     fn next_queue_position(&self) -> u32 {
-        self.inner
-            .torrents
-            .read()
-            .expect("torrents lock poisoned")
+        let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+        let pending = self.inner.pending.read().expect("pending lock poisoned");
+        torrents
             .values()
             .map(|e| e.queue_position + 1)
+            .chain(pending.values().map(|p| p.queue_position + 1))
             .max()
             .unwrap_or(0)
     }
@@ -466,6 +503,10 @@ impl Core {
         let rows = self.db(|db| db.torrents()).await?;
         let count = rows.len();
         for row in rows {
+            if row.torrent.is_empty() {
+                self.restore_pending(row);
+                continue;
+            }
             let torrent = match Torrent::from_bytes(&row.torrent) {
                 Ok(t) => Arc::new(t),
                 Err(e) => {
@@ -495,6 +536,8 @@ impl Core {
                 PathBuf::from,
             );
             self.spawn_entry(Spawn {
+                id: row.id.clone(),
+                peers: Vec::new(),
                 torrent,
                 save_path,
                 held_path,
@@ -520,8 +563,234 @@ impl Core {
         Ok(())
     }
 
+    /// Bring back a magnet link that was still waiting for metadata.
+    fn restore_pending(&self, row: TorrentRow) {
+        let Some(uri) = row.magnet else {
+            tracing::error!(id = %row.id, "stored torrent has neither metadata nor a magnet link");
+            return;
+        };
+        let magnet = match Magnet::parse(&uri) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(id = %row.id, error = %e, "stored magnet link no longer parses");
+                return;
+            }
+        };
+        let save_path = PathBuf::from(&row.save_path);
+        let held_path = row.held_path.as_ref().map_or_else(
+            || held_path_for(&self.inner.config.data_dir, &save_path, &row.id),
+            PathBuf::from,
+        );
+        let id = row.id.clone();
+        self.inner
+            .pending
+            .write()
+            .expect("pending lock poisoned")
+            .insert(
+                row.id,
+                Pending {
+                    magnet,
+                    uri,
+                    save_path,
+                    held_path,
+                    label: row.label,
+                    added_at: row.added_at,
+                    paused: row.paused,
+                    unwanted: policy_from_byte(row.unwanted_policy),
+                    queue_position: row.queue_position,
+                    fetch: None,
+                },
+            );
+        if !row.paused {
+            self.start_fetch(&id);
+        }
+    }
+
+    /// Start (or restart) the metadata fetch for a pending magnet link. When it finishes,
+    /// the torrent starts for real.
+    fn start_fetch(&self, id: &str) {
+        let mut pending = self.inner.pending.write().expect("pending lock poisoned");
+        let Some(p) = pending.get_mut(id) else {
+            return;
+        };
+        let mut fetch = self.inner.session.fetch_metadata(&p.magnet);
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        p.fetch = Some((fetch.watch(), cancel_tx));
+        let core = self.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            tokio::select! {
+                fetched = fetch.wait() => {
+                    if let Some(fetched) = fetched
+                        && let Err(e) = core.metadata_arrived(&id, fetched).await
+                    {
+                        tracing::error!(%id, error = %e, "could not start the torrent from its metadata");
+                    }
+                }
+                _ = cancel_rx => {}
+            }
+        });
+    }
+
+    /// A magnet link's metadata is here: store it as a `.torrent` and start the torrent.
+    async fn metadata_arrived(
+        &self,
+        id: &str,
+        fetched: apitorrent_engine::metadata::Fetched,
+    ) -> Result<(), CoreError> {
+        let Some(p) = self
+            .inner
+            .pending
+            .write()
+            .expect("pending lock poisoned")
+            .remove(id)
+        else {
+            return Ok(()); // removed meanwhile
+        };
+        let bytes = apitorrent_engine::metadata::torrent_file(
+            &fetched.info,
+            &p.magnet.trackers,
+            &p.magnet.web_seeds,
+        );
+        let torrent = Arc::new(
+            Torrent::from_bytes(&bytes).map_err(|e| CoreError::InvalidTorrent(e.to_string()))?,
+        );
+        let prios = select_only_priorities(&torrent, p.magnet.select_only.as_deref());
+        let hashes = torrent.info.info_hashes();
+        let (key, name, stored) = (id.to_owned(), torrent.info.name.clone(), prios.clone());
+        let (v1, v2) = (
+            hashes.get_v1().map(|h| h.to_hex()),
+            hashes.get_v2().map(|h| h.to_hex()),
+        );
+        self.db(move |db| {
+            db.set_metadata(&key, &bytes, &name, v1.as_deref(), v2.as_deref(), &stored)
+        })
+        .await?;
+        tracing::info!(%id, name = %torrent.info.name, "metadata fetched");
+        self.spawn_entry(Spawn {
+            id: id.to_owned(),
+            peers: fetched.peers,
+            torrent,
+            save_path: p.save_path,
+            held_path: p.held_path,
+            have: None,
+            placements: None,
+            paused: p.paused,
+            file_priorities: prios,
+            unwanted: p.unwanted,
+            label: p.label,
+            added_at: p.added_at,
+            totals: (0, 0),
+            queue_position: p.queue_position,
+            limits: TorrentLimits::default(),
+            queued: !p.paused && self.queue_limited(),
+        })?;
+        self.apply_queue().await;
+        self.refresh();
+        Ok(())
+    }
+
+    /// Add a magnet link: store it, and fetch its metadata in the background.
+    async fn add_magnet(&self, uri: &str, req: AddTorrentRequest) -> Result<TorrentId, CoreError> {
+        let magnet = Magnet::parse(uri).map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
+        if magnet.info_hashes.get_v1().is_none() {
+            return Err(CoreError::Unsupported(
+                "v2-only magnet links need BEP 52 hash requests, which aren't implemented yet; \
+                 use a hybrid link (with a btih hash) or the .torrent file"
+                    .into(),
+            ));
+        }
+        let id = magnet.info_hashes.id_string();
+        let taken = self
+            .inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .contains_key(&id)
+            || self
+                .inner
+                .pending
+                .read()
+                .expect("pending lock poisoned")
+                .contains_key(&id);
+        if taken {
+            return Err(CoreError::Duplicate);
+        }
+        let save_path = req
+            .save_path
+            .map_or_else(|| self.inner.config.download_dir.clone(), PathBuf::from);
+        if !save_path.is_absolute() {
+            return Err(CoreError::InvalidRequest(
+                "save path must be absolute".into(),
+            ));
+        }
+        let held_path = {
+            let (data, save, id) = (
+                self.inner.config.data_dir.clone(),
+                save_path.clone(),
+                id.clone(),
+            );
+            tokio::task::spawn_blocking(move || held_path_for(&data, &save, &id))
+                .await
+                .expect("held path probe panicked")
+        };
+        let name = magnet.display_name.clone().unwrap_or_else(|| id.clone());
+        let row = TorrentRow {
+            id: id.clone(),
+            info_hash_v1: magnet.info_hashes.get_v1().map(|h| h.to_hex()),
+            info_hash_v2: magnet.info_hashes.get_v2().map(|h| h.to_hex()),
+            name,
+            torrent: Vec::new(),
+            save_path: save_path.to_string_lossy().into_owned(),
+            label: req.label.clone(),
+            added_at: now_ms(),
+            paused: req.paused,
+            have: None,
+            file_priorities: None,
+            downloaded_total: 0,
+            uploaded_total: 0,
+            placements: None,
+            held_path: Some(held_path.to_string_lossy().into_owned()),
+            unwanted_policy: policy_to_byte(req.unwanted_policy),
+            queue_position: self.next_queue_position(),
+            download_rate: 0,
+            upload_rate: 0,
+            max_connections: None,
+            magnet: Some(uri.to_owned()),
+        };
+        let (added_at, queue_position) = (row.added_at, row.queue_position);
+        self.db(move |db| db.insert_torrent(&row)).await?;
+        self.inner
+            .pending
+            .write()
+            .expect("pending lock poisoned")
+            .insert(
+                id.clone(),
+                Pending {
+                    magnet,
+                    uri: uri.to_owned(),
+                    save_path,
+                    held_path,
+                    label: req.label,
+                    added_at,
+                    paused: req.paused,
+                    unwanted: req.unwanted_policy,
+                    queue_position,
+                    fetch: None,
+                },
+            );
+        if !req.paused {
+            self.start_fetch(&id);
+        }
+        tracing::info!(%id, "magnet link added");
+        self.refresh();
+        Ok(id)
+    }
+
     fn spawn_entry(&self, s: Spawn) -> Result<TorrentId, CoreError> {
         let Spawn {
+            id,
+            peers,
             torrent,
             save_path,
             held_path,
@@ -538,7 +807,6 @@ impl Core {
             queued,
         } = s;
         let group = settings::group_for(&self.settings(), label.as_deref()).map(str::to_owned);
-        let id = torrent.info.info_hashes().id_string();
         let parts_path = self
             .inner
             .config
@@ -553,6 +821,7 @@ impl Core {
                 parts_path: Some(parts_path),
                 have,
                 placements,
+                peers,
                 unwanted: engine_policy(unwanted),
                 paused: paused || queued,
                 file_priorities: Some(file_priorities.clone()),
@@ -594,24 +863,27 @@ impl Core {
                 .decode(data.trim())
                 .map_err(|e| CoreError::InvalidRequest(format!("bad base64: {e}")))?,
             AddSource::Magnet { uri } => {
-                // Parse it so a bad link fails as such, then say what's missing.
-                Magnet::parse(uri).map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
-                return Err(CoreError::Unsupported(
-                    "magnet links need metadata exchange, which isn't implemented yet".into(),
-                ));
+                let uri = uri.clone();
+                return self.add_magnet(&uri, req).await;
             }
         };
         let torrent = Arc::new(
             Torrent::from_bytes(&bytes).map_err(|e| CoreError::InvalidTorrent(e.to_string()))?,
         );
         let id = torrent.info.info_hashes().id_string();
-        if self
+        let taken = self
             .inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
             .contains_key(&id)
-        {
+            || self
+                .inner
+                .pending
+                .read()
+                .expect("pending lock poisoned")
+                .contains_key(&id);
+        if taken {
             return Err(CoreError::Duplicate);
         }
         let files = torrent.info.files.len();
@@ -665,11 +937,14 @@ impl Core {
             download_rate: 0,
             upload_rate: 0,
             max_connections: None,
+            magnet: None,
         };
         let queue_position = row.queue_position;
         let added_at = row.added_at;
         self.db(move |db| db.insert_torrent(&row)).await?;
         if let Err(e) = self.spawn_entry(Spawn {
+            id: id.clone(),
+            peers: Vec::new(),
             torrent,
             save_path,
             held_path,
@@ -714,6 +989,29 @@ impl Core {
     }
 
     async fn set_paused(&self, id: &str, paused: bool) -> Result<(), CoreError> {
+        let is_pending = {
+            let mut pending = self.inner.pending.write().expect("pending lock poisoned");
+            match pending.get_mut(id) {
+                Some(p) => {
+                    p.paused = paused;
+                    if paused {
+                        // Dropping the sender cancels the fetch.
+                        p.fetch = None;
+                    }
+                    true
+                }
+                None => false,
+            }
+        };
+        if is_pending {
+            let key = id.to_owned();
+            self.db(move |db| db.set_paused(&key, paused)).await?;
+            if !paused {
+                self.start_fetch(id);
+            }
+            self.refresh();
+            return Ok(());
+        }
         let handle = self.handle(id)?;
         let key = id.to_owned();
         self.db(move |db| db.set_paused(&key, paused)).await?;
@@ -819,6 +1117,19 @@ impl Core {
     /// Remove a torrent, and optionally its downloaded files. Its held copies and part
     /// store are always deleted: they only exist for the torrent's sake.
     pub async fn remove(&self, id: &str, delete_files: bool) -> Result<(), CoreError> {
+        let pending = self
+            .inner
+            .pending
+            .write()
+            .expect("pending lock poisoned")
+            .remove(id);
+        if pending.is_some() {
+            let key = id.to_owned();
+            self.db(move |db| db.remove_torrent(&key)).await?;
+            self.inner.store.apply(Vec::new(), vec![id.to_owned()]);
+            tracing::info!(%id, "magnet link removed");
+            return Ok(());
+        }
         let entry = self
             .inner
             .torrents
@@ -842,6 +1153,28 @@ impl Core {
     }
 
     pub async fn detail(&self, id: &str) -> Result<TorrentDetail, CoreError> {
+        let pending = self
+            .inner
+            .pending
+            .read()
+            .expect("pending lock poisoned")
+            .get(id)
+            .map(|p| (p.uri.clone(), p.magnet.trackers.clone(), p.unwanted));
+        if let Some((uri, trackers, unwanted_policy)) = pending {
+            let summary = self.inner.store.get(id).ok_or(CoreError::NotFound)?;
+            return Ok(TorrentDetail {
+                summary,
+                files: Vec::new(),
+                trackers: trackers.into_iter().map(|t| vec![t]).collect(),
+                comment: None,
+                created_by: None,
+                creation_date: None,
+                piece_length: 0,
+                magnet: uri,
+                unwanted_policy,
+                limits: TorrentLimits::default(),
+            });
+        }
         let (torrent, handle, prios, unwanted_policy, limits) = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let e = torrents.get(id).ok_or(CoreError::NotFound)?;
@@ -909,8 +1242,12 @@ impl Core {
     /// Rebuild every summary from the engine and publish the changes.
     fn refresh(&self) {
         let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
-        let summaries = torrents.iter().map(|(id, e)| summarize(id, e)).collect();
+        let mut summaries: Vec<TorrentSummary> =
+            torrents.iter().map(|(id, e)| summarize(id, e)).collect();
         drop(torrents);
+        let pending = self.inner.pending.read().expect("pending lock poisoned");
+        summaries.extend(pending.iter().map(|(id, p)| summarize_pending(id, p)));
+        drop(pending);
         self.inner.store.apply(summaries, Vec::new());
     }
 
@@ -974,6 +1311,15 @@ impl Core {
     /// Save resume state and stop every torrent.
     pub async fn shutdown(&self) -> Result<(), CoreError> {
         self.inner.stop.notify_waiters();
+        for p in self
+            .inner
+            .pending
+            .write()
+            .expect("pending lock poisoned")
+            .values_mut()
+        {
+            p.fetch = None;
+        }
         self.save_resume().await?;
         let handles: Vec<TorrentHandle> = self
             .inner
@@ -1036,6 +1382,71 @@ fn summarize(id: &str, e: &Entry) -> TorrentSummary {
         queue_position: e.queue_position,
         group: e.group.clone(),
     }
+}
+
+fn summarize_pending(id: &str, p: &Pending) -> TorrentSummary {
+    let status = p
+        .fetch
+        .as_ref()
+        .map(|(w, _)| w.borrow().clone())
+        .unwrap_or_default();
+    let hashes = p.magnet.info_hashes;
+    TorrentSummary {
+        id: id.to_owned(),
+        name: p
+            .magnet
+            .display_name
+            .clone()
+            .unwrap_or_else(|| id.to_owned()),
+        info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
+        info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
+        state: if p.paused {
+            TorrentState::Paused
+        } else {
+            TorrentState::Metadata
+        },
+        progress: 0.0,
+        size: 0,
+        pieces_have: 0,
+        pieces_total: 0,
+        downloaded: 0,
+        uploaded: 0,
+        download_rate: 0,
+        upload_rate: 0,
+        peers: status.peers,
+        seeds: 0,
+        added_at: p.added_at,
+        label: p.label.clone(),
+        save_path: p.save_path.to_string_lossy().into_owned(),
+        private: false,
+        error: status.last_error,
+        queue_position: p.queue_position,
+        group: None,
+    }
+}
+
+/// File priorities from a magnet link's `so` selection (BEP 53). Its indices count the
+/// torrent's real files, skipping pad entries.
+fn select_only_priorities(
+    torrent: &Torrent,
+    select: Option<&[std::ops::RangeInclusive<usize>]>,
+) -> Vec<u8> {
+    let files = &torrent.info.files;
+    let Some(select) = select else {
+        return vec![4; files.len()];
+    };
+    let mut real = 0usize;
+    files
+        .iter()
+        .map(|f| {
+            if f.is_pad() {
+                return 0;
+            }
+            let chosen = select.iter().any(|r| r.contains(&real));
+            real += 1;
+            if chosen { 4 } else { 0 }
+        })
+        .collect()
 }
 
 fn engine_limits(l: TorrentLimits) -> apitorrent_engine::limits::TorrentLimits {

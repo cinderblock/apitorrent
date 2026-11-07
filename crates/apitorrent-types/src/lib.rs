@@ -21,6 +21,8 @@ pub type TorrentId = String;
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum TorrentState {
+    /// A magnet link whose info dictionary is still being fetched from peers.
+    Metadata,
     /// Checking files already on disk.
     Checking,
     Downloading,

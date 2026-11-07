@@ -176,7 +176,8 @@ async fn bad_input_is_rejected() {
     assert_eq!(e.code(), "invalid_torrent");
     let e = core
         .add(bad(AddSource::Magnet {
-            uri: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".into(),
+            // v2-only magnets need BEP 52 hash requests, not implemented yet.
+            uri: "magnet:?xt=urn:btmh:1220caf1e1c30e81cb361b9ee167c4aa64228a7fa4fa9f6105232b28ad099f3a302e".into(),
         }))
         .await
         .unwrap_err();
@@ -282,5 +283,125 @@ async fn queue_settings_and_groups() {
     let mut bad = core.settings();
     bad.groups.push(bad.groups[0].clone());
     assert!(core.set_settings(bad).await.is_err());
+    core.shutdown().await.unwrap();
+}
+
+/// A magnet link: the metadata comes from a peer, the torrent downloads, and after a
+/// restart it is an ordinary torrent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn magnet_link_end_to_end() {
+    use apitorrent_engine::{AddTorrent, Session};
+
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let data: Vec<u8> = (0..200_000u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let bytes = TorrentBuilder::new("linux.iso", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&[], data.clone()))
+        .build()
+        .unwrap();
+    let torrent = std::sync::Arc::new(apitorrent_metainfo::Torrent::from_bytes(&bytes).unwrap());
+
+    // An engine session seeds it.
+    let seed_dir = tempfile::tempdir().unwrap();
+    std::fs::write(seed_dir.path().join("linux.iso"), &data).unwrap();
+    let seeder = Session::start(SessionConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        ..SessionConfig::default()
+    })
+    .await
+    .unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent::new(
+            torrent.clone(),
+            seed_dir.path().to_path_buf(),
+        ))
+        .unwrap();
+    seed.wait_finished().await;
+
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let v1 = torrent.info.info_hashes().get_v1().unwrap().to_hex();
+    let uri = format!(
+        "magnet:?xt=urn:btih:{v1}&dn=Linux&x.pe={}",
+        seeder.listen_addr()
+    );
+    let id = core
+        .add(AddTorrentRequest {
+            source: AddSource::Magnet { uri },
+            save_path: None,
+            paused: false,
+            label: Some("iso".into()),
+            file_priorities: None,
+            unwanted_policy: UnwantedPolicy::Hold,
+        })
+        .await
+        .unwrap();
+    assert_eq!(id, v1);
+    let s = core.store().get(&id).unwrap();
+    assert!(
+        matches!(
+            s.state,
+            TorrentState::Metadata
+                | TorrentState::Checking
+                | TorrentState::Downloading
+                | TorrentState::Seeding
+        ),
+        "{s:?}"
+    );
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    let s = core.store().get(&id).unwrap();
+    assert_eq!(s.name, "linux.iso", "the real name replaces the magnet's");
+    assert_eq!(s.label.as_deref(), Some("iso"));
+    assert_eq!(
+        std::fs::read(cfg.download_dir.join("linux.iso")).unwrap(),
+        data
+    );
+    core.shutdown().await.unwrap();
+    drop(core);
+
+    let core = Core::start(cfg).await.unwrap();
+    let s = core.store().get(&id).unwrap();
+    assert_eq!(s.name, "linux.iso");
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    core.shutdown().await.unwrap();
+}
+
+/// A magnet link with no reachable peers waits; pausing and removing it works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_magnet_can_be_paused_and_removed() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let uri = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Nowhere";
+    let id = core
+        .add(AddTorrentRequest {
+            source: AddSource::Magnet { uri: uri.into() },
+            save_path: None,
+            paused: false,
+            label: None,
+            file_priorities: None,
+            unwanted_policy: UnwantedPolicy::Hold,
+        })
+        .await
+        .unwrap();
+    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Metadata);
+    assert_eq!(core.store().get(&id).unwrap().name, "Nowhere");
+    let detail = core.detail(&id).await.unwrap();
+    assert_eq!(detail.magnet, uri);
+    assert!(detail.files.is_empty());
+    core.pause(&id).await.unwrap();
+    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Paused);
+    core.shutdown().await.unwrap();
+    drop(core);
+
+    // It comes back paused, still waiting for metadata.
+    let core = Core::start(cfg).await.unwrap();
+    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Paused);
+    core.resume(&id).await.unwrap();
+    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Metadata);
+    core.remove(&id, true).await.unwrap();
+    assert!(core.store().get(&id).is_none());
     core.shutdown().await.unwrap();
 }

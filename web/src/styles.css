@@ -384,7 +384,8 @@ code {
 }
 
 .state-paused,
-.state-checking {
+.state-checking,
+.state-metadata {
   color: var(--muted);
 }
 

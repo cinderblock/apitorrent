@@ -181,6 +181,12 @@ engine core stays in the main thread, because its pieces interlock.
 - Daemon command-line limits (`--memory-limit-mib` aside) only seed the *first* settings;
   after that the stored settings win. Memory isn't a live setting yet (the budget is
   fixed at session start).
+- **v2-only magnet links are refused** for now: the info dictionary has no piece layers,
+  so they would need BEP 52 hash requests (step 7). Hybrid links and btih-only links to
+  hybrid torrents work, trusting v1 piece hashes.
+- A magnet link keeps the id it was added under (its v1 hash) even when the metadata
+  turns out to be hybrid, whose own id would be the v2 hash. Core passes ids explicitly
+  for this reason.
 - Known engine gaps, to fix before real-world use: a v2 `Unknown` verdict is treated as
   invalid (needs BEP 52 hash requests), upload `cancel` is ignored.
 
@@ -228,7 +234,11 @@ engine core stays in the main thread, because its pieces interlock.
   label, per-torrent limits, a queue with download/seed/total limits and moves (DB
   migration 3), API (`/settings`, `/torrents/{id}/limits|label|queue`), UI (Settings
   dialog, queue column and buttons, label and limits editing)
-- [ ] Magnets, PEX, LSD
+- [x] Magnets and PEX: `metadata.rs` fetch (BEP 9, verified against the info-hash,
+  bad senders dropped), torrents serve `ut_metadata`, PEX (BEP 11, not for private
+  torrents), core pending entries ("Fetching metadata" state, DB migration 4, `so` file
+  selection, survives restarts, pause and remove)
+- [ ] LSD (BEP 14)
 - [ ] DHT (delegated)
 - [ ] uTP and MSE (delegated)
 - [ ] M4 auth (delegated)

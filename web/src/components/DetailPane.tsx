@@ -266,7 +266,10 @@ export function DetailPane({ summary }: { summary: TorrentSummary }) {
             )}
           </dl>
         )}
-        {tab === "files" && detail && <FilesTab summary={summary} detail={detail} refetch={refetch} />}
+        {tab === "files" && detail && summary.state === "metadata" && (
+          <p className="muted">The file list arrives with the metadata, which is being fetched from peers{summary.peers > 0 ? ` (${summary.peers} connected)` : ""}.</p>
+        )}
+        {tab === "files" && detail && summary.state !== "metadata" && <FilesTab summary={summary} detail={detail} refetch={refetch} />}
         {tab === "trackers" && detail && (
           detail.trackers.length === 0 ? (
             <p className="muted">No trackers. Peers come from other sources.</p>

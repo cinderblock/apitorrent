@@ -21,6 +21,7 @@ const STATE_LABEL: Record<TorrentSummary["state"], string> = {
   seeding: "Seeding",
   paused: "Paused",
   queued: "Queued",
+  metadata: "Metadata…",
   error: "Error",
 };
 

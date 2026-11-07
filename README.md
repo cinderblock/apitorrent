@@ -4,9 +4,9 @@ A BitTorrent client meant to replace Deluge. It has its own Rust engine, a nativ
 a full web UI with passkey login, and sandboxed TypeScript plugins.
 
 > **Status: early development.** The engine downloads and seeds v1, v2 and hybrid
-> torrents from `.torrent` files, finds peers through HTTP, HTTPS and UDP trackers, and
-> can be driven from the web UI. Magnet links, DHT, authentication and the desktop app are
-> next. Don't point it at anything you care about yet. See
+> torrents from `.torrent` files and magnet links, finds peers through HTTP, HTTPS and UDP
+> trackers and peer exchange, and can be driven from the web UI. DHT, authentication and
+> the desktop app are in progress. Don't point it at anything you care about yet. See
 > [`plans/apitorrent-bootstrap.md`](plans/apitorrent-bootstrap.md) for progress, and
 > [`docs/architecture.md`](docs/architecture.md) for the design.
 
