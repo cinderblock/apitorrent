@@ -10,6 +10,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub mod auth;
+
 /// The API version in the URL prefix.
 pub const API_VERSION: u32 = 1;
 

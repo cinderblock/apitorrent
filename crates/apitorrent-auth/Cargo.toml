@@ -1,0 +1,32 @@
+[package]
+name = "apitorrent-auth"
+description = "Users, passkeys, passwords, sessions and API tokens for apitorrent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+apitorrent-types.workspace = true
+argon2 = { version = "0.5", features = ["std"] }
+data-encoding.workspace = true
+getrandom = "0.3"
+hex.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2"
+thiserror.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid = { version = "1", features = ["v4", "serde"] }
+webauthn-rs = { version = "0.6.2", default-features = false, features = ["conditional-ui"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

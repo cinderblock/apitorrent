@@ -23,6 +23,7 @@ apitorrent-server = { path = "crates/apitorrent-server" }
 apitorrent-deluge = { path = "crates/apitorrent-deluge" }
 apitorrent-mse = { path = "crates/apitorrent-mse" }
 apitorrent-utp = { path = "crates/apitorrent-utp" }
+apitorrent-auth = { path = "crates/apitorrent-auth" }
 
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }
@@ -56,7 +57,6 @@ crypto-bigint = { version = "0.7", default-features = false }
 rc4 = "0.2"
 num-bigint = "0.4"
 # Transport: uTP. socket2 sizes the UDP buffers before tokio takes the socket.
-socket2 = "0.6"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 url = "2"
@@ -85,6 +85,13 @@ match_same_arms = "allow"
 case_sensitive_file_extension_comparisons = "allow"
 similar_names = "allow"
 assert_is_empty = "allow"
+
+# Password hashing is deliberately expensive; unoptimised it takes seconds in debug builds.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 lto = "thin"
