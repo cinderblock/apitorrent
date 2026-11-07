@@ -21,7 +21,7 @@ use std::path::PathBuf;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, header};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 
@@ -85,6 +85,8 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
             put(routes::set_unwanted_policy),
         )
         .route("/torrents/{id}/held/release", post(routes::release_held))
+        .route("/bans", get(routes::bans).post(routes::ban))
+        .route("/bans/{ip}", delete(routes::unban))
         .route("/sync", get(sync::handler))
         .fallback(routes::not_found);
     let mut app = Router::new().nest("/api/v1", api);

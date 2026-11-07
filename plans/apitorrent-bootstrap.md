@@ -90,8 +90,8 @@ engine core stays in the main thread, because its pieces interlock.
   1. ~~Real-world interop test against the Ubuntu swarm~~ (done, two bugs fixed)
   2. ~~Part store, unwanted-file handling, held area~~ (done)
   3. ~~Memory budget (session and torrent)~~ (done; group limits come with step 5)
-  4. Bad-peer system ← current (attribution, smart ban, parole, trust, bans, blocklists)
-  5. Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing
+  4. ~~Bad-peer system~~ (done; v2 block proofs come with hash requests in step 7)
+  5. Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing ← current
   6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE
   7. v2 hash requests, webseeds (BEP 19), upload `cancel`, naming policy
   8. Content library: matching, bookends, piece reuse, fingerprints, pack switchover
@@ -171,7 +171,14 @@ engine core stays in the main thread, because its pieces interlock.
   and at the pause 223 pieces (56 MiB) verified out of 60 MiB downloaded; no hash
   failures; data deleted. It overshot the cap again (60 MiB against 50); 100 ms polling
   plus pause isn't a hard cap.
-- Known engine gaps, to fix before real-world use: no banning of peers that send bad data, a v2 `Unknown` verdict is treated as
+- **Trust design trap:** docking every contributor of a failed mixed piece (as a naive
+  libtorrent-style rule does) can ban an honest seed. Several mixed pieces are in flight
+  before parole takes effect, so an honest peer collects many penalties. Now a single
+  mixed failure only means parole, and smart ban settles it. A unit test simulates 50
+  mixed failures with one liar.
+- Loopback tests can give each session its own IP (127.0.0.2, 127.0.0.3), which works on
+  Windows. That's how the ban tests tell the liar from the honest seeder.
+- Known engine gaps, to fix before real-world use: a v2 `Unknown` verdict is treated as
   invalid (needs BEP 52 hash requests), upload `cancel` is ignored, no rate limiting.
 
 ## Progress log
@@ -208,7 +215,10 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] Memory budget: session-wide byte budget (default 256 MiB, `--memory-limit-mib`) and
   optional per-torrent limit; the picker starts new pieces only when there is room.
   Sparse files on Windows
-- [ ] Bad-peer system
+- [x] Bad-peer system: `reputation.rs` (whole-piece proof, smart ban by block digests,
+  parole with exclusive pieces, trust only lost on repeated failures), `ban.rs`
+  (escalating session-wide IP bans; P2P, DAT and CIDR blocklists), `--blocklist`,
+  `GET/POST /bans`, `DELETE /bans/{ip}`
 - [ ] Limits and queueing
 - [ ] Magnets, PEX, LSD
 - [ ] DHT (delegated)

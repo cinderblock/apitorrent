@@ -600,3 +600,122 @@ async fn memory_budget_is_respected() {
     );
     wait_for("memory to be released", || leecher.memory_used() == 0).await;
 }
+
+/// A seeder that claims every piece but serves corrupted data, listening on its own
+/// loopback address so it can be banned without banning the honest seeder.
+async fn lying_seeder(
+    fx: &Fixture,
+    dir: &Path,
+    ip: &str,
+) -> (Session, apitorrent_engine::TorrentHandle) {
+    write_files(dir, fx);
+    // Corrupt a few bytes in every 64 KiB piece of big.bin.
+    let big = dir.join("pack").join("big.bin");
+    let mut bytes = std::fs::read(&big).unwrap();
+    for at in (100..bytes.len()).step_by(64 * 1024) {
+        bytes[at] ^= 0xff;
+    }
+    std::fs::write(&big, bytes).unwrap();
+    let liar = Session::start(SessionConfig {
+        listen: format!("{ip}:0").parse().unwrap(),
+        ..SessionConfig::default()
+    })
+    .await
+    .unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let handle = liar
+        .add_torrent(AddTorrent {
+            // Resume data that claims everything, without a recheck.
+            have: Some(Bitfield::full(pieces)),
+            ..AddTorrent::new(fx.torrent.clone(), dir.to_path_buf())
+        })
+        .unwrap();
+    handle.wait_finished().await;
+    (liar, handle)
+}
+
+/// With an honest seeder and a lying one, the download still completes with the right
+/// data, and only the liar is banned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_peer_sending_bad_data_is_banned() {
+    let fx = fixture(Version::V1);
+    let good_dir = tempfile::tempdir().unwrap();
+    let bad_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let (good, _g) = seed_fixture(&fx, good_dir.path()).await;
+    let (liar, _l) = lying_seeder(&fx, bad_dir.path(), "127.0.0.2").await;
+
+    let leecher = Session::start(local_config()).await.unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![liar.listen_addr(), good.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .unwrap_or_else(|_| panic!("download timed out: {:?}", leech.stats()));
+    assert_files(leech_dir.path(), &fx);
+    let liar_ip: std::net::IpAddr = "127.0.0.2".parse().unwrap();
+    let honest_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+    assert!(
+        leecher.is_blocked(liar_ip),
+        "the liar is banned: {:?}",
+        leecher.bans()
+    );
+    assert!(
+        !leecher.is_blocked(honest_ip),
+        "the honest seeder is not: {:?}",
+        leecher.bans()
+    );
+    let bans = leecher.bans();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(bans[0].reason, apitorrent_engine::ban::BanReason::BadData);
+}
+
+/// A blocklisted address is never connected to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blocklisted_peers_are_refused() {
+    let fx = fixture(Version::V1);
+    let blocked_dir = tempfile::tempdir().unwrap();
+    let good_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let (good, _g) = seed_fixture(&fx, good_dir.path()).await;
+    write_files(blocked_dir.path(), &fx);
+    let blocked = Session::start(SessionConfig {
+        listen: "127.0.0.3:0".parse().unwrap(),
+        ..SessionConfig::default()
+    })
+    .await
+    .unwrap();
+    let blocked_handle = blocked
+        .add_torrent(AddTorrent::new(
+            fx.torrent.clone(),
+            blocked_dir.path().to_path_buf(),
+        ))
+        .unwrap();
+    blocked_handle.wait_finished().await;
+
+    let leecher = Session::start(local_config()).await.unwrap();
+    let (list, errors) = apitorrent_engine::ban::Blocklist::parse("test:127.0.0.3-127.0.0.3");
+    assert!(errors.is_empty());
+    leecher.set_blocklist(list);
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![blocked.listen_addr(), good.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .expect("download timed out");
+    assert_eq!(
+        blocked_handle.stats().uploaded,
+        0,
+        "nothing came from the blocked peer"
+    );
+}

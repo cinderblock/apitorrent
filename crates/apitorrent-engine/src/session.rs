@@ -13,6 +13,7 @@ use apitorrent_metainfo::{InfoHashes, Sha1Hash};
 use apitorrent_tracker::TrackerClient;
 use apitorrent_wire::PeerId;
 
+use crate::ban::{BanInfo, BanPolicy, BanReason, Blocklist, IpFilter};
 use crate::peer;
 use crate::torrent::{ActorMsg, AddTorrent, TorrentActor, TorrentHandle};
 
@@ -31,6 +32,8 @@ pub struct SessionConfig {
     /// downloaded plus pieces waiting to be hashed and written. When it is reached, torrents
     /// finish the pieces they have started before starting new ones.
     pub memory_limit: u64,
+    /// How long bans for bad data last.
+    pub ban_policy: BanPolicy,
 }
 
 impl Default for SessionConfig {
@@ -42,6 +45,7 @@ impl Default for SessionConfig {
             upload_slots: 8,
             client_name: concat!("apitorrent ", env!("CARGO_PKG_VERSION")).to_owned(),
             memory_limit: 256 * 1024 * 1024,
+            ban_policy: BanPolicy::default(),
         }
     }
 }
@@ -61,6 +65,7 @@ pub(crate) struct Shared {
     /// Sent with every announce so trackers can recognise us across IP changes.
     pub(crate) announce_key: u32,
     pub(crate) memory: MemoryBudget,
+    pub(crate) filter: IpFilter,
     listen_port: u16,
     next_key: AtomicU64,
     torrents: Mutex<HashMap<Sha1Hash, mpsc::Sender<ActorMsg>>>,
@@ -135,9 +140,11 @@ impl Session {
         let peer_id = PeerId::azureus(*b"AT", version, rand::random());
         let tracker = TrackerClient::new().map_err(io::Error::other)?;
         let memory = MemoryBudget::new(config.memory_limit);
+        let filter = IpFilter::new(config.ban_policy);
         let shared = Arc::new(Shared {
             config,
             memory,
+            filter,
             peer_id,
             tracker,
             announce_key: rand::random(),
@@ -163,6 +170,30 @@ impl Session {
     /// Bytes of piece data held in memory right now, across all torrents.
     pub fn memory_used(&self) -> u64 {
         self.shared.memory.used()
+    }
+
+    /// Ban an address by hand. Its connections close within a second.
+    pub fn ban(&self, ip: std::net::IpAddr) -> std::time::Duration {
+        self.shared.filter.ban(ip, BanReason::Manual)
+    }
+
+    pub fn unban(&self, ip: std::net::IpAddr) -> bool {
+        self.shared.filter.unban(ip)
+    }
+
+    /// Addresses banned right now.
+    pub fn bans(&self) -> Vec<BanInfo> {
+        self.shared.filter.bans()
+    }
+
+    /// Replace the IP blocklist. Connections from listed addresses close within a second.
+    pub fn set_blocklist(&self, list: Blocklist) {
+        self.shared.filter.set_blocklist(list);
+    }
+
+    /// Whether connections to and from `ip` are refused.
+    pub fn is_blocked(&self, ip: std::net::IpAddr) -> bool {
+        self.shared.filter.is_blocked(ip)
     }
 
     pub fn add_torrent(&self, params: AddTorrent) -> Result<TorrentHandle, AddError> {
@@ -207,6 +238,10 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
+                if shared.filter.is_blocked(addr.ip()) {
+                    tracing::debug!(%addr, "refused a blocked peer");
+                    continue;
+                }
                 tokio::spawn(route_incoming(stream, addr, shared.clone()));
             }
             Err(e) => {

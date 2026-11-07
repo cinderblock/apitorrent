@@ -8,8 +8,9 @@ use serde::Deserialize;
 
 use apitorrent_core::CoreError;
 use apitorrent_types::{
-    API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, ReleaseHeldRequest, ServerInfo,
-    SetFilePrioritiesRequest, SetUnwantedPolicyRequest, TorrentDetail, TorrentSummary,
+    API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, Ban, BanRequest,
+    ReleaseHeldRequest, ServerInfo, SetFilePrioritiesRequest, SetUnwantedPolicyRequest,
+    TorrentDetail, TorrentSummary,
 };
 
 use crate::AppState;
@@ -122,6 +123,26 @@ pub(crate) async fn release_held(
     Json(req): Json<ReleaseHeldRequest>,
 ) -> ApiResult<StatusCode> {
     s.core.release_held(&id, req.files).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn bans(State(s): State<AppState>) -> Json<Vec<Ban>> {
+    Json(s.core.bans())
+}
+
+pub(crate) async fn ban(
+    State(s): State<AppState>,
+    Json(req): Json<BanRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.ban(&req.ip)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn unban(
+    State(s): State<AppState>,
+    Path(ip): Path<String>,
+) -> ApiResult<StatusCode> {
+    s.core.unban(&ip)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

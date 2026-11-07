@@ -2,7 +2,7 @@
 //! every protocol decision for one torrent.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,10 +16,12 @@ use apitorrent_wire::extended::{ExtensionHandshake, names};
 use apitorrent_wire::{BlockRef, Decoder, Handshake, MAX_BLOCK_LEN, Message, PeerId};
 
 use crate::announce::{Announcer, Job, TrackerStatus};
+use crate::ban::BanReason;
 use crate::bitfield::Bitfield;
-use crate::layout::Layout;
+use crate::layout::{BLOCK_LEN, Layout};
 use crate::peer::{self, PeerCmd, PeerEvent};
 use crate::picker::{PeerKey, Picker, Received};
+use crate::reputation::Reputation;
 use crate::session::Shared;
 use crate::storage::{FileStorage, Placement, Storage, StoragePaths};
 use crate::verify::{PieceHashes, Verdict};
@@ -138,6 +140,8 @@ pub(crate) enum ActorMsg {
     PieceWritten {
         piece: u32,
         result: Result<Verdict, String>,
+        /// SHA-1 of each block, when asked for or when the piece failed.
+        digests: Option<Vec<Sha1Hash>>,
     },
     BlockRead {
         peer: PeerKey,
@@ -390,6 +394,9 @@ pub(crate) struct TorrentActor {
     memory_limit: Option<u64>,
     /// Bytes this torrent has counted against the session's memory budget.
     memory_held: u64,
+    /// Who sent each block of each piece in progress.
+    block_from: HashMap<u32, Vec<Option<IpAddr>>>,
+    reputation: Reputation,
     announcer: Announcer,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
@@ -490,6 +497,8 @@ impl TorrentActor {
             moving: HashSet::new(),
             memory_limit: params.memory_limit,
             memory_held: 0,
+            block_from: HashMap::new(),
+            reputation: Reputation::default(),
             announcer: Announcer::new(&torrent.trackers, &keys, Instant::now()),
             finished: false,
         };
@@ -769,7 +778,11 @@ impl TorrentActor {
                 self.publish_stats();
                 self.connect_more();
             }
-            ActorMsg::PieceWritten { piece, result } => self.on_piece_written(piece, result),
+            ActorMsg::PieceWritten {
+                piece,
+                result,
+                digests,
+            } => self.on_piece_written(piece, result, digests.as_deref()),
             ActorMsg::BlockRead {
                 peer,
                 block,
@@ -879,6 +892,11 @@ impl TorrentActor {
                 break;
             };
             if self.peers.values().any(|p| p.addr == addr) {
+                continue;
+            }
+            if self.shared.filter.is_blocked(addr.ip()) {
+                self.retry_at.insert(addr, now + RETRY_AFTER);
+                deferred.push(addr);
                 continue;
             }
             let complete = self.picker.as_ref().is_some_and(|p| p.have().is_full());
@@ -1184,7 +1202,12 @@ impl TorrentActor {
             self.shared.memory.available(),
             self.memory_limit,
         );
-        for block in picker.pick(key, &peer.has, want, max_new) {
+        let blocks = if self.reputation.on_parole(peer.addr.ip()) {
+            picker.pick_exclusive(key, &peer.has, want, max_new)
+        } else {
+            picker.pick(key, &peer.has, want, max_new)
+        };
+        for block in blocks {
             peer.send(Message::Request(block));
             peer.requests.push(block);
         }
@@ -1225,6 +1248,7 @@ impl TorrentActor {
             return;
         };
         peer.requests.swap_remove(i);
+        let peer_ip = peer.addr.ip();
         peer.downloaded += data.len() as u64;
         self.downloaded += data.len() as u64;
         let picker = self.picker.as_mut().expect("running");
@@ -1238,6 +1262,12 @@ impl TorrentActor {
                 let buf = self.buffers.entry(piece).or_insert_with(|| vec![0u8; size]);
                 let start = offset as usize;
                 buf[start..start + data.len()].copy_from_slice(data);
+                let blocks = self.layout.blocks_in_piece(piece) as usize;
+                let from = self
+                    .block_from
+                    .entry(piece)
+                    .or_insert_with(|| vec![None; blocks]);
+                from[(offset / BLOCK_LEN) as usize] = Some(peer_ip);
                 for other in cancel {
                     if let Some(p) = self.peers.get_mut(&other)
                         && let Some(j) = p.requests.iter().position(|b| *b == block)
@@ -1248,20 +1278,26 @@ impl TorrentActor {
                 }
                 if piece_complete {
                     let data = self.buffers.remove(&piece).expect("buffer exists");
-                    self.verify_and_write(piece, data);
+                    let want_digests = self.reputation.wants_digests(piece);
+                    self.verify_and_write(piece, data, want_digests);
                 }
             }
         }
         self.fill_requests(key);
     }
 
-    fn verify_and_write(&self, piece: u32, data: Vec<u8>) {
+    fn verify_and_write(&self, piece: u32, data: Vec<u8>, want_digests: bool) {
         let hashes = self.hashes.clone();
         let storage = self.storage.clone();
         let offset = self.layout.piece_offset(piece);
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let verdict = hashes.verify(piece, &data);
+            let digests = (want_digests || verdict != Verdict::Valid).then(|| {
+                data.chunks(BLOCK_LEN as usize)
+                    .map(Sha1Hash::digest)
+                    .collect()
+            });
             let result = if verdict == Verdict::Valid {
                 storage
                     .write(offset, &data)
@@ -1270,11 +1306,68 @@ impl TorrentActor {
             } else {
                 Ok(verdict)
             };
-            let _ = tx.blocking_send(ActorMsg::PieceWritten { piece, result });
+            let _ = tx.blocking_send(ActorMsg::PieceWritten {
+                piece,
+                result,
+                digests,
+            });
         });
     }
 
-    fn on_piece_written(&mut self, piece: u32, result: Result<Verdict, String>) {
+    /// Settle who is to blame (or credit) for a verified or failed piece.
+    fn judge_piece(&mut self, piece: u32, valid: bool, digests: Option<&[Sha1Hash]>) {
+        let senders = self.block_from.remove(&piece).unwrap_or_default();
+        let bans = if valid {
+            self.reputation.piece_verified(piece, &senders, digests)
+        } else {
+            self.reputation
+                .piece_failed(piece, &senders, digests.unwrap_or_default())
+        };
+        for v in bans {
+            self.ban(v.ip, v.reason, v.why);
+        }
+    }
+
+    /// Ban an address session-wide and drop its connections here. Other torrents drop
+    /// theirs on their next tick.
+    fn ban(&mut self, ip: IpAddr, reason: BanReason, why: &str) {
+        let length = self.shared.filter.ban(ip, reason);
+        tracing::warn!(%ip, why, minutes = length.as_secs() / 60, "banned peer");
+        self.reputation.forget(ip);
+        self.drop_blocked_peers();
+    }
+
+    /// Close connections to addresses that are banned or blocklisted.
+    fn drop_blocked_peers(&mut self) {
+        let blocked: Vec<PeerKey> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| self.shared.filter.is_blocked(p.addr.ip()))
+            .map(|(k, _)| *k)
+            .collect();
+        for key in blocked {
+            if let Some(p) = self.peers.get(&key) {
+                p.close();
+            }
+            self.drop_peer(key);
+        }
+    }
+
+    fn on_piece_written(
+        &mut self,
+        piece: u32,
+        result: Result<Verdict, String>,
+        digests: Option<&[Sha1Hash]>,
+    ) {
+        if self.picker.is_none() {
+            return;
+        }
+        // Disk errors say nothing about the peers.
+        if let Ok(verdict) = &result {
+            self.judge_piece(piece, *verdict == Verdict::Valid, digests);
+        } else {
+            self.block_from.remove(&piece);
+        }
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
@@ -1466,7 +1559,8 @@ impl TorrentActor {
         if self.ticks.is_multiple_of(CHOKE_EVERY) {
             self.run_choker();
         }
-        // Another torrent may have freed memory since our peers last asked.
+        // Another torrent may have banned an address, or freed memory.
+        self.drop_blocked_peers();
         self.fill_all();
         self.announce();
         self.connect_more();

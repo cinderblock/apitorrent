@@ -13,6 +13,9 @@
 //! 3. Endgame: once every missing block is requested, blocks already requested from slow
 //!    peers are requested again from others, at most [`ENDGAME_DUPLICATES`] times.
 //!
+//! A peer on parole (suspected of sending bad data) is picked *exclusively*: it only gets
+//! whole pieces that nobody else downloads, so if one fails it is clear who sent it.
+//!
 //! New pieces come from `order`, which holds every wanted piece that is neither complete
 //! nor in progress, sorted by `(priority, availability)`. It is split into buckets per key,
 //! so an availability change moves a piece one bucket with a single swap.
@@ -56,6 +59,8 @@ enum Block {
 struct Partial {
     blocks: Vec<Block>,
     received: u32,
+    /// The only peer allowed to supply this piece, for a peer on parole.
+    owner: Option<PeerKey>,
 }
 
 impl Partial {
@@ -223,16 +228,43 @@ impl Picker {
         max: usize,
         max_new: usize,
     ) -> Vec<BlockRef> {
+        self.pick_inner(peer, has, max, max_new, false)
+    }
+
+    /// Like [`Picker::pick`], for a peer on parole: it gets only whole pieces of its own,
+    /// which no other peer will be asked for, and takes no part in endgame.
+    pub fn pick_exclusive(
+        &mut self,
+        peer: PeerKey,
+        has: &Bitfield,
+        max: usize,
+        max_new: usize,
+    ) -> Vec<BlockRef> {
+        self.pick_inner(peer, has, max, max_new, true)
+    }
+
+    fn pick_inner(
+        &mut self,
+        peer: PeerKey,
+        has: &Bitfield,
+        max: usize,
+        max_new: usize,
+        exclusive: bool,
+    ) -> Vec<BlockRef> {
         let mut out = Vec::new();
         if max == 0 {
             return out;
         }
+        let allowed = |part: &Partial| match part.owner {
+            Some(owner) => owner == peer,
+            None => !exclusive,
+        };
 
         // 1. Pieces in progress, most complete first.
         let mut partials: Vec<(u32, u32)> = self
             .partial
             .iter()
-            .filter(|(p, part)| has.get(**p) && part.missing())
+            .filter(|(p, part)| has.get(**p) && part.missing() && allowed(part))
             .map(|(p, part)| (*p, part.received))
             .collect();
         partials.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -250,10 +282,13 @@ impl Picker {
                 break;
             };
             self.start_piece(piece);
+            if exclusive {
+                self.partial.get_mut(&piece).expect("just started").owner = Some(peer);
+            }
             started += 1;
             self.take_missing(piece, peer, max, &mut out);
         }
-        if out.len() >= max || self.has_fresh() {
+        if out.len() >= max || self.has_fresh() || exclusive {
             return out;
         }
 
@@ -261,7 +296,7 @@ impl Picker {
         let mut candidates: Vec<(u32, u32)> = self
             .partial
             .iter()
-            .filter(|(p, _)| has.get(**p))
+            .filter(|(p, part)| has.get(**p) && part.owner.is_none())
             .map(|(p, part)| (*p, part.received))
             .collect();
         candidates.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -326,6 +361,7 @@ impl Picker {
             Partial {
                 blocks: vec![Block::Missing; blocks],
                 received: 0,
+                owner: None,
             },
         );
     }
@@ -372,9 +408,12 @@ impl Picker {
         }
     }
 
-    /// Forget every outstanding request to `peer`.
+    /// Forget every outstanding request to `peer`, and release the pieces it owned.
     pub fn peer_gone(&mut self, peer: PeerKey) {
         for part in self.partial.values_mut() {
+            if part.owner == Some(peer) {
+                part.owner = None;
+            }
             for slot in &mut part.blocks {
                 if let Block::Requested(peers) = slot {
                     peers.retain(|&p| p != peer);
@@ -637,6 +676,30 @@ mod tests {
             [blocks[0]],
             "a missing block of a started piece is still picked"
         );
+    }
+
+    /// A paroled peer's pieces are its own: nobody else is asked for them, and it isn't
+    /// asked for anyone else's, even in endgame.
+    #[test]
+    fn exclusive_pieces_are_not_shared() {
+        let mut p = picker(2);
+        let all = Bitfield::full(2);
+        let mine = p.pick_exclusive(1, &all, 100, 1);
+        let piece = mine[0].piece;
+        assert!(mine.iter().all(|b| b.piece == piece), "one whole piece");
+        p.request_failed(1, &mine[0]);
+        let other = p.pick(2, &all, 100, usize::MAX);
+        assert!(
+            other.iter().all(|b| b.piece != piece),
+            "others don't touch it: {other:?}"
+        );
+        // Everything is requested now; endgame for peer 3 must skip the owned piece.
+        let dup = p.pick(3, &all, 100, usize::MAX);
+        assert!(dup.iter().all(|b| b.piece != piece), "{dup:?}");
+        // Once the owner leaves, the piece is open to everyone.
+        p.peer_gone(1);
+        let freed = p.pick(2, &all, 100, usize::MAX);
+        assert!(freed.iter().any(|b| b.piece == piece), "{freed:?}");
     }
 
     #[test]

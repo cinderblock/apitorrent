@@ -5,11 +5,13 @@
 //! per peer connection.
 
 mod announce;
+pub mod ban;
 pub mod bitfield;
 pub mod layout;
 pub mod parts;
 mod peer;
 pub mod picker;
+pub mod reputation;
 mod session;
 pub mod storage;
 mod torrent;

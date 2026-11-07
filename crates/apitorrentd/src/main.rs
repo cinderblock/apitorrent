@@ -34,6 +34,10 @@ struct Args {
     #[arg(long, env = "APITORRENT_PEER_LISTEN", default_value = "0.0.0.0:6881")]
     peer_listen: SocketAddr,
 
+    /// An IP blocklist to load (P2P, DAT or CIDR lines).
+    #[arg(long, env = "APITORRENT_BLOCKLIST")]
+    blocklist: Option<PathBuf>,
+
     /// Most piece data held in memory at once, in MiB, across all torrents.
     #[arg(long, env = "APITORRENT_MEMORY_LIMIT_MIB", default_value_t = 256)]
     memory_limit_mib: u64,
@@ -117,6 +121,25 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if let Some(path) = &args.blocklist {
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let (list, errors) = apitorrent_engine::ban::Blocklist::parse(&text);
+                for e in errors.iter().take(5) {
+                    tracing::warn!(path = %path.display(), error = %e, "skipped a blocklist line");
+                }
+                if errors.len() > 5 {
+                    tracing::warn!(more = errors.len() - 5, "more blocklist lines skipped");
+                }
+                core.set_blocklist(list);
+            }
+            Err(e) => {
+                tracing::error!(path = %path.display(), error = %e, "could not read the blocklist");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
 
     let server = ServerConfig {
         listen: args.api,

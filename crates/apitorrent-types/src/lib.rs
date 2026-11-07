@@ -219,6 +219,40 @@ pub struct ServerInfo {
     pub capabilities: Vec<String>,
 }
 
+/// Why an address is banned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum BanReason {
+    /// Sent data that failed verification, with proof.
+    BadData,
+    /// Took part in too many failed pieces, without proof.
+    Untrusted,
+    /// Banned by hand.
+    Manual,
+}
+
+/// A banned peer address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Ban {
+    pub ip: String,
+    pub reason: BanReason,
+    /// How many times it has been banned this session; each repeat doubles the length.
+    pub count: u32,
+    /// When the ban ends, in milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub until: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BanRequest {
+    pub ip: String,
+}
+
 /// Messages from the server on the `/api/v1/sync` WebSocket.
 ///
 /// The server keeps a revisioned store. A client first gets a `snapshot` at some revision,

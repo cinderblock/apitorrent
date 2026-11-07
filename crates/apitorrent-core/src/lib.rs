@@ -163,6 +163,54 @@ impl Core {
         self.inner.session.listen_addr().port()
     }
 
+    /// Addresses banned right now.
+    pub fn bans(&self) -> Vec<apitorrent_types::Ban> {
+        use apitorrent_engine::ban::BanReason as R;
+        self.inner
+            .session
+            .bans()
+            .into_iter()
+            .map(|b| apitorrent_types::Ban {
+                ip: b.ip.to_string(),
+                reason: match b.reason {
+                    R::BadData => apitorrent_types::BanReason::BadData,
+                    R::Untrusted => apitorrent_types::BanReason::Untrusted,
+                    R::Manual => apitorrent_types::BanReason::Manual,
+                },
+                count: b.count,
+                until: b
+                    .until
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX)),
+            })
+            .collect()
+    }
+
+    pub fn ban(&self, ip: &str) -> Result<(), CoreError> {
+        let ip = ip
+            .parse()
+            .map_err(|_| CoreError::InvalidRequest(format!("not an IP address: {ip}")))?;
+        self.inner.session.ban(ip);
+        Ok(())
+    }
+
+    pub fn unban(&self, ip: &str) -> Result<(), CoreError> {
+        let ip = ip
+            .parse()
+            .map_err(|_| CoreError::InvalidRequest(format!("not an IP address: {ip}")))?;
+        if self.inner.session.unban(ip) {
+            Ok(())
+        } else {
+            Err(CoreError::NotFound)
+        }
+    }
+
+    /// Replace the IP blocklist.
+    pub fn set_blocklist(&self, list: apitorrent_engine::ban::Blocklist) {
+        tracing::info!(ranges = list.len(), "blocklist loaded");
+        self.inner.session.set_blocklist(list);
+    }
+
     pub fn subscribe(&self) -> (Snapshot, broadcast::Receiver<Arc<Patch>>) {
         self.inner.store.subscribe()
     }
