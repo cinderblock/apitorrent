@@ -1,0 +1,25 @@
+[package]
+name = "apitorrent-dht"
+description = "Mainline DHT (BEP 5) with IPv6, secure node IDs, read-only mode and scrape"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+apitorrent-bencode.workspace = true
+futures-util.workspace = true
+rand.workspace = true
+sha1.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
