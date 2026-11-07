@@ -280,9 +280,14 @@ async fn passkey_flow_end_to_end() {
         .await
         .json();
     let mut forged = soft.authenticate(&start["options"], ORIGIN).unwrap();
-    let sig = forged["response"]["signature"].as_str().unwrap().to_owned();
-    let flipped = if sig.ends_with('A') { "B" } else { "A" };
-    forged["response"]["signature"] = Value::from(format!("{}{flipped}", &sig[..sig.len() - 1]));
+    // Flip a bit in the last byte of the DER signature (inside S): still well-formed, but
+    // no longer a valid signature. (Editing the base64 text could hit padding bits.)
+    let b64 = data_encoding::BASE64URL_NOPAD;
+    let mut sig = b64
+        .decode(forged["response"]["signature"].as_str().unwrap().as_bytes())
+        .unwrap();
+    *sig.last_mut().unwrap() ^= 0x01;
+    forged["response"]["signature"] = Value::from(b64.encode(&sig));
     let r = post(
         &app,
         "/api/v1/auth/login/passkey/finish",
