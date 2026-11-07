@@ -75,6 +75,24 @@ impl PieceHashes {
         }
     }
 
+    /// The piece layer we have for the file with this `pieces root`.
+    pub fn layer(&self, root: &Sha256Hash) -> Option<&Arc<[Sha256Hash]>> {
+        self.layers.get(root)
+    }
+
+    /// Whether a downloaded copy of `piece` could be verified now. False only for a piece
+    /// of a multi-piece file in a v2-only torrent whose piece layer we don't have yet.
+    pub fn can_verify(&self, piece: u32) -> bool {
+        if !self.v1.is_empty() {
+            return true;
+        }
+        let Some(v2) = self.v2_pieces.get(piece as usize).copied().flatten() else {
+            return true;
+        };
+        let (_, length, root) = self.files[v2.file];
+        length <= self.piece_length || root.is_some_and(|r| self.layers.contains_key(&r))
+    }
+
     /// Add a piece layer received from a peer. The caller must have validated it with
     /// [`Info::validate_piece_layer`].
     pub fn add_layer(&mut self, root: Sha256Hash, layer: Arc<[Sha256Hash]>) {
@@ -209,5 +227,32 @@ mod tests {
         let last = u32::try_from(t.info.piece_count()).unwrap() - 1;
         let start = last as usize * 32 * 1024;
         assert_eq!(hashes.verify(last, &space[start..]), Verdict::Valid);
+    }
+}
+
+#[cfg(test)]
+mod piece_size_tests {
+    use super::*;
+    use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
+
+    /// The smallest legal piece size: the piece layer is the leaf layer.
+    #[test]
+    fn v2_with_16k_pieces() {
+        let data: Vec<u8> = (0..100_000u32).map(|i| (i % 253) as u8).collect();
+        let bytes = TorrentBuilder::new("f", Version::V2)
+            .piece_length(16 * 1024)
+            .file(FileSource::from_bytes(&[], data.clone()))
+            .build()
+            .unwrap();
+        let t = Torrent::from_bytes(&bytes).unwrap();
+        assert_eq!(t.piece_layers.len(), 1, "the layer survives parsing");
+        let h = PieceHashes::new(&t);
+        for (i, chunk) in data.chunks(16 * 1024).enumerate() {
+            assert_eq!(
+                h.verify(u32::try_from(i).unwrap(), chunk),
+                Verdict::Valid,
+                "piece {i}"
+            );
+        }
     }
 }

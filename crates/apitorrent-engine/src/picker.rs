@@ -96,6 +96,8 @@ pub struct Picker {
     bucket_start: Vec<u32>,
     sequential: bool,
     rng: StdRng,
+    /// Wanted pieces that may not be started yet (their hashes haven't arrived).
+    held: Bitfield,
     /// Pieces with priority above 0, and how many of those we have.
     wanted_total: u32,
     wanted_have: u32,
@@ -118,6 +120,7 @@ impl Picker {
             bucket_start: vec![0; KEY_COUNT + 1],
             sequential: false,
             rng: StdRng::seed_from_u64(seed),
+            held: Bitfield::new(n),
             wanted_total: 0,
             wanted_have: 0,
         };
@@ -383,7 +386,7 @@ impl Picker {
     fn has_fresh(&self) -> bool {
         if self.sequential {
             (0..self.layout.piece_count())
-                .any(|p| self.is_wanted(p) && !self.partial.contains_key(&p))
+                .any(|p| self.is_wanted(p) && !self.partial.contains_key(&p) && !self.held.get(p))
         } else {
             !self.order.is_empty()
         }
@@ -391,8 +394,12 @@ impl Picker {
 
     fn next_fresh(&self, has: &Bitfield) -> Option<u32> {
         if self.sequential {
-            return (0..self.layout.piece_count())
-                .find(|&p| self.is_wanted(p) && !self.partial.contains_key(&p) && has.get(p));
+            return (0..self.layout.piece_count()).find(|&p| {
+                self.is_wanted(p)
+                    && !self.partial.contains_key(&p)
+                    && !self.held.get(p)
+                    && has.get(p)
+            });
         }
         self.order.iter().copied().find(|&p| has.get(p))
     }
@@ -497,6 +504,18 @@ impl Picker {
         }
     }
 
+    /// Hold a wanted piece back from being started (or release it). A held piece still
+    /// counts as wanted, so the torrent isn't finished while it is missing.
+    pub fn set_held(&mut self, piece: u32, held: bool) {
+        if held {
+            if self.held.set(piece) {
+                self.remove_from_order(piece);
+            }
+        } else if self.held.clear(piece) {
+            self.insert_into_order(piece);
+        }
+    }
+
     /// Pieces started and not yet verified: being downloaded, or waiting to be hashed and
     /// written. Each holds a piece buffer.
     pub fn pieces_in_progress(&self) -> usize {
@@ -506,7 +525,7 @@ impl Picker {
     // ----- ordering internals -----------------------------------------------------------
 
     fn in_order_set(&self, piece: u32) -> bool {
-        self.is_wanted(piece) && !self.partial.contains_key(&piece)
+        self.is_wanted(piece) && !self.partial.contains_key(&piece) && !self.held.get(piece)
     }
 
     fn key(&self, piece: u32) -> u32 {
@@ -723,6 +742,24 @@ mod tests {
             [blocks[0]],
             "a missing block of a started piece is still picked"
         );
+    }
+
+    #[test]
+    fn held_pieces_stay_wanted_but_are_not_picked() {
+        let mut p = picker(3);
+        let all = Bitfield::full(3);
+        p.set_held(0, true);
+        p.set_held(1, true);
+        p.check_invariants();
+        let blocks = p.pick(1, &all, 1000, usize::MAX);
+        assert!(blocks.iter().all(|b| b.piece == 2), "{blocks:?}");
+        assert!(!p.is_finished());
+        assert_eq!(p.wanted(), (3, 0));
+        p.set_held(0, false);
+        let blocks = p.pick(2, &all, 1000, usize::MAX);
+        assert!(blocks.iter().any(|b| b.piece == 0), "{blocks:?}");
+        assert!(blocks.iter().all(|b| b.piece != 1), "{blocks:?}");
+        p.check_invariants();
     }
 
     #[test]

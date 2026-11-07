@@ -693,13 +693,6 @@ impl Core {
     /// Add a magnet link: store it, and fetch its metadata in the background.
     async fn add_magnet(&self, uri: &str, req: AddTorrentRequest) -> Result<TorrentId, CoreError> {
         let magnet = Magnet::parse(uri).map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
-        if magnet.info_hashes.get_v1().is_none() {
-            return Err(CoreError::Unsupported(
-                "v2-only magnet links need BEP 52 hash requests, which aren't implemented yet; \
-                 use a hybrid link (with a btih hash) or the .torrent file"
-                    .into(),
-            ));
-        }
         let id = magnet.info_hashes.id_string();
         let taken = self
             .inner

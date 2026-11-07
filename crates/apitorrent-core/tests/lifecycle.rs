@@ -174,14 +174,6 @@ async fn bad_input_is_rejected() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), "invalid_torrent");
-    let e = core
-        .add(bad(AddSource::Magnet {
-            // v2-only magnets need BEP 52 hash requests, not implemented yet.
-            uri: "magnet:?xt=urn:btmh:1220caf1e1c30e81cb361b9ee167c4aa64228a7fa4fa9f6105232b28ad099f3a302e".into(),
-        }))
-        .await
-        .unwrap_err();
-    assert_eq!(e.code(), "unsupported");
     core.shutdown().await.unwrap();
 }
 

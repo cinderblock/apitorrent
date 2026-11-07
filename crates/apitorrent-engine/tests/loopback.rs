@@ -1041,3 +1041,116 @@ async fn local_service_discovery() {
         .unwrap_or_else(|_| panic!("download via LSD timed out: {:?}", leech.stats()));
     assert_files(leech_dir.path(), &fx);
 }
+
+/// Fetch a v2-only torrent by its btmh magnet link: the info dictionary has no piece
+/// layers, so they come from the seeder by hash requests (BEP 52) before pieces can be
+/// downloaded and verified.
+async fn v2_magnet(files: Vec<(Vec<String>, Vec<u8>)>, piece_length: u64) {
+    use apitorrent_metainfo::Magnet;
+
+    let mut b = TorrentBuilder::new("v2pack", Version::V2).piece_length(piece_length);
+    for (path, bytes) in &files {
+        let p: Vec<&str> = path.iter().map(String::as_str).collect();
+        b = b.file(FileSource::from_bytes(&p, bytes.clone()));
+    }
+    let torrent = Arc::new(Torrent::from_bytes(&b.build().unwrap()).unwrap());
+    let fx = Fixture {
+        torrent: torrent.clone(),
+        files,
+    };
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    for (path, (_, bytes)) in torrent_paths(seed_dir.path(), &torrent)
+        .iter()
+        .zip(&fx.files)
+    {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+    let seeder = Session::start(local_config()).await.unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent::new(
+            torrent.clone(),
+            seed_dir.path().to_path_buf(),
+        ))
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), seed.wait_finished())
+        .await
+        .unwrap_or_else(|_| panic!("v2 seeder check timed out: {:?}", seed.stats()));
+
+    let v2 = torrent.info.info_hashes().get_v2().unwrap().to_hex();
+    let uri = format!("magnet:?xt=urn:btmh:1220{v2}&x.pe={}", seeder.listen_addr());
+    let leecher = Session::start(local_config()).await.unwrap();
+    let mut fetch = leecher.fetch_metadata(&Magnet::parse(&uri).unwrap());
+    let fetched = tokio::time::timeout(Duration::from_secs(30), fetch.wait())
+        .await
+        .expect("metadata fetch timed out")
+        .expect("fetch finished");
+    let bytes = apitorrent_engine::metadata::torrent_file(&fetched.info, &[], &[]);
+    let fetched_torrent = Arc::new(Torrent::from_bytes(&bytes).unwrap());
+    assert!(
+        fetched_torrent.piece_layers.is_empty(),
+        "magnets carry no piece layers"
+    );
+    let pieces = u32::try_from(fetched_torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: fetched.peers,
+            ..AddTorrent::new(fetched_torrent, leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(90), leech.wait_finished())
+        .await
+        .unwrap_or_else(|_| panic!("v2 download timed out: {:?}", leech.stats()));
+    for (path, (_, bytes)) in torrent_paths(leech_dir.path(), &torrent)
+        .iter()
+        .zip(&fx.files)
+    {
+        assert!(
+            std::fs::read(path).unwrap() == *bytes,
+            "{} differs",
+            path.display()
+        );
+    }
+}
+
+/// Where each fixture file lives under `root`, by the torrent's own file paths (which
+/// include the torrent's directory for multi-file torrents; pad entries skipped).
+fn torrent_paths(root: &Path, torrent: &Torrent) -> Vec<std::path::PathBuf> {
+    torrent
+        .info
+        .files
+        .iter()
+        .filter(|f| !f.is_pad())
+        .map(|f| {
+            let mut p = root.to_path_buf();
+            for c in &f.path {
+                p.push(c);
+            }
+            p
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_magnet_small_layers() {
+    v2_magnet(
+        vec![
+            (vec!["a.bin".into()], data(1_500_000, 11)),
+            (vec!["b.bin".into()], data(30_000, 12)),
+        ],
+        64 * 1024,
+    )
+    .await;
+}
+
+/// 640 pieces of 16 KiB: the layer is 1024 wide, fetched in two chunks with proofs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_magnet_chunked_layers() {
+    v2_magnet(
+        vec![(vec!["big.bin".into()], data(640 * 16 * 1024 - 7, 13))],
+        16 * 1024,
+    )
+    .await;
+}

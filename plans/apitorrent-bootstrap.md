@@ -93,7 +93,7 @@ engine core stays in the main thread, because its pieces interlock.
   4. ~~Bad-peer system~~ (done; v2 block proofs come with hash requests in step 7)
   5. ~~Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing~~ (done)
   6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE ← current
-  7. v2 hash requests, webseeds (BEP 19), upload `cancel`, naming policy
+  7. ~~v2 hash requests~~, ~~upload `cancel`~~, webseeds (BEP 19), naming policy
   8. Content library: matching, bookends, piece reuse, fingerprints, pack switchover
 - **Delegated streams:**
   - `apitorrent-dht`: BEP 5, 32 and 42 (evaluate rqbit's crate first)
@@ -181,14 +181,20 @@ engine core stays in the main thread, because its pieces interlock.
 - Daemon command-line limits (`--memory-limit-mib` aside) only seed the *first* settings;
   after that the stored settings win. Memory isn't a live setting yet (the budget is
   fixed at session start).
-- **v2-only magnet links are refused** for now: the info dictionary has no piece layers,
-  so they would need BEP 52 hash requests (step 7). Hybrid links and btih-only links to
-  hybrid torrents work, trusting v1 piece hashes.
+- **BEP 52 hash requests** (`hashreq.rs`): v2-only magnet links fetch each multi-piece
+  file's piece layer from peers in chunks of up to 512 with uncle proofs. The spec is
+  ambiguous by one about which proof layers are omitted, so the verifier folds whatever
+  uncles arrive and accepts only an exact root match (also trying with one redundant
+  leading uncle dropped). We answer piece-layer requests and reject leaf-layer ones.
+  **Interop with libtorrent is untested**: check it in the interop matrix (M10).
+- **Pieces waiting for their layer must stay *wanted*.** The first version held them at
+  priority 0, and a v2 magnet torrent then reported itself finished before downloading
+  anything. The picker now has a separate "held" state: wanted, but not started.
 - A magnet link keeps the id it was added under (its v1 hash) even when the metadata
   turns out to be hybrid, whose own id would be the v2 hash. Core passes ids explicitly
   for this reason.
-- Known engine gaps, to fix before real-world use: a v2 `Unknown` verdict is treated as
-  invalid (needs BEP 52 hash requests), upload `cancel` is ignored.
+- Known engine gaps: none blocking real-world use now that hash requests and cancels exist.
+  Still missing: webseeds, DHT/uTP/MSE wiring, naming policy.
 
 ## Progress log
 

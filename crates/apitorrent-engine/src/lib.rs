@@ -7,6 +7,7 @@
 mod announce;
 pub mod ban;
 pub mod bitfield;
+pub mod hashreq;
 pub mod layout;
 pub mod limits;
 pub mod lsd;

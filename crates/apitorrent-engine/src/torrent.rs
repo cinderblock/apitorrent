@@ -10,15 +10,16 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot, watch};
 
-use apitorrent_metainfo::{InfoHashes, Sha1Hash, Torrent};
+use apitorrent_metainfo::{InfoHashes, Sha1Hash, Sha256Hash, Torrent};
 use apitorrent_wire::extended::{
     ExtensionHandshake, METADATA_PIECE_LEN, MetadataMessage, PexFlags, PexMessage, names,
 };
-use apitorrent_wire::{BlockRef, Decoder, Handshake, MAX_BLOCK_LEN, Message, PeerId};
+use apitorrent_wire::{BlockRef, Decoder, Handshake, HashRequest, MAX_BLOCK_LEN, Message, PeerId};
 
 use crate::announce::{Announcer, Job, TrackerStatus};
 use crate::ban::BanReason;
 use crate::bitfield::Bitfield;
+use crate::hashreq::LayerShape;
 use crate::layout::{BLOCK_LEN, Layout};
 use crate::limits::{Slot, Throttle, TorrentLimits};
 use crate::peer::{self, PeerCmd, PeerEvent};
@@ -35,6 +36,19 @@ const OPTIMISTIC_EVERY: u32 = 3;
 const RECONNECT_AFTER: Duration = Duration::from_secs(10);
 /// How long to wait before retrying a peer we failed to reach.
 const RETRY_AFTER: Duration = Duration::from_secs(60);
+/// How long to wait for a hash request to be answered before asking another peer.
+const HASH_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// A piece layer being fetched from peers (BEP 52).
+struct LayerFetch {
+    file: usize,
+    shape: LayerShape,
+    chunks: Vec<Option<Vec<Sha256Hash>>>,
+    asked: HashMap<u32, (PeerKey, Instant)>,
+    /// Peers that refused or answered wrongly; not asked again.
+    refused: HashSet<PeerKey>,
+}
+
 /// Our extension ids, sent in the extension handshake.
 const OUR_UT_METADATA: u8 = 1;
 const OUR_UT_PEX: u8 = 2;
@@ -326,6 +340,8 @@ struct Peer {
     tx: Option<mpsc::UnboundedSender<PeerCmd>>,
     peer_id: Option<PeerId>,
     fast: bool,
+    /// The peer set the v2 bit in its handshake, so it can answer hash requests.
+    v2: bool,
     extensions: Option<ExtensionHandshake>,
     /// Addresses we last told this peer about by PEX.
     pex_sent: HashSet<SocketAddr>,
@@ -364,6 +380,7 @@ impl Peer {
             tx: None,
             peer_id: None,
             fast: false,
+            v2: false,
             extensions: None,
             pex_sent: HashSet::new(),
             has: Bitfield::new(pieces),
@@ -442,6 +459,8 @@ pub(crate) struct TorrentActor {
     /// Who sent each block of each piece in progress.
     block_from: HashMap<u32, Vec<Option<IpAddr>>>,
     reputation: Reputation,
+    /// Piece layers still to fetch, by `pieces root`.
+    layer_fetches: HashMap<Sha256Hash, LayerFetch>,
     announcer: Announcer,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
@@ -554,6 +573,7 @@ impl TorrentActor {
             memory_held: 0,
             block_from: HashMap::new(),
             reputation: Reputation::default(),
+            layer_fetches: HashMap::new(),
             announcer: Announcer::new(&torrent.trackers, &keys, Instant::now()),
             finished: false,
         };
@@ -593,11 +613,13 @@ impl TorrentActor {
     fn start(&mut self, have: Bitfield) {
         let seed = rand::random();
         let mut picker = Picker::new(self.layout.clone(), have, seed);
-        if let Some(prios) = &self.file_priorities {
-            picker.set_priorities(&piece_priorities(&self.layout, prios));
+        self.plan_layer_fetches();
+        if let Some(prios) = self.effective_priorities() {
+            picker.set_priorities(&prios);
         }
-        self.finished = picker.is_finished();
         self.picker = Some(picker);
+        self.apply_holds();
+        self.finished = self.picker.as_ref().is_some_and(Picker::is_finished);
         if let Err(e) = self.storage.create_empty_files() {
             tracing::warn!(error = %e, "could not create empty files");
         }
@@ -614,8 +636,44 @@ impl TorrentActor {
         }
         self.file_priorities = Some(prios.to_vec());
         self.place_files();
+        self.refresh_priorities();
+        // Newly wanted pieces may need the seeds we let go once we had everything.
+        if self.picker.as_ref().is_some_and(|p| !p.have().is_full()) {
+            for addr in &self.seed_addrs {
+                self.retry_at.remove(addr);
+            }
+        }
+        self.connect_more();
+    }
+
+    /// Piece priorities from the file priorities. `None` when everything is at the default.
+    fn effective_priorities(&self) -> Option<Vec<u8>> {
+        self.file_priorities
+            .as_ref()
+            .map(|p| piece_priorities(&self.layout, p))
+    }
+
+    /// Hold back pieces that can't be verified yet (their piece layer hasn't arrived), and
+    /// release the ones that now can.
+    fn apply_holds(&mut self) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        for piece in 0..self.layout.piece_count() {
+            picker.set_held(piece, !self.hashes.can_verify(piece));
+        }
+    }
+
+    /// Push the effective priorities into the picker and update every peer's interest.
+    fn refresh_priorities(&mut self) {
+        let prios = self.effective_priorities();
+        if let Some(prios) = prios
+            && let Some(picker) = self.picker.as_mut()
+        {
+            picker.set_priorities(&prios);
+        }
+        self.apply_holds();
         if let Some(picker) = self.picker.as_mut() {
-            picker.set_priorities(&piece_priorities(&self.layout, prios));
             for peer in self.peers.values_mut() {
                 peer.wanted = u32::try_from(
                     peer.has
@@ -631,13 +689,158 @@ impl TorrentActor {
             }
             self.publish_stats();
         }
-        // Newly wanted pieces may need the seeds we let go once we had everything.
-        if self.picker.as_ref().is_some_and(|p| !p.have().is_full()) {
-            for addr in &self.seed_addrs {
-                self.retry_at.remove(addr);
+    }
+
+    // ----- piece layers (BEP 52) ---------------------------------------------------------
+
+    /// Find the files whose pieces can't be verified until their piece layer arrives.
+    fn plan_layer_fetches(&mut self) {
+        let info = &self.torrent.info;
+        for (file, f) in info.files.iter().enumerate() {
+            let Some(root) = f.pieces_root else { continue };
+            if f.is_pad() || self.hashes.layer(&root).is_some() {
+                continue;
+            }
+            let Some(shape) = LayerShape::new(root, f.length, info.piece_length) else {
+                continue;
+            };
+            let first = u32::try_from(f.offset / info.piece_length).expect("fits");
+            if self.hashes.can_verify(first) {
+                continue; // hybrid: the v1 hashes are enough
+            }
+            self.layer_fetches.insert(
+                root,
+                LayerFetch {
+                    file,
+                    shape,
+                    chunks: vec![None; shape.chunks() as usize],
+                    asked: HashMap::new(),
+                    refused: HashSet::new(),
+                },
+            );
+        }
+    }
+
+    /// Ask v2-capable peers for the layer chunks nobody is fetching.
+    fn request_layers(&mut self) {
+        let now = Instant::now();
+        let ready: Vec<PeerKey> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.tx.is_some() && p.v2)
+            .map(|(k, _)| *k)
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        let mut next = 0usize;
+        for fetch in self.layer_fetches.values_mut() {
+            fetch
+                .asked
+                .retain(|_, (_, at)| now.duration_since(*at) < HASH_REQUEST_TIMEOUT);
+            for chunk in 0..fetch.shape.chunks() {
+                if fetch.chunks[chunk as usize].is_some() || fetch.asked.contains_key(&chunk) {
+                    continue;
+                }
+                // Round-robin over the peers that haven't refused this layer.
+                let candidates: Vec<PeerKey> = ready
+                    .iter()
+                    .copied()
+                    .filter(|k| !fetch.refused.contains(k))
+                    .collect();
+                let Some(&key) = candidates.get(next % candidates.len().max(1)) else {
+                    break;
+                };
+                next += 1;
+                if let Some(peer) = self.peers.get(&key) {
+                    peer.send(Message::HashRequest(fetch.shape.request(chunk)));
+                    fetch.asked.insert(chunk, (key, now));
+                }
             }
         }
-        self.connect_more();
+    }
+
+    fn on_hashes(&mut self, key: PeerKey, request: &HashRequest, hashes: &[u8]) {
+        let Some(fetch) = self.layer_fetches.get_mut(&request.pieces_root) else {
+            return;
+        };
+        let chunk = request.index / fetch.shape.chunk_len().max(1);
+        if fetch.asked.get(&chunk).is_none_or(|(k, _)| *k != key) {
+            return; // not something we asked this peer for
+        }
+        fetch.asked.remove(&chunk);
+        let parsed: Vec<Sha256Hash> = hashes
+            .as_chunks::<32>()
+            .0
+            .iter()
+            .map(|c| Sha256Hash(*c))
+            .collect();
+        let Some(good) = fetch.shape.verify(request, &parsed) else {
+            tracing::debug!(key, "piece layer hashes didn't prove out");
+            fetch.refused.insert(key);
+            return;
+        };
+        fetch.chunks[chunk as usize] = Some(good);
+        if fetch.chunks.iter().any(Option::is_none) {
+            return;
+        }
+        let fetch = self
+            .layer_fetches
+            .remove(&request.pieces_root)
+            .expect("present");
+        let mut layer: Vec<Sha256Hash> = fetch.chunks.into_iter().flatten().flatten().collect();
+        layer.truncate(fetch.shape.pieces as usize);
+        if let Err(e) = self.torrent.info.validate_piece_layer(fetch.file, &layer) {
+            tracing::warn!(error = %e, "assembled piece layer is wrong; starting over");
+            self.plan_layer_fetches();
+            return;
+        }
+        let mut hashes = (*self.hashes).clone();
+        hashes.add_layer(fetch.shape.root, layer.into());
+        self.hashes = Arc::new(hashes);
+        tracing::debug!(file = fetch.file, "piece layer fetched");
+        self.refresh_priorities();
+    }
+
+    fn on_hash_reject(&mut self, key: PeerKey, request: &HashRequest) {
+        if let Some(fetch) = self.layer_fetches.get_mut(&request.pieces_root) {
+            let chunk = request.index / fetch.shape.chunk_len().max(1);
+            if fetch.asked.get(&chunk).is_some_and(|(k, _)| *k == key) {
+                fetch.asked.remove(&chunk);
+            }
+            fetch.refused.insert(key);
+        }
+        self.request_layers();
+    }
+
+    /// Answer a peer's hash request from the piece layers we have.
+    fn on_hash_request(&self, key: PeerKey, request: HashRequest) {
+        let Some(peer) = self.peers.get(&key) else {
+            return;
+        };
+        let info = &self.torrent.info;
+        let answer = info
+            .files
+            .iter()
+            .find(|f| f.pieces_root == Some(request.pieces_root))
+            .and_then(|f| LayerShape::new(request.pieces_root, f.length, info.piece_length))
+            .and_then(|shape| {
+                let layer = self.hashes.layer(&request.pieces_root)?;
+                shape.answer(&request, layer)
+            });
+        match answer {
+            Some(hashes) => {
+                let mut bytes = Vec::with_capacity(hashes.len() * 32);
+                for h in &hashes {
+                    bytes.extend_from_slice(h.as_bytes());
+                }
+                peer.send(Message::Hashes {
+                    request,
+                    hashes: Bytes::from(bytes),
+                });
+            }
+            None => peer.send(Message::HashReject(request)),
+        }
     }
 
     /// Bring each file's placement in line with its priority: wanted files go to the save
@@ -1138,6 +1341,7 @@ impl TorrentActor {
         peer.half_open = None;
         peer.peer_id = Some(peer_id);
         peer.fast = reserved.fast();
+        peer.v2 = reserved.v2();
         if reserved.extension_protocol() {
             let mut ext = ExtensionHandshake {
                 client: Some(self.shared.config.client_name.clone()),
@@ -1284,7 +1488,9 @@ impl TorrentActor {
                 }
             }
             Message::Extended { .. } => {}
-            Message::HashRequest(_) | Message::Hashes { .. } | Message::HashReject(_) => {}
+            Message::HashRequest(r) => self.on_hash_request(key, r),
+            Message::Hashes { request, hashes } => self.on_hashes(key, &request, &hashes),
+            Message::HashReject(r) => self.on_hash_reject(key, &r),
         }
         Ok(())
     }
@@ -1795,6 +2001,9 @@ impl TorrentActor {
             .max(1);
         if self.ticks.is_multiple_of(pex_every) {
             self.send_pex();
+        }
+        if !self.layer_fetches.is_empty() {
+            self.request_layers();
         }
         // Another torrent may have banned an address, or freed memory.
         self.drop_blocked_peers();
