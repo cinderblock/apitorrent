@@ -46,6 +46,27 @@ The target design is in `docs/architecture.md`.
 - **TLS**: expect a reverse proxy. Built-in rustls supports bring-your-own certificates and
   ACME HTTP-01. DNS-01 runs through a `dns-provider` plugin.
 
+- **Scope: everything.** The user's answer to "which milestone next" (2026-11-06) was "do it
+  all. boil the ocean". Work runs in parallel streams (see Plan / steps). *(user)*
+- **Real-world swarm test approved** (2026-11-06): join the public Ubuntu swarm, download
+  about 50 MB, stop and delete. *(user)*
+- **Unwanted files never sit in the save directory.** Boundary bytes go to a part store;
+  deselecting a file with data moves it to a managed held area (default) or deletes it.
+  *(user 2026-11-06)*
+- **Dedupe goes past size matching**: bookend pieces, piece-level reuse, v2 roots, and idle
+  fingerprinting. *(user asked; design in `docs/architecture.md`, "Going further")*
+- **Pack switchover is automated**: superseded-by links, retirement on "unregistered", and
+  a tracker-adapter plugin hook for tracker-specific behaviour. *(user)*
+- **Limits are hierarchical** (session, group, torrent, peer) for bandwidth, memory,
+  connections, half-open attempts, connection attempts per second, and queueing. *(user
+  asked for app-wide and per-torrent/group limits, plus connection and connect-rate limits)*
+- **Banning works on evidence**: smart ban, parole, trust points, escalating global IP bans.
+  A single unattributable failure is not a ban. *(user asked for a sophisticated system;
+  my design)*
+- **Naming policy per storage root**: portable by default, native as an option, forced
+  portable on filesystems that need it. *(the user asked whether portable-everywhere was
+  best; this is my answer)*
+
 ## Prior art (checked 2026-11-06)
 
 No existing client has the whole combination:
@@ -61,30 +82,26 @@ No existing client has the whole combination:
 
 ## Plan / steps
 
-- **M0: foundations** ← current
-  1. Cargo workspace, licence, README, CI-ready layout (no remote).
-  2. `apitorrent-bencode`: a strict codec, depth-limited, with canonical-encoding checks
-     and a fuzz target.
-  3. `apitorrent-metainfo`: v1, v2 and hybrid parsing, info-hashes (SHA-1 and SHA-256),
-     file trees, BEP 47 pad files, merkle roots, magnet URIs, path sanitising.
-  4. `apitorrent-wire`: sans-IO handshake and message codec, extension handshake.
-- **M1: engine MVP** (design notes: per-torrent actor task owns the picker and
-  `PieceHashes`; each peer connection is a tokio task doing socket I/O only and exchanging
-  messages with the actor over channels; blocks are assembled in memory per piece, hashed
-  on a blocking pool and written only once verified; a memory cap on in-flight pieces is
-  still to do): TCP peers, a picker, storage (placement-based), HTTP and UDP
-  trackers, resume state. Download from a local seeder in an integration test.
-- **M2: core and server**: registry with SQLite, axum API, WebSocket sync, daemon binary.
-- **M3: web UI**: torrent list (virtualised), details, add torrent, settings.
-- **M4: auth**: bootstrap, passkeys, sessions, API tokens, CSRF.
-- **M5: engine depth**: DHT, PEX, LSD, uTP, MSE/PE, magnet metadata, v2 merkle
-  verification, webseeds, choker, rate limits, NAT.
-- **M6: content library**: matching, staging, materialising.
-- **M7: desktop**: Tauri app with local and remote modes, path mappings, TLS pinning.
-- **M8: plugin host**: deno_core, the SDK, first plugins (qbittorrent-api, RSS, Ubuntu,
-  Raspberry Pi).
-- **M9: Deluge importer**, rules and retention, distribution channels.
-- **M10: CI**: GitHub Actions when the repo goes public, including the interop matrix.
+M0 to M3.1 are done (see the progress log). Everything else is in scope. It runs as
+parallel streams. Self-contained crates go to background agents working in worktrees; the
+engine core stays in the main thread, because its pieces interlock.
+
+- **Main thread (engine core), in order:**
+  1. Real-world interop test against the Ubuntu swarm ← current
+  2. Part store, unwanted-file handling, held area
+  3. Memory budget (session, group, torrent)
+  4. Bad-peer system (attribution, smart ban, parole, trust, bans, blocklists)
+  5. Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing
+  6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE
+  7. v2 hash requests, webseeds (BEP 19), upload `cancel`, naming policy
+  8. Content library: matching, bookends, piece reuse, fingerprints, pack switchover
+- **Delegated streams:**
+  - `apitorrent-dht`: BEP 5, 32 and 42 (evaluate rqbit's crate first)
+  - `apitorrent-utp` (BEP 29) and `apitorrent-mse` (MSE/PE)
+  - M4 auth: passkeys, sessions, API tokens, so the API can leave loopback
+- **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
+  host and first plugins (qbittorrent-api, RSS, Ubuntu, Raspberry Pi, tracker adapters),
+  M9 Deluge importer, rules and channels, TLS (bring-your-own certificates, ACME), M10 CI.
 
 ## Findings / gotchas
 
@@ -143,16 +160,21 @@ No existing client has the whole combination:
   (`d185833`); daemon serves it with CSP and other security headers (`f459ad6`)
 - [ ] M3.2 UI: per-tracker status (engine already reports it), peers tab, label
   editing, settings page, column chooser, embedding `web/dist` into release binaries
-- [ ] **Next milestone: waiting on the user's priority call** (see the open questions)
+- [ ] Real-world Ubuntu swarm test
+- [ ] Part store and unwanted files
+- [ ] Memory budget
+- [ ] Bad-peer system
+- [ ] Limits and queueing
+- [ ] Magnets, PEX, LSD
+- [ ] DHT (delegated)
+- [ ] uTP and MSE (delegated)
+- [ ] M4 auth (delegated)
+- [ ] Content library and pack switchover
+- [ ] M3.2, M7, M8, M9, TLS, M10
 
 ## Open questions for the user
 
-1. Which milestone next? Options: magnets + DHT + PEX (the client becomes useful on
-   real public swarms), passkey auth (lets the API leave loopback), or the Tauri desktop
-   app. **Recommendation: magnets + DHT + PEX first.**
-2. May I run a short real-world interop test: join a public Ubuntu ISO swarm (HTTPS
-   tracker), download about 50 MB to check interop with real libtorrent and Transmission
-   peers, then stop and delete the data? It uses your network and IP briefly.
+*(none right now)*
 
 ## How to run it
 

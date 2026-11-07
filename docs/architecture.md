@@ -309,6 +309,110 @@ The old torrent keeps seeding from the same content item. Removing a torrent rem
 placements, and a content item is deleted only when no placement and no retention rule
 still references it.
 
+### Going further than file-level matching
+
+- **Bookends.** A v1 piece that straddles file X (which we have) and a neighbour Y is
+  verified the moment both are available from *any* source. If Y has to be downloaded,
+  X's part of the piece comes from the library copy, Y's part from peers, and the whole
+  piece is hashed in the staging area. If it fails, the piece is downloaded again entirely
+  from peers. Only if that clean copy disagrees with the library bytes in X's range is the
+  candidate marked as a different version.
+- **Piece-level reuse.** Every piece that verifies is genuinely the torrent's data, even
+  when the file as a whole doesn't match (a repack that changed one region, say). Those
+  pieces are copied into the new torrent's own file, and only the failing ones are
+  downloaded. The two files stay separate content items, because their bytes differ.
+- **v2 needs no bookends.** v2 files start on piece boundaries, so `pieces root` matches
+  exactly. Piece layers then pinpoint which pieces differ when the roots don't match.
+- **Fingerprints for future torrents.** In idle time the library computes each file's v2
+  `pieces root` and full SHA-256, even for files that came from v1 torrents. A later v2 or
+  hybrid torrent of the same file then matches with no I/O at all. v1 candidates are
+  still found by length (and name) and then checked by hashing at the new torrent's
+  alignment, which costs one read of the candidate file.
+
+### Unwanted files and the part store
+
+A torrent's save directory only ever holds files the user wants. Deselecting a file
+removes it from that directory.
+
+- Bytes of unwanted files that come in as part of boundary pieces go to a **part store**,
+  never to the save directory. It holds one sparse slot per piece, managed by apitorrent in
+  its data directory. It keeps those boundary pieces verifiable and seedable.
+- **Deselecting a file that already has data** moves it out of the save directory:
+  - The boundary bytes that neighbouring wanted files still need go to the part store.
+  - The rest goes to a managed **held** area (a rename, so it lives on the same volume as
+    the save path) or is deleted, depending on the per-torrent retention setting, which
+    defaults to *hold*.
+  - Re-selecting a held file moves it back with no download. Held data is listed in the
+    UI, counts against a quota, and is purged when its torrent is removed (or by hand).
+- Files the user wants are written in place while downloading. An optional
+  "incomplete" suffix or directory keeps partial wanted files out of view too.
+
+### Pack switchover (superseded torrents)
+
+Some trackers publish single-episode torrents, then a season pack, then delete the
+singles. apitorrent automates the switch:
+
+1. Adding the pack matches its files against the library, so nothing is downloaded twice.
+   Each single whose files are all covered by the pack is recorded as **superseded by**
+   it.
+2. The single keeps seeding until it is **retired**. Retirement happens when the tracker
+   reports it unregistered, or a rule or the user retires it. Its content stays, because
+   the pack references it.
+3. Spotting "unregistered" is tracker-specific. Core ships a default set of
+   announce-failure patterns. A **tracker adapter** plugin can replace them, query the
+   tracker's API for packs that contain a torrent's files, and fetch the pack
+   automatically.
+
+## Resource limits
+
+Limits form a hierarchy: session, then **group**, then torrent, then peer. A group is a
+named set of torrents, selected by label, tracker or rule. The tightest level that applies
+wins.
+
+- **Bandwidth:** download and upload rates through hierarchical token buckets, with
+  protocol overhead counted separately and optionally exempt.
+- **Memory:** a byte budget for in-flight piece buffers and the write queue, at session
+  level and optionally per group or torrent. When it is exhausted the picker stops
+  starting new pieces and finishes the ones in progress first.
+- **Connections:** open connections per session, group and torrent, plus half-open
+  (connecting) attempts at once and new connection attempts per second.
+- **Queueing:** the number of active downloads and seeds, like Deluge's queue.
+
+## Misbehaving peers
+
+One failed piece is not proof: several peers usually contributed to it, and honest peers
+occasionally send bad data. Peers are scored, and banned only on evidence.
+
+1. If every block of a failed piece came from one peer, that peer is at fault.
+2. Otherwise the digest of each block is recorded along with who sent it. The piece is
+   downloaded again, preferring a single peer, and suspects are put **on parole**: they
+   are assigned only whole pieces, so a later failure is attributable. When the piece
+   passes, block digests that differ from the good copy prove which peer sent bad data
+   (libtorrent calls this "smart ban").
+3. For v2 torrents, merkle hash requests give block-level proof immediately.
+4. **Proven bad data means a ban.** The peer's IP is banned for the session's ban period,
+   which escalates on repeat offences and is global, since poisoning tends to span
+   swarms. An unproven involvement costs trust points, and repeated involvement leads to a
+   ban.
+5. Protocol violations, such as oversized or unrequested blocks or a bad handshake,
+   disconnect the peer and count against its trust. Slow peers are only snubbed, never
+   banned.
+6. IP blocklists in the common P2P formats are supported, and can be loaded by plugins.
+
+## File naming policy
+
+Each storage root has a naming policy:
+
+- **portable** (the default): Windows rules everywhere, so a directory can be shared over
+  SMB, moved to exFAT, or opened from any OS with the same names.
+- **native**: only the rules of the host filesystem, plus the rules that are always
+  enforced: no `..`, no separators and no control characters.
+
+The policy is forced to portable when the root is on a filesystem that needs it (NTFS,
+exFAT or FAT mounted on Linux, or SMB). The torrent path to disk path mapping is always
+stored, so renames are reversible. Seeding and library matching use torrent paths and
+hashes, never disk names.
+
 ## Remote file access (thin client)
 
 - Each storage root on the daemon has an optional set of **share locators**: a UNC path
