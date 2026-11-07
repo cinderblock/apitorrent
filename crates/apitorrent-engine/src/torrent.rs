@@ -90,6 +90,8 @@ pub struct AddTorrent {
     pub peers: Vec<SocketAddr>,
     /// One priority per file; `None` downloads everything at the default priority.
     pub file_priorities: Option<Vec<u8>>,
+    /// This torrent's own cap on piece data in memory, below the session's.
+    pub memory_limit: Option<u64>,
 }
 
 impl AddTorrent {
@@ -105,6 +107,7 @@ impl AddTorrent {
             paused: false,
             peers: Vec::new(),
             file_priorities: None,
+            memory_limit: None,
         }
     }
 }
@@ -384,6 +387,9 @@ pub(crate) struct TorrentActor {
     unwanted: UnwantedPolicy,
     /// Files whose placement change is in flight.
     moving: HashSet<usize>,
+    memory_limit: Option<u64>,
+    /// Bytes this torrent has counted against the session's memory budget.
+    memory_held: u64,
     announcer: Announcer,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
@@ -482,6 +488,8 @@ impl TorrentActor {
             file_priorities: params.file_priorities,
             unwanted: params.unwanted,
             moving: HashSet::new(),
+            memory_limit: params.memory_limit,
+            memory_held: 0,
             announcer: Announcer::new(&torrent.trackers, &keys, Instant::now()),
             finished: false,
         };
@@ -700,6 +708,7 @@ impl TorrentActor {
                 _ = tick.tick() => self.on_tick(),
             }
         }
+        self.shared.memory.sub(self.memory_held);
         self.shared.unregister(&self.info_hashes);
     }
 
@@ -1169,9 +1178,36 @@ impl TorrentActor {
             return;
         }
         let want = depth - peer.requests.len();
-        for block in picker.pick(key, &peer.has, want) {
+        let max_new = new_piece_room(
+            &self.layout,
+            picker.pieces_in_progress(),
+            self.shared.memory.available(),
+            self.memory_limit,
+        );
+        for block in picker.pick(key, &peer.has, want, max_new) {
             peer.send(Message::Request(block));
             peer.requests.push(block);
+        }
+        self.sync_memory();
+    }
+
+    /// Bring this torrent's share of the memory budget in line with its pieces in progress.
+    fn sync_memory(&mut self) {
+        let pieces = self.picker.as_ref().map_or(0, Picker::pieces_in_progress) as u64;
+        let want = pieces * self.layout.piece_length();
+        if want > self.memory_held {
+            self.shared.memory.add(want - self.memory_held);
+        } else {
+            self.shared.memory.sub(self.memory_held - want);
+        }
+        self.memory_held = want;
+    }
+
+    /// Ask every unchoked peer for more blocks: memory freed up, or pieces became wanted.
+    fn fill_all(&mut self) {
+        let keys: Vec<PeerKey> = self.peers.keys().copied().collect();
+        for key in keys {
+            self.fill_requests(key);
         }
     }
 
@@ -1274,6 +1310,9 @@ impl TorrentActor {
                 self.fail(e);
             }
         }
+        // The piece's buffer is gone, which may let peers start new pieces.
+        self.sync_memory();
+        self.fill_all();
         self.publish_stats();
     }
 
@@ -1427,6 +1466,8 @@ impl TorrentActor {
         if self.ticks.is_multiple_of(CHOKE_EVERY) {
             self.run_choker();
         }
+        // Another torrent may have freed memory since our peers last asked.
+        self.fill_all();
         self.announce();
         self.connect_more();
         self.publish_stats();
@@ -1492,6 +1533,24 @@ impl TorrentActor {
             }
         });
     }
+}
+
+/// How many new pieces a torrent may start, given the session's free memory and the
+/// torrent's own limit. A torrent with nothing in progress may always start one, so no
+/// torrent starves while others hold the budget.
+fn new_piece_room(
+    layout: &Layout,
+    in_progress: usize,
+    session_available: u64,
+    torrent_limit: Option<u64>,
+) -> usize {
+    let piece = layout.piece_length().max(1);
+    let session = session_available / piece;
+    let torrent = torrent_limit.map_or(u64::MAX, |limit| {
+        limit.saturating_sub(in_progress as u64 * piece) / piece
+    });
+    let room = usize::try_from(session.min(torrent)).unwrap_or(usize::MAX);
+    if in_progress == 0 { room.max(1) } else { room }
 }
 
 /// Each piece gets the highest priority of the files it overlaps. Pad files don't count.
@@ -1587,4 +1646,30 @@ fn check_existing(storage: &dyn Storage, hashes: &PieceHashes, layout: &Layout) 
         }
     }
     have
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
+
+    fn layout(piece_kib: u64) -> Layout {
+        let bytes = TorrentBuilder::new("t", Version::V1)
+            .piece_length(piece_kib * 1024)
+            .file(FileSource::from_bytes(&[], vec![0; 1 << 20]))
+            .build()
+            .unwrap();
+        Layout::from_info(&Torrent::from_bytes(&bytes).unwrap().info)
+    }
+
+    #[test]
+    fn new_piece_room_respects_both_budgets() {
+        let l = layout(64);
+        let piece = 64 * 1024;
+        assert_eq!(new_piece_room(&l, 0, 10 * piece, None), 10);
+        assert_eq!(new_piece_room(&l, 3, 10 * piece, Some(5 * piece)), 2);
+        assert_eq!(new_piece_room(&l, 6, 10 * piece, Some(5 * piece)), 0);
+        assert_eq!(new_piece_room(&l, 2, piece - 1, None), 0);
+        assert_eq!(new_piece_room(&l, 0, 0, Some(0)), 1, "never starved");
+    }
 }

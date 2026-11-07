@@ -28,7 +28,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::storage::{long_path, read_exact_at, write_all_at};
+use crate::storage::{long_path, open_or_create, read_exact_at, set_sparse, write_all_at};
 
 const MAGIC: &[u8; 8] = b"APTPARTS";
 const VERSION: u32 = 1;
@@ -261,15 +261,10 @@ impl PartFile {
         if let Some(f) = &state.file {
             return Ok(f.clone());
         }
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&self.path)?;
+        // Replaces whatever is there: an unreadable store or another torrent's.
+        let file = open_or_create(&self.path)?;
+        file.set_len(0)?;
+        set_sparse(&file);
         let mut header = Vec::with_capacity(HEADER_SIZE);
         header.extend_from_slice(MAGIC);
         header.extend_from_slice(&VERSION.to_le_bytes());

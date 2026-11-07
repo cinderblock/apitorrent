@@ -34,6 +34,10 @@ struct Args {
     #[arg(long, env = "APITORRENT_PEER_LISTEN", default_value = "0.0.0.0:6881")]
     peer_listen: SocketAddr,
 
+    /// Most piece data held in memory at once, in MiB, across all torrents.
+    #[arg(long, env = "APITORRENT_MEMORY_LIMIT_MIB", default_value_t = 256)]
+    memory_limit_mib: u64,
+
     /// A built web UI to serve (the `web/dist` directory).
     #[arg(long, env = "APITORRENT_WEB_ROOT")]
     web_root: Option<PathBuf>,
@@ -101,6 +105,7 @@ async fn main() -> ExitCode {
         download_dir,
         session: SessionConfig {
             listen: args.peer_listen,
+            memory_limit: args.memory_limit_mib.saturating_mul(1024 * 1024),
             ..SessionConfig::default()
         },
     })

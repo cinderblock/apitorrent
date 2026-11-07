@@ -27,6 +27,10 @@ pub struct SessionConfig {
     pub upload_slots: usize,
     /// Sent to peers in the extension handshake.
     pub client_name: String,
+    /// Most bytes of piece data held in memory at once, across all torrents: pieces being
+    /// downloaded plus pieces waiting to be hashed and written. When it is reached, torrents
+    /// finish the pieces they have started before starting new ones.
+    pub memory_limit: u64,
 }
 
 impl Default for SessionConfig {
@@ -37,6 +41,7 @@ impl Default for SessionConfig {
             request_queue: 64,
             upload_slots: 8,
             client_name: concat!("apitorrent ", env!("CARGO_PKG_VERSION")).to_owned(),
+            memory_limit: 256 * 1024 * 1024,
         }
     }
 }
@@ -55,9 +60,43 @@ pub(crate) struct Shared {
     pub(crate) tracker: TrackerClient,
     /// Sent with every announce so trackers can recognise us across IP changes.
     pub(crate) announce_key: u32,
+    pub(crate) memory: MemoryBudget,
     listen_port: u16,
     next_key: AtomicU64,
     torrents: Mutex<HashMap<Sha1Hash, mpsc::Sender<ActorMsg>>>,
+}
+
+/// The session's memory budget for piece data. Torrents reserve and release whole pieces;
+/// the budget only says how much room is left, it never blocks.
+#[derive(Debug)]
+pub(crate) struct MemoryBudget {
+    limit: u64,
+    used: AtomicU64,
+}
+
+impl MemoryBudget {
+    pub(crate) fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            used: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn available(&self) -> u64 {
+        self.limit.saturating_sub(self.used())
+    }
+
+    pub(crate) fn used(&self) -> u64 {
+        self.used.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn add(&self, bytes: u64) {
+        self.used.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub(crate) fn sub(&self, bytes: u64) {
+        self.used.fetch_sub(bytes, Ordering::Relaxed);
+    }
 }
 
 impl Shared {
@@ -95,8 +134,10 @@ impl Session {
         let version = version_digits();
         let peer_id = PeerId::azureus(*b"AT", version, rand::random());
         let tracker = TrackerClient::new().map_err(io::Error::other)?;
+        let memory = MemoryBudget::new(config.memory_limit);
         let shared = Arc::new(Shared {
             config,
+            memory,
             peer_id,
             tracker,
             announce_key: rand::random(),
@@ -117,6 +158,11 @@ impl Session {
 
     pub fn peer_id(&self) -> PeerId {
         self.shared.peer_id
+    }
+
+    /// Bytes of piece data held in memory right now, across all torrents.
+    pub fn memory_used(&self) -> u64 {
+        self.shared.memory.used()
     }
 
     pub fn add_torrent(&self, params: AddTorrent) -> Result<TorrentHandle, AddError> {

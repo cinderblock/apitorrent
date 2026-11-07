@@ -89,8 +89,8 @@ engine core stays in the main thread, because its pieces interlock.
 - **Main thread (engine core), in order:**
   1. ~~Real-world interop test against the Ubuntu swarm~~ (done, two bugs fixed)
   2. ~~Part store, unwanted-file handling, held area~~ (done)
-  3. Memory budget (session, group, torrent) ← current
-  4. Bad-peer system (attribution, smart ban, parole, trust, bans, blocklists)
+  3. ~~Memory budget (session and torrent)~~ (done; group limits come with step 5)
+  4. Bad-peer system ← current (attribution, smart ban, parole, trust, bans, blocklists)
   5. Rate limits, connection limits, half-open limits, connect-rate limits, groups, queueing
   6. Magnets (BEP 9), PEX (BEP 11), LSD (BEP 14), then wiring in DHT, uTP and MSE
   7. v2 hash requests, webseeds (BEP 19), upload `cancel`, naming policy
@@ -163,8 +163,15 @@ engine core stays in the main thread, because its pieces interlock.
 - Bash heredocs in this environment fail on some content ("unexpected EOF"). Write
   scripts and test snippets to the scratchpad with the Write tool, then run or append
   them.
-- Known engine gaps, to fix before real-world use: no memory cap on in-flight piece
-  buffers, no banning of peers that send bad data, a v2 `Unknown` verdict is treated as
+- **NTFS zero-fill stall.** On Windows, the first write past the end of a non-sparse
+  file makes NTFS zero-fill the gap first. With rarest-first writes into a 6.6 GB file,
+  that stalled writes for seconds: 46 MB arrived with no completed piece. Fixed by marking
+  new files sparse (`FSCTL_SET_SPARSE`; the one `unsafe` block, with a scoped allow).
+  Second Ubuntu run, 2026-11-06 about 10:40 PM PST (06:40Z): first piece after 16 MB,
+  and at the pause 223 pieces (56 MiB) verified out of 60 MiB downloaded; no hash
+  failures; data deleted. It overshot the cap again (60 MiB against 50); 100 ms polling
+  plus pause isn't a hard cap.
+- Known engine gaps, to fix before real-world use: no banning of peers that send bad data, a v2 `Unknown` verdict is treated as
   invalid (needs BEP 52 hash requests), upload `cancel` is ignored, no rate limiting.
 
 ## Progress log
@@ -198,7 +205,9 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] Part store and unwanted files: `parts.rs` (per-torrent slot file), per-file
   placements (save, held, parts) in `FileStorage`, hold or delete on deselect, release
   held, data deletion, placements persisted (DB migration 2), API and Files tab
-- [ ] Memory budget
+- [x] Memory budget: session-wide byte budget (default 256 MiB, `--memory-limit-mib`) and
+  optional per-torrent limit; the picker starts new pieces only when there is room.
+  Sparse files on Windows
 - [ ] Bad-peer system
 - [ ] Limits and queueing
 - [ ] Magnets, PEX, LSD

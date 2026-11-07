@@ -214,8 +214,15 @@ impl Picker {
 
     // ----- picking --------------------------------------------------------------------
 
-    /// Choose up to `max` blocks to request from `peer`, which has the pieces in `has`.
-    pub fn pick(&mut self, peer: PeerKey, has: &Bitfield, max: usize) -> Vec<BlockRef> {
+    /// Choose up to `max` blocks to request from `peer`, which has the pieces in `has`,
+    /// starting at most `max_new` pieces that aren't in progress yet (the memory budget).
+    pub fn pick(
+        &mut self,
+        peer: PeerKey,
+        has: &Bitfield,
+        max: usize,
+        max_new: usize,
+    ) -> Vec<BlockRef> {
         let mut out = Vec::new();
         if max == 0 {
             return out;
@@ -237,11 +244,13 @@ impl Picker {
         }
 
         // 2. New pieces.
-        while out.len() < max {
+        let mut started = 0;
+        while out.len() < max && started < max_new {
             let Some(piece) = self.next_fresh(has) else {
                 break;
             };
             self.start_piece(piece);
+            started += 1;
             self.take_missing(piece, peer, max, &mut out);
         }
         if out.len() >= max || self.has_fresh() {
@@ -402,6 +411,8 @@ impl Picker {
         }
     }
 
+    /// Pieces started and not yet verified: being downloaded, or waiting to be hashed and
+    /// written. Each holds a piece buffer.
     pub fn pieces_in_progress(&self) -> usize {
         self.partial.len()
     }
@@ -588,9 +599,9 @@ mod tests {
         p.peer_bitfield(&has(4, &[0, 1]));
         p.check_invariants();
         // Piece 2 has availability 1, piece 3 has 2, pieces 0 and 1 have 3.
-        let blocks = p.pick(1, &Bitfield::full(4), 2);
+        let blocks = p.pick(1, &Bitfield::full(4), 2, usize::MAX);
         assert!(blocks.iter().all(|b| b.piece == 2), "{blocks:?}");
-        let blocks = p.pick(1, &Bitfield::full(4), 2);
+        let blocks = p.pick(1, &Bitfield::full(4), 2, usize::MAX);
         assert!(blocks.iter().all(|b| b.piece == 3), "{blocks:?}");
         p.check_invariants();
     }
@@ -598,11 +609,34 @@ mod tests {
     #[test]
     fn finishes_partial_pieces_before_starting_new_ones() {
         let mut p = picker(4);
-        let first = p.pick(1, &Bitfield::full(4), 1);
+        let first = p.pick(1, &Bitfield::full(4), 1, usize::MAX);
         let piece = first[0].piece;
-        let second = p.pick(2, &Bitfield::full(4), 1);
+        let second = p.pick(2, &Bitfield::full(4), 1, usize::MAX);
         assert_eq!(second[0].piece, piece);
         assert_ne!(second[0].offset, first[0].offset);
+    }
+
+    /// With no room for new pieces, only pieces in progress are picked, and once those are
+    /// fully requested the peer gets nothing more.
+    #[test]
+    fn max_new_caps_pieces_started() {
+        let mut p = picker(4);
+        let all = Bitfield::full(4);
+        let blocks = p.pick(1, &all, 100, 1);
+        let pieces: std::collections::HashSet<u32> = blocks.iter().map(|b| b.piece).collect();
+        assert_eq!(pieces.len(), 1, "only one piece started: {blocks:?}");
+        assert_eq!(p.pieces_in_progress(), 1);
+        assert!(
+            p.pick(2, &all, 100, 0).is_empty(),
+            "no room and nothing missing"
+        );
+        p.request_failed(1, &blocks[0]);
+        let again = p.pick(2, &all, 100, 0);
+        assert_eq!(
+            again,
+            [blocks[0]],
+            "a missing block of a started piece is still picked"
+        );
     }
 
     #[test]
@@ -612,7 +646,7 @@ mod tests {
         p.set_priority(3, 1);
         p.set_priority(0, MAX_PRIORITY);
         p.check_invariants();
-        let blocks = p.pick(1, &Bitfield::full(4), 1);
+        let blocks = p.pick(1, &Bitfield::full(4), 1, usize::MAX);
         assert_eq!(blocks[0].piece, 0);
         p.set_priority(1, 0);
         p.check_invariants();
@@ -626,7 +660,7 @@ mod tests {
         let all = Bitfield::full(n);
         let mut requested = Vec::new();
         loop {
-            let got = p.pick(1, &all, 4);
+            let got = p.pick(1, &all, 4, usize::MAX);
             if got.is_empty() {
                 break;
             }
@@ -635,10 +669,13 @@ mod tests {
         // 3 pieces of 2 blocks each.
         assert_eq!(requested.len(), 6);
         // Peer 2 now gets endgame duplicates.
-        let dup = p.pick(2, &all, 10);
+        let dup = p.pick(2, &all, 10, usize::MAX);
         assert_eq!(dup.len(), 6);
         // And a third peer gets nothing: the duplicate limit is reached.
-        assert_eq!(p.pick(3, &all, 10), [] as [apitorrent_wire::BlockRef; 0]);
+        assert_eq!(
+            p.pick(3, &all, 10, usize::MAX),
+            [] as [apitorrent_wire::BlockRef; 0]
+        );
 
         for b in &requested {
             match p.block_received(1, b) {
@@ -662,22 +699,22 @@ mod tests {
     fn failed_piece_is_downloaded_again() {
         let mut p = picker(1);
         let all = Bitfield::full(1);
-        let blocks = p.pick(1, &all, 10);
+        let blocks = p.pick(1, &all, 10, usize::MAX);
         for b in &blocks {
             p.block_received(1, b);
         }
         p.piece_verified(0, false);
         p.check_invariants();
-        assert_eq!(p.pick(2, &all, 10).len(), blocks.len());
+        assert_eq!(p.pick(2, &all, 10, usize::MAX).len(), blocks.len());
     }
 
     #[test]
     fn disconnect_releases_requests() {
         let mut p = picker(1);
         let all = Bitfield::full(1);
-        let blocks = p.pick(1, &all, 10);
+        let blocks = p.pick(1, &all, 10, usize::MAX);
         p.peer_gone(1);
-        assert_eq!(p.pick(2, &all, 10), blocks);
+        assert_eq!(p.pick(2, &all, 10, usize::MAX), blocks);
     }
 
     #[test]
@@ -685,7 +722,7 @@ mod tests {
         let mut p = picker(5);
         p.set_sequential(true);
         p.peer_bitfield(&has(5, &[4]));
-        let blocks = p.pick(1, &Bitfield::full(5), 1);
+        let blocks = p.pick(1, &Bitfield::full(5), 1, usize::MAX);
         assert_eq!(blocks[0].piece, 0);
     }
 

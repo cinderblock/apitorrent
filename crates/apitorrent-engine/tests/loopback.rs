@@ -549,3 +549,54 @@ async fn resume_reconnects_to_known_peers() {
         .unwrap_or_else(|_| panic!("download after resume timed out: {:?}", leech.stats()));
     assert_files(leech_dir.path(), &fx);
 }
+
+/// A transfer under a two-piece memory budget still completes, and never holds more than
+/// the budget. (With one torrent the "always start one piece" rule can't exceed it: that
+/// only applies when the torrent holds nothing.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn memory_budget_is_respected() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let (seeder, _seed) = seed_fixture(&fx, seed_dir.path()).await;
+    let piece = fx.torrent.info.piece_length;
+    let leecher = Session::start(SessionConfig {
+        memory_limit: 2 * piece,
+        ..local_config()
+    })
+    .await
+    .unwrap();
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![seeder.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    let peak = Arc::new(AtomicU64::new(0));
+    let sampler = {
+        let (leecher, peak) = (leecher.clone(), peak.clone());
+        tokio::spawn(async move {
+            loop {
+                peak.fetch_max(leecher.memory_used(), Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_micros(200)).await;
+            }
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .expect("download timed out");
+    sampler.abort();
+    assert_files(leech_dir.path(), &fx);
+    let peak = peak.load(Ordering::Relaxed);
+    assert!(peak > 0, "the sampler saw pieces in progress");
+    assert!(
+        peak <= 2 * piece,
+        "peak {peak} is over the {} budget",
+        2 * piece
+    );
+    wait_for("memory to be released", || leecher.memory_used() == 0).await;
+}

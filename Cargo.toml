@@ -40,6 +40,7 @@ percent-encoding = "2"
 sha1 = "0.10"
 sha2 = "0.10"
 thiserror = "2"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl"] }
 data-encoding = "2"
 proptest = "1"
 rand = "0.9"

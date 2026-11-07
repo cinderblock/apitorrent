@@ -175,15 +175,7 @@ impl FileStorage {
             return Ok(Some(h.clone()));
         }
         let opened = if create {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)
+            open_or_create(path)
         } else {
             OpenOptions::new().read(true).write(true).open(path)
         };
@@ -376,15 +368,7 @@ impl Storage for FileStorage {
                     .filter_map(|p| self.file_in_piece(file, p).map(|s| (p, s)))
                     .collect();
                 if !pieces.is_empty() {
-                    if let Some(dir) = dst.parent() {
-                        std::fs::create_dir_all(dir)?;
-                    }
-                    let f = OpenOptions::new()
-                        .read(true)
-                        .write(true)
-                        .create(true)
-                        .truncate(false)
-                        .open(dst)?;
+                    let f = open_or_create(dst)?;
                     for &(piece, seg) in &pieces {
                         let mut buf = vec![0u8; seg.len];
                         self.parts.read(piece, seg.buf_offset as u64, &mut buf)?;
@@ -481,6 +465,59 @@ impl Storage for FileStorage {
         first_error.map_or(Ok(()), Err)
     }
 }
+
+/// Open a file for reading and writing, creating it (and its directory) if needed. A new
+/// file is made sparse on Windows; see [`set_sparse`].
+pub(crate) fn open_or_create(path: &Path) -> io::Result<File> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    if f.metadata()?.len() == 0 {
+        set_sparse(&f);
+    }
+    Ok(f)
+}
+
+/// Mark a file sparse, so writing far past its end doesn't make NTFS zero-fill the gap
+/// first. Pieces arrive in random order, and without this the first write near the end of
+/// a large file blocks for as long as it takes to write gigabytes of zeros. Other
+/// platforms' filesystems leave holes on their own. Failure (FAT32, exFAT, some network
+/// shares) is harmless: writes still work, just slower.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub(crate) fn set_sparse(f: &File) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+
+    let mut returned = 0u32;
+    // SAFETY: the handle is a valid open file for the duration of the call; with no input
+    // buffer FSCTL_SET_SPARSE sets the flag, and there is no output buffer or OVERLAPPED.
+    let ok = unsafe {
+        DeviceIoControl(
+            f.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &raw mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        tracing::debug!(error = %io::Error::last_os_error(), "could not make a file sparse");
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn set_sparse(_: &File) {}
 
 /// Move a file, falling back to copy and delete across volumes. A missing source is not
 /// an error: there is nothing to move.
@@ -692,6 +729,21 @@ mod tests {
             std::fs::read(dir.path().join("sub").join("t.bin")).unwrap(),
             vec![7; 1000]
         );
+    }
+
+    /// Writing near the end of a new file must not zero-fill everything before it.
+    #[cfg(windows)]
+    #[test]
+    fn new_files_are_sparse() {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big");
+        let f = open_or_create(&path).unwrap();
+        write_all_at(&f, b"end", 4 << 30).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.len(), (4 << 30) + 3);
+        assert_ne!(meta.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE, 0);
     }
 
     #[cfg(windows)]
