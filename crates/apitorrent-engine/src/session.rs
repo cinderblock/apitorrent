@@ -44,6 +44,8 @@ pub struct SessionConfig {
     pub max_half_open: usize,
     /// New outgoing connection attempts per second. 0 is unlimited.
     pub connect_rate: u64,
+    /// How often to send peer exchange messages. BEP 11 asks for at most once a minute.
+    pub pex_interval: std::time::Duration,
 }
 
 impl Default for SessionConfig {
@@ -61,6 +63,7 @@ impl Default for SessionConfig {
             max_connections: 500,
             max_half_open: 64,
             connect_rate: 30,
+            pex_interval: std::time::Duration::from_secs(60),
         }
     }
 }
@@ -283,6 +286,25 @@ impl Session {
             .collect();
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    /// Start fetching the info dictionary for a magnet link (BEP 9). The peers in the link
+    /// (`x.pe`) and its trackers are used; more can be added to the returned fetch.
+    pub fn fetch_metadata(
+        &self,
+        magnet: &apitorrent_metainfo::Magnet,
+    ) -> crate::metadata::MetadataFetch {
+        let peers = magnet
+            .peers
+            .iter()
+            .filter_map(|p| p.parse::<SocketAddr>().ok())
+            .collect();
+        crate::metadata::start(
+            self.shared.clone(),
+            magnet.info_hashes,
+            magnet.trackers.clone(),
+            peers,
+        )
     }
 
     /// Whether connections to and from `ip` are refused.

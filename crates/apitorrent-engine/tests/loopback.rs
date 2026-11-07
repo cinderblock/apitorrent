@@ -845,3 +845,141 @@ async fn connection_limit_holds() {
     assert_eq!(peak.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_files(leech_dir.path(), &fx);
 }
+
+async fn magnet_then_download(version: Version) {
+    use apitorrent_metainfo::Magnet;
+
+    let fx = fixture(version);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let (seeder, _seed) = seed_fixture(&fx, seed_dir.path()).await;
+
+    // A magnet link with only the v1 hash (btih) and the seeder as an `x.pe` peer, as
+    // most real links look.
+    let hashes = fx.torrent.info.info_hashes();
+    let v1 = hashes.get_v1().unwrap().to_hex();
+    let uri = format!(
+        "magnet:?xt=urn:btih:{v1}&dn=pack&x.pe={}",
+        seeder.listen_addr()
+    );
+    let magnet = Magnet::parse(&uri).unwrap();
+
+    let leecher = Session::start(local_config()).await.unwrap();
+    let mut fetch = leecher.fetch_metadata(&magnet);
+    let fetched = tokio::time::timeout(Duration::from_secs(30), fetch.wait())
+        .await
+        .unwrap_or_else(|_| panic!("metadata fetch timed out: {:?}", fetch.status()))
+        .expect("fetch finished");
+    assert_eq!(&fetched.info[..], fx.torrent.info.raw(), "{version:?}");
+    assert!(fetched.peers.contains(&seeder.listen_addr()));
+
+    let bytes = apitorrent_engine::metadata::torrent_file(&fetched.info, &[], &[]);
+    let torrent = Arc::new(Torrent::from_bytes(&bytes).unwrap());
+    assert_eq!(torrent.info.info_hashes(), hashes);
+    let pieces = u32::try_from(torrent.info.piece_count()).unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: fetched.peers,
+            ..AddTorrent::new(torrent, leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
+        .await
+        .unwrap_or_else(|_| panic!("{version:?} download timed out: {:?}", leech.stats()));
+    assert_files(leech_dir.path(), &fx);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn magnet_v1() {
+    magnet_then_download(Version::V1).await;
+}
+
+/// A hybrid torrent fetched by its v1 hash: the info dictionary has no piece layers (they
+/// aren't part of it), so pieces verify by their v1 hashes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn magnet_hybrid() {
+    magnet_then_download(Version::Hybrid).await;
+}
+
+/// A fetch that runs into a peer serving the wrong dictionary keeps going and gets the
+/// right one from another peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn magnet_ignores_peers_without_the_torrent() {
+    use apitorrent_metainfo::Magnet;
+
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let (seeder, _seed) = seed_fixture(&fx, seed_dir.path()).await;
+    let v1 = fx.torrent.info.info_hashes().get_v1().unwrap().to_hex();
+    // A port nobody listens on, then the real seeder.
+    let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let dead_addr = dead.local_addr().unwrap();
+    drop(dead);
+    let uri = format!(
+        "magnet:?xt=urn:btih:{v1}&x.pe={dead_addr}&x.pe={}",
+        seeder.listen_addr()
+    );
+    let leecher = Session::start(local_config()).await.unwrap();
+    let mut fetch = leecher.fetch_metadata(&Magnet::parse(&uri).unwrap());
+    let fetched = tokio::time::timeout(Duration::from_secs(30), fetch.wait())
+        .await
+        .expect("metadata fetch timed out")
+        .expect("fetch finished");
+    assert_eq!(&fetched.info[..], fx.torrent.info.raw());
+}
+
+/// Peer exchange: B only knows A, A knows the seeder. B learns of the seeder from A and
+/// connects to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pex_spreads_peers() {
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let a_dir = tempfile::tempdir().unwrap();
+    let b_dir = tempfile::tempdir().unwrap();
+    let (seeder, seed) = seed_fixture(&fx, seed_dir.path()).await;
+    let fast_pex = || SessionConfig {
+        pex_interval: Duration::from_secs(1),
+        ..local_config()
+    };
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let a_session = Session::start(fast_pex()).await.unwrap();
+    // A downloads slowly, so it is still a leecher (and connected to the seeder) while
+    // B arrives.
+    let a = a_session
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![seeder.listen_addr()],
+            limits: apitorrent_engine::limits::TorrentLimits {
+                download_rate: 100_000,
+                ..Default::default()
+            },
+            ..AddTorrent::new(fx.torrent.clone(), a_dir.path().to_path_buf())
+        })
+        .unwrap();
+    wait_for("A to connect to the seeder", || a.stats().peers > 0).await;
+    let b_session = Session::start(fast_pex()).await.unwrap();
+    let b = b_session
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![a_session.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), b_dir.path().to_path_buf())
+        })
+        .unwrap();
+    // The seeder sees a second leecher only if B learned its address by PEX.
+    let mut watch = seed.watch();
+    tokio::time::timeout(Duration::from_secs(30), watch.wait_for(|s| s.peers >= 2))
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "B never reached the seeder: {:?} {:?}",
+                b.stats(),
+                seed.stats()
+            )
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), b.wait_finished())
+        .await
+        .expect("B's download timed out");
+    assert_files(b_dir.path(), &fx);
+}

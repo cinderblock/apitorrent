@@ -12,7 +12,9 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use apitorrent_metainfo::{InfoHashes, Sha1Hash, Torrent};
-use apitorrent_wire::extended::{ExtensionHandshake, names};
+use apitorrent_wire::extended::{
+    ExtensionHandshake, METADATA_PIECE_LEN, MetadataMessage, PexFlags, PexMessage, names,
+};
 use apitorrent_wire::{BlockRef, Decoder, Handshake, MAX_BLOCK_LEN, Message, PeerId};
 
 use crate::announce::{Announcer, Job, TrackerStatus};
@@ -34,6 +36,9 @@ const OPTIMISTIC_EVERY: u32 = 3;
 const RECONNECT_AFTER: Duration = Duration::from_secs(10);
 /// How long to wait before retrying a peer we failed to reach.
 const RETRY_AFTER: Duration = Duration::from_secs(60);
+/// Our extension ids, sent in the extension handshake.
+const OUR_UT_METADATA: u8 = 1;
+const OUR_UT_PEX: u8 = 2;
 /// Most outstanding block reads we'll do for one peer.
 const MAX_PEER_UPLOAD_QUEUE: u32 = 256;
 
@@ -323,6 +328,8 @@ struct Peer {
     peer_id: Option<PeerId>,
     fast: bool,
     extensions: Option<ExtensionHandshake>,
+    /// Addresses we last told this peer about by PEX.
+    pex_sent: HashSet<SocketAddr>,
     has: Bitfield,
     is_seed: bool,
     /// How many pieces the peer has that we still want.
@@ -357,6 +364,7 @@ impl Peer {
             peer_id: None,
             fast: false,
             extensions: None,
+            pex_sent: HashSet::new(),
             has: Bitfield::new(pieces),
             is_seed: false,
             wanted: 0,
@@ -1138,7 +1146,12 @@ impl TorrentActor {
                 your_ip: Some(peer.addr.ip()),
                 ..Default::default()
             };
-            ext.extensions.insert(names::UT_METADATA.to_owned(), 1);
+            ext.extensions
+                .insert(names::UT_METADATA.to_owned(), OUR_UT_METADATA);
+            // No peer exchange for private torrents (BEP 27): peers come from the tracker.
+            if !self.torrent.info.private {
+                ext.extensions.insert(names::UT_PEX.to_owned(), OUR_UT_PEX);
+            }
             peer.send(Message::Extended {
                 id: 0,
                 payload: Bytes::from(ext.encode()),
@@ -1237,16 +1250,133 @@ impl TorrentActor {
                 offset,
                 data,
             } => self.on_piece(key, piece, offset, &data),
-            Message::Extended { id, payload } => {
-                if id == 0 {
-                    let ext = ExtensionHandshake::decode(&payload)
-                        .map_err(|e| format!("bad extension handshake: {e}"))?;
-                    peer.extensions = Some(ext);
+            Message::Extended { id: 0, payload } => {
+                let ext = ExtensionHandshake::decode(&payload)
+                    .map_err(|e| format!("bad extension handshake: {e}"))?;
+                peer.extensions = Some(ext);
+            }
+            Message::Extended {
+                id: OUR_UT_METADATA,
+                payload,
+            } => {
+                let msg = MetadataMessage::decode(&payload)
+                    .map_err(|e| format!("bad ut_metadata message: {e}"))?;
+                self.on_metadata_message(key, &msg);
+            }
+            Message::Extended {
+                id: OUR_UT_PEX,
+                payload,
+            } => {
+                if !self.torrent.info.private {
+                    let pex = PexMessage::decode(&payload)
+                        .map_err(|e| format!("bad ut_pex message: {e}"))?;
+                    let added = pex.added.into_iter().map(|(addr, _)| addr).collect();
+                    self.add_candidates(added);
+                    self.connect_more();
                 }
             }
+            Message::Extended { .. } => {}
             Message::HashRequest(_) | Message::Hashes { .. } | Message::HashReject(_) => {}
         }
         Ok(())
+    }
+
+    /// Answer a peer's request for a piece of the info dictionary (BEP 9).
+    fn on_metadata_message(&mut self, key: PeerKey, msg: &MetadataMessage) {
+        let &MetadataMessage::Request { piece } = msg else {
+            // We have the metadata; data and rejects from others mean nothing to us.
+            return;
+        };
+        let Some(peer) = self.peers.get(&key) else {
+            return;
+        };
+        let Some(their_id) = peer
+            .extensions
+            .as_ref()
+            .and_then(|e| e.id_of(names::UT_METADATA))
+        else {
+            return;
+        };
+        let raw = self.torrent.info.raw();
+        let start = piece as usize * METADATA_PIECE_LEN;
+        let reply = if start < raw.len() {
+            let end = (start + METADATA_PIECE_LEN).min(raw.len());
+            MetadataMessage::Data {
+                piece,
+                total_size: raw.len() as u64,
+                data: Bytes::copy_from_slice(&raw[start..end]),
+            }
+        } else {
+            MetadataMessage::Reject { piece }
+        };
+        peer.send(Message::Extended {
+            id: their_id,
+            payload: Bytes::from(reply.encode()),
+        });
+    }
+
+    /// The address a peer accepts connections on: its own for outbound connections, or the
+    /// listen port from its extension handshake for inbound ones.
+    fn reachable_addr(peer: &Peer) -> Option<SocketAddr> {
+        if peer.outbound {
+            return Some(peer.addr);
+        }
+        let port = peer.extensions.as_ref()?.listen_port?;
+        Some(SocketAddr::new(peer.addr.ip(), port))
+    }
+
+    /// Tell each peer that supports it which peers we're connected to (BEP 11): what's new
+    /// since the last message, and what went away.
+    fn send_pex(&mut self) {
+        if self.torrent.info.private {
+            return;
+        }
+        let connected: HashSet<SocketAddr> = self
+            .peers
+            .values()
+            .filter(|p| p.tx.is_some())
+            .filter_map(Self::reachable_addr)
+            .collect();
+        for peer in self.peers.values_mut() {
+            let Some(id) = peer
+                .extensions
+                .as_ref()
+                .and_then(|e| e.id_of(names::UT_PEX))
+            else {
+                continue;
+            };
+            let me = Self::reachable_addr(peer);
+            let current: HashSet<SocketAddr> = connected
+                .iter()
+                .copied()
+                .filter(|a| Some(*a) != me)
+                .collect();
+            let added: Vec<(SocketAddr, PexFlags)> = current
+                .difference(&peer.pex_sent)
+                .take(PexMessage::MAX_PEERS)
+                .map(|a| (*a, PexFlags(0)))
+                .collect();
+            let dropped: Vec<SocketAddr> = peer
+                .pex_sent
+                .difference(&current)
+                .take(PexMessage::MAX_PEERS)
+                .copied()
+                .collect();
+            if added.is_empty() && dropped.is_empty() {
+                continue;
+            }
+            for (a, _) in &added {
+                peer.pex_sent.insert(*a);
+            }
+            for a in &dropped {
+                peer.pex_sent.remove(a);
+            }
+            let msg = PexMessage { added, dropped };
+            peer.send(Message::Extended {
+                id,
+                payload: Bytes::from(msg.encode()),
+            });
+        }
     }
 
     fn update_interest(&mut self, key: PeerKey) {
@@ -1647,6 +1777,12 @@ impl TorrentActor {
         }
         if self.ticks.is_multiple_of(CHOKE_EVERY) {
             self.run_choker();
+        }
+        let pex_every = u32::try_from(self.shared.config.pex_interval.as_secs())
+            .unwrap_or(u32::MAX)
+            .max(1);
+        if self.ticks.is_multiple_of(pex_every) {
+            self.send_pex();
         }
         // Another torrent may have banned an address, or freed memory.
         self.drop_blocked_peers();
