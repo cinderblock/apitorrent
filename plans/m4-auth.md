@@ -59,6 +59,8 @@ Delegated stream from `plans/apitorrent-bootstrap.md`.
 
 ## Plan / steps
 
+All steps are done. Remaining ideas are under "Follow-ups".
+
 1. `apitorrent-auth` crate: store + migrations, clock, secrets, users, passkeys, passwords,
    sessions, tokens, setup token, rate limiter, ceremonies, audit events.
 2. Auth DTOs in `apitorrent-types` (ts-rs).
@@ -74,17 +76,55 @@ Delegated stream from `plans/apitorrent-bootstrap.md`.
 - webauthn-rs `start_passkey_registration` sets `require_resident_key(false)`; we patch
   the returned options to `residentKey: required` so login can be usernameless.
 - webauthn-rs `start_discoverable_authentication` forces `mediation: conditional`; the
-  button flow clears it.
+  button flow sends only the inner `publicKey` options, which drops it.
+- webauthn-rs 0.6's JSON shapes match `@simplewebauthn/browser` 14 directly (it accepts
+  `clientExtensionResults`); checked in headless Chrome with a CDP virtual authenticator.
+- There is no OpenSSL-free software authenticator crate for tests
+  (`webauthn-authenticator-rs` needs OpenSSL), so `crates/apitorrent-server/tests/common/
+  authenticator.rs` is a small one: ES256 via `p256` 0.14 (already in the tree), `none`
+  attestation, hand-rolled CBOR. Negative tests (no UV, replay, wrong origin, forged
+  signature) prove the server really verifies.
+- Argon2 at 64 MiB is slow unoptimised, so `[profile.dev.package.argon2]` (and `blake2`)
+  build at `opt-level = 3`. Tests use a cheap `PasswordCost`.
+- The bash tool's wrapper choked on some quoted heredocs here; patch scripts went through
+  files in the scratchpad instead.
+- Binding `0.0.0.0` in tests would raise a Windows Firewall prompt, so the listen-rule
+  tests only cover the refusals (which return before binding).
+- Vite's dev proxy keeps `Host: localhost:5173`, so dev sign-in works unchanged: Origin
+  matches Host, and the `localhost` RP allows any port.
+
+## Endpoints (all under `/api/v1/auth`)
+
+- `GET status`
+- `POST setup/start`, `setup/finish`, `setup/password`
+- `POST login/passkey/start`, `login/passkey/finish`, `login/password` (also the second
+  factor), `logout`
+- `POST reauth/passkey/start`, `reauth/passkey/finish`, `reauth/password`
+- `GET passkeys`; `POST passkeys/start`, `passkeys/finish`; `PATCH|DELETE passkeys/{id}`
+- `PUT|DELETE password`
+- `GET|POST tokens`; `DELETE tokens/{id}`
+- `GET sessions`; `DELETE sessions/{id}`
+
+## Follow-ups (not in M4's scope)
+
+- Inviting more users (admin creates a user plus a one-time enrollment link), and role
+  management. Roles are stored and viewers are read-only already.
+- Finer token scopes (`torrents:write`, `admin`) and IP-range binding.
+- Conditional-UI (autofill) passkey sign-in.
+- An audit-log viewer (events are recorded in `auth_events`).
+- Device pairing for the desktop thin client.
 
 ## Progress log
 
-- [ ] 1 auth crate
-- [ ] 2 types
-- [ ] 3 server
-- [ ] 4 daemon
-- [ ] 5 Rust tests
-- [ ] 6 web UI
-- [ ] 7 docs
+- [x] 1 auth crate (`49e00e3`)
+- [x] 2 types (`49e00e3`)
+- [x] 3 server: middleware, routes, cookies, proxies, guard, WS re-checks (`269cde6`)
+- [x] 4 daemon flags and setup banner (`269cde6`)
+- [x] 5 Rust tests: 18 auth unit tests, 11 server integration tests over HTTP with a
+  software authenticator (`269cde6`)
+- [x] 6 web UI and 6 bun tests; headless Chrome check with a virtual authenticator
+  (`8bc15b7`)
+- [x] 7 docs: architecture "Authentication", README "Signing in", bootstrap plan
 
 ## Open questions for the user
 

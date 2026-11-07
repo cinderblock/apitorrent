@@ -136,8 +136,9 @@ Resume state is a versioned, serialisable struct that the core stores.
 
 ## Persistence
 
-- **SQLite in WAL mode**, one database per instance: torrents, files, labels, rules, feeds,
-  library entries, users, credentials, sessions, tokens, audit log.
+- **SQLite in WAL mode**, two databases per instance: `apitorrent.db` for torrents, files,
+  labels, rules, feeds and library entries, and `auth.db` for users, credentials, sessions,
+  tokens and the security audit log (see "Authentication").
 - Resume state (piece bitfields, file mtimes and sizes for quick validation, stats) is
   saved incrementally. A bitfield is flushed after each verified piece batch, at most every
   few seconds, so a power failure loses seconds of progress, not hours.
@@ -166,15 +167,21 @@ Resume state is a versioned, serialisable struct that the core stores.
 
 - **The daemon binds plain HTTP only to loopback by default.**
 - **Behind a reverse proxy** (Caddy, …) is the expected deployment. Configure
-  `trusted_proxies`; `X-Forwarded-*` is honoured only from those addresses.
+  `--trusted-proxy` (addresses or networks); `X-Forwarded-For` and `X-Forwarded-Proto` are
+  honoured only from those peers. The client address is the right-most untrusted entry of
+  `X-Forwarded-For`. The proxy must pass the `Host` header through, because the Host,
+  Origin and passkey checks all use it. `--public-url https://…` names the public origin.
 - **Built-in TLS** (rustls) is for direct exposure. It supports:
   - Bring your own certificate and key, reloaded on change.
   - ACME HTTP-01 and TLS-ALPN-01, built in.
   - ACME DNS-01 through a `dns-provider` plugin (Cloudflare, Route53, RFC 2136, …). The
     ACME state machine stays in the core, so the TLS listener owns its certificates. Only
     "publish this TXT record" is pluggable.
-- A non-loopback plaintext bind is refused unless `trusted_proxies` is set, or the operator
-  sets `allow_insecure_lan = true`. The UI then shows a persistent warning.
+- A non-loopback bind needs authentication enabled, and plain HTTP there is refused unless
+  `--trusted-proxy` is set or the operator passes `--allow-insecure-lan`. Either way the
+  daemon logs a loud warning recommending a TLS reverse proxy, and the UI shows a
+  persistent warning on any page reached over plain HTTP from a non-loopback host.
+  (Built-in TLS isn't implemented yet.)
 
 ### Client trust (desktop thin client, CLI, instance-to-instance)
 
@@ -190,24 +197,90 @@ certificate errors" switch. A server is trusted in one of three ways:
 
 ### Authentication
 
-- **Passkeys (WebAuthn) are primary.** The relying-party ID is the configured public
-  hostname. `localhost` works for local setups.
-- **Passwords are optional** (Argon2id), for bootstrap or for environments without passkey
-  support. An admin can disable them.
-- **Bootstrap**: on first start, the daemon prints a one-time setup URL with a token, and
-  the first user enrolls a passkey there. Nothing is reachable before enrollment except
-  that page.
-- **Sessions**: an HttpOnly, Secure, SameSite=Strict cookie, rotated on privilege change,
-  with idle and absolute expiry.
-- **CSRF**: SameSite=Strict, plus an `Origin` / `Sec-Fetch-Site` check on every state-changing
-  request and on WebSocket upgrade.
-- **API tokens**: scoped (`read`, `torrents:write`, `admin`, …), hashed at rest, optionally
-  tied to an IP range. Used by scripts and external tools.
-- **Device pairing**: the desktop thin client gets a device credential. It is a bearer
-  token bound to the pinned key, and can be revoked per device.
-- **Roles**: `admin`, `user` (owns its torrents) and `viewer`. Multi-user from day one,
-  because adding it later is painful.
-- **Audit log** of security-relevant events.
+Built in M4 (`crates/apitorrent-auth`, wired into `apitorrent-server`). Credentials live in
+their own SQLite file, `auth.db` in the data directory (WAL, forward-only migrations,
+`secure_delete`, owner-only permissions on Unix), so they can be backed up or wiped apart
+from the torrent database.
+
+- **Every `/api/v1` route needs a credential** except `info`, `auth/status` and the setup,
+  sign-in and sign-out endpoints. That includes unknown paths (401, not 404) and the sync
+  WebSocket. Writes (anything but `GET`/`HEAD`) also need a credential that may write.
+- **Passkeys (WebAuthn) are primary**, through `webauthn-rs` 0.6 (RustCrypto, no OpenSSL).
+  - One relying party per host: `localhost` (any port, `http` or `https`) always, plus the
+    host of each `--public-url`, which must be `https`. The request's `Host` picks the RP,
+    and a passkey works only on the host it was made on. An IP address can never be an RP
+    ID, so `http://127.0.0.1` gets password and token sign-in only, and the UI points to
+    `http://localhost` instead.
+  - Passkeys are **discoverable** (resident key required) and **user-verified**, so
+    sign-in is usernameless and the login endpoints never reveal which accounts exist.
+    Signature counters are checked.
+  - Users can have several passkeys, named and revocable. The last sign-in method can't be
+    removed.
+  - Ceremony state stays in server memory: single-use, five-minute expiry, bound to its
+    host (and, for re-auth and adding a passkey, to its session), and capped in number.
+- **Passwords are optional** (argon2id, 64 MiB, 3 passes; 12 to 1024 characters; at most
+  two hashes at once; hashes with old parameters are upgraded on sign-in). The instance
+  chooses `--passwords off` (the default), `fallback` (a password alone signs in, for hosts
+  without passkey support) or `second-factor` (a user who set one must enter it after the
+  passkey; until then the session can only finish signing in or sign out, and it lapses
+  after five minutes).
+- **Bootstrap**: while no user exists, the daemon prints a one-time setup URL,
+  `/setup#token=…`, on stderr. The token is in the fragment, so it never reaches the server
+  or an access log; the setup page reads it and removes it from the address bar. It has
+  160 bits, lasts an hour, and is replaced (and reprinted) when it expires or after ten
+  wrong guesses. `--write-setup-token` also writes it to `<data dir>/setup-token` (mode
+  0600 on Unix; on Windows it inherits the data directory's per-user ACL), deleted once
+  used. The token, checked in constant time, enrolls the first admin with a passkey (or a
+  password in `fallback` mode). Nothing but setup and status works before then.
+- **Sessions**: a 256-bit random id in a cookie, stored only as its SHA-256. Idle expiry
+  (7 days by default) and absolute expiry (30 days), both configurable. Every sign-in,
+  re-authentication and second-factor step issues a new id and ends the old one. Sign-out
+  deletes it; users can list their sessions and end any of them.
+  - Over HTTPS (a trusted proxy reporting `X-Forwarded-Proto: https`) the cookie is
+    `__Host-apitorrent-session` with `Secure; HttpOnly; SameSite=Strict; Path=/`.
+  - Over plain HTTP (loopback, or a LAN with `--allow-insecure-lan`) it is
+    `apitorrent-session` with the same attributes minus `Secure`: browsers reject
+    `__Host-` without `Secure`, and Safari refuses `Secure` cookies on `http://localhost`
+    even though it is a secure context. On loopback the prefix would add nothing anyway.
+    Each transport reads only its own cookie name, so neither can stand in for the other.
+- **Recent authentication**: adding or removing a passkey, setting or removing the
+  password, and creating an API token need a sign-in from the last ten minutes. Otherwise
+  the server answers `reauth_required` and the UI asks for the passkey (or the password, in
+  `fallback` mode) again.
+- **CSRF**: SameSite=Strict, plus checks on every state-changing request and WebSocket
+  upgrade: `Origin`, when present, must equal the request's own origin, port included (other
+  ports on the same host are other sites' pages, and browsers call them `same-site`), and
+  `Sec-Fetch-Site` may not be `cross-site` or `same-site`. A cookie-authenticated WebSocket
+  must carry `Origin`. Requests with `Authorization: Bearer` skip these checks: a browser
+  never adds that header to a cross-site request, since we grant no CORS. A bad bearer
+  token is a 401, never a fall-back to the cookie.
+- **API tokens**: `apt_` plus 256 random bits, shown once, stored as SHA-256. Named, with
+  scope `read` (`GET` and the sync socket) or `full`, an optional expiry, last-used time,
+  and revocation. Tokens can never manage credentials: account endpoints need a browser
+  session. Finer scopes (`torrents:write`, `admin`, …) and IP-range binding can extend
+  this later.
+- **Rate limits and lockout**: sign-in and setup calls are limited per client address
+  (IPv6 by /64) to bursts of 15 and 30 a minute, and ten consecutive failures lock the
+  address out for a minute, doubling up to an hour. Five wrong passwords lock that
+  account's password sign-in the same way. Passkey sign-in is never locked per account,
+  since it can't be guessed and locking it would only let an attacker lock the owner out.
+  Unknown users cost a full argon2 verification, so timing doesn't reveal them.
+- **Long-lived sockets**: the sync WebSocket re-checks its credential whenever any session
+  or token is revoked, and on every 30-second ping, which catches expiry. It closes with
+  code 4401 once the credential is no longer valid.
+- **No-auth development mode**: `--insecure-no-auth-loopback` treats direct loopback
+  requests with a loopback `Host` as a synthetic local admin. It is refused with a
+  non-loopback address or with trusted proxies, and requests carrying proxy headers
+  (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`) don't get the free pass, since a local
+  proxy would make remote clients look local.
+- **Device pairing** (planned): the desktop thin client gets a device credential. It is a
+  bearer token bound to the pinned key, and can be revoked per device.
+- **Roles**: `admin`, `user` (owns its torrents) and `viewer` are stored, and viewers may
+  only read. The first user is the admin. Creating further users (invitations) is still to
+  come.
+- **Audit log**: setup, sign-ins and failures, lockouts, re-authentication, and passkey,
+  password, token and session changes go to `auth_events` with time, user and client
+  address, kept for a year.
 
 ## Plugins
 

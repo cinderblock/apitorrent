@@ -5,8 +5,9 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 
 > **Status: early development.** The engine downloads and seeds v1, v2 and hybrid
 > torrents from `.torrent` files and magnet links, finds peers through HTTP, HTTPS and UDP
-> trackers and peer exchange, and can be driven from the web UI. DHT, authentication and
-> the desktop app are in progress. Don't point it at anything you care about yet. See
+> trackers and peer exchange, and can be driven from the web UI, with passkey sign-in.
+> DHT, uTP and encryption are being wired in; the desktop app is next. Don't point it at
+> anything you care about yet. See
 > [`plans/apitorrent-bootstrap.md`](plans/apitorrent-bootstrap.md) for progress, and
 > [`docs/architecture.md`](docs/architecture.md) for the design.
 
@@ -57,13 +58,61 @@ cd web && bun run build && cd ..
 cargo run -p apitorrentd -- --web-root web/dist
 ```
 
-The API listens on `127.0.0.1:8742` by default and refuses other addresses until
-authentication is implemented. `apitorrentd --help` lists the options; each one can also
-be set with an `APITORRENT_*` environment variable.
+`apitorrentd --help` lists the options; each one can also be set with an `APITORRENT_*`
+environment variable.
 
-For UI work, run `bun run dev` in `web/` alongside the daemon: Vite proxies `/api` to it.
+For UI work, run `bun run dev` in `web/` alongside the daemon: Vite proxies `/api` to it,
+and you sign in at http://localhost:5173 as usual.
 The UI's API types in `web/src/api/generated` are generated from the Rust types with
 `cargo test -p apitorrent-types`.
+
+## Signing in
+
+Everything except the sign-in pages needs an account. On first start, with no users yet,
+the daemon prints a one-time setup link on its console:
+
+```text
+========================================================================
+ apitorrent has no users yet. To create the first admin, open
+
+   http://localhost:8742/setup#token=abcd-efgh-ijkl-mnop-qrst-uvwx-yz23-4567
+ ...
+```
+
+Open it in a browser (or open `/setup` and paste the token), pick a username and create
+a passkey. That account is the admin. The token works once and expires after an hour; a
+new one is printed while nobody has used one. Pass `--write-setup-token` to also write it
+to `<data dir>/setup-token` (owner-only on Unix), for headless installs. It is deleted
+once used.
+
+- **Passkeys** are the sign-in method. Browsers only allow them on `https://` or
+  `http://localhost`, so open the UI as `http://localhost:8742`, not
+  `http://127.0.0.1:8742`. Each passkey works on the host it was made on.
+- **Passwords** are off by default. `--passwords fallback` lets a password sign in on its
+  own (for hosts without passkey support); `--passwords second-factor` asks for it after
+  the passkey.
+- **API tokens** for scripts are made on the Account page, read-only or full, and sent
+  as `Authorization: Bearer <token>`.
+- `--insecure-no-auth-loopback` turns sign-in off for requests from this machine. It is
+  for development only, and refused with a non-loopback `--api`.
+
+### Reaching it from other machines
+
+The API listens on `127.0.0.1:8742` by default. The supported way to expose it is a reverse
+proxy with TLS in front (Caddy, nginx), which passes the `Host` header through:
+
+```sh
+apitorrentd --api 0.0.0.0:8742 \
+  --public-url https://torrents.example.com \
+  --trusted-proxy 10.0.0.5
+```
+
+`--public-url` makes that host a passkey host and an accepted `Host` name, and
+`--trusted-proxy` makes the daemon believe that proxy's `X-Forwarded-For` and
+`X-Forwarded-Proto` headers. Without a trusted proxy a non-loopback address is refused,
+unless you pass `--allow-insecure-lan` and accept plain HTTP on your network (passkeys
+won't work there; use `--passwords fallback`). See "Security model" in
+[`docs/architecture.md`](docs/architecture.md) for the details.
 
 ## Licence
 

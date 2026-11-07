@@ -100,7 +100,8 @@ engine core stays in the main thread, because its pieces interlock.
 - **Delegated streams:**
   - `apitorrent-dht`: BEP 5, 32 and 42 ✅ done (own implementation, see Findings)
   - `apitorrent-utp` (BEP 29) and `apitorrent-mse` (MSE/PE)
-  - M4 auth: passkeys, sessions, API tokens, so the API can leave loopback
+  - ~~M4 auth: passkeys, sessions, API tokens, so the API can leave loopback~~ done
+    (`plans/m4-auth.md`)
 - **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
   host and first plugins (qbittorrent-api, RSS, Ubuntu, Raspberry Pi, tracker adapters),
   M9 Deluge importer, rules and channels, TLS (bring-your-own certificates, ACME), M10 CI.
@@ -298,6 +299,11 @@ engine core stays in the main thread, because its pieces interlock.
   (`retry_plaintext()`), which is the engine's job. Pass our BitTorrent handshake as the
   initial payload to save a round trip. An accepted plaintext stream replays its first
   bytes, so the engine reads the BitTorrent handshake from the `MseStream` either way.
+- Auth (M4): webauthn-rs 0.6 dropped OpenSSL for RustCrypto, so passkeys need no C
+  toolchain; 0.5 and `webauthn-authenticator-rs` still pull OpenSSL in. Passkeys only work
+  on `https://` or `http://localhost`, never on an IP address, so the UI points
+  `127.0.0.1` users at `localhost`. Plain-HTTP cookies drop the `__Host-` prefix because
+  Safari refuses `Secure` cookies on `http://localhost`.
 
 ## Progress log
 
@@ -356,7 +362,11 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] uTP and MSE: `apitorrent-mse` and `apitorrent-utp`, built by a background agent
   (`t3/mse-and-utp-transport-crates`, cherry-picked); engine wiring is step 6. See
   `plans/transport-mse-utp.md`.
-- [ ] M4 auth (delegated)
+- [x] M4 auth: `apitorrent-auth` (own `auth.db`), passkeys via webauthn-rs 0.6, optional
+  argon2id passwords, setup token, sessions, scoped API tokens, rate limits; auth on every
+  route and the sync socket; non-loopback listening behind a trusted proxy; sign-in, setup
+  and account pages (background agent, `t3/add-m4-authentication`, cherry-picked; details
+  in `plans/m4-auth.md`)
 - [x] Content library and pack switchover: `library.rs` (v2 root and v1 sampled matching,
   hard link or copy, superseded detection, "unregistered" patterns), engine copy-on-write
   for linked files, DB migration 6 (`linked`, `superseded` table), retirement every 60 s,
@@ -387,7 +397,7 @@ engine core stays in the main thread, because its pieces interlock.
 ```sh
 cd web && bun install && bun run build && cd ..
 cargo run -p apitorrentd -- --web-root web/dist
-# then open http://localhost:8742
+# then open the /setup#token=… link the daemon prints, at http://localhost:8742
 ```
 
 For UI development, run `bun run dev` in `web/` (Vite proxies `/api` to the daemon on
