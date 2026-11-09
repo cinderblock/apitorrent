@@ -75,33 +75,70 @@ Seed limits (`apitorrent-core/src/seeding.rs`) already exist and are reused, not
 ## Plan / steps
 
 1. ✅ Read the M8 plan, contract, core, server, client; write this plan.
-2. Types: `apitorrent-types/src/automation.rs` (candidates, rules, dry run, aliases,
+2. ✅ Types: `apitorrent-types/src/automation.rs` (candidates, rules, dry run, aliases,
    channels, subscriptions), exported to TypeScript.
-3. Core: `automation/` module: DB, candidate store, version ordering, globs, rule engine
+3. ✅ Core: `automation/` module: DB, candidate store, version ordering, globs, rule engine
    (taking, file selection, superseded), dry run, aliases, channel key and publishing,
    subscriptions (via `apitorrent-client`). Unit tests plus a core integration test.
-4. Plugin contract: `AppApi::submit_candidates` (default method), `SourceFetcher` trait;
+4. ✅ Plugin contract: `AppApi::submit_candidates` (default method), `SourceFetcher` trait;
    host op `op_at_candidates_submit`, `PluginHost` implements `SourceFetcher`; daemon wiring.
-5. Server: `automation_routes.rs` (rules, candidates, dry run, channels, feed, key,
+5. ✅ Server: `automation_routes.rs` (rules, candidates, dry run, channels, feed, key,
    subscriptions), one `.merge` line.
-6. Two-instance channel test over 127.0.0.1 with self-signed TLS and pinning; bad
+6. ✅ Two-instance channel test over 127.0.0.1 with self-signed TLS and pinning; bad
    signature and backwards revision rejected.
-7. SDK (`api.candidates.submit`, harness), rss and ubuntu-releases submit candidates.
+7. ← current: SDK (`api.candidates.submit`, harness), rss and ubuntu-releases submit candidates.
 8. Web: `web/src/rules/` (Rules page with editor and dry run, Channels and subscriptions),
    navigation hook.
 9. Docs: architecture "Automation", README, this plan. Full checks.
 
 ## Findings / gotchas
 
-*(none yet)*
+- **`semver`-style equality.** A derived `PartialEq` on the version key said `24.04` ≠
+  `24.4.0` while `Ord` said equal (the unit test caught it:
+  `assertion left == right failed` at `version.rs`). Equality is now defined by the order.
+- **File globs and the torrent's folder.** `TorrentFile::path` includes a multi-file
+  torrent's top folder (`ubuntu-24.04/ubuntu-24.04-desktop-amd64.iso`), so an alias glob
+  `*.iso` never matched and the alias stayed empty in the first core test run. Globs now
+  follow `.gitignore`: without a `/` they match the file name, with one the whole path.
+- **A manual refresh raced the background poller.** Creating a subscription wakes the
+  poller; `refresh` then found the subscription "in flight" and returned without polling
+  (`revision: None, last_checked: None` in the first channel test run). Each subscription
+  now has its own async lock: refresh waits, the poller skips busy ones.
+- **Alias paths on Windows** came out as `downloads\library/ubuntu/…` from
+  `Path::join("library/ubuntu/…")`; they are now joined component by component.
+- **Windows rename over an open file.** Rust's `fs::rename` replaces atomically, but a
+  reader that opened the alias without `FILE_SHARE_DELETE` blocks it (`ERROR_ACCESS_DENIED`
+  / `ERROR_SHARING_VIOLATION`). That is reported as "in use" and retried every pass; the old
+  alias stays intact (unit test `an_open_alias_is_retried_not_broken`, using
+  `OpenOptionsExt::share_mode(FILE_SHARE_READ)`). `std::fs::File::open` itself shares
+  delete, so ordinary readers in Rust don't block it.
+- The subscription client (`Remote::request`) reads a whole response with no size cap. A
+  publisher is pinned and authenticated, so this is a robustness gap, not a trust one; see
+  open question 2.
 
 ## Progress log
 
 - [x] Plan
+- [x] Types and plugin contract (`6c96687`)
+- [x] Core automation: candidates, rules, dry run, superseded, aliases, channels,
+  subscriptions; unit tests and `tests/automation.rs` (`9c4bf0a`, `238a716`)
+- [x] Plugin host: `api.candidates.submit`, `SourceFetcher`; host test; daemon wiring
+  (`2f3d373`)
+- [x] Server routes; `tests/channels.rs` (two instances, bad signature, backward revision,
+  REST scopes) (`fb2f7f6`)
+- [ ] SDK and plugins
+- [ ] Web UI
+- [ ] Docs, full checks
 
 ## Open questions for the user
 
-*(none yet)*
+1. **Plaintext subscription tokens.** A subscription's API token for the publisher is
+   stored in `automation.db` as is (it must be sent), never returned by the API.
+   Recommendation: fine for now (same trust as the data dir); an OS keychain later for the
+   desktop app.
+2. **A response size cap for `apitorrent-client`.** `Remote::request` reads whole bodies.
+   Recommendation: add a capped variant when the client crate is next touched; channels
+   are small (at most 1000 entries).
 
 ## Things not to do
 
