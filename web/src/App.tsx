@@ -12,6 +12,9 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
 import { TorrentTable } from "./components/TorrentTable";
+import { DesktopMenu } from "./desktop/DesktopGate";
+import { isDesktop } from "./desktop/bridge";
+import { useIncomingLinks } from "./desktop/links";
 import { formatRate } from "./format";
 import { navigate } from "./router";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
@@ -46,6 +49,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focus, setFocus] = useState<string | null>(null);
   const [adding, setAdding] = useState<File[] | null>(null);
+  const [addingMagnet, setAddingMagnet] = useState("");
   const [removing, setRemoving] = useState<string[] | null>(null);
   const [dragging, setDragging] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -53,6 +57,12 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const narrow = useNarrow();
   // The filters drawer, on a phone.
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  // Magnet links and .torrent files the OS hands the desktop app.
+  useIncomingLinks(({ files, magnets }) => {
+    setAddingMagnet(magnets.join("\n"));
+    setAdding(files);
+  });
 
   const rows = useMemo(() => visibleTorrents(state.torrents, view), [state.torrents, view]);
   const counts = useMemo(() => countByFilter(state.torrents), [state.torrents]);
@@ -199,9 +209,13 @@ export function App({ status: auth }: { status: AuthStatus }) {
         {auth.authDisabled && (
           <span className="badge badge-warn">No sign-in (development mode)</span>
         )}
-        <button type="button" className="account-button" onClick={() => navigate("/account")}>
-          {auth.user?.displayName ?? "Account"}
-        </button>
+        {isDesktop() ? (
+          <DesktopMenu />
+        ) : (
+          <button type="button" className="account-button" onClick={() => navigate("/account")}>
+            {auth.user?.displayName ?? "Account"}
+          </button>
+        )}
       </header>
       <Sidebar
         open={filtersOpen}
@@ -268,7 +282,17 @@ export function App({ status: auth }: { status: AuthStatus }) {
         </div>
       )}
       <StatusBar />
-      {adding && <AddTorrent initialFiles={adding} onClose={() => setAdding(null)} />}
+      {adding && (
+        <AddTorrent
+          key={addingMagnet + adding.map((f) => f.name).join()}
+          initialFiles={adding}
+          initialMagnet={addingMagnet}
+          onClose={() => {
+            setAdding(null);
+            setAddingMagnet("");
+          }}
+        />
+      )}
       {settingsOpen && (
         <SettingsDialog
           onClose={() => setSettingsOpen(false)}

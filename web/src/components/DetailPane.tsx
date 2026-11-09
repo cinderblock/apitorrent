@@ -6,6 +6,7 @@ import type { TorrentLimits } from "../api/generated/TorrentLimits";
 import type { TorrentFile } from "../api/generated/TorrentFile";
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
+import { PathActions } from "../desktop/PathActions";
 import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, toKiB } from "../format";
 import { describeSeedLimits, formatSeedingTime, SeedLimitsFields } from "./SeedLimitsFields";
 
@@ -343,7 +344,10 @@ function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detai
         <tbody>
           {detail.files.map((f) => (
             <tr key={f.index}>
-              <td className="cell-path">{f.path}</td>
+              <td className="cell-path">
+                {f.path}
+                {f.placement === "save" && <PathActions savePath={summary.savePath} file={f.path} />}
+              </td>
               <td className="end">{formatBytes(f.length)}</td>
               <td>{formatPercent(f.progress)}</td>
               <td>{location(f)}</td>
@@ -401,7 +405,15 @@ export function DetailPane({ summary, onClose }: { summary: TorrentSummary; onCl
             <Row label="Peers" value={`${summary.peers} connected, ${summary.seeds} of them seeds`} />
             <Row label="Downloaded" value={formatBytes(summary.downloaded)} />
             <Row label="Uploaded" value={`${formatBytes(summary.uploaded)} (ratio ${formatRatio(summary.uploaded, summary.downloaded)})`} />
-            <Row label="Save path" value={<code>{summary.savePath}</code>} />
+            <Row
+              label="Save path"
+              value={
+                <>
+                  <code>{summary.savePath}</code>
+                  <PathActions savePath={summary.savePath} file={summary.name} explain />
+                </>
+              }
+            />
             <Row label="Label" value={<LabelEditor id={summary.id} label={summary.label} />} />
             <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings)</span>} />
             <Row label="Queue" value={`Position ${summary.queuePosition + 1}`} />

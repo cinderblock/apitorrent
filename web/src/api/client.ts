@@ -27,6 +27,7 @@ import type { SetupPasswordRequest } from "./generated/SetupPasswordRequest";
 import type { SetupStartRequest } from "./generated/SetupStartRequest";
 import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { UnwantedPolicy } from "./generated/UnwantedPolicy";
+import { transport } from "./transport";
 
 const BASE = "/api/v1";
 
@@ -61,7 +62,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     init.body = JSON.stringify(body);
     init.headers = { "content-type": "application/json" };
   }
-  const resp = await fetch(`${BASE}${path}`, init);
+  const resp = await transport.fetch(`${BASE}${path}`, init);
   if (!resp.ok) {
     let err: ApiError = { code: "http_error", message: `${resp.status} ${resp.statusText}` };
     try {

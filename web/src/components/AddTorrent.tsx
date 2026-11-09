@@ -5,6 +5,8 @@ import { api, ApiRequestError, fileToBase64 } from "../api/client";
 interface Props {
   /** Files dropped on the window, to add straight away. */
   initialFiles: File[];
+  /** Magnet links to add (one per line), such as one the desktop app was opened with. */
+  initialMagnet?: string;
   onClose: () => void;
 }
 
@@ -13,10 +15,10 @@ interface Outcome {
   error: string | null;
 }
 
-export function AddTorrent({ initialFiles, onClose }: Props) {
+export function AddTorrent({ initialFiles, initialMagnet = "", onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [files, setFiles] = useState<File[]>(initialFiles);
-  const [magnet, setMagnet] = useState("");
+  const [magnet, setMagnet] = useState(initialMagnet);
   const [paused, setPaused] = useState(false);
   const [label, setLabel] = useState("");
   const [savePath, setSavePath] = useState("");

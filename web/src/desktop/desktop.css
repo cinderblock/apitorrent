@@ -1,0 +1,112 @@
+/* Desktop-only UI: the connection profiles, path actions and notices. */
+
+.profiles-card {
+  width: min(44rem, 94vw);
+}
+
+.profile-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.profile-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.profile-list li.active {
+  border-color: var(--accent);
+}
+
+.profile-main {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+.profile-main code {
+  overflow-wrap: anywhere;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.lan-info {
+  margin-top: 6px;
+}
+
+.lan-info code {
+  overflow-wrap: anywhere;
+}
+
+.profile-editor .indent {
+  margin-left: 24px;
+}
+
+.profile-editor code.key {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.mappings input {
+  width: 100%;
+  min-width: 10rem;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.mappings td span {
+  display: block;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.path-actions {
+  display: inline-flex;
+  gap: 10px;
+  margin-left: 10px;
+}
+
+.path-unavailable {
+  display: block;
+  font-size: 12px;
+}
+
+button.danger {
+  color: var(--err);
+}
+
+.desktop-notices {
+  position: fixed;
+  right: 16px;
+  bottom: 40px;
+  display: grid;
+  gap: 8px;
+  max-width: min(28rem, 90vw);
+  z-index: 10;
+}
+
+.desktop-notice {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
+}

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { App } from "../App";
 import { authApi, onAuthLost } from "../api/client";
 import type { AuthStatus } from "../api/generated/AuthStatus";
+import { isDesktop } from "../desktop/bridge";
+import { DesktopProblem } from "../desktop/DesktopProblem";
 import { navigate, usePath } from "../router";
 import { AccountPage } from "./AccountPage";
 import { viewFor } from "./flow";
@@ -40,6 +42,7 @@ export function AuthGate() {
       </div>
     );
   }
+  if (isDesktop() && view !== "app") return <DesktopProblem view={view} retry={() => void refresh()} />;
   if (view === "unreachable" || !status) {
     return (
       <div className="auth-page">

@@ -4,6 +4,7 @@
 import { notifyAuthLost } from "./client";
 import type { SyncMessage } from "./generated/SyncMessage";
 import { applySync, initialSyncState, type SyncState } from "../state/torrents";
+import { transport, type SocketLike } from "./transport";
 
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
 
@@ -22,7 +23,7 @@ export const CLOSE_UNAUTHORIZED = 4401;
 export class SyncClient {
   private snapshot: SyncSnapshot = { state: initialSyncState, status: "connecting" };
   private listeners = new Set<Listener>();
-  private socket: WebSocket | null = null;
+  private socket: SocketLike | null = null;
   private retries = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
@@ -60,7 +61,7 @@ export class SyncClient {
   }
 
   private connect(): void {
-    const ws = new WebSocket(this.url);
+    const ws = transport.openSocket(this.url);
     this.socket = ws;
     ws.onmessage = (event) => {
       let msg: SyncMessage;
