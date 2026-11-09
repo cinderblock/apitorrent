@@ -382,8 +382,8 @@ pub fn files_verified(layout: &Layout, have: &Bitfield, files: &[usize]) -> bool
 }
 
 /// Whether a tracker's error says the torrent is gone from it. Trackers word this
-/// differently; these cover the common ones. Tracker-adapter plugins will be able to
-/// decide instead.
+/// differently; these cover the common ones. For a tracker a `tracker-adapter` plugin
+/// covers, the plugin decides instead (see `adapters`).
 pub fn is_unregistered(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
     [

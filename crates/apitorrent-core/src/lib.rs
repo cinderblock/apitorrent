@@ -5,6 +5,7 @@
 //! layer over [`Core`].
 
 pub mod automation;
+pub mod adapters;
 pub mod db;
 pub mod fingerprint;
 pub mod import;
@@ -218,6 +219,8 @@ struct Inner {
     roots: Vec<apitorrent_types::StorageRoot>,
     /// Rules, aliases and channels (see `automation`).
     automation: automation::Automation,
+    /// Tracker adapters for pack switchover (see `adapters`).
+    adapters: adapters::AdapterState,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -287,6 +290,7 @@ impl Core {
                 seed_clock: Mutex::new(std::time::Instant::now()),
                 roots: vec![root],
                 automation,
+                adapters: adapters::AdapterState::default(),
             }),
         };
         core.apply_session_settings();
@@ -1131,35 +1135,11 @@ impl Core {
         Ok(report)
     }
 
-    /// Remove superseded torrents whose tracker now says they're unregistered. Their files
-    /// stay: the torrent that superseded them holds the same data.
+    /// Remove superseded torrents whose tracker now says they're unregistered (their files
+    /// stay: the torrent that superseded them holds the same data), and ask tracker
+    /// adapters for the packs of unregistered torrents. See `adapters`.
     pub async fn retire_superseded(&self) {
-        if !self.settings().library.retire_superseded {
-            return;
-        }
-        let candidates: Vec<(String, TorrentHandle)> = self
-            .inner
-            .torrents
-            .read()
-            .expect("torrents lock poisoned")
-            .iter()
-            .filter(|(_, e)| e.superseded_by.is_some())
-            .map(|(k, e)| (k.clone(), e.handle.clone()))
-            .collect();
-        for (id, handle) in candidates {
-            let gone = handle
-                .trackers()
-                .await
-                .iter()
-                .filter_map(|t| t.error.as_deref())
-                .any(library::is_unregistered);
-            if gone {
-                tracing::info!(%id, "retiring a superseded torrent its tracker no longer knows");
-                if let Err(e) = self.remove(&id, false).await {
-                    tracing::warn!(%id, error = %e, "could not retire");
-                }
-            }
-        }
+        adapters::retire_superseded(self).await;
     }
 
     /// The naming for a new torrent saved under `save_path`: the setting, unless the
