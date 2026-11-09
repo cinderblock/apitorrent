@@ -45,9 +45,10 @@ feeds, and distribution channels.
   the single episodes you have; they keep seeding until their tracker drops them, then
   retire on their own. Shared files are copy-on-write, so one torrent never changes
   another's data.
-- **Automation.** Plugins watch sources such as feeds, Ubuntu releases and Raspberry Pi
-  images. Rules decide what to fetch and what to retire, and channels push it to your other
-  servers.
+- **Automation.** Plugins watch sources such as feeds and Ubuntu releases and offer what
+  they find. Rules decide what to fetch (the latest N, with a label, a folder and only the
+  files you want) and what to retire, keep a stable "latest" path, and signed channels push
+  it to your other servers.
 - **Moving from Deluge.** Import a Deluge config directory: torrents keep their files,
   progress, labels, queue order, limits and totals, with no rehash and no re-download.
 - **qBittorrent WebAPI compatibility** (a plugin), for the *arr ecosystem.
@@ -123,14 +124,45 @@ current version keeps running.
   enforces capabilities like the daemon, and `apitorrent-plugin-build`, which writes the
   installable `dist/<id>-<version>.plugin.json`.
 - `plugins/rss`: RSS, Atom and JSON feeds with per-feed filters, deduplicated by guid.
-- `plugins/ubuntu-releases`: new Ubuntu release torrents as they come out.
+  Offers items to rules, and adds them directly per feed (on by default).
+- `plugins/ubuntu-releases`: new Ubuntu release torrents as they come out, offered to rules
+  (or added directly, if you ask).
 
 ```sh
-cd plugins/rss && bun test && bun run build   # then install dist/rss-1.0.0.plugin.json
+cd plugins/rss && bun test && bun run build   # then install dist/rss-1.1.0.plugin.json
 ```
 
 Plugins live in `<data dir>/plugins`; `--no-plugins` turns them off. See "Plugins" in
 [`docs/architecture.md`](docs/architecture.md) for the design and the full API.
+
+## Rules, aliases and channels
+
+`source` plugins offer **release candidates** (a title, a version, a date, links and
+metadata such as the flavour). **Rules**, on the Rules page (`/rules`) or under
+`/api/v1/rules`, decide what becomes a torrent:
+
+- **Match** by source, title (contains, is, glob or regular expression, and a title to
+  exclude) and metadata fields.
+- **Order** by version (`24.04.1`, `2.1.0-rc.1`), date, or text with numbers compared as
+  numbers, and **keep the latest N** (or all).
+- **Place** them: a label, a folder, paused or not, and which files to download by glob
+  (`*.iso` matches the name in any folder).
+- **Retire** what newer releases push out: keep seeding, pause, or seed to a ratio or a
+  time and then pause or remove (the same seed limits as everywhere else).
+- **Dry run** a rule against the current candidates before saving it.
+- **Keep a "latest" path**, such as `library/ubuntu/latest-desktop-amd64.iso` inside the
+  download directory: a hard link to the newest completed release (a copy on another
+  drive), swapped in one step, and still valid after the old torrent is removed. If a
+  program has the old one open on Windows, it is swapped once it's closed.
+
+**Channels** publish what a rule keeps, or every torrent with a label, as a signed,
+revisioned list with the `.torrent` files. Another apitorrent subscribes with an API token
+(a read-only one is enough) over the same strict TLS as the desktop app: by the publisher's
+pairing code, a private CA or the OS. It checks each list against the publisher's channel
+key (Ed25519, kept in `<data dir>/automation/`), refuses one whose revision goes back, and
+runs its own rules over the entries. Channels and subscriptions are admin-only. Rules and
+everything they took live in `<data dir>/automation.db`. See "Automation" in
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Signing in
 

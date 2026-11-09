@@ -83,7 +83,8 @@ minimal Plugins page. The design was decided earlier: `docs/architecture.md`, "P
 
 **Follow-ups, not in this milestone:** `qbittorrent-api` (what it needs is listed in the
 architecture doc, "First-party plugins"), plugin-authenticated routes and listeners, a
-`raspberry-pi` source, DNS-provider plugins, core rules consuming `source` candidates,
+`raspberry-pi` source, DNS-provider plugins, ~~core rules consuming `source` candidates~~
+(done in M9, `plans/m9-automation.md`),
 shipping first-party bundles with the daemon (today they are built and installed by hand).
 
 ## Findings / gotchas

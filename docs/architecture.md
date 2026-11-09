@@ -92,12 +92,12 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `crates/apitorrent-tracker` | Tracker clients: HTTP/HTTPS (strict TLS through the OS trust store) and UDP (BEP 15), announce and scrape. Pure codecs plus a shared async client. |
 | `crates/apitorrent-dht` | The Mainline DHT: BEP 5, 32 (IPv6), 33 (scrape), 42 (secure IDs) and 43 (read-only). A sans-IO node plus a tokio driver; persistence as opaque bytes the core stores. |
 | `crates/apitorrent-types` | Shared domain and API DTO types. Exported to TypeScript. |
-| `crates/apitorrent-core` | Orchestration: registry, persistence, queue, labels, rules, content library, feeds, the event store. |
+| `crates/apitorrent-core` | Orchestration: registry, persistence, queue, labels, seed limits, content library, the event store, and automation (candidates, rules, aliases, channels and subscriptions). |
 | `crates/apitorrent-auth` | Users, passkeys (WebAuthn), optional passwords (Argon2id), sessions, scoped API tokens, device pairing. |
 | `crates/apitorrent-webui` | The built web UI, compiled into release binaries (`embed` feature) with brotli and gzip copies and ETags. |
 | `crates/apitorrent-server` | axum HTTP/WS API, static web UI, TLS (rustls), ACME. |
 | `crates/apitorrent-client` | A Rust client for the API with strict TLS and certificate pinning. Used by the desktop thin client and the CLI. |
-| `crates/apitorrent-plugin-api` | The plugin contract without V8: manifests, capabilities and their expansion, network grants, the settings-schema subset, and the `AppApi` (core implements) and `PluginService` (host implements, server calls) traits. |
+| `crates/apitorrent-plugin-api` | The plugin contract without V8: manifests, capabilities and their expansion, network grants, the settings-schema subset, and the `AppApi` (core implements), `PluginService` (host implements, server calls) and `SourceFetcher` (host implements, core's rules call) traits. |
 | `crates/apitorrent-plugins` | The plugin host on embedded V8 (`deno_core`): one isolate per plugin, capability-checked ops, curated globals, the plugin lifecycle. Only it and `apitorrentd` link V8. |
 | `crates/apitorrentd` | Daemon binary. |
 | `crates/apitorrent-cli` | `apitorrent` CLI. |
@@ -166,9 +166,11 @@ Resume state is a versioned, serialisable struct that the core stores.
 
 ## Persistence
 
-- **SQLite in WAL mode**, two databases per instance: `apitorrent.db` for torrents, files,
-  labels, rules, feeds and library entries, and `auth.db` for users, credentials, sessions,
-  tokens and the security audit log (see "Authentication").
+- **SQLite in WAL mode**, three databases per instance: `apitorrent.db` for torrents, files,
+  labels and library entries, `automation.db` for release candidates, rules, aliases,
+  channels and subscriptions (see "Automation"), and `auth.db` for users, credentials,
+  sessions, tokens and the security audit log (see "Authentication"). Each has its own
+  migrations, so work on one never collides with another's schema versions.
 - Resume state (piece bitfields, file mtimes and sizes for quick validation, stats) is
   saved incrementally. A bitfield is flushed after each verified piece batch, at most every
   few seconds, so a power failure loses seconds of progress, not hours.
@@ -492,9 +494,11 @@ They prove the plugin API, and they ship in the box:
 - **`rss`** (built): RSS 2.0, RSS 1.0, Atom and JSON feeds; include and exclude expressions
   per feed; label, folder and paused per feed; deduplicated by guid; a new feed's existing
   items are only marked seen unless *backfill* is on; conditional requests; failed adds
-  retried. Provides the `source` role.
+  retried. Provides the `source` role: offers the items that pass a feed's filters to
+  rules, and adds them directly unless the feed's `addDirectly` is off.
 - **`ubuntu-releases`** (built): new Ubuntu release torrents (LTS or all, chosen flavours
-  and architecture) from `meta-release` and the release directories. Provides `source`.
+  and architecture) from `meta-release` and the release directories. Provides `source`:
+  offers each release to rules (see "Automation"); adds directly only if asked.
 - **`qbittorrent-api`** (planned): a qBittorrent WebAPI v2 compatibility layer, so Sonarr,
   Radarr, autobrr, cross-seed and friends work unchanged. Categories and tags map to
   labels. Off by default. It fits the `api-compat` role and routes under
@@ -714,16 +718,84 @@ yet; suggestions offer each root's own path, filled in when it already works her
 
 ## Automation
 
-### Sources (plugins)
+Built in M9 (`plans/m9-automation.md`), in `apitorrent-core/src/automation/`, with its own
+database, `automation.db`. `Core::start` starts it; the server reaches it through `Core`.
 
-A `source` plugin turns some upstream into **release candidates**: `{ id, title, version,
-published, links (torrent / magnet / webseed), metadata }`.
+### Sources and release candidates
+
+A **source** turns some upstream into **release candidates**: `{ id, title, version,
+published, links (torrent / magnet / webseed), metadata }`. Two kinds of source exist:
+
+- **Plugins with the `source` role** call `api.candidates.submit([...])` (at most 1000 at a
+  time). No API scope is needed: a candidate becomes a torrent only through a rule an admin
+  or user wrote. The core checks each candidate (lengths, a parsable magnet, `http(s)`
+  links, metadata up to 16 KiB) and lists the refused ones with reasons. The older pull
+  method, `roles.provide("source", { candidates })`, still works.
+- **Subscribed channels** (below): each entry is a candidate from `channel:<subscription
+  id>`, with its `.torrent` file.
+
+Candidates are stored per source (`plugin:<id>` or `channel:<id>`), so a rule created later
+still sees releases offered earlier. Submitting one again updates it. A source keeps at most
+5000; one unseen for 180 days is forgotten unless a rule still keeps it.
+
+**`.torrent` links are fetched as the source plugin.** When a rule takes a candidate that
+has only a `.torrent` URL, the core asks the plugin host (the `SourceFetcher` trait in the
+plugin contract, wired by the daemon) to `GET` it with that plugin's own grants, DNS
+rebinding checks and strict TLS, as the plugin's own `fetch` would; the plugin's log notes
+it. The core never fetches a plugin-supplied URL with its own network access, which would
+let a plugin reach hosts it was never granted. Nothing is fetched until a rule wants it. A
+web seed link is added to a magnet link as `ws=`; a `.torrent` file carries its own.
+
+`rss` offers every item that passes a feed's filters, and still adds directly per feed
+(`addDirectly`, on by default). `ubuntu-releases` offers each release (point version from
+the file name, release date, flavour, architecture, codename, LTS) and adds directly only
+with `addDirectly` on.
 
 ### Rules (core)
 
-A rule says which candidates to take: match criteria, version ordering, **keep the latest
-N**, a target label or root, file selection, and what to do with superseded items: keep
-seeding, stop, or remove after a ratio or time.
+A rule (`/api/v1/rules`, the Rules page at `/rules`) holds:
+
+- **Match criteria**: sources (empty means any), a title condition and a title to
+  exclude, and metadata conditions (all must hold; numbers and booleans compare as their
+  JSON text, and a list matches if any element does). Each condition is *contains*, *is*,
+  a *glob* or a *regular expression* (Rust `regex`, with a compiled-size cap), ignoring
+  case.
+- **Version ordering** over the version, the title or the publication date: **SemVer**,
+  leniently (any number of dotted parts, leading zeros allowed, so Ubuntu's `24.04.1` works,
+  which the `semver` crate refuses; `24.04` equals `24.4.0`; pre-releases sort before their
+  release), **dates** (RFC 3339, `YYYY-MM-DD`, `YYYY.MM.DD`, `YYYYMMDD`, with time zones), or a
+  **natural sort** (digit runs compared as numbers). Candidates whose version doesn't parse
+  under the scheme are left out rather than guessed at; ties go to the newer publication
+  date.
+- **Keep the latest N** (0 keeps every match).
+- **Target**: a label, a save path (absolute, or relative to the download directory), and
+  whether to add paused.
+- **File selection by glob**: include and exclude lists. As in `.gitignore`, a glob
+  without a `/` matches the file name in any folder (`*.iso`); one with a `/` matches the
+  whole path inside the torrent (`**` crosses folders, `*` doesn't). A `.torrent` gets its
+  priorities when added; a magnet link gets them once its metadata arrives.
+- **Superseded items**, those a newer release pushes out of the latest N: keep seeding,
+  stop (pause now), or **seed limits** (a ratio and/or a time, then pause, remove, or remove
+  with the data), which become the torrent's own limits through the existing seed-limit
+  machinery (`seeding.rs`); nothing is duplicated.
+- **An alias** (below).
+
+**Passes.** The rules run every minute, and at once when a source submits, a rule changes
+or a subscription brings a new revision; between passes a 10-second tick applies pending
+file selections and updates aliases. A pass plans each enabled rule (`plan.rs`, pure) and
+carries the plan out:
+
+- *take*: add the torrent. If it's already there (added by hand or by another rule), the
+  rule adopts it. A failed take is retried after 10 minutes.
+- *supersede*: apply the superseded action once.
+- A taken torrent that disappears (removed by someone, or by its seed limits) is marked
+  *gone* and never taken again.
+- Editing a rule doesn't touch what it already took; items that stop matching keep their
+  state, unranked.
+
+**Dry run** (`POST /rules/dry-run`, and in the editor): the same plan for a rule, saved or
+not, against the current candidates: each match with its rank and verdict (*take*, *keep*,
+*supersede*, *older*, *gone*, or *unusable* with the reason). Nothing changes.
 
 **Seed limits** (built, in core): a ratio and/or a total seeding time, then pause, remove,
 or remove with the files. The torrent's own limits win over its group's, which win over the
@@ -731,16 +803,76 @@ instance's. Seeding time counts only while actually seeding, and survives restar
 act once: a torrent the user resumes afterwards seeds on until its own limits change.
 Imported from Deluge's "stop seed at ratio" settings and libtorrent's `seeding_time`.
 
-**Stable aliases**: a rule can maintain a "latest" path, such as
-`library/ubuntu/latest-desktop-amd64.iso`, that always points at the current release.
+### Stable aliases
+
+A rule can keep a "latest" path, such as `library/ubuntu/latest-desktop-amd64.iso`, that
+always names its newest completed release: the largest wanted, complete file matching the
+alias's glob, in the best-ranked kept torrent that has finished. It only moves forward: a
+newer release replaces it once that release completes.
+
+- **A hard link** when the alias is on the same volume: no extra space, and it keeps
+  working after the torrent it came from is removed, data and all. On another volume, or a
+  filesystem without hard links, a **copy** (a copy-on-write clone where the filesystem can,
+  through `reflink-copy`).
+- **Not a symlink.** Windows needs a privilege (or developer mode) to make symlinks, and a
+  symlink dangles once its target torrent is removed, which is exactly what superseded
+  releases do. The content library avoids symlinks for the same reasons.
+- **Atomic replacement.** The new link is made under a temporary name in the alias's
+  folder and renamed over the alias, so a reader sees the old file or the new one, never
+  a missing or partial one (Rust's `rename` replaces atomically on every platform; on
+  Windows it uses POSIX rename semantics where the filesystem supports them).
+- **Safe on Windows.** No symlink privilege is needed. A program that has the old alias
+  open without delete sharing blocks the rename (`ERROR_ACCESS_DENIED` or
+  `ERROR_SHARING_VIOLATION`); the old alias then stays intact, the rule shows "in use",
+  and the next tick tries again. On Unix an open reader keeps reading the old file.
+- **It only replaces its own file.** Alias paths are relative to the download directory
+  (no `..`, no drive), two rules can't share one, and an existing file the alias didn't
+  make is never overwritten. Deleting a rule leaves its alias file in place.
 
 ### Distribution ("make it available to my servers")
 
-- An instance can **publish a channel**: a signed, revisioned list of torrents chosen by a
-  rule or a label.
-- Other instances **subscribe** over the authenticated API, with the same strict TLS and
-  pinning as the thin client, and run their own rules over the channel. A server farm then
-  follows one curator instance, and the swarm does the data transfer.
+An instance can **publish a channel** (`/api/v1/channels`, admin-only): a signed,
+revisioned list of torrents chosen by a rule (what it keeps, with the candidates'
+versions and metadata) or by a label, with each torrent's `.torrent` file (or magnet links
+only). Other instances **subscribe** over the authenticated API and run their own rules
+over it, so a server farm follows one curator instance and the swarm does the data
+transfer.
+
+**The feed** (`GET /api/v1/channels/{id}/feed`, any credential, so a read-only token is
+enough) is `{ format, payload, signature, publicKey }`: `payload` is the base64 of the
+document's exact JSON (`{ format, channel, name, description, revision, issuedAt, entries
+}`), and `signature` an Ed25519 signature over `"apitorrent-channel-v1\0"` followed by
+those bytes. Signing exact bytes needs no canonical JSON; the domain tag keeps the key
+from signing anything usable elsewhere. The revision moves only when the entries change
+(a hash of them is stored), and never goes backwards.
+
+**The key** is the instance's Ed25519 key, a PKCS#8 file at
+`<data dir>/automation/channel-key.p8` (owner-only on Unix), made on first start. It comes
+from `ring`, which the TLS stack already uses as its provider: no second implementation of
+Ed25519 to build or audit, constant-time, maintained. (`ed25519-dalek` was the
+alternative; its stricter verification rules matter for multi-party protocols, not for a
+key pinned by the subscriber.)
+
+**Subscribing** (`/api/v1/subscriptions`, admin-only, since a subscription stores another
+server's token and makes this daemon connect out) uses `apitorrent-client`, so the trust
+rules are the thin client's: the OS verifier, a private CA, or a key pinned from the
+publisher's pairing code (the subscriber probes the server, checks the code names the key
+it presents, and pins the full SHA-256). There is no way to skip certificate checks. Each
+poll (every 5 minutes to 7 days, or "Check now"):
+
+1. fetches the feed with the subscription's API token (stored in `automation.db`, never
+   returned by the API);
+2. verifies the signature against the **publisher key pinned at subscription** (given
+   by the admin, or else the key of the first feed, which arrived over the verified TLS
+   link and then stays pinned); another key is refused even with a valid signature;
+3. requires the document to name the subscribed channel (no replaying another channel's
+   feed) and refuses a **revision lower than the last accepted one**; the same revision
+   is a no-op;
+4. stores each entry as a candidate, checking that an included `.torrent` is the torrent
+   the entry names, and wakes the rules.
+
+The publisher learns nothing about subscribers beyond their token's use. Deleting a
+subscription forgets its candidates; torrents rules took stay.
 
 ## Deluge migration
 

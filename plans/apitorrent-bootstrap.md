@@ -561,8 +561,8 @@ them, restarts, and reports. On this machine (release build, NVMe):
 - [x] M9 (part): seed limits (`seeding.rs`, DB migration 9 `seeding`, settings, group and
   per-torrent limits, `PUT /torrents/{id}/seed-limits`, UI in Settings, groups and the
   details, Deluge import). Core test `seed_limits_pause_then_remove`
-- [ ] M9 rest: rules over source candidates (after M8 lands, since sources produce the
-  candidates), stable "latest" aliases, distribution channels
+- [x] M9 rest: rules over source candidates, stable "latest" aliases, distribution
+  channels (`plans/m9-automation.md`)
 - [x] M3.2 (part): Peers tab (client, progress, rates, flags with a legend), Trackers tab
   with live status, status bar (`GET /stats`), bans list in Settings, wanted-piece
   progress

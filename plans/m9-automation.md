@@ -86,10 +86,10 @@ Seed limits (`apitorrent-core/src/seeding.rs`) already exist and are reused, not
    subscriptions), one `.merge` line.
 6. ✅ Two-instance channel test over 127.0.0.1 with self-signed TLS and pinning; bad
    signature and backwards revision rejected.
-7. ← current: SDK (`api.candidates.submit`, harness), rss and ubuntu-releases submit candidates.
-8. Web: `web/src/rules/` (Rules page with editor and dry run, Channels and subscriptions),
+7. ✅ SDK (`api.candidates.submit`, harness), rss and ubuntu-releases submit candidates.
+8. ✅ Web: `web/src/rules/` (Rules page with editor and dry run, Channels and subscriptions),
    navigation hook.
-9. Docs: architecture "Automation", README, this plan. Full checks.
+9. ✅ Docs: architecture "Automation", README, this plan. Full checks.
 
 ## Findings / gotchas
 
@@ -112,6 +112,15 @@ Seed limits (`apitorrent-core/src/seeding.rs`) already exist and are reused, not
   alias stays intact (unit test `an_open_alias_is_retried_not_broken`, using
   `OpenOptionsExt::share_mode(FILE_SHARE_READ)`). `std::fs::File::open` itself shares
   delete, so ordinary readers in Rust don't block it.
+- **Disk full again, 2026-11-09 ~2:05 AM PST (10:05Z).** The first full `cargo test` died
+  with `could not compile apitorrent-server (test "acme_pebble")`; C: had 0 MB free
+  (machine-wide, other projects' builds too). I deleted only this worktree's incremental
+  cache (`~/.cargo/build/a4/fc65d689130f35/debug/incremental`, 8.8 GB, confirmed by its
+  `.d` files naming only this worktree), then reran with `CARGO_INCREMENTAL=0`: all 68 test
+  binaries passed. About 11 GB was free afterwards and falling.
+- **Default ordering vs. feed items.** The default (SemVer on the version) leaves RSS items
+  out, since they have no version; the smoke test's dry run showed `unusable: it has no
+  version`. The editor now says to order feed items by publication date or title.
 - The subscription client (`Remote::request`) reads a whole response with no size cap. A
   publisher is pinned and authenticated, so this is a robustness gap, not a trust one; see
   open question 2.
@@ -126,9 +135,22 @@ Seed limits (`apitorrent-core/src/seeding.rs`) already exist and are reused, not
   (`2f3d373`)
 - [x] Server routes; `tests/channels.rs` (two instances, bad signature, backward revision,
   REST scopes) (`fb2f7f6`)
-- [ ] SDK and plugins
-- [ ] Web UI
-- [ ] Docs, full checks
+- [x] SDK and plugins: `api.candidates.submit`, harness `host.candidates`; rss and
+  ubuntu-releases 1.1.0 offer candidates (`a7e6d88`)
+- [x] Web UI: `/rules` (rules, editor, dry run, channels, subscriptions), toolbar button
+  (`8c19b37`)
+- [x] Docs: architecture "Automation" rewritten to match, Persistence and crate table,
+  README section; M8 plan follow-up and bootstrap progress ticked
+- [x] Daemon smoke test, 2026-11-09 1:48 AM PST (09:48Z): `apitorrentd` on 127.0.0.1:8799
+  with `--insecure-no-auth-loopback`, no LSD/DHT/uTP, peers on 127.0.0.1. Over the HTTP
+  API: added a labelled magnet, created a label channel (revision 1, 1 entry), read its
+  signed feed, created a keep-all rule, subscribed the instance to its own channel over
+  loopback `http://`, refreshed (revision 1, publisher key pinned from the first feed),
+  ran the rules (the entry was adopted as `active`), dry run. Script: scratchpad
+  `smoke.sh` (not kept in the repo).
+- [x] Checks: `cargo clippy --all-targets -- -D warnings` (default members), `cargo test`
+  (default members), web `typecheck`, `test` and `build`, `bun run test:plugins`,
+  `bun run typecheck:plugins`
 
 ## Open questions for the user
 
@@ -139,6 +161,37 @@ Seed limits (`apitorrent-core/src/seeding.rs`) already exist and are reused, not
 2. **A response size cap for `apitorrent-client`.** `Remote::request` reads whole bodies.
    Recommendation: add a capped variant when the client crate is next touched; channels
    are small (at most 1000 entries).
+
+## How to run it
+
+```sh
+cargo test -p apitorrent-core --lib automation     # versions, globs, plan, aliases, signing
+cargo test -p apitorrent-core --test automation    # rules end to end in the core
+cargo test -p apitorrent-server --test channels    # two instances over TLS, REST scopes
+cargo test -p apitorrent-plugins --test host       # api.candidates.submit, fetch_as
+bun run test:plugins                               # SDK harness, rss, ubuntu-releases
+cd web && bun test                                 # rule form helpers
+```
+
+## Merge notes (for the main thread)
+
+- Shared files touched, all additively: `apitorrent-core/src/lib.rs` (`pub mod automation`,
+  one `Inner` field, its open in `Core::start`, one spawn), `apitorrent-core/src/db.rs`
+  (`torrent_file`), `apitorrent-core/src/plugin_api.rs` (`submit_candidates`),
+  `apitorrent-server/src/lib.rs` (`mod automation_routes`, one `.merge`),
+  `apitorrent-server/src/routes.rs` (the `automation` capability),
+  `apitorrent-types/src/lib.rs` (`pub mod automation`), the plugin contract (a default
+  method on `AppApi`, a new `sources.rs` with `SourceFetcher`), `apitorrentd/src/plugins.rs`
+  (one line: `core.set_source_fetcher`), root `Cargo.toml` (`regex`, `ring` workspace
+  deps), `clippy.toml` (`SemVer` as a doc identifier).
+- Plugin host: one new op (`op_at_candidates_submit`) in the `extension!` list and
+  `04_api.js` (`api.candidates`), and `impl SourceFetcher for PluginHost` in `lib.rs`.
+- Test helpers: `FakeApp` in `crates/apitorrent-plugins/tests/common` gained a
+  `candidates` field and `submit_candidates`.
+- No `apitorrent.db` migration was added (automation has `automation.db`), so there is no
+  migration number to renumber.
+- The rss and ubuntu-releases plugins moved to 1.1.0 (manifests, `package.json`,
+  `bun.lock`); the rss end-to-end test now approves whatever version the bundle has.
 
 ## Things not to do
 
