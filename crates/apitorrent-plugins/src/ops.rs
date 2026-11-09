@@ -135,6 +135,7 @@ deno_core::extension!(
         op_at_torrent_add,
         op_at_torrent_control,
         op_at_torrent_remove,
+        op_at_candidates_submit,
         op_at_fetch,
         op_at_fetch_abort,
         op_at_url_parse,
@@ -744,6 +745,28 @@ async fn op_at_torrent_remove(
     let c = ctx(&state.borrow());
     require(&c, PluginApiScope::TorrentsRemove)?;
     on_main(&c.main, c.app.remove(id, delete_files)).await
+}
+
+// --- Release candidates ----------------------------------------------------------------
+
+/// Hand release candidates to the core's rules. Any plugin that fills the `source` role
+/// may; no API scope is involved, since candidates only become torrents through rules an
+/// admin wrote.
+#[op2]
+#[string]
+async fn op_at_candidates_submit(
+    state: Rc<RefCell<OpState>>,
+    #[string] candidates: String,
+) -> Result<String, JsErrorBox> {
+    let c = ctx(&state.borrow());
+    if !c.caps.roles.contains(&PluginRole::Source) {
+        return Err(not_capable(
+            "submitting release candidates needs the `source` role, which the plugin's              manifest doesn't declare",
+        ));
+    }
+    let list: Vec<apitorrent_types::automation::ReleaseCandidate> =
+        from_json(&candidates, "candidates")?;
+    on_main(&c.main, c.app.submit_candidates(&c.id, list)).await
 }
 
 // --- fetch ------------------------------------------------------------------------------

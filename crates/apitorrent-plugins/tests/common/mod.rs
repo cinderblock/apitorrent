@@ -26,6 +26,8 @@ pub struct FakeApp {
     pub added: Mutex<Vec<AddTorrentRequest>>,
     pub controls: Mutex<Vec<(TorrentId, TorrentControl)>>,
     pub events: broadcast::Sender<AppEvent>,
+    /// Release candidates submitted, with their source.
+    pub candidates: Mutex<Vec<(String, apitorrent_types::automation::ReleaseCandidate)>>,
 }
 
 impl FakeApp {
@@ -34,6 +36,7 @@ impl FakeApp {
             added: Mutex::new(Vec::new()),
             controls: Mutex::new(Vec::new()),
             events: broadcast::channel(64).0,
+            candidates: Mutex::new(Vec::new()),
         })
     }
 
@@ -108,6 +111,24 @@ impl AppApi for FakeApp {
 
     fn events(&self) -> broadcast::Receiver<AppEvent> {
         self.events.subscribe()
+    }
+
+    fn submit_candidates(
+        &self,
+        source: &str,
+        candidates: Vec<apitorrent_types::automation::ReleaseCandidate>,
+    ) -> BoxFuture<Result<apitorrent_types::automation::SubmitCandidatesOutcome, AppError>> {
+        let accepted = u32::try_from(candidates.len()).unwrap();
+        self.candidates
+            .lock()
+            .unwrap()
+            .extend(candidates.into_iter().map(|c| (source.to_owned(), c)));
+        Box::pin(async move {
+            Ok(apitorrent_types::automation::SubmitCandidatesOutcome {
+                accepted,
+                rejected: Vec::new(),
+            })
+        })
     }
 }
 

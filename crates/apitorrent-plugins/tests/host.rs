@@ -724,3 +724,87 @@ async fn errors_are_logged_not_fatal() {
             .contains("no config")
     );
 }
+
+/// A `source` plugin hands candidates to the app, and the app fetches a candidate's link
+/// through the host with that plugin's grants; plugins without the role can't submit.
+#[tokio::test(flavor = "multi_thread")]
+async fn sources_submit_candidates_and_links_are_fetched_with_their_grants() {
+    use apitorrent_plugin_api::SourceFetcher as _;
+    let dir = tempfile::tempdir().unwrap();
+    let app = FakeApp::new();
+    let h = host(dir.path(), app.clone());
+    let port = serve(|path| match path {
+        "/r.torrent" => (200, vec![], b"d4:infod4:name1:xee".to_vec()),
+        _ => (404, vec![], vec![]),
+    })
+    .await;
+    let base = format!("http://127.0.0.1:{port}");
+    let caps = PluginCapabilities {
+        network: vec![base.clone()],
+        roles: vec![PluginRole::Source],
+        ..probe_caps()
+    };
+    let submit = format!(
+        "return await api.candidates.submit([{{ id: 'r1', title: 'Release 1', version: '1.0',          links: {{ torrent: '{base}/r.torrent' }}, metadata: {{ arch: 'amd64' }} }}]);"
+    );
+    run(&h, probing("src", caps, &submit)).await;
+    let v = probe(&h, "src").await;
+    assert_eq!(v, json!({ "accepted": 1, "rejected": [] }));
+    let got = app.candidates.lock().unwrap().clone();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].0, "src");
+    assert_eq!(got[0].1.version.as_deref(), Some("1.0"));
+    assert_eq!(got[0].1.metadata["arch"], "amd64");
+
+    // The app fetches the link as the plugin: within its grants, and logged.
+    let body = h
+        .fetch_as("src", &format!("{base}/r.torrent"), 1024)
+        .await
+        .unwrap();
+    assert_eq!(body, b"d4:infod4:name1:xee");
+    let logs = h.logs("src", None).unwrap();
+    assert!(
+        logs.iter().any(|l| l.message.contains("for a rule")),
+        "{logs:#?}"
+    );
+    // Outside its grants, too large, or an error status: refused.
+    let refused = h
+        .fetch_as("src", "http://127.0.0.1:1/x", 1024)
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, "not_capable");
+    assert!(
+        h.fetch_as("src", &format!("{base}/r.torrent"), 4)
+            .await
+            .is_err()
+    );
+    assert!(
+        h.fetch_as("src", &format!("{base}/missing"), 1024)
+            .await
+            .is_err()
+    );
+    assert!(
+        h.fetch_as("nobody", &format!("{base}/r.torrent"), 1024)
+            .await
+            .is_err()
+    );
+
+    // Without the `source` role, submitting is refused.
+    run(
+        &h,
+        probing(
+            "plain",
+            probe_caps(),
+            &attempt("await api.candidates.submit([])"),
+        ),
+    )
+    .await;
+    let v = probe(&h, "plain").await;
+    assert_eq!(v["name"], "NotCapable", "{v:#}");
+    // And a plugin that isn't a source can't have links fetched for it either.
+    assert!(
+        h.fetch_as("plain", &format!("{base}/r.torrent"), 1024)
+            .await
+            .is_err()
+    );
+}

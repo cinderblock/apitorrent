@@ -786,6 +786,66 @@ async fn futures_join_all<F: Future<Output = ()>>(futs: impl Iterator<Item = F>)
     .await;
 }
 
+/// Rules fetch a `source` plugin's `.torrent` links through here: with that plugin's own
+/// network grants, address checks and strict TLS, exactly as its own `fetch` would. The
+/// fetch is noted in the plugin's log.
+impl apitorrent_plugin_api::SourceFetcher for PluginHost {
+    fn fetch_as(
+        &self,
+        plugin_id: &str,
+        url: &str,
+        max_bytes: usize,
+    ) -> BoxFuture<Result<Vec<u8>, apitorrent_plugin_api::AppError>> {
+        use apitorrent_plugin_api::AppError;
+        let run = self.running(plugin_id);
+        let fetcher = self.inner.fetcher.clone();
+        let logs = self.slot_logs(plugin_id);
+        let url = url.to_owned();
+        Box::pin(async move {
+            let run = run.map_err(|e| AppError::new("not_running", e.to_string()))?;
+            if !run
+                .manifest
+                .capabilities
+                .roles
+                .contains(&apitorrent_plugin_api::PluginRole::Source)
+            {
+                return Err(AppError::new(
+                    "not_capable",
+                    "the plugin isn't a release source",
+                ));
+            }
+            let net = run.net.read().expect("grants lock poisoned").clone();
+            let args = fetch::FetchArgs {
+                url: url.clone(),
+                method: "GET".to_owned(),
+                headers: Vec::new(),
+                redirect: fetch::RedirectMode::Follow,
+            };
+            let (meta, body) = fetcher.fetch(&net, args, None).await.map_err(|e| match e {
+                fetch::FetchError::NotCapable(m) => AppError::new("not_capable", m),
+                fetch::FetchError::Failed(m) => AppError::new("fetch_failed", m),
+            })?;
+            if !(200..300).contains(&meta.status) {
+                return Err(AppError::new(
+                    "fetch_failed",
+                    format!("{url} answered {} {}", meta.status, meta.status_text),
+                ));
+            }
+            if body.len() > max_bytes {
+                return Err(AppError::new(
+                    "fetch_failed",
+                    format!("{url} is larger than {max_bytes} bytes"),
+                ));
+            }
+            logs.host(
+                PluginLogLevel::Info,
+                &format!("fetched {url} for a rule ({} bytes)", body.len()),
+            );
+            Ok(body)
+        })
+    }
+}
+
 impl PluginService for PluginHost {
     fn list(&self) -> Vec<PluginInfo> {
         match self.inner.store.plugins() {

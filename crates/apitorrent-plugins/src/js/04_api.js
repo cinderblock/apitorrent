@@ -5,6 +5,7 @@
 // results.
 
 import {
+  op_at_candidates_submit,
   op_at_events,
   op_at_info,
   op_at_kv_delete,
@@ -148,6 +149,17 @@ export const api = Object.freeze({
     setLabel: (id, label) => control(id, { action: "setLabel", label: label ?? null }),
     async remove(id, { deleteFiles = false } = {}) {
       unwrap(await op_at_torrent_remove(String(id), Boolean(deleteFiles)));
+    },
+  }),
+
+  candidates: Object.freeze({
+    /**
+     * Offer release candidates to the server's rules (the `source` role). Resolves to
+     * { accepted, rejected }: rejected lists each refused candidate with the reason.
+     */
+    async submit(list) {
+      if (!Array.isArray(list)) throw new TypeError("submit() needs an array of candidates");
+      return unwrap(await op_at_candidates_submit(JSON.stringify(list)));
     },
   }),
 
