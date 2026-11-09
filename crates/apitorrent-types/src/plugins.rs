@@ -55,6 +55,13 @@ pub struct PluginCapabilities {
     /// only HTTPS on the default port is allowed. A port of `*` allows any port.
     #[serde(default)]
     pub network: Vec<String>,
+    /// Settings fields whose values are also network grants, so an admin can point the
+    /// plugin at hosts of their choosing (a feed's URL, say) without a new manifest. Paths
+    /// name string properties: `feedUrl`, `feeds[].url`, `extraHosts[]`. A URL value
+    /// grants its own origin (plain HTTP only when the URL says `http://`); any other value
+    /// is read as a grant pattern, as in `network`.
+    #[serde(default)]
+    pub network_from_settings: Vec<String>,
     /// Calls into apitorrent.
     #[serde(default)]
     pub api: Vec<PluginApiScope>,

@@ -67,14 +67,15 @@ fn manifest_into(m: &PluginManifest, problems: &mut Vec<String>) {
     if m.name.trim().is_empty() || m.name.chars().count() > 100 || has_control(&m.name) {
         problems.push("name must be 1 to 100 printable characters".to_owned());
     }
-    let version_ok = !m.version.is_empty()
+    let version_ok = m.version.starts_with(|c: char| c.is_ascii_alphanumeric())
         && m.version.len() <= 64
         && m.version
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'));
     if !version_ok {
         problems.push(format!(
-            "version `{}` must be 1 to 64 letters, digits, `.`, `-`, `+` or `_`",
+            "version `{}` must be 1 to 64 letters, digits, `.`, `-`, `+` or `_`, starting \
+             with a letter or digit",
             m.version
         ));
     }
@@ -108,6 +109,21 @@ fn manifest_into(m: &PluginManifest, problems: &mut Vec<String>) {
         && let Err(e) = schema::check_schema(s)
     {
         problems.push(format!("settings schema: {e}"));
+    }
+    for path in &caps.network_from_settings {
+        let leaf = m
+            .settings
+            .as_ref()
+            .and_then(|s| schema::resolve_path(s, path));
+        if leaf
+            .and_then(|l| l.get("type"))
+            .and_then(serde_json::Value::as_str)
+            != Some("string")
+        {
+            problems.push(format!(
+                "networkFromSettings `{path}` must name a string setting in the settings schema"
+            ));
+        }
     }
 }
 

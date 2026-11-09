@@ -210,7 +210,40 @@ impl fmt::Display for NetworkGrant {
 #[derive(Debug, Clone, Default)]
 pub struct NetworkGrants(Vec<NetworkGrant>);
 
+/// The grant a settings value stands for (see `networkFromSettings`): a URL grants its
+/// origin, anything else is read as a grant pattern. `None` for values that are neither.
+pub fn grant_from_setting(value: &str) -> Option<NetworkGrant> {
+    if let Ok(url) = Url::parse(value.trim())
+        && matches!(url.scheme(), "http" | "https")
+        && let Some(host) = url.host()
+    {
+        let host = match host {
+            Host::Domain(d) => HostPattern::Name(d.to_ascii_lowercase()),
+            Host::Ipv4(ip) => HostPattern::Ip(IpAddr::V4(ip)),
+            Host::Ipv6(ip) => HostPattern::Ip(IpAddr::V6(ip)),
+        };
+        return Some(NetworkGrant {
+            plain_http: url.scheme() == "http",
+            host,
+            port: url.port().map_or(PortPattern::Default, PortPattern::Port),
+        });
+    }
+    NetworkGrant::parse(value).ok()
+}
+
 impl NetworkGrants {
+    /// The manifest's grants plus those from settings values. Unparseable entries are
+    /// skipped: manifests are validated at install, settings values are the admin's.
+    pub fn combine(manifest: &[String], from_settings: &[String]) -> Self {
+        Self(
+            manifest
+                .iter()
+                .filter_map(|g| NetworkGrant::parse(g).ok())
+                .chain(from_settings.iter().filter_map(|v| grant_from_setting(v)))
+                .collect(),
+        )
+    }
+
     pub fn parse(grants: &[String]) -> Result<Self, GrantError> {
         grants
             .iter()
@@ -371,6 +404,20 @@ mod tests {
             assert_eq!(g(s).to_string(), s);
             assert_eq!(g(&g(s).to_string()), g(s));
         }
+    }
+
+    #[test]
+    fn settings_values_become_grants() {
+        let g = grant_from_setting("http://127.0.0.1:8080/feed.xml?x=1").unwrap();
+        assert!(g.allows(&u("http://127.0.0.1:8080/other")));
+        assert!(!g.allows(&u("http://127.0.0.1:8081/")));
+        let g = grant_from_setting("https://Feeds.Example.com/rss").unwrap();
+        assert!(g.allows(&u("https://feeds.example.com/x")));
+        assert!(!g.allows(&u("http://feeds.example.com/x")));
+        assert!(grant_from_setting("*.tracker.example").is_some());
+        assert!(grant_from_setting("not a host").is_none());
+        let all = NetworkGrants::combine(&["a.example".into()], &["https://b.example/".into()]);
+        assert!(all.allows(&u("https://a.example/")) && all.allows(&u("https://b.example/")));
     }
 
     #[test]

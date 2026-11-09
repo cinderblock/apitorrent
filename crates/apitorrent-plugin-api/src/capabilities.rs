@@ -41,6 +41,13 @@ pub fn expansion(wanted: &PluginCapabilities, granted: &PluginCapabilities) -> V
             Err(_) => out.push(format!("connect to {g}")),
         }
     }
+    for path in &wanted.network_from_settings {
+        if !granted.network_from_settings.contains(path) {
+            out.push(format!(
+                "connect to the hosts you enter in its `{path}` setting"
+            ));
+        }
+    }
     let mut scopes = wanted.api.clone();
     scopes.sort_unstable();
     scopes.dedup();
@@ -94,6 +101,7 @@ mod tests {
             kv: true,
             schedule: true,
             roles: vec![PluginRole::Source],
+            ..PluginCapabilities::default()
         };
         let narrower = PluginCapabilities {
             network: vec!["a.example.com".into(), "feeds.net".into()],
@@ -105,6 +113,7 @@ mod tests {
             kv: true,
             schedule: false,
             roles: vec![PluginRole::Source],
+            ..PluginCapabilities::default()
         };
         assert!(expansion(&narrower, &granted).is_empty());
         assert!(expansion(&granted, &granted).is_empty());
@@ -126,12 +135,14 @@ mod tests {
             kv: true,
             schedule: true,
             roles: vec![PluginRole::DnsProvider],
+            network_from_settings: vec!["feeds[].url".into()],
         };
         let e = expansion(&wanted, &granted);
         assert_eq!(
             e,
             [
                 "connect to http://example.com",
+                "connect to the hosts you enter in its `feeds[].url` setting",
                 "remove torrents, and delete their data",
                 "serve GET /x under its API path",
                 "store its own data",

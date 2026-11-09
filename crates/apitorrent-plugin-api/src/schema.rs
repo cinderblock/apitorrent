@@ -353,6 +353,53 @@ pub fn with_defaults(schema: &Value, value: &Value) -> Value {
     }
 }
 
+/// The schema a settings path (`feeds[].url`, `hosts[]`, `token`) names, if any.
+pub fn resolve_path<'s>(schema: &'s Value, path: &str) -> Option<&'s Value> {
+    let mut node = schema;
+    for seg in path.split('.') {
+        let (name, array) = match seg.strip_suffix("[]") {
+            Some(n) => (n, true),
+            None => (seg, false),
+        };
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        node = node.get("properties")?.get(name)?;
+        if array {
+            if ty(node) != Some("array") {
+                return None;
+            }
+            node = node.get("items")?;
+        }
+    }
+    Some(node)
+}
+
+/// Every non-empty string at a settings path; arrays (`[]`) are walked.
+pub fn strings_at(value: &Value, path: &str) -> Vec<String> {
+    let mut current = vec![value];
+    for seg in path.split('.') {
+        let (name, array) = match seg.strip_suffix("[]") {
+            Some(n) => (n, true),
+            None => (seg, false),
+        };
+        current = current
+            .into_iter()
+            .filter_map(|v| v.get(name))
+            .flat_map(|v| match (array, v) {
+                (true, Value::Array(items)) => items.iter().collect::<Vec<_>>(),
+                (true, _) => Vec::new(),
+                (false, v) => vec![v],
+            })
+            .collect();
+    }
+    current
+        .into_iter()
+        .filter_map(|v| v.as_str().map(str::to_owned))
+        .filter(|s| !s.trim().is_empty())
+        .collect()
+}
+
 /// The names of the secret (top-level `writeOnly`) properties.
 pub fn secrets(schema: &Value) -> Vec<String> {
     schema
@@ -440,6 +487,21 @@ mod tests {
             })
         );
         validate(&s, &v).unwrap();
+    }
+
+    #[test]
+    fn settings_paths() {
+        let s = rss_like();
+        assert_eq!(ty(resolve_path(&s, "feeds[].url").unwrap()), Some("string"));
+        assert_eq!(
+            ty(resolve_path(&s, "advanced.retries").unwrap()),
+            Some("integer")
+        );
+        assert!(resolve_path(&s, "feeds.url").is_none());
+        assert!(resolve_path(&s, "nope").is_none());
+        let v = json!({"feeds": [{"url": "https://a/"}, {"url": ""}, {"paused": true}, {"url": "https://b/"}]});
+        assert_eq!(strings_at(&v, "feeds[].url"), ["https://a/", "https://b/"]);
+        assert!(strings_at(&v, "token").is_empty());
     }
 
     #[test]

@@ -14,6 +14,14 @@ export type PluginCapabilities = {
  */
 network: Array<string>, 
 /**
+ * Settings fields whose values are also network grants, so an admin can point the
+ * plugin at hosts of their choosing (a feed's URL, say) without a new manifest. Paths
+ * name string properties: `feedUrl`, `feeds[].url`, `extraHosts[]`. A URL value
+ * grants its own origin (plain HTTP only when the URL says `http://`); any other value
+ * is read as a grant pattern, as in `network`.
+ */
+networkFromSettings: Array<string>, 
+/**
  * Calls into apitorrent.
  */
 api: Array<PluginApiScope>, 

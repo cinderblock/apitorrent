@@ -44,7 +44,8 @@ pub(crate) struct PluginCtx {
     pub id: String,
     pub version: String,
     pub caps: PluginCapabilities,
-    pub net: NetworkGrants,
+    /// The manifest's grants plus those from settings; replaced when settings change.
+    pub net: Arc<std::sync::RwLock<NetworkGrants>>,
     /// Settings with defaults filled in, as of the start of the run.
     pub settings: serde_json::Value,
     pub app: Arc<dyn AppApi>,
@@ -764,7 +765,8 @@ async fn op_at_fetch(
 ) -> Result<FetchResult, JsErrorBox> {
     let c = ctx(&state.borrow());
     let args: FetchArgs = from_json(&args, "request")?;
-    let (fetcher, net) = (c.fetcher.clone(), c.net.clone());
+    let net = c.net.read().expect("grants lock poisoned").clone();
+    let fetcher = c.fetcher.clone();
     let task = c
         .main
         .spawn(async move { fetcher.fetch(&net, args, has_body.then_some(body)).await });

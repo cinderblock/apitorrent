@@ -142,6 +142,7 @@ struct Run {
     exited: watch::Receiver<bool>,
     manifest: Arc<PluginManifest>,
     stopping: Arc<std::sync::atomic::AtomicBool>,
+    net: Arc<std::sync::RwLock<NetworkGrants>>,
 }
 
 impl PluginHost {
@@ -362,8 +363,7 @@ impl PluginHost {
         }
         // The manifest's own capabilities, which approval made a subset of the grants.
         let caps = manifest.capabilities.clone();
-        let net = NetworkGrants::parse(&caps.network)
-            .map_err(|e| PluginError::Internal(e.to_string()))?;
+        let net = Arc::new(std::sync::RwLock::new(grants_for(&caps, &settings)));
         let generation = self.inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let shared = Arc::new(RunShared::new(generation));
         let (tx, inbox) = mpsc::unbounded_channel();
@@ -372,7 +372,7 @@ impl PluginHost {
             id: id.to_owned(),
             version: version.clone(),
             caps,
-            net,
+            net: net.clone(),
             settings,
             app: self.inner.app.clone(),
             main: self.inner.main.clone(),
@@ -426,6 +426,7 @@ impl PluginHost {
                     exited,
                     manifest,
                     stopping,
+                    net,
                 });
             }
         }
@@ -704,6 +705,8 @@ impl PluginHost {
             .map_err(|errors| PluginError::InvalidRequest(errors.join("; ")))?;
         self.inner.store.set_settings(id, &merged)?;
         if let Some(run) = self.current_run(id) {
+            *run.net.write().expect("grants lock poisoned") =
+                grants_for(&run.manifest.capabilities, &effective);
             let _ = run.tx.send(HostMsg::Settings(effective));
         }
         self.slot_logs(id)
@@ -752,6 +755,17 @@ impl PluginHost {
         let stops = ids.iter().map(|id| self.stop_run(id));
         futures_join_all(stops).await;
     }
+}
+
+/// A plugin's network grants: its manifest's, plus the hosts named in the settings fields
+/// it declared in `networkFromSettings`.
+fn grants_for(caps: &PluginCapabilities, settings: &serde_json::Value) -> NetworkGrants {
+    let from_settings: Vec<String> = caps
+        .network_from_settings
+        .iter()
+        .flat_map(|path| schema::strings_at(settings, path))
+        .collect();
+    NetworkGrants::combine(&caps.network, &from_settings)
 }
 
 fn not_running() -> PluginError {
