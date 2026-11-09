@@ -208,3 +208,22 @@ async fn rss_plugin_polls_a_local_feed() {
     assert_eq!(r.status, 200);
     assert_eq!(app.added.lock().unwrap().len(), 4);
 }
+
+/// Every first-party plugin's manifest and settings schema pass the host's checks. (Not
+/// enabled: `ubuntu-releases` would reach the real Ubuntu servers.)
+#[tokio::test(flavor = "multi_thread")]
+async fn first_party_plugins_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = host(dir.path(), FakeApp::new());
+    for name in ["rss", "ubuntu-releases"] {
+        let bundle = build_plugin(name, &dir.path().join(name));
+        let (id, version) = (bundle.manifest.id.clone(), bundle.manifest.version.clone());
+        assert_eq!(id, name);
+        h.install(bundle).await.unwrap();
+        h.approve(id.clone(), version).await.unwrap();
+        let settings = h.settings(&id).unwrap();
+        assert!(settings.schema.is_some());
+        // The defaults are valid settings.
+        h.set_settings(id.clone(), settings.values).await.unwrap();
+    }
+}

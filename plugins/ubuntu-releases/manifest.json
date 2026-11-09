@@ -1,0 +1,41 @@
+{
+  "id": "ubuntu-releases",
+  "name": "Ubuntu releases",
+  "version": "1.0.0",
+  "description": "Adds the torrents of supported Ubuntu releases (LTS only, or all) for the flavours and architecture you choose, as they come out.",
+  "author": "apitorrent",
+  "apiVersion": 1,
+  "capabilities": {
+    "network": ["changelogs.ubuntu.com", "releases.ubuntu.com", "cdimage.ubuntu.com"],
+    "api": ["torrents:add"],
+    "routes": [
+      { "path": "/status", "methods": ["GET"] },
+      { "path": "/check", "methods": ["POST"] }
+    ],
+    "kv": true,
+    "schedule": true,
+    "roles": ["source"]
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "flavors": {
+        "type": "array",
+        "title": "Images",
+        "default": ["desktop"],
+        "items": { "type": "string", "enum": ["desktop", "live-server"] }
+      },
+      "arch": { "type": "string", "title": "Architecture", "enum": ["amd64", "arm64"], "default": "amd64" },
+      "channel": {
+        "type": "string",
+        "title": "Releases",
+        "enum": ["lts", "all"],
+        "default": "lts"
+      },
+      "label": { "type": "string", "title": "Label", "default": "ubuntu", "maxLength": 100 },
+      "savePath": { "type": "string", "title": "Folder, relative to the download directory", "maxLength": 500 },
+      "paused": { "type": "boolean", "title": "Add paused", "default": false },
+      "intervalHours": { "type": "integer", "title": "Check every (hours)", "minimum": 1, "maximum": 168, "default": 12 }
+    }
+  }
+}
