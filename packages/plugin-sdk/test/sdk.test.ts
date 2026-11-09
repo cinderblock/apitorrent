@@ -155,3 +155,61 @@ test("sources submit candidates; bad ones are listed, not stored", async () => {
   expect([...host.candidates.keys()]).toEqual(["a"]);
   await host.stop();
 });
+
+test("the harness signs clients in with tokens and keeps ordinary routes signed-in only", async () => {
+  const manifest: PluginManifest = {
+    id: "compat",
+    name: "Compat",
+    version: "1.0.0",
+    description: "",
+    author: null,
+    homepage: null,
+    apiVersion: 1,
+    capabilities: {
+      network: [],
+      networkFromSettings: [],
+      api: ["tokens:verify", "torrents:control"],
+      routes: [
+        { path: "/login", methods: ["POST"], auth: "plugin" },
+        { path: "/me", methods: ["GET"], auth: "plugin" },
+        { path: "/plain", methods: ["GET"] },
+      ],
+      kv: false,
+      schedule: false,
+      roles: ["api-compat"],
+    },
+    settings: null,
+  };
+  const reader = { userId: "u2", userName: "bob", role: "viewer" as const, mayWrite: false };
+  const host = createTestHost({ manifest, tokens: { apt_bob: reader } });
+  await host.start(
+    definePlugin({
+      start(api) {
+        api.http.route("POST", "/login", async (req) => api.auth.login(await req.text()));
+        api.http.route("GET", "/me", async (req, ctx) => ({
+          caller: ctx.caller,
+          session: await api.auth.session(new URL(req.url).searchParams.get("s") ?? ""),
+        }));
+        api.http.route("GET", "/plain", () => "ok");
+      },
+    }),
+  );
+  expect(await (await host.request("POST", "/login", { caller: null, body: "apt_nope" })).json()).toBeNull();
+  const login = await (await host.request("POST", "/login", { caller: null, body: "apt_bob" })).json();
+  expect(login.caller).toEqual(reader);
+  const me = await (await host.request("GET", `/me?s=${login.session}`, { caller: null })).json();
+  expect(me).toEqual({ caller: null, session: reader });
+  host.revokeToken("apt_bob");
+  const after = await (await host.request("GET", `/me?s=${login.session}`, { caller: null })).json();
+  expect(after.session).toBeNull();
+  expect((await host.request("GET", "/plain", { caller: null })).status).toBe(401);
+  expect((await host.request("GET", "/plain")).status).toBe(200);
+
+  await host.api.torrents.setSeedLimits("aa", { ratio: 2 });
+  await host.api.torrents.queue("aa", "top");
+  expect(host.controls).toEqual([
+    { id: "aa", action: "setSeedLimits", limits: { ratio: 2 } },
+    { id: "aa", action: "queue", to: "top" },
+  ]);
+  await host.stop();
+});

@@ -14,6 +14,10 @@
  * ```
  *
  * Scheduled jobs never run on their own here; call `runJob`.
+ *
+ * For compatibility layers: `tokens` lists the API tokens `api.auth.login` accepts, and
+ * `request(…, { caller: null })` calls a route the way a client that hasn't signed in to
+ * apitorrent would (only routes declared with `"auth": "plugin"` take that).
  */
 
 import type {
@@ -21,16 +25,20 @@ import type {
   AddOutcome,
   Api,
   AppEvent,
+  AppInfo,
   EventType,
   HttpMethod,
   Interval,
+  LoginResult,
   Plugin,
   PluginCaller,
   PluginCapabilities,
   PluginManifest,
   ReleaseCandidate,
+  QueueMove,
   RoleImpls,
   RouteHandler,
+  SeedLimitsInput,
   TorrentDetail,
   TorrentSummary,
 } from "./index";
@@ -41,8 +49,14 @@ export interface TestHostOptions<S> {
   manifest: PluginManifest;
   /** Settings as an admin saved them; the schema's defaults are filled in. */
   settings?: Partial<S> | Record<string, unknown>;
-  /** What `api.torrents.list()` returns. */
+  /** What `api.torrents.list()` returns. The host keeps this array: change it between calls. */
   torrents?: TorrentSummary[];
+  /** What `api.torrents.get(id)` returns, by id. */
+  details?: Record<string, TorrentDetail>;
+  /** What `api.app.info()` returns, over defaults. */
+  app?: Partial<AppInfo>;
+  /** API tokens `api.auth.login` accepts, and whose they are. */
+  tokens?: Record<string, PluginCaller>;
   /** Answers the plugin's `fetch` calls that its grants allow. */
   fetch?: (request: Request) => Response | Promise<Response>;
   /** Who calls the plugin's routes in `request()`. */
@@ -52,6 +66,24 @@ export interface TestHostOptions<S> {
 export interface AddedTorrent extends AddOptions {
   id: string;
 }
+
+/** A call to a torrent control (`pause`, `setLabel`, `setSeedLimits`, …). */
+export interface Control {
+  id: string;
+  action: string;
+  label?: string | null;
+  limits?: SeedLimitsInput | null;
+  download?: number;
+  upload?: number;
+  to?: QueueMove;
+}
+
+/** Options for `request()`: a `RequestInit`, and who calls (`null`: nobody signed in). */
+export interface TestRequestInit extends RequestInit {
+  caller?: PluginCaller | null;
+}
+
+const DEFAULT_CALLER: PluginCaller = { userId: "u1", userName: "admin", role: "admin", mayWrite: true };
 
 export class NotCapable extends Error {
   override name = "NotCapable";
@@ -90,11 +122,16 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
     schedule: declared.schedule ?? false,
     roles: declared.roles ?? [],
   };
+  const routeDecl = (method: string, path: string) =>
+    caps.routes.find((r) => routeMatches(r.path, path) && r.methods.includes(method));
   let settings = withDefaults(manifest.settings, options.settings ?? {}) as S;
   const settingsListeners = new Set<(s: S) => void>();
   const kv = new Map<string, unknown>();
   const added: AddedTorrent[] = [];
-  const controls: { id: string; action: string; label?: string | null }[] = [];
+  const controls: Control[] = [];
+  const torrents: TorrentSummary[] = options.torrents ?? [];
+  const tokens = new Map(Object.entries(options.tokens ?? {}));
+  const sessions = new Map<string, string>();
   const removed: { id: string; deleteFiles: boolean }[] = [];
   const fetches: Request[] = [];
   const candidates = new Map<string, ReleaseCandidate>();
@@ -129,13 +166,60 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
 
   const api: Api<S> = {
     plugin: { id: manifest.id, version: manifest.version },
+    app: {
+      async info() {
+        scope("torrents:read");
+        return {
+          version: "0.1.0",
+          downloadDir: "/downloads",
+          seedLimits: { ratio: 0, seedMinutes: 0, action: "pause" },
+          queue: {
+            maxActiveDownloads: 0,
+            maxActiveSeeds: 0,
+            maxActive: 0,
+            ignoreSlow: false,
+            slowDownloadRate: 2048,
+            slowUploadRate: 2048,
+            slowAfterSecs: 60,
+          },
+          peerPort: 6881,
+          ...options.app,
+        };
+      },
+    },
+    auth: {
+      async login(token: string): Promise<LoginResult | null> {
+        scope("tokens:verify");
+        const caller = tokens.get(token);
+        if (!caller) return null;
+        const session = crypto.randomUUID().replaceAll("-", "");
+        sessions.set(session, token);
+        return { session, caller: structuredClone(caller) };
+      },
+      async session(id: string) {
+        scope("tokens:verify");
+        const token = sessions.get(id);
+        const caller = token === undefined ? undefined : tokens.get(token);
+        if (!caller) {
+          sessions.delete(id);
+          return null;
+        }
+        return structuredClone(caller);
+      },
+      async logout(id: string) {
+        scope("tokens:verify");
+        return sessions.delete(id);
+      },
+    },
     torrents: {
       async list() {
         scope("torrents:read");
-        return structuredClone(options.torrents ?? []);
+        return structuredClone(torrents);
       },
       async get(id: string): Promise<TorrentDetail> {
         scope("torrents:read");
+        const d = options.details?.[id];
+        if (d) return structuredClone(d);
         throw new ApitorrentError("not_found", `no torrent ${id}`);
       },
       async add(o: AddOptions): Promise<AddOutcome> {
@@ -163,6 +247,19 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
       async setLabel(id: string, label: string | null) {
         scope("torrents:control");
         controls.push({ id, action: "setLabel", label });
+      },
+      async setSeedLimits(id: string, limits: SeedLimitsInput | null) {
+        scope("torrents:control");
+        controls.push({ id, action: "setSeedLimits", limits });
+      },
+      async setRateLimits(id: string, l: { download?: number; upload?: number }) {
+        scope("torrents:control");
+        controls.push({ id, action: "setRateLimits", download: l.download ?? 0, upload: l.upload ?? 0 });
+      },
+      async queue(id: string, to: QueueMove) {
+        scope("torrents:control");
+        if (!["top", "up", "down", "bottom"].includes(to)) throw new TypeError(`bad queue move ${to}`);
+        controls.push({ id, action: "queue", to });
       },
       async remove(id: string, o?: { deleteFiles?: boolean }) {
         scope("torrents:remove");
@@ -258,6 +355,13 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
     roles: {
       provide<R extends keyof RoleImpls>(role: R, impl: RoleImpls[R]) {
         need((caps.roles as string[]).includes(role), `the \`${role}\` role`);
+        if (role === "tracker-adapter") {
+          const trackers = (impl as RoleImpls["tracker-adapter"]).trackers;
+          const ok = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+          if (!Array.isArray(trackers) || !trackers.every((t) => typeof t === "string" && ok.test(t))) {
+            throw new TypeError("a tracker adapter names the trackers it covers: `trackers: [\"host\"]`");
+          }
+        }
         roles.set(role, impl);
       },
     },
@@ -269,6 +373,12 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
     added,
     controls,
     removed,
+    /** The torrents `api.torrents.list()` returns; change them between calls. */
+    torrents,
+    /** Revoke a token: sessions made from it end, as they do in apitorrent. */
+    revokeToken(token: string) {
+      tokens.delete(token);
+    },
     /** Every request the plugin's `fetch` made (and was allowed to make). */
     fetches,
     /** Release candidates the plugin submitted, by id (the latest submission of each). */
@@ -299,20 +409,26 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
       await job.handler();
     },
 
-    /** Call one of the plugin's routes, as a signed-in user would. */
-    async request(method: HttpMethod, path: string, init: RequestInit = {}): Promise<Response> {
-      if (!caps.routes.some((r) => routeMatches(r.path, path) && r.methods.includes(method))) {
-        return Response.json({ code: "no_route" }, { status: 404 });
+    /**
+     * Call one of the plugin's routes, as a signed-in user would (or, with `caller: null`,
+     * a client that hasn't signed in). `path` may carry a query string.
+     */
+    async request(method: HttpMethod, path: string, init: TestRequestInit = {}): Promise<Response> {
+      const { caller: given, ...requestInit } = init;
+      const routePath = path.split("?")[0]!;
+      const decl = routeDecl(method, routePath);
+      if (!decl) return Response.json({ code: "no_route" }, { status: 404 });
+      const caller = given === undefined ? (options.caller ?? DEFAULT_CALLER) : given;
+      if (caller === null && (decl.auth ?? "api") !== "plugin") {
+        return Response.json({ code: "unauthenticated" }, { status: 401 });
       }
-      const route = routes.find((r) => r.method === method && routeMatches(r.path, path));
+      const route = routes.find((r) => r.method === method && routeMatches(r.path, routePath));
       if (!route) return Response.json({ code: "no_route" }, { status: 404 });
       const req = new Request(`http://localhost:8742/api/v1/plugins/${manifest.id}${path}`, {
-        ...init,
+        ...requestInit,
         method,
       });
-      const caller = options.caller ??
-        { userId: "u1", userName: "admin", role: "admin" } as PluginCaller;
-      const r = await route.handler(req, { caller, path });
+      const r = await route.handler(req, { caller, path: routePath });
       if (r instanceof Response) return r;
       return r === undefined ? new Response(null, { status: 204 }) : Response.json(r);
     },

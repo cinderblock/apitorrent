@@ -18,4 +18,4 @@ methods: Array<string>,
 /**
  * Who authenticates requests to this route. Defaults to `api`.
  */
-auth: PluginRouteAuth, };
+auth?: PluginRouteAuth, };

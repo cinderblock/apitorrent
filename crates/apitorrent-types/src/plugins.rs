@@ -117,6 +117,7 @@ pub struct PluginRoute {
     pub methods: Vec<String>,
     /// Who authenticates requests to this route. Defaults to `api`.
     #[serde(default)]
+    #[ts(as = "Option<PluginRouteAuth>", optional)]
     pub auth: PluginRouteAuth,
 }
 

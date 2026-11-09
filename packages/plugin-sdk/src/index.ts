@@ -13,20 +13,34 @@
 
 import type { AddOutcome } from "./generated/AddOutcome";
 import type { AppEvent } from "./generated/AppEvent";
+import type { AppInfo } from "./generated/AppInfo";
+import type { PackQuery } from "./generated/PackQuery";
 import type { PluginCaller } from "./generated/PluginCaller";
 import type { SubmitCandidatesOutcome } from "./generated/SubmitCandidatesOutcome";
+import type { SeedLimitAction } from "./generated/SeedLimitAction";
 import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { TorrentSummary } from "./generated/TorrentSummary";
+import type { UnregisteredQuery } from "./generated/UnregisteredQuery";
 
 export type { AddOutcome } from "./generated/AddOutcome";
 export type { AppEvent } from "./generated/AppEvent";
+export type { AppInfo } from "./generated/AppInfo";
+export type { PackFile } from "./generated/PackFile";
+export type { PackQuery } from "./generated/PackQuery";
 export type { PluginCaller } from "./generated/PluginCaller";
 export type { PluginCapabilities } from "./generated/PluginCapabilities";
 export type { PluginManifest } from "./generated/PluginManifest";
 export type { SubmitCandidatesOutcome } from "./generated/SubmitCandidatesOutcome";
+export type { PluginRouteAuth } from "./generated/PluginRouteAuth";
+export type { QueueSettings } from "./generated/QueueSettings";
+export type { SeedLimitAction } from "./generated/SeedLimitAction";
+export type { SeedLimits } from "./generated/SeedLimits";
 export type { TorrentDetail } from "./generated/TorrentDetail";
+export type { TorrentFile } from "./generated/TorrentFile";
 export type { TorrentState } from "./generated/TorrentState";
 export type { TorrentSummary } from "./generated/TorrentSummary";
+export type { TrackerInfo } from "./generated/TrackerInfo";
+export type { UnregisteredQuery } from "./generated/UnregisteredQuery";
 
 /** What to add. Give `magnet` or `torrent`. Needs `torrents:add`. */
 export interface AddOptions {
@@ -42,6 +56,16 @@ export interface AddOptions {
   filePriorities?: number[];
 }
 
+/** A torrent's own seed limits. 0 means no limit of that kind. */
+export interface SeedLimitsInput {
+  ratio?: number;
+  seedMinutes?: number;
+  /** What happens when they are reached; `pause` by default. */
+  action?: SeedLimitAction;
+}
+
+export type QueueMove = "top" | "up" | "down" | "bottom";
+
 export interface Torrents {
   /** Needs `torrents:read`. */
   list(): Promise<TorrentSummary[]>;
@@ -53,6 +77,11 @@ export interface Torrents {
   pause(id: string): Promise<void>;
   resume(id: string): Promise<void>;
   setLabel(id: string, label: string | null): Promise<void>;
+  /** The torrent's own seed limits; `null` follows its group's or the instance's. */
+  setSeedLimits(id: string, limits: SeedLimitsInput | null): Promise<void>;
+  /** The torrent's own rate limits in bytes per second (0: none of its own). */
+  setRateLimits(id: string, limits: { download?: number; upload?: number }): Promise<void>;
+  queue(id: string, to: QueueMove): Promise<void>;
   /** Needs `torrents:remove`. */
   remove(id: string, options?: { deleteFiles?: boolean }): Promise<void>;
 }
@@ -103,15 +132,45 @@ export interface Settings<S> {
 export type HttpMethod = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 export interface RouteContext {
-  /** The signed-in user who called. */
-  caller: PluginCaller;
-  /** The path relative to `/api/v1/plugins/<id>`. */
+  /**
+   * The signed-in user who called. Always set on ordinary routes. On a route declared with
+   * `"auth": "plugin"` it is `null` unless the request also signed in to apitorrent (a
+   * bearer token, a browser session, or a loopback request with authentication off).
+   */
+  caller: PluginCaller | null;
+  /** The path relative to `/api/v1/plugins/<id>` (or to the plugin's own listener). */
   path: string;
+}
+
+/** About this apitorrent instance. Needs `torrents:read`. */
+export interface App {
+  info(): Promise<AppInfo>;
+}
+
+export interface LoginResult {
+  /** An opaque session id; give it to the client (as a cookie, say). */
+  session: string;
+  caller: PluginCaller;
+}
+
+/**
+ * Signing clients in with apitorrent API tokens, for compatibility layers whose clients
+ * log in their own way. Needs `tokens:verify` (and the `api-compat` role). The host keeps
+ * the sessions: they last an hour unused, end when the plugin restarts, and end at once
+ * when the token is revoked or expires.
+ */
+export interface Auth {
+  /** Check a token a client presented. `null` when it isn't a live API token. */
+  login(token: string): Promise<LoginResult | null>;
+  /** Who a session belongs to, or `null` once it has ended. Using it keeps it alive. */
+  session(id: string): Promise<PluginCaller | null>;
+  logout(id: string): Promise<boolean>;
 }
 
 /**
  * Return a `Response`, or any JSON value (sent as `application/json`), or nothing (204).
- * Responses are served with a sandboxing Content-Security-Policy and can't set cookies.
+ * Responses are served with a sandboxing Content-Security-Policy. Only routes declared with
+ * `"auth": "plugin"` may set cookies (host-only, never named like apitorrent's).
  */
 export type RouteHandler = (
   request: Request,
@@ -160,15 +219,40 @@ export interface SourceRole {
   candidates(limit?: number): ReleaseCandidate[] | Promise<ReleaseCandidate[]>;
 }
 
-export interface DnsProviderRole {
-  /** Publish a TXT record (ACME DNS-01). */
-  setTxt(name: string, value: string, ttlSeconds?: number): Promise<void>;
-  removeTxt(name: string, value: string): Promise<void>;
+/** An ACME DNS-01 TXT record. */
+export interface TxtRecord {
+  /** The name being validated, without `*.` (`example.com` for `*.example.com`). */
+  domain: string;
+  /** The record's full name: `_acme-challenge.<domain>`, without a trailing dot. */
+  name: string;
+  value: string;
 }
 
+/**
+ * Publishes ACME DNS-01 records. apitorrent keeps the ACME account, keys and certificates;
+ * the provider only adds and removes records, and the daemon itself waits until the zone's
+ * authoritative servers answer with a new record. Several records may share a name (a
+ * wildcard and its base domain); `removeTxt` must remove only the one with that value.
+ */
+export interface DnsProviderRole {
+  setTxt(record: TxtRecord): Promise<void>;
+  removeTxt(record: TxtRecord): Promise<void>;
+}
+
+/** A pack that holds a torrent's files: a magnet link, or a `.torrent` file's bytes. */
+export type PackSource = { magnet: string } | { torrent: Uint8Array | ArrayBuffer };
+
+/**
+ * Tracker-specific behaviour for the trackers named in `trackers` (host names, or `*.`
+ * and a domain for its subdomains). For those trackers `isUnregistered` replaces the
+ * built-in "unregistered" patterns, and `findPack` may name the pack that replaced a
+ * torrent the tracker deleted; apitorrent adds it, reuses the files, and retires the old
+ * torrent. Fetching the pack downloads a whole pack: let users turn that on in settings.
+ */
 export interface TrackerAdapterRole {
-  /** Whether a tracker's announce failure means the torrent was deleted there. */
-  isUnregistered?(message: string, trackerUrl: string): boolean | Promise<boolean>;
+  trackers: string[];
+  isUnregistered?(query: UnregisteredQuery): boolean | Promise<boolean>;
+  findPack?(query: PackQuery): PackSource | null | Promise<PackSource | null>;
 }
 
 export interface RoleImpls {
@@ -185,6 +269,8 @@ export interface Roles {
 
 export interface Api<S = Record<string, unknown>> {
   plugin: { readonly id: string; readonly version: string };
+  app: App;
+  auth: Auth;
   torrents: Torrents;
   candidates: Candidates;
   events: Events;
