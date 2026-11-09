@@ -552,8 +552,10 @@ engine core stays in the main thread, because its pieces interlock.
   2026-11-09. The LAN listener serves the embedded UI (`apitorrent-webui`). Pairing uses
   the daemon's short code. See `plans/m7-desktop.md`
 - [ ] M7 follow-ups: run the GUI once (needs your OK to use the screen, or a hidden
-  desktop), build installers and test link registration, TLS for Local mode's LAN listener,
-  a folder picker, share locators on the daemon
+  desktop), build installers and test link registration, a folder picker, share locators
+  on the daemon. Local mode's LAN listener now serves HTTPS with a self-signed certificate
+  and shows its pairing code (on by default; plain HTTP still needs a proxy or consent).
+  Not yet run end to end in the app
 - [x] M10 (written, not yet run): `.github/workflows/ci.yml` (web; Rust on Linux, Windows
   and macOS with fmt, clippy, tests and an embedded-UI daemon build; the desktop app on
   all three; ACME against Pebble v2.10.1), `release.yml` (on a `v*` tag: daemons for

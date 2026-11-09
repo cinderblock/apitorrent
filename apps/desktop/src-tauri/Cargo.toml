@@ -30,6 +30,7 @@ apitorrent-dht.workspace = true
 apitorrent-engine.workspace = true
 apitorrent-mse.workspace = true
 apitorrent-server.workspace = true
+apitorrent-tls.workspace = true
 apitorrent-types.workspace = true
 # The UI the network listener serves (Local mode).
 apitorrent-webui = { workspace = true, features = ["embed"] }

@@ -81,9 +81,18 @@ pub struct LanSettings {
     /// The `https://` URLs browsers use (through the proxy). Passkeys work on these.
     #[serde(default)]
     pub public_urls: Vec<String>,
-    /// Serve plain HTTP on the network without a proxy.
+    /// Serve plain HTTP on the network without a proxy (only with `https` off).
     #[serde(default)]
     pub allow_insecure_lan: bool,
+    /// Serve HTTPS with a self-signed certificate kept in the profile's data directory.
+    /// Other apps pair with it by the code shown; browsers warn once. Off means plain
+    /// HTTP, which needs a trusted proxy or `allow_insecure_lan`.
+    #[serde(default = "https_by_default")]
+    pub https: bool,
+}
+
+fn https_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -145,10 +154,10 @@ impl Profile {
                                 .into(),
                         ));
                     }
-                    if lan.trusted_proxies.is_empty() && !lan.allow_insecure_lan {
+                    if !lan.https && lan.trusted_proxies.is_empty() && !lan.allow_insecure_lan {
                         return Err(ProfileError::Invalid(
-                            "serving on the network needs a trusted TLS reverse proxy, or \
-                             accepting plain HTTP explicitly"
+                            "serving on the network needs HTTPS, a trusted TLS reverse proxy, \
+                             or accepting plain HTTP explicitly"
                                 .into(),
                         ));
                     }
@@ -542,16 +551,30 @@ mod tests {
                 trusted_proxies: vec![],
                 public_urls: vec![],
                 allow_insecure_lan: false,
+                https: false,
             });
         }
         assert!(
             store.upsert(p.clone()).is_err(),
-            "LAN without proxy or consent"
+            "plain HTTP on the LAN without proxy or consent"
         );
         if let ProfileKind::Local(l) = &mut p.kind {
-            l.lan.as_mut().unwrap().allow_insecure_lan = true;
+            l.lan.as_mut().unwrap().https = true;
+        }
+        store.upsert(p.clone()).unwrap();
+        if let ProfileKind::Local(l) = &mut p.kind {
+            let lan = l.lan.as_mut().unwrap();
+            lan.https = false;
+            lan.allow_insecure_lan = true;
         }
         store.upsert(p).unwrap();
+
+        // Profiles saved before HTTPS existed get it.
+        let old: LanSettings = serde_json::from_str(
+            r#"{"listen":"192.168.1.10:8742","trustedProxies":[],"publicUrls":[],"allowInsecureLan":false}"#,
+        )
+        .unwrap();
+        assert!(old.https);
         assert_eq!(store.profiles().len(), 1, "failed saves changed nothing");
     }
 

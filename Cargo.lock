@@ -243,6 +243,7 @@ dependencies = [
  "apitorrent-engine",
  "apitorrent-mse",
  "apitorrent-server",
+ "apitorrent-tls",
  "apitorrent-types",
  "apitorrent-webui",
  "base64 0.23.1",

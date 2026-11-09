@@ -371,7 +371,7 @@ function MappingsField({ mappings, setMappings, connected }: { mappings: PathMap
 
 function LanField({ lan, setLan }: { lan: LanSettings | null; setLan: (l: LanSettings | null) => void }) {
   const on = lan !== null;
-  const l = lan ?? { listen: "0.0.0.0:8742", trustedProxies: [], publicUrls: [], allowInsecureLan: false };
+  const l = lan ?? { listen: "0.0.0.0:8742", trustedProxies: [], publicUrls: [], allowInsecureLan: false, https: true };
   // The lists are edited as text, so a half-typed "a, " keeps its comma.
   const [proxiesText, setProxiesText] = useState(l.trustedProxies.join(", "));
   const [urlsText, setUrlsText] = useState(l.publicUrls.join(", "));
@@ -419,10 +419,20 @@ function LanField({ lan, setLan }: { lan: LanSettings | null; setLan: (l: LanSet
             />
           </label>
           <label className="check">
-            <input type="checkbox" checked={l.allowInsecureLan} onChange={(e) => setLan({ ...l, allowInsecureLan: e.target.checked })} />
-            Allow plain HTTP without a proxy
+            <input type="checkbox" checked={l.https} onChange={(e) => setLan({ ...l, https: e.target.checked })} />
+            Serve HTTPS with a self-signed certificate
           </label>
-          {l.allowInsecureLan && (
+          <p className="hint muted">
+            Other apps pair with it by the code shown once it runs. Browsers warn about the certificate once, and sign in with a password (passkeys need a
+            trusted certificate: use a reverse proxy with a public URL for those).
+          </p>
+          {!l.https && (
+            <label className="check">
+              <input type="checkbox" checked={l.allowInsecureLan} onChange={(e) => setLan({ ...l, allowInsecureLan: e.target.checked })} />
+              Allow plain HTTP without a proxy
+            </label>
+          )}
+          {!l.https && l.allowInsecureLan && (
             <p className="hint error-text">
               Passwords and session cookies then cross the network unencrypted, and browsers won't offer passkeys. Use a TLS reverse proxy if you can.
             </p>

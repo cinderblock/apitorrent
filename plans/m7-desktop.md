@@ -176,8 +176,8 @@ Times are US Pacific (UTC alongside).
    certificate for the name stand in for the server the user paired with.
 3. **Plain HTTP to a LAN daemon stays refused**; only loopback `http://`.
 4. **Local mode on the LAN**: rather than passwords over plain HTTP, the LAN listener
-   should use the built-in TLS (self-signed with a pairing code, or ACME). Follow-up, now
-   that `apitorrent-tls` is on master.
+   uses the built-in TLS: a self-signed certificate in the profile's data directory, its
+   pairing code shown in the app (`LanSettings.https`, on by default). Done 2026-11-09.
 
 ## Things not to do
 

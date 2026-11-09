@@ -13,7 +13,9 @@ use std::time::Duration;
 use apitorrent_auth::{Auth, AuthConfig, Clock as _, PasswordMode, SetupToken, SystemClock};
 use apitorrent_core::{Core, CoreConfig};
 use apitorrent_engine::SessionConfig;
-use apitorrent_server::{AuthMode, Embedded, ServerConfig, TrustedProxies, WebUi};
+use apitorrent_server::{
+    AuthMode, Embedded, ServerConfig, TlsServe, TlsServer, TrustedProxies, WebUi,
+};
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -33,10 +35,14 @@ pub struct LanStatus {
     /// While no user exists: the link that creates the first one. Open it from a browser
     /// on the network (or here).
     pub setup_link: Option<String>,
+    /// With HTTPS: the pairing code of the self-signed certificate, which other apps and
+    /// the CLI check before trusting it.
+    pub pairing_code: Option<String>,
 }
 
 struct Lan {
     settings: LanSettings,
+    pairing_code: Option<String>,
     stop: Option<oneshot::Sender<()>>,
     error: Arc<Mutex<Option<String>>>,
     task: tokio::task::JoinHandle<()>,
@@ -161,6 +167,24 @@ impl LocalNode {
             .collect();
         public_hosts.push(settings.listen.ip().to_string());
         let error: Arc<Mutex<Option<String>>> = Arc::default();
+        // HTTPS with a self-signed certificate that names this listener (and the public
+        // hosts), kept in the profile's data directory so the pairing code stays put.
+        let tls = if settings.https {
+            match self.self_signed(&settings, &public_hosts) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::error!(error = %e, "no certificate for the network listener");
+                    *error.lock().expect("not poisoned") = Some(e);
+                    return self.set_lan(settings, None, error, None, tokio::spawn(async {}));
+                }
+            }
+        } else {
+            None
+        };
+        let pairing_code = tls
+            .as_ref()
+            .and_then(|t| t.store.current())
+            .map(|c| c.info.pairing_code());
         let config = ServerConfig {
             listen: settings.listen,
             public_hosts,
@@ -176,17 +200,68 @@ impl LocalNode {
             let shutdown = async move {
                 let _ = stopped.await;
             };
-            if let Err(e) = apitorrent_server::serve(core, config, shutdown).await {
+            let result = match tls {
+                Some(tls) => match TlsServer::bind(core, config, tls).await {
+                    Ok(server) => server.run(shutdown).await,
+                    Err(e) => Err(e),
+                },
+                None => apitorrent_server::serve(core, config, shutdown).await,
+            };
+            if let Err(e) = result {
                 tracing::error!(error = %e, "the network listener stopped");
                 *failed.lock().expect("not poisoned") = Some(e.to_string());
             }
         });
+        self.set_lan(settings, pairing_code, error, Some(stop), task);
+    }
+
+    fn set_lan(
+        &self,
+        settings: LanSettings,
+        pairing_code: Option<String>,
+        error: Arc<Mutex<Option<String>>>,
+        stop: Option<oneshot::Sender<()>>,
+        task: tokio::task::JoinHandle<()>,
+    ) {
         *self.lan.lock().expect("not poisoned") = Some(Lan {
             settings,
-            stop: Some(stop),
+            pairing_code,
+            stop,
             error,
             task,
         });
+    }
+
+    /// The self-signed certificate for the network listener, created or renewed as needed.
+    fn self_signed(
+        &self,
+        settings: &LanSettings,
+        public_hosts: &[String],
+    ) -> Result<TlsServe, String> {
+        let mut names = vec![
+            "localhost".to_owned(),
+            "127.0.0.1".to_owned(),
+            "::1".to_owned(),
+        ];
+        let ip = settings.listen.ip();
+        if !ip.is_unspecified() && !ip.is_loopback() {
+            names.push(ip.to_string());
+        }
+        names.extend(public_hosts.iter().cloned());
+        names.sort();
+        names.dedup();
+        let dir = self.data_dir.join("tls").join("self-signed");
+        let loaded = apitorrent_tls::ensure_self_signed(&dir, &names, std::time::SystemTime::now())
+            .map_err(|e| format!("couldn't make a certificate: {e}"))?;
+        let store = apitorrent_tls::CertStore::new();
+        store.install(loaded, apitorrent_tls::CertSource::SelfSigned);
+        apitorrent_tls::spawn_self_signed_renewer(store.clone(), dir, names);
+        Ok(TlsServe {
+            store,
+            acme: None,
+            http_redirect: None,
+            https_port: settings.listen.port(),
+        })
     }
 
     pub fn lan_status(&self) -> Option<LanStatus> {
@@ -197,8 +272,9 @@ impl LocalNode {
             token
                 .filter(|t| t.expires_at > SystemClock.now_ms())
                 .map(|t| {
+                    let scheme = if lan.settings.https { "https" } else { "http" };
                     let base = lan.settings.public_urls.first().map_or_else(
-                        || format!("http://{}", lan.settings.listen),
+                        || format!("{scheme}://{}", lan.settings.listen),
                         |u| u.trim_end_matches('/').to_owned(),
                     );
                     format!("{base}/setup#token={}", t.token)
@@ -210,6 +286,7 @@ impl LocalNode {
             listen: lan.settings.listen,
             error: lan.error.lock().expect("not poisoned").clone(),
             setup_link,
+            pairing_code: lan.pairing_code.clone(),
         })
     }
 

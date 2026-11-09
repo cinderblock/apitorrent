@@ -121,7 +121,14 @@ function LanInfo({ lan }: { lan: NonNullable<DesktopState["connection"]>["lan"] 
       {lan.error ? (
         <p className="error-text">Network access failed: {lan.error}</p>
       ) : (
-        <p className="muted">Serving the web UI on {lan.listen}.</p>
+        <p className="muted">
+          Serving the web UI on {lan.pairingCode ? "https" : "http"}://{lan.listen}.
+        </p>
+      )}
+      {lan.pairingCode && (
+        <p>
+          Pairing code for other apps: <code className="key">{lan.pairingCode}</code>
+        </p>
       )}
       {lan.setupLink && (
         <p>

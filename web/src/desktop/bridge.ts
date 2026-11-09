@@ -27,6 +27,7 @@ export interface LanSettings {
   trustedProxies: string[];
   publicUrls: string[];
   allowInsecureLan: boolean;
+  https: boolean;
 }
 
 export interface RemoteProfile {
@@ -52,6 +53,7 @@ export interface LanStatus {
   listen: string;
   error: string | null;
   setupLink: string | null;
+  pairingCode: string | null;
 }
 
 export interface ConnectionView {
