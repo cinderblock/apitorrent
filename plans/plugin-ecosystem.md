@@ -69,32 +69,53 @@ integrations:
 ## Plan / steps
 
 1. ✅ Survey; this plan.
-2. Contract: route `auth`, scope `tokens:verify`, `PluginCaller.mayWrite`, `AppApi` additions
+2. ✅ Contract: route `auth`, scope `tokens:verify`, `PluginCaller.mayWrite`, `AppApi` additions
    (app info, seed limits, rate limits, queue moves), `Credentials` and `TrackerAdapters`
    traits, validation and approval wording.
-3. Host: `api.auth`, `api.app.info`, the new controls, role metadata, `route_auth` for the
+3. ✅ Host: `api.auth`, `api.app.info`, the new controls, role metadata, `route_auth` for the
    server, bundled offers, DNS provider and tracker adapter glue.
-4. Core: the new `AppApi` calls; tracker adapters in `retire_superseded`, with tests.
-5. Server: plugin-authenticated routes, cookies, the credentials check, `--plugin-listen`.
-6. `plugins/qbittorrent-api` with Bun tests on pinned *arr request fixtures, and a Rust end
+4. ✅ Core: the new `AppApi` calls; tracker adapters in `retire_superseded`, with tests.
+5. ✅ Server: plugin-authenticated routes, cookies, the credentials check, `--plugin-listen`.
+6. ✅ `plugins/qbittorrent-api` with Bun tests on pinned *arr request fixtures, and a Rust end
    to end test (real core, auth, server and host).
-7. TLS: DNS-01 propagation check, daemon flags, `plugins/cloudflare-dns`, mock-API and Pebble
+7. **(current)** TLS: DNS-01 propagation check, daemon flags, `plugins/cloudflare-dns`, mock-API and Pebble
    tests.
 8. Bundled first-party plugins; `ci.yml` and `release.yml`.
 9. Docs (README, architecture, this plan), web UI capability wording, final checks.
 
 ## Findings / gotchas
 
-*(none yet)*
+- **The client fixtures are written from the clients' source, not captured traffic.** No
+  *arr install was used (task rule). `plugins/qbittorrent-api/test/fixtures/*.json` name
+  the source files each is based on (Sonarr's `QBittorrentProxyV2.cs`, go-qbittorrent,
+  cross-seed's `QBittorrent.ts`); multipart bodies are pinned byte for byte in each
+  client's layout (.NET `HttpFormData`, Go `mime/multipart`, undici `FormData`).
+- **Sonarr asks `app/webapiVersion` before signing in** and treats anything but 404 as
+  "supported": the unauthenticated answer must be 403, as qBittorrent's is.
+- **cross-seed insists on a `Set-Cookie` from `auth/login`**, so a login by a client that is
+  already signed in to apitorrent (a bearer token, or loopback with auth off) still gets a
+  marker `SID` cookie.
+- **A category without a folder saves in the download directory** (qBittorrent's manual
+  mode), which the Rust end-to-end test first got wrong.
+- `cargo fmt` reorders `mod` lines that master leaves unsorted in
+  `apitorrent-types/src/lib.rs`, `apitorrentd/src/main.rs` and `apitorrent-core/src/lib.rs`;
+  those hunks are kept out of these commits so the shared files only carry real changes.
+- **Two `bun install`s at once fail** (`EEXIST: failed to link package`): the rss e2e tests
+  raced in a fresh checkout. Serialised with a lock (`eee511e`).
+- Bash heredocs in this environment break on some quoting (a Python edit with `\r\n`
+  silently failed to match); multi-line edits go through scratchpad scripts or the Edit
+  tool.
 
 ## Progress log
 
 - [x] Survey and plan (2026-11-09 1:00 AM PST (09:00Z))
-- [ ] Contract
-- [ ] Host
-- [ ] Core
-- [ ] Server
-- [ ] qbittorrent-api
+- [x] Contract, host and server (`1baa78d`): route auth, tokens:verify, sessions,
+  plugin listener, app info, wider controls, role glue, bundled offers; 7 host tests, 3
+  server tests
+- [x] Core tracker adapters (`56d64bf`), with a fake-adapter test
+- [x] SDK types and harness (`3cb8897`)
+- [x] qbittorrent-api (`d871c3d`): 10 Bun tests (3 pinned client conversations), Rust end
+  to end through the URL base and its own listener
 - [ ] DNS-01 and Cloudflare
 - [ ] Bundled plugins and workflows
 - [ ] Docs and final checks
