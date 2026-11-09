@@ -5,7 +5,7 @@
   "workspaces": ["packages/*", "plugins/*"],
   "scripts": {
     "build:plugins": "bun run --filter './plugins/*' build",
-    "test:plugins": "bun test packages plugins",
+    "test:plugins": "bun test ./packages ./plugins",
     "typecheck:plugins": "bun run --filter './packages/*' --filter './plugins/*' typecheck"
   }
 }

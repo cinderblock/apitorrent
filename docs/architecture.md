@@ -97,13 +97,14 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `crates/apitorrent-webui` | The built web UI, compiled into release binaries (`embed` feature) with brotli and gzip copies and ETags. |
 | `crates/apitorrent-server` | axum HTTP/WS API, static web UI, TLS (rustls), ACME. |
 | `crates/apitorrent-client` | A Rust client for the API with strict TLS and certificate pinning. Used by the desktop thin client and the CLI. |
-| `crates/apitorrent-plugin-host` | Embedded V8 (`deno_core`): one isolate per plugin, capability-checked ops, the plugin lifecycle. |
+| `crates/apitorrent-plugin-api` | The plugin contract without V8: manifests, capabilities and their expansion, network grants, the settings-schema subset, and the `AppApi` (core implements) and `PluginService` (host implements, server calls) traits. |
+| `crates/apitorrent-plugins` | The plugin host on embedded V8 (`deno_core`): one isolate per plugin, capability-checked ops, curated globals, the plugin lifecycle. Only it and `apitorrentd` link V8. |
 | `crates/apitorrentd` | Daemon binary. |
 | `crates/apitorrent-cli` | `apitorrent` CLI. |
 | `apps/desktop` | Tauri 2 app. |
 | `web/` | The web UI (TypeScript, React, Vite, Bun), shared with the desktop app. |
-| `packages/plugin-sdk` | `@apitorrent/plugin-sdk`: types, a test harness and a build helper for plugin authors. |
-| `plugins/` | First-party plugins (qBittorrent API, RSS/Atom, Ubuntu releases, Raspberry Pi images, ACME DNS providers, …). |
+| `packages/plugin-sdk` | `@apitorrent/plugin-sdk`: types, a `bun test` harness and a build script for plugin authors. |
+| `plugins/` | First-party plugins: `rss` and `ubuntu-releases` so far; planned: qBittorrent API, Raspberry Pi images, ACME DNS providers. |
 
 ## Engine
 
@@ -383,6 +384,8 @@ from the torrent database.
 
 ## Plugins
 
+Built in M8 (`plans/m8-plugins.md`).
+
 ### Runtime: TypeScript on embedded V8
 
 Decided 2026-11-06, replacing the earlier WebAssembly plan. WebAssembly adds a toolchain
@@ -394,27 +397,87 @@ plugins.
 | WebAssembly components | Sandboxed and multi-language, but authoring friction is high. Rejected. |
 | Bun as the plugin runtime | Great tooling, but it has **no permission system**: every plugin would run with the daemon's full privileges. It can't be embedded either, so plugins would be subprocesses. Rejected as the runtime. **Kept as the authoring toolchain.** |
 | Full Node or Deno compatibility | A large surface and a large attack surface. Most of it is never needed. Rejected. |
-| **Embedded V8 with our own globals** (`deno_core`) | TypeScript, fast, in-process, with a small curated API in which every privileged call is an op the host checks against the plugin's grants. **Chosen.** |
+| Deno's extension crates (`deno_web`, `deno_fetch`, `deno_crypto`) | Checked 2026-11-08: `deno_crypto` pulls in aws-lc-rs (CMake and NASM on Windows), `deno_fetch` brings its own TLS stack with an "ignore certificate errors" switch, `deno_web` brings Blob URLs, BroadcastChannel, Locks and CSS. Rejected. |
+| **Embedded V8 with our own globals** (`deno_core` 0.413, V8 150) | TypeScript, fast, in-process, with a small curated API in which every privileged call is an op the host checks against the plugin's grants. **Chosen.** |
 
-- Authors write TypeScript against `@apitorrent/plugin-sdk`, and test and bundle it with
-  Bun (`bun test`, `bun build` → a single ESM file). npm packages work as long as they bundle
-  to plain JS without Node built-ins.
-- **Each plugin gets its own V8 isolate** with a heap limit. A watchdog terminates runaway
-  execution and records the reason.
-- **Globals**: `fetch` (host-checked), `URL`, `TextEncoder` / `TextDecoder`, `crypto.subtle`
-  and `getRandomValues`, timers, `structuredClone`, `console` (to the plugin log),
-  `AbortController`, `Headers` / `Request` / `Response`, plus the `apitorrent` module.
-- **The `apitorrent` module**: torrents (query, add, control), events (subscribe),
-  library, rules, KV storage, scheduling, settings schema (rendered by the UI), HTTP routes
-  under `/plugins/<id>/` (or a dedicated listener), and roles such as `source`,
-  `dns-provider` and `api-compat`.
+- Authors write TypeScript against `@apitorrent/plugin-sdk`, test with `bun test` (the SDK's
+  harness plays the host and enforces the same capabilities), and bundle with
+  `apitorrent-plugin-build` into `<id>-<version>.plugin.json`: the manifest plus one ES
+  module. npm packages work as long as they bundle to plain JS without Node built-ins.
+- **Each plugin runs in its own V8 isolate on its own thread**, with a JavaScript heap limit
+  (64 MiB) and a separate budget for `ArrayBuffer` memory (64 MiB), which the heap limit
+  doesn't cover: a counting allocator refuses allocations past it and the plugin gets a
+  `RangeError`. **A watchdog** terminates code that runs more than 2 s without yielding, and
+  the heap-limit callback ends a plugin that runs out of memory; both record why in the
+  plugin's log and error.
+- **Globals**: `fetch` (host-checked, see below), `URL`/`URLSearchParams` (the `url` crate),
+  `TextEncoder`/`TextDecoder` (every WHATWG encoding, via `encoding_rs`), timers,
+  `structuredClone`, `AbortController`/`AbortSignal`, `Event`/`EventTarget`,
+  `DOMException`, `Headers`/`Request`/`Response` (whole bodies, no streams), `crypto`
+  (`getRandomValues`, `randomUUID`, `subtle.digest` and HMAC), `atob`/`btoa`, and
+  `console` (to a per-plugin log ring of 1000 lines). `Deno`, deno_core's internals,
+  `WebAssembly` (its memories escape the budget), `SharedArrayBuffer` and `Atomics` are
+  removed. An uncaught error in a timer, a handler or a promise is logged, not fatal.
+- **The `apitorrent` API** is the object passed to the plugin's `start(api)`: `torrents`
+  (list, get, add, pause, resume, set label, remove), `events.on` (torrent added, removed,
+  state changed, finished), `kv` (JSON values, 16 MiB per plugin), `schedule.every` (jobs
+  that don't overlap and resume their cadence after a restart), `settings` (with defaults
+  and change notifications), `http.route`, and `roles.provide`. The host reaches the app
+  through the `AppApi` trait, which the core implements; those calls run on the daemon's
+  runtime, never on a plugin's thread.
 
 ### Capabilities
 
-A plugin's manifest declares what it needs: network hosts, API scopes, HTTP routes,
-listeners, filesystem paths, schedule. The admin approves those at install, and any
-expansion at upgrade. Undeclared calls fail. Plugins get **no** raw filesystem, process,
-environment or socket access.
+A plugin's manifest declares everything it may do, and an admin approves it before the
+plugin runs. Undeclared calls throw `NotCapable`.
+
+- **`network`**: host patterns for `fetch`: `example.com` (HTTPS on 443), `*.example.com`
+  (subdomains), `example.com:8443` or `:*`, and `http://…` to allow plain HTTP. Names are
+  compared after IDNA. The host follows redirects itself and checks every hop; it never
+  goes from HTTPS to HTTP and drops `Authorization` when a redirect leaves the origin. A
+  granted *name* must resolve to public addresses (DNS-rebinding defence); loopback and
+  private addresses are reachable only through a grant that names the IP address (or
+  `localhost`). TLS is the tracker crate's strict configuration. Bodies are capped (8 MiB
+  out, 32 MiB in).
+- **`networkFromSettings`**: settings fields whose values are also grants, so a feed reader
+  can reach the feeds an admin types in. A URL grants its origin; anything else is read as
+  a pattern. Grants update when the settings change.
+- **`api`**: `torrents:read`, `torrents:add`, `torrents:control`, `torrents:remove`,
+  `events:read`. A plugin's save path is relative to the download directory; absolute
+  paths and `..` are refused.
+- **`routes`**, **`kv`**, **`schedule`**, **`roles`** (`source`, `api-compat`,
+  `dns-provider`, `tracker-adapter`).
+
+Plugins get **no** filesystem, process, environment or socket access, and no listeners (yet).
+
+**Approval and upgrades.** A new plugin waits for approval; the admin approves a specific
+version, and the grants become exactly what it declares. A new version within the grants
+replaces the running one at once; one that asks for more waits as *pending*, with the new
+capabilities listed in words, while the old version keeps running.
+
+**Settings** are described by a JSON Schema subset (types, titles, defaults, enums,
+ranges, lengths, `uri` and `multiline` formats, nested objects and arrays) that the host
+validates and the UI renders; unsupported keywords are refused at install. Top-level
+`writeOnly` strings are secrets: the API never returns them.
+
+### Management API and plugin routes
+
+- `GET/POST /api/v1/plugins` (list, install a bundle), `GET/DELETE /api/v1/plugins/{id}`,
+  and actions under `/api/v1/plugins/{id}/-/`: `approve`, `enable`, `disable`, `logs`,
+  `settings`. The `-` segment keeps them apart from plugin routes.
+- **Admin only.** Installing, approving and uninstalling also need a browser session with
+  recent authentication (like creating an API token), and go to the security audit log;
+  enabling and disabling work with a full-scope token, so a script can switch a plugin off.
+- **Plugin routes** are everything else under `/api/v1/plugins/{id}/`, with ordinary API
+  authentication (viewers may `GET`). The plugin learns who called but never sees
+  `Cookie` or `Authorization`, can't set cookies, and its responses carry
+  `Content-Security-Policy: sandbox; default-src 'none'`, so it can't run script as this
+  origin.
+- The UI's Plugins page (`/plugins`) installs, approves, enables, shows logs and permissions,
+  and renders each plugin's settings form.
+- On disk: `<data dir>/plugins/plugins.db` (versions, grants, settings, KV, schedule) and
+  `bundles/<sha256>.js` (content-addressed, checked on load). `--no-plugins` turns the host
+  off; the endpoints then answer `plugins_disabled`.
 
 ### External integrations
 
@@ -426,13 +489,30 @@ daemon, be managed by it and stay sandboxed. External integrations are for every
 
 They prove the plugin API, and they ship in the box:
 
-- **`qbittorrent-api`**: a qBittorrent WebAPI v2 compatibility layer, so Sonarr, Radarr,
-  autobrr, cross-seed and friends work unchanged. Login maps to scoped API tokens.
-  Categories and tags map to labels. It mounts on its own listener, or under a URL base
-  (the *arr apps support one). Off by default.
-- **Sources**: RSS/Atom/JSON feeds, Ubuntu releases, Raspberry Pi images, open-data
-  publishers.
-- **DNS providers** for ACME DNS-01.
+- **`rss`** (built): RSS 2.0, RSS 1.0, Atom and JSON feeds; include and exclude expressions
+  per feed; label, folder and paused per feed; deduplicated by guid; a new feed's existing
+  items are only marked seen unless *backfill* is on; conditional requests; failed adds
+  retried. Provides the `source` role.
+- **`ubuntu-releases`** (built): new Ubuntu release torrents (LTS or all, chosen flavours
+  and architecture) from `meta-release` and the release directories. Provides `source`.
+- **`qbittorrent-api`** (planned): a qBittorrent WebAPI v2 compatibility layer, so Sonarr,
+  Radarr, autobrr, cross-seed and friends work unchanged. Categories and tags map to
+  labels. Off by default. It fits the `api-compat` role and routes under
+  `/api/v1/plugins/qbittorrent-api/` (the *arr apps accept a URL base). What's still
+  missing:
+  - **Plugin-authenticated routes.** qBittorrent clients log in with `POST
+    /api/v2/auth/login` and a `SID` cookie, not our session or token, so `api-compat`
+    routes need an auth mode where the server lets the request through and the plugin
+    authenticates it, with Set-Cookie allowed for those routes only.
+  - **A way to check credentials**: an op that verifies an apitorrent API token (or a
+    password) and returns the user, so "login maps to scoped API tokens".
+  - **More of the torrent API**: files, trackers, peers, per-torrent limits, recheck,
+    reannounce, categories as labels, tags, and properties such as ratio and ETA, plus a
+    `torrents:read` that includes the detail the sync endpoint uses.
+  - **Optionally its own listener** (a `listeners` capability) for clients that can't set a
+    URL base.
+- **Sources** (planned): Raspberry Pi images, open-data publishers.
+- **DNS providers** for ACME DNS-01 (planned; the `dns-provider` role and HMAC are ready).
 
 ## Content library (cross-torrent file sharing)
 

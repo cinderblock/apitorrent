@@ -78,8 +78,13 @@ minimal Plugins page. The design was decided earlier: `docs/architecture.md`, "P
 6. ✅ `networkFromSettings` (`b4d20ed`).
 7. ✅ `packages/plugin-sdk` (`7f320fd`).
 8. ✅ Plugins: `rss` with the end-to-end test (`cd105cf`), `ubuntu-releases` (`556f31d`).
-9. Web UI: `web/src/plugins/` ← current
-10. Docs: README, architecture, this plan; daemon smoke test.
+9. ✅ Web UI: `web/src/plugins/` (`76c5449`).
+10. ✅ Docs (README, architecture), daemon smoke test, workspace checks.
+
+**Follow-ups, not in this milestone:** `qbittorrent-api` (what it needs is listed in the
+architecture doc, "First-party plugins"), plugin-authenticated routes and listeners, a
+`raspberry-pi` source, DNS-provider plugins, core rules consuming `source` candidates,
+shipping first-party bundles with the daemon (today they are built and installed by hand).
 
 ## Findings / gotchas
 
@@ -142,16 +147,43 @@ minimal Plugins page. The design was decided earlier: `docs/architecture.md`, "P
 - [x] `networkFromSettings`
 - [x] SDK (types, harness, build) with tests
 - [x] `rss` (7 Bun tests, Rust end-to-end test), `ubuntu-releases` (2 Bun tests)
-- [ ] Web UI Plugins page
-- [ ] README, architecture doc, daemon smoke test
+- [x] Web UI Plugins page (list, install, approve with the capability list, enable and
+  disable, permissions, live logs, schema-driven settings with secrets)
+- [x] README and architecture doc
+- [x] Daemon smoke test, 2026-11-09 ~12:20 AM PST (08:20Z): `apitorrentd` with
+  `--insecure-no-auth-loopback`, everything on 127.0.0.1, no LSD/DHT/uTP. Over the HTTP API:
+  installed `rss-1.0.0.plugin.json`, approved, set a feed on a local `python -m
+  http.server`, enabled, `POST /api/v1/plugins/rss/poll` added the feed's magnet (label
+  `smoke`), `/plugins` served the UI, and `--no-plugins` answered `plugins_disabled`. Script:
+  scratchpad `smoke.sh` (not kept in the repo).
+- [x] `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, web
+  `typecheck` and `test`, plugin SDK and plugins `test` and `typecheck`
 
 ## Open questions for the user
 
-*(none yet)*
+1. **First-party plugins in the box.** They are built and installed by hand today. Should
+   the daemon embed the built bundles and offer them on the Plugins page (installed but
+   not approved)? Recommendation: yes, once release builds exist (M10).
+2. **`+crt-static` on Windows** (see the LNK4098 finding). Recommendation: leave it until
+   CI; decide with the desktop app, which links V8 too.
+
+## How to run it
+
+```sh
+bun install                                   # root workspace: SDK and plugins
+bun run test:plugins                          # SDK and plugin tests
+cd plugins/rss && bun run build               # dist/rss-1.0.0.plugin.json
+cargo test -p apitorrent-plugins              # host tests, including the rss end to end
+cargo run -p apitorrentd -- --web-root web/dist   # then Plugins, Install a plugin…
+```
 
 ## Things not to do
 
 - Don't add an "ignore certificate errors" option, for plugins or anything else.
 - Don't give plugins `Deno.core`: the bootstrap captures what it needs and deletes it.
+- Don't let `fetch` follow redirects inside reqwest: the host follows them so each hop is
+  checked against the grants.
+- Don't name two web files the same but for case (`SchemaForm.tsx` and `schemaForm.ts`):
+  on Windows TypeScript resolves one to the other.
 - Don't run `AppApi` futures on a plugin's thread: core spawns tasks, and they would die with
   the plugin's runtime. They run on the daemon's runtime.

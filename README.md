@@ -7,7 +7,8 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 > torrents from `.torrent` files and magnet links, finds peers through HTTP, HTTPS and UDP
 > trackers, the DHT, local discovery and peer exchange, over TCP or uTP with optional
 > encryption, and can be driven from the web UI, with passkey sign-in, or from the desktop
-> app (a thin client to a daemon, or the engine built in). Don't point it at
+> app (a thin client to a daemon, or the engine built in). Sandboxed TypeScript plugins
+> run inside the daemon (RSS feeds and Ubuntu releases so far). Don't point it at
 > anything you care about yet. See
 > [`plans/apitorrent-bootstrap.md`](plans/apitorrent-bootstrap.md) for progress, and
 > [`docs/architecture.md`](docs/architecture.md) for the design.
@@ -58,9 +59,12 @@ Linux, Windows and macOS; `release.yml` builds the release binaries and installe
 version tag into a draft release.
 
 ```sh
-cargo test                             # Rust tests (all but the desktop app)
+bun install                            # plugin SDK and first-party plugins (root workspace)
+cargo test                             # Rust tests, all but the desktop app (the plugin
+                                       # end-to-end test runs Bun)
 cargo test -p apitorrent-desktop       # the desktop app: build web/ first, it embeds the UI
-cd web && bun install && bun test      # web UI tests
+cd web && bun install && bun test      # web UI tests (web/ has its own lockfile)
+bun run test:plugins                   # plugin SDK and plugin tests, from the root
 
 # Run the daemon with the web UI at http://localhost:8742
 cd web && bun run build && cd ..
@@ -97,6 +101,29 @@ cargo build -p apitorrent-desktop      # or: cargo test -p apitorrent-desktop
 cd apps/desktop/src-tauri && cargo tauri dev     # runs Vite and the app together
 cd apps/desktop/src-tauri && cargo tauri build   # installers in target/release/bundle
 ```
+
+## Plugins
+
+Plugins are TypeScript, bundled into one ES module and run inside the daemon on embedded
+V8, each in its own isolate with memory limits and a watchdog. A plugin can do only what
+its manifest declares and an admin approved on the Plugins page: the hosts `fetch` may
+reach (strict TLS, as everywhere), torrent calls, storage, scheduled jobs, HTTP routes
+under `/api/v1/plugins/<id>/`, and roles such as `source`. It has no filesystem, process,
+environment or socket access. An update that asks for more waits for approval while the
+current version keeps running.
+
+- `packages/plugin-sdk` (`@apitorrent/plugin-sdk`): types, a `bun test` harness that
+  enforces capabilities like the daemon, and `apitorrent-plugin-build`, which writes the
+  installable `dist/<id>-<version>.plugin.json`.
+- `plugins/rss`: RSS, Atom and JSON feeds with per-feed filters, deduplicated by guid.
+- `plugins/ubuntu-releases`: new Ubuntu release torrents as they come out.
+
+```sh
+cd plugins/rss && bun test && bun run build   # then install dist/rss-1.0.0.plugin.json
+```
+
+Plugins live in `<data dir>/plugins`; `--no-plugins` turns them off. See "Plugins" in
+[`docs/architecture.md`](docs/architecture.md) for the design and the full API.
 
 ## Signing in
 
