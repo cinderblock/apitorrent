@@ -54,6 +54,16 @@ button.danger {
   color: var(--on-accent);
 }
 
+/* Hovered, they stay coloured (the plain hover rule above is more specific and would give
+   them a light background under white text). */
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, black);
+}
+
+button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--err) 85%, black);
+}
+
 button.link {
   border: none;
   background: none;
