@@ -191,6 +191,9 @@ export function App({ status: auth }: { status: AuthStatus }) {
         <button type="button" onClick={() => setSettingsOpen(true)}>
           Settings
         </button>
+        <button type="button" onClick={() => navigate("/rules")}>
+          Rules
+        </button>
         {(auth.authDisabled || auth.user?.role === "admin") && (
           <button type="button" onClick={() => navigate("/plugins")}>
             Plugins

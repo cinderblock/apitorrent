@@ -1,0 +1,101 @@
+/* The Rules page. Builds on the shared account-page, field and list styles. */
+
+.rule-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.rule-summary {
+  margin: 4px 0 0;
+}
+
+.rule-alias {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.rule-source {
+  font-size: 11px;
+}
+
+.rule-hint {
+  margin: -4px 0 10px;
+  font-size: 12px;
+}
+
+.rule-match {
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.rule-match input {
+  flex: 1;
+  min-width: 8rem;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.rule-match-label {
+  min-width: 6.5rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rule-match .rule-field-name {
+  flex: 0 1 8rem;
+}
+
+.rule-editor h3 {
+  margin-top: 16px;
+}
+
+.rule-editor select {
+  padding: 4px 6px;
+}
+
+.rule-key {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.rule-subform {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+
+.dry-run tr.verdict-take td:last-child,
+.rule-card tr.item-active td:nth-child(3) {
+  color: var(--ok);
+}
+
+.dry-run tr.verdict-supersede td:last-child,
+.rule-card tr.item-failed td:nth-child(3) {
+  color: var(--warn);
+}
+
+.dry-run tr.verdict-unusable td,
+.dry-run tr.verdict-gone td,
+.rule-card tr.item-gone td,
+.rule-card tr.item-superseded td {
+  color: var(--muted);
+}
+
+.rules-page .list {
+  display: block;
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .rule-editor .field-row {
+    flex-direction: column;
+    gap: 0;
+  }
+}

@@ -163,8 +163,8 @@ pub struct VersionOrder {
 
 /// Which files of a taken torrent to download, by glob. As in `.gitignore`, a glob without a
 /// `/` matches file names in any folder (`*.iso`); one with a `/` matches the whole path
-/// inside the torrent, folder included (`ubuntu-*/casper/*`; `**` crosses folders, `*`
-/// doesn't). Nothing listed means every file.
+/// inside the torrent, folder included (`ubuntu-26.04/casper/vmlinuz`; `**` crosses folders,
+/// `*` doesn't). Nothing listed means every file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export)]

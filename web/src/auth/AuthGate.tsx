@@ -7,6 +7,7 @@ import { isDesktop } from "../desktop/bridge";
 import { DesktopProblem } from "../desktop/DesktopProblem";
 import { navigate, usePath } from "../router";
 import { PluginsPage } from "../plugins/PluginsPage";
+import { RulesPage } from "../rules/RulesPage";
 import { AccountPage } from "./AccountPage";
 import { viewFor } from "./flow";
 import { LoginPage } from "./LoginPage";
@@ -63,5 +64,6 @@ export function AuthGate() {
   if (view === "login" || view === "secondFactor") return <LoginPage status={status} onSignedIn={setStatus} />;
   if (path === "/account") return <AccountPage status={status} onStatus={setStatus} refresh={refresh} />;
   if (path === "/plugins") return <PluginsPage status={status} onStatus={setStatus} />;
+  if (path === "/rules") return <RulesPage status={status} />;
   return <App status={status} />;
 }
