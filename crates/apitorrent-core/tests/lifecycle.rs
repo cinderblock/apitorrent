@@ -215,6 +215,7 @@ async fn queue_settings_and_groups() {
         download_rate: 1024 * 1024,
         upload_rate: 0,
         max_connections: 10,
+        seed_limits: None,
     });
     core.set_settings(settings.clone()).await.unwrap();
 
@@ -789,6 +790,88 @@ async fn fingerprints_let_v2_torrents_reuse_v1_files() {
         data
     );
     assert_eq!(core.store().get(&new).unwrap().downloaded, 0);
+    core.shutdown().await.unwrap();
+}
+
+/// Seed limits: a torrent that has uploaded its own size reaches a ratio of 1 and pauses.
+/// Resumed by hand it seeds on; changing its limits lets them act again; "remove" removes
+/// it and keeps its file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn seed_limits_pause_then_remove() {
+    use apitorrent_engine::{AddTorrent, Session};
+    use apitorrent_types::{SeedLimitAction, SeedLimits};
+
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let data: Vec<u8> = (0..120_000u32)
+        .map(|i| u8::try_from((i * 17 + 1) % 251).unwrap())
+        .collect();
+    let bytes = TorrentBuilder::new("share.bin", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&[], data.clone()))
+        .build()
+        .unwrap();
+    std::fs::write(cfg.download_dir.join("share.bin"), &data).unwrap();
+    let id = core.add(add_bytes(&bytes)).await.unwrap();
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    let ratio_1 = |action| SeedLimits {
+        ratio: 1.0,
+        seed_minutes: 0,
+        action,
+    };
+    core.set_seed_limits(&id, Some(ratio_1(SeedLimitAction::Pause)))
+        .await
+        .unwrap();
+
+    // A leecher downloads the whole torrent from the core: ratio 1 (by size, since the
+    // core downloaded nothing).
+    let leecher = Session::start(SessionConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        ..SessionConfig::default()
+    })
+    .await
+    .unwrap();
+    let torrent = std::sync::Arc::new(apitorrent_metainfo::Torrent::from_bytes(&bytes).unwrap());
+    let leech_dir = tempfile::tempdir().unwrap();
+    let leech = leecher
+        .add_torrent(AddTorrent::new(torrent, leech_dir.path().to_path_buf()))
+        .unwrap();
+    let core_addr: std::net::SocketAddr =
+        format!("127.0.0.1:{}", core.peer_port()).parse().unwrap();
+    leech.add_peers(vec![core_addr]).await;
+    tokio::time::timeout(Duration::from_secs(20), leech.wait_finished())
+        .await
+        .expect("the leecher finished");
+
+    wait_for(&core, &id, TorrentState::Paused).await;
+    let d = core.detail(&id).await.unwrap();
+    assert!(d.seed_limit_reached);
+    assert!(
+        d.seeding_secs >= 1,
+        "seeding time counted: {}",
+        d.seeding_secs
+    );
+
+    // Resumed by hand, it seeds on.
+    core.resume(&id).await.unwrap();
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Seeding);
+
+    // New limits of its own act again: this time, removal. The file stays.
+    core.set_seed_limits(&id, Some(ratio_1(SeedLimitAction::Remove)))
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while core.store().get(&id).is_some() {
+        assert!(tokio::time::Instant::now() < deadline, "never removed");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        std::fs::read(cfg.download_dir.join("share.bin")).unwrap(),
+        data
+    );
     core.shutdown().await.unwrap();
 }
 

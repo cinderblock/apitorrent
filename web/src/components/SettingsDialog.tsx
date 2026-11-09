@@ -5,6 +5,7 @@ import type { Ban } from "../api/generated/Ban";
 import type { GroupSettings } from "../api/generated/GroupSettings";
 import type { Settings } from "../api/generated/Settings";
 import { formatDateTime, fromKiB, toKiB } from "../format";
+import { SeedLimitsFields } from "./SeedLimitsFields";
 
 const BAN_REASONS: Record<Ban["reason"], string> = {
   badData: "sent data that failed verification",
@@ -82,7 +83,7 @@ function NumberField({ label, value, onChange, hint }: { label: string; value: n
   );
 }
 
-const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, uploadRate: 0, maxConnections: 0 };
+const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null };
 
 export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onImport: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -196,6 +197,14 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
                 </>
               )}
             </fieldset>
+            <fieldset className="settings-section">
+              <legend>Seeding limits</legend>
+              <p className="hint muted">
+                When a finished torrent has shared enough. A group, or the torrent itself (in its details), can set its own. A torrent you resume by
+                hand after its limits act seeds on.
+              </p>
+              <SeedLimitsFields idPrefix="seed" value={settings.seedLimits} onChange={(seedLimits) => update({ seedLimits })} />
+            </fieldset>
             <BansSection />
             <fieldset className="settings-section">
               <legend>Library</legend>
@@ -284,6 +293,17 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
                   <button type="button" onClick={() => update({ groups: settings.groups.filter((_, j) => j !== i) })}>
                     Remove
                   </button>
+                  <div className="group-seed">
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={g.seedLimits !== null}
+                        onChange={(e) => updateGroup(i, { seedLimits: e.target.checked ? { ...settings.seedLimits } : null })}
+                      />
+                      Its own seeding limits
+                    </label>
+                    {g.seedLimits && <SeedLimitsFields idPrefix={`group-${i}-seed`} value={g.seedLimits} onChange={(seedLimits) => updateGroup(i, { seedLimits })} />}
+                  </div>
                 </div>
               ))}
               <button type="button" onClick={() => update({ groups: [...settings.groups, { ...NEW_GROUP }] })}>

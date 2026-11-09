@@ -156,6 +156,15 @@ pub(crate) async fn set_limits(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn set_seed_limits(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<apitorrent_types::SetSeedLimitsRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_seed_limits(&id, req.limits).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn set_label(
     State(s): State<AppState>,
     Path(id): Path<String>,

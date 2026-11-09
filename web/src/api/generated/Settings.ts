@@ -4,6 +4,7 @@ import type { GroupSettings } from "./GroupSettings";
 import type { LibrarySettings } from "./LibrarySettings";
 import type { NamingPolicy } from "./NamingPolicy";
 import type { QueueSettings } from "./QueueSettings";
+import type { SeedLimits } from "./SeedLimits";
 
 /**
  * Instance-wide settings. Rates are bytes per second; 0 means unlimited throughout.
@@ -29,4 +30,9 @@ naming: NamingPolicy, library: LibrarySettings,
  * Encryption for peer connections. New connections use a change; open ones keep
  * theirs.
  */
-encryption: EncryptionPolicy, };
+encryption: EncryptionPolicy, 
+/**
+ * When finished torrents stop seeding, unless their group or the torrent itself says
+ * otherwise.
+ */
+seedLimits: SeedLimits, };

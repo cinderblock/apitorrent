@@ -32,7 +32,8 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 - **Limits that nest.** Rates, connections and memory are capped for the whole session,
   for groups of torrents (chosen by label), and per torrent. A Deluge-style queue limits
   how many torrents download and seed at once, and can let slow torrents stop holding a
-  slot.
+  slot. Seeding stops at a ratio or a seeding time (for everything, a group or one
+  torrent), then pauses or removes the torrent.
 - **Bad peers are banned on evidence.** Corrupt data is traced to the peer that sent it,
   block by block, before anyone is banned. IP blocklists load from common formats.
 - **A content library.** A new torrent reuses files other torrents already have (hard

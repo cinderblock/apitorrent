@@ -414,6 +414,19 @@ engine core stays in the main thread, because its pieces interlock.
   new torrent's first check, the old torrent is simply not marked. Harmless, since it
   keeps seeding.
 
+### Disk full (2026-11-09)
+
+- At about 12:05 AM PST (08:05Z) C: ran out of space (392 MB free), and a write of
+  `web/src/styles.css` left it empty. It was rebuilt from HEAD plus the session's two
+  edits, and nothing else was damaged.
+- The cause was build output. `~/.cargo/build` (the machine-wide cargo build dir, shared
+  with other projects) was 219 GB. apitorrent's master build dir was 60 GB, half of it
+  stale incremental sessions (1,060 of them). The finished agents' worktrees held about
+  20 GB, and the live plugin and desktop agents 11 and 22 GB.
+- Fixed with `cargo clean` in the four finished worktrees and by deleting master's
+  `debug/incremental`, which brought it to 50 GB free. Watch free space while the agents
+  build V8 and Tauri, and clean finished worktrees after merging them.
+
 ## Progress log
 
 - [x] Research the engine options and prior art
@@ -504,7 +517,11 @@ engine core stays in the main thread, because its pieces interlock.
   `file_paths`), uses resume progress without rehashing, and keeps labels, queue order,
   limits, totals and edited trackers. `POST /import/deluge`, and a UI dialog under
   Settings
-- [ ] M9 rest: rules and retention, distribution channels
+- [x] M9 (part): seed limits (`seeding.rs`, DB migration 9 `seeding`, settings, group and
+  per-torrent limits, `PUT /torrents/{id}/seed-limits`, UI in Settings, groups and the
+  details, Deluge import). Core test `seed_limits_pause_then_remove`
+- [ ] M9 rest: rules over source candidates (after M8 lands, since sources produce the
+  candidates), stable "latest" aliases, distribution channels
 - [x] M3.2 (part): Peers tab (client, progress, rates, flags with a legend), Trackers tab
   with live status, status bar (`GET /stats`), bans list in Settings, wanted-piece
   progress

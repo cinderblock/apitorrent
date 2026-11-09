@@ -8,6 +8,7 @@ pub mod db;
 pub mod fingerprint;
 pub mod import;
 pub mod library;
+pub mod seeding;
 pub mod settings;
 pub mod store;
 
@@ -42,6 +43,20 @@ pub use crate::store::{Patch, Snapshot, Store};
 const REFRESH: Duration = Duration::from_secs(1);
 /// How often resume state is saved.
 const SAVE_EVERY: Duration = Duration::from_secs(30);
+/// Deluge's "stop seeding at ratio" (with "remove") as seed limits.
+fn deluge_seed_limits(stop: Option<(f64, bool)>) -> apitorrent_types::SeedLimits {
+    use apitorrent_types::{SeedLimitAction, SeedLimits};
+    stop.map_or_else(SeedLimits::default, |(ratio, remove)| SeedLimits {
+        ratio,
+        seed_minutes: 0,
+        action: if remove {
+            SeedLimitAction::Remove
+        } else {
+            SeedLimitAction::Pause
+        },
+    })
+}
+
 /// How often the fingerprinter looks for files to fingerprint.
 const FINGERPRINT_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often superseded torrents are checked for retirement.
@@ -183,6 +198,10 @@ struct Inner {
     fingerprints: RwLock<HashMap<PathBuf, fingerprint::Fingerprint>>,
     /// Set at shutdown, so a fingerprint in progress stops reading.
     stopping: Arc<std::sync::atomic::AtomicBool>,
+    /// Seeding time and seed limits per torrent (see `seeding`), saved with resume state.
+    seeding: Mutex<HashMap<TorrentId, seeding::SeedState>>,
+    /// When seeding time was last counted.
+    seed_clock: Mutex<std::time::Instant>,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -245,11 +264,22 @@ impl Core {
                 supersede_pending: Mutex::new(HashMap::new()),
                 fingerprints: RwLock::new(HashMap::new()),
                 stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                seeding: Mutex::new(HashMap::new()),
+                seed_clock: Mutex::new(std::time::Instant::now()),
             }),
         };
         core.apply_session_settings();
         core.restore().await?;
         core.load_fingerprints().await;
+        match core.db(|db| db.seed_states()).await {
+            Ok(rows) => core
+                .inner
+                .seeding
+                .lock()
+                .expect("seeding lock poisoned")
+                .extend(rows),
+            Err(e) => tracing::warn!(error = %e, "could not load seeding state"),
+        }
         core.apply_queue().await;
         tokio::spawn(core.clone().background());
         tokio::spawn(core.clone().fingerprinter());
@@ -882,6 +912,7 @@ impl Core {
             s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
             s.queue.max_active = d.max_active_limit.unwrap_or(0);
             s.queue.ignore_slow = d.dont_count_slow;
+            s.seed_limits = deluge_seed_limits(d.stop_at_ratio);
             self.set_settings(s).await?;
         }
         let ours = self.inner.config.download_dir.clone();
@@ -1019,7 +1050,25 @@ impl Core {
                 file_paths,
             });
             match spawned {
-                Ok(_) => report.imported.push(name),
+                Ok(_) => {
+                    // Deluge copies its global "stop at ratio" into every torrent, so only
+                    // a torrent that differs from the global setting gets limits of its own.
+                    let own = (t.stop_at_ratio != state.settings.stop_at_ratio)
+                        .then(|| deluge_seed_limits(t.stop_at_ratio));
+                    let seed = seeding::SeedState {
+                        seed_ms: t.seeding_secs.saturating_mul(1000),
+                        limits: own,
+                        reached: false,
+                    };
+                    self.inner
+                        .seeding
+                        .lock()
+                        .expect("seeding lock poisoned")
+                        .insert(id.clone(), seed);
+                    let key = id.clone();
+                    let _ = self.db(move |db| db.save_seed_states(&[(key, seed)])).await;
+                    report.imported.push(name);
+                }
                 Err(e) => {
                     let key = id.clone();
                     let _ = self.db(move |db| db.remove_torrent(&key)).await;
@@ -1883,6 +1932,11 @@ impl Core {
             tracing::warn!(%id, error = %e, "could not delete all of the torrent's data");
         }
         self.inner.store.apply(Vec::new(), vec![id.to_owned()]);
+        self.inner
+            .seeding
+            .lock()
+            .expect("seeding lock poisoned")
+            .remove(id);
         tracing::info!(%id, delete_files, "torrent removed");
         Ok(())
     }
@@ -1922,6 +1976,10 @@ impl Core {
                 naming: policy_of(naming),
                 peers: Vec::new(),
                 tracker_status: Vec::new(),
+                seed_limits: None,
+                effective_seed_limits: self.settings().seed_limits,
+                seeding_secs: 0,
+                seed_limit_reached: false,
             });
         }
         let (torrent, handle, prios, unwanted_policy, limits, naming) = {
@@ -1975,7 +2033,21 @@ impl Core {
         let mut magnet = Magnet::new(torrent.info.info_hashes());
         magnet.display_name = Some(torrent.info.name.clone());
         magnet.trackers = torrent.trackers.iter().flatten().cloned().collect();
+        let seed = self.seed_state(id);
+        let group = self
+            .inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .get(id)
+            .and_then(|e| e.group.clone());
+        let effective_seed_limits =
+            seeding::effective(&self.settings(), group.as_deref(), seed.limits);
         Ok(TorrentDetail {
+            seed_limits: seed.limits,
+            effective_seed_limits,
+            seeding_secs: seed.seed_ms / 1000,
+            seed_limit_reached: seed.reached,
             summary,
             files,
             trackers: torrent.trackers.clone(),
@@ -2003,6 +2075,113 @@ impl Core {
                 })
                 .collect(),
         })
+    }
+
+    fn seed_state(&self, id: &str) -> seeding::SeedState {
+        self.inner
+            .seeding
+            .lock()
+            .expect("seeding lock poisoned")
+            .get(id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Set a torrent's own seed limits (`None` follows its group's or the instance's). A
+    /// change lets the new limits act, even if earlier ones already did.
+    pub async fn set_seed_limits(
+        &self,
+        id: &str,
+        limits: Option<apitorrent_types::SeedLimits>,
+    ) -> Result<(), CoreError> {
+        self.handle(id)?;
+        if let Some(l) = limits
+            && (!l.ratio.is_finite() || l.ratio < 0.0)
+        {
+            return Err(CoreError::InvalidRequest(
+                "the ratio must be a number, 0 or more".into(),
+            ));
+        }
+        let state = {
+            let mut map = self.inner.seeding.lock().expect("seeding lock poisoned");
+            let s = map.entry(id.to_owned()).or_default();
+            s.limits = limits;
+            s.reached = false;
+            *s
+        };
+        let key = id.to_owned();
+        self.db(move |db| db.save_seed_states(&[(key, state)]))
+            .await?;
+        Ok(())
+    }
+
+    /// Count seeding time, and act on torrents that reached their seed limits. Called every
+    /// refresh. Only torrents seeding right now count time: not paused, not queued.
+    async fn apply_seed_limits(&self) {
+        let elapsed = {
+            let mut clock = self.inner.seed_clock.lock().expect("seed clock poisoned");
+            let now = std::time::Instant::now();
+            let e = now.duration_since(*clock);
+            *clock = now;
+            e
+        };
+        let settings = self.settings();
+        let mut due: Vec<(TorrentId, apitorrent_types::SeedLimitAction)> = Vec::new();
+        {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let mut seeding = self.inner.seeding.lock().expect("seeding lock poisoned");
+            for (id, e) in torrents.iter() {
+                let stats = e.handle.stats();
+                if e.paused || e.queued || stats.state != EngineState::Seeding {
+                    continue;
+                }
+                let s = seeding.entry(id.clone()).or_default();
+                s.seed_ms += u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+                if s.reached {
+                    continue;
+                }
+                let limits = seeding::effective(&settings, e.group.as_deref(), s.limits);
+                if !limits.active() {
+                    continue;
+                }
+                let size: u64 = e
+                    .torrent
+                    .info
+                    .files
+                    .iter()
+                    .filter(|f| !f.is_pad())
+                    .map(|f| f.length)
+                    .sum();
+                let ratio = seeding::ratio(
+                    e.uploaded_base + stats.uploaded,
+                    e.downloaded_base + stats.downloaded,
+                    size,
+                );
+                if seeding::reached(&limits, ratio, s.seed_ms / 1000) {
+                    s.reached = true;
+                    due.push((id.clone(), limits.action));
+                }
+            }
+        }
+        for (id, action) in due {
+            use apitorrent_types::SeedLimitAction as A;
+            tracing::info!(%id, ?action, "seed limits reached");
+            let result = match action {
+                A::Pause => self.pause(&id).await,
+                A::Remove => self.remove(&id, false).await,
+                A::RemoveWithData => self.remove(&id, true).await,
+            };
+            if let Err(e) = result {
+                tracing::warn!(%id, error = %e, "could not act on the seed limits");
+            }
+            if action == A::Pause {
+                let state = self.seed_state(&id);
+                let key = id.clone();
+                let _ = self
+                    .db(move |db| db.save_seed_states(&[(key, state)]))
+                    .await;
+            }
+        }
     }
 
     /// Session-wide numbers for a status bar.
@@ -2069,6 +2248,15 @@ impl Core {
             }
         }
         self.db(move |db| db.save_resume(&rows)).await?;
+        let seeding: Vec<(TorrentId, seeding::SeedState)> = self
+            .inner
+            .seeding
+            .lock()
+            .expect("seeding lock poisoned")
+            .iter()
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        self.db(move |db| db.save_seed_states(&seeding)).await?;
         if let Some(state) = self.inner.session.dht_state().await {
             let encoded = base64::engine::general_purpose::STANDARD.encode(state);
             self.db(move |db| db.set_meta(DHT_STATE_KEY, &encoded))
@@ -2089,6 +2277,7 @@ impl Core {
                     // Torrents that finish move from the download limit to the seed limit.
                     self.apply_queue().await;
                     self.settle_supersedes().await;
+                    self.apply_seed_limits().await;
                     self.refresh();
                 }
                 _ = save.tick() => {

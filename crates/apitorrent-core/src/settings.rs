@@ -21,6 +21,7 @@ pub fn defaults(session: &SessionConfig) -> Settings {
         naming: apitorrent_types::NamingPolicy::Portable,
         library: apitorrent_types::LibrarySettings::default(),
         encryption: encryption_setting(session.encryption),
+        seed_limits: apitorrent_types::SeedLimits::default(),
     }
 }
 
@@ -54,6 +55,15 @@ fn clamp_u32(v: usize) -> u32 {
 
 /// Reject settings that can't be applied.
 pub fn validate(s: &Settings) -> Result<(), String> {
+    let ratio_ok = |l: &apitorrent_types::SeedLimits| l.ratio.is_finite() && l.ratio >= 0.0;
+    if !ratio_ok(&s.seed_limits)
+        || s.groups
+            .iter()
+            .filter_map(|g| g.seed_limits.as_ref())
+            .any(|l| !ratio_ok(l))
+    {
+        return Err("a seed ratio must be a number, 0 or more".into());
+    }
     let mut names = HashSet::new();
     let mut labels = HashSet::new();
     for g in &s.groups {
@@ -232,6 +242,7 @@ mod tests {
             download_rate: 0,
             upload_rate: 0,
             max_connections: 0,
+            seed_limits: None,
         });
         assert_eq!(group_for(&s, Some("iso")), Some("linux"));
         assert_eq!(group_for(&s, Some("other")), None);
@@ -243,6 +254,7 @@ mod tests {
             download_rate: 0,
             upload_rate: 0,
             max_connections: 0,
+            seed_limits: None,
         });
         assert!(validate(&s).is_err());
     }

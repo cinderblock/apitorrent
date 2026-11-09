@@ -595,6 +595,12 @@ A rule says which candidates to take: match criteria, version ordering, **keep t
 N**, a target label or root, file selection, and what to do with superseded items: keep
 seeding, stop, or remove after a ratio or time.
 
+**Seed limits** (built, in core): a ratio and/or a total seeding time, then pause, remove,
+or remove with the files. The torrent's own limits win over its group's, which win over the
+instance's. Seeding time counts only while actually seeding, and survives restarts. Limits
+act once: a torrent the user resumes afterwards seeds on until its own limits change.
+Imported from Deluge's "stop seed at ratio" settings and libtorrent's `seeding_time`.
+
 **Stable aliases**: a rule can maintain a "latest" path, such as
 `library/ubuntu/latest-desktop-amd64.iso`, that always points at the current release.
 

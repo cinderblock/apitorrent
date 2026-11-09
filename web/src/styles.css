@@ -770,7 +770,7 @@ code {
   min-width: 0;
 }
 
-.group-row input {
+.group-row input:not([type="checkbox"]) {
   width: 100%;
   min-width: 0;
 }
@@ -1173,4 +1173,22 @@ button.link.danger-text {
   .sidebar {
     transition: none;
   }
+}
+
+/* Seeding limits */
+
+.seed-limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+  gap: 8px 12px;
+  max-width: 40rem;
+}
+
+.group-seed {
+  grid-column: 1 / -1;
+}
+
+.seed-limits-form {
+  display: grid;
+  gap: 6px;
 }

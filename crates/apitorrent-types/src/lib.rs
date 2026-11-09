@@ -158,6 +158,16 @@ pub struct TorrentDetail {
     pub naming: NamingPolicy,
     pub peers: Vec<PeerInfo>,
     pub tracker_status: Vec<TrackerInfo>,
+    /// The torrent's own seed limits (`null`: its group's or the instance's).
+    pub seed_limits: Option<SeedLimits>,
+    /// The limits that apply, wherever they come from.
+    pub effective_seed_limits: SeedLimits,
+    /// Time spent seeding, across restarts.
+    #[ts(type = "number")]
+    pub seeding_secs: u64,
+    /// The limits were reached and acted on. A torrent resumed by hand afterwards seeds on
+    /// until its own limits change.
+    pub seed_limit_reached: bool,
 }
 
 /// A connected peer.
@@ -231,8 +241,51 @@ pub struct TorrentLimits {
     pub max_connections: Option<u32>,
 }
 
+/// When a finished torrent stops seeding. 0 means no limit of that kind; with neither
+/// limit set it seeds for ever.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct SeedLimits {
+    /// Stop at this share ratio: uploaded divided by downloaded (by the size, for a
+    /// torrent that downloaded nothing, such as one that came from the library).
+    pub ratio: f64,
+    /// Stop after seeding this many minutes in total, across restarts.
+    pub seed_minutes: u32,
+    pub action: SeedLimitAction,
+}
+
+impl SeedLimits {
+    /// Whether either limit is set.
+    pub fn active(&self) -> bool {
+        self.ratio > 0.0 || self.seed_minutes > 0
+    }
+}
+
+/// What happens to a torrent that reaches its seed limits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SeedLimitAction {
+    /// Pause it. Resuming it by hand lets it seed on.
+    #[default]
+    Pause,
+    /// Remove it from apitorrent; its files stay.
+    Remove,
+    /// Remove it and delete its files.
+    RemoveWithData,
+}
+
+/// A torrent's own seed limits. `null` follows its group's, or the instance's.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetSeedLimitsRequest {
+    pub limits: Option<SeedLimits>,
+}
+
 /// Instance-wide settings. Rates are bytes per second; 0 means unlimited throughout.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Settings {
@@ -257,6 +310,10 @@ pub struct Settings {
     /// theirs.
     #[serde(default)]
     pub encryption: EncryptionPolicy,
+    /// When finished torrents stop seeding, unless their group or the torrent itself says
+    /// otherwise.
+    #[serde(default)]
+    pub seed_limits: SeedLimits,
 }
 
 /// Message stream encryption (MSE) for peer connections. It hides BitTorrent traffic from
@@ -375,7 +432,7 @@ impl QueueSettings {
 }
 
 /// Limits shared by every torrent whose label is in `labels`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct GroupSettings {
@@ -386,6 +443,10 @@ pub struct GroupSettings {
     #[ts(type = "number")]
     pub upload_rate: u64,
     pub max_connections: u32,
+    /// Seed limits for the group's torrents, in place of the instance's. `null` follows the
+    /// instance.
+    #[serde(default)]
+    pub seed_limits: Option<SeedLimits>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

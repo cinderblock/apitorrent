@@ -70,7 +70,10 @@ fn fake_deluge() -> tempfile::TempDir {
     "max_active_downloading": 3,
     "max_active_seeding": 5,
     "max_active_limit": 8,
-    "dont_count_slow_torrents": true
+    "dont_count_slow_torrents": true,
+    "stop_seed_at_ratio": true,
+    "stop_seed_ratio": 1.5,
+    "remove_seed_at_ratio": false
 }"#,
     )
     .unwrap();
@@ -130,6 +133,7 @@ fn reads_a_deluge_directory() {
         (Some(3), Some(5), Some(8))
     );
     assert!(s.dont_count_slow);
+    assert_eq!(s.stop_at_ratio, Some((1.5, false)));
 }
 
 #[test]

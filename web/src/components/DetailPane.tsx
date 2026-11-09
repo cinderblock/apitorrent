@@ -7,6 +7,7 @@ import type { TorrentFile } from "../api/generated/TorrentFile";
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
 import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, toKiB } from "../format";
+import { describeSeedLimits, formatSeedingTime, SeedLimitsFields } from "./SeedLimitsFields";
 
 type Tab = "general" | "files" | "peers" | "trackers";
 
@@ -165,6 +166,56 @@ function LimitsEditor({ id, limits, refetch }: { id: string; limits: TorrentLimi
         Cancel
       </button>
       <span className="muted">Rates in KiB/s; empty means no limit of its own.</span>
+    </form>
+  );
+}
+
+function SeedLimitsEditor({ id, detail, refetch }: { id: string; detail: TorrentDetail; refetch: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [own, setOwn] = useState(detail.seedLimits !== null);
+  const [limits, setLimits] = useState(detail.seedLimits ?? detail.effectiveSeedLimits);
+  if (!editing) {
+    return (
+      <span className="inline-edit">
+        <span>
+          {describeSeedLimits(detail.effectiveSeedLimits)}
+          <span className="muted"> ({detail.seedLimits ? "its own" : "from its group or the settings"})</span>
+          {detail.seedLimitReached && <span className="muted">. Reached; it seeds on until these change</span>}
+        </span>
+        <button
+          type="button"
+          className="link"
+          onClick={() => {
+            setOwn(detail.seedLimits !== null);
+            setLimits(detail.seedLimits ?? detail.effectiveSeedLimits);
+            setEditing(true);
+          }}
+        >
+          Change
+        </button>
+      </span>
+    );
+  }
+  return (
+    <form
+      className="seed-limits-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void api.setSeedLimits(id, own ? limits : null).then(refetch);
+        setEditing(false);
+      }}
+    >
+      <label className="check">
+        <input type="checkbox" checked={own} onChange={(e) => setOwn(e.target.checked)} />
+        Its own limits (otherwise its group&apos;s, or the settings&apos;)
+      </label>
+      {own && <SeedLimitsFields idPrefix={`torrent-seed`} value={limits} onChange={setLimits} />}
+      <span className="inline-edit">
+        <button type="submit">Save</button>
+        <button type="button" onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+      </span>
     </form>
   );
 }
@@ -357,6 +408,8 @@ export function DetailPane({ summary, onClose }: { summary: TorrentSummary; onCl
             {summary.supersededBy && <Row label="Superseded" value={<SupersededBy id={summary.supersededBy} />} />}
             {detail && <Row label="File names" value={detail.naming === "native" ? "Native" : "Portable"} />}
             {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} />} />}
+            {detail && <Row label="Seeding limits" value={<SeedLimitsEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} />} />}
+            {detail && detail.seedingSecs > 0 && <Row label="Seeding time" value={formatSeedingTime(detail.seedingSecs)} />}
             <Row label="Added" value={<When ms={summary.addedAt} />} />
             {summary.infoHashV1 && <Row label="Info-hash v1" value={<code>{summary.infoHashV1}</code>} />}
             {summary.infoHashV2 && <Row label="Info-hash v2" value={<code>{summary.infoHashV2}</code>} />}

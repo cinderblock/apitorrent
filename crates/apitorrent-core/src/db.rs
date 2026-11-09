@@ -80,6 +80,15 @@ const MIGRATIONS: &[&str] = &[
         computed_at INTEGER NOT NULL
     );
     ",
+    // 9: seeding time and seed limits per torrent (see `seeding`). `limits` is JSON.
+    "
+    CREATE TABLE seeding (
+        torrent   TEXT PRIMARY KEY REFERENCES torrents(id) ON DELETE CASCADE,
+        seed_secs INTEGER NOT NULL DEFAULT 0,
+        limits    TEXT,
+        reached   INTEGER NOT NULL DEFAULT 0
+    );
+    ",
 ];
 
 /// A torrent as stored.
@@ -468,6 +477,53 @@ impl Database {
         let tx = self.conn.transaction()?;
         for p in paths {
             tx.execute("DELETE FROM fingerprints WHERE path = ?1", [p])?;
+        }
+        tx.commit()
+    }
+
+    /// Every torrent's seeding state. Rows whose limits don't parse keep no limits.
+    pub fn seed_states(&self) -> rusqlite::Result<Vec<(String, crate::seeding::SeedState)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT torrent, seed_secs, limits, reached FROM seeding")?;
+        stmt.query_map([], |r| {
+            let limits: Option<String> = r.get(2)?;
+            Ok((
+                r.get::<_, String>(0)?,
+                crate::seeding::SeedState {
+                    seed_ms: u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0) * 1000,
+                    limits: limits.and_then(|l| serde_json::from_str(&l).ok()),
+                    reached: r.get::<_, i64>(3)? != 0,
+                },
+            ))
+        })?
+        .collect()
+    }
+
+    /// Store seeding states, in one transaction. Torrents no longer here are skipped.
+    pub fn save_seed_states(
+        &mut self,
+        rows: &[(String, crate::seeding::SeedState)],
+    ) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO seeding (torrent, seed_secs, limits, reached)
+                 SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM torrents WHERE id = ?1)
+                 ON CONFLICT(torrent) DO UPDATE SET seed_secs = excluded.seed_secs,
+                     limits = excluded.limits, reached = excluded.reached",
+            )?;
+            for (id, s) in rows {
+                let limits = s
+                    .limits
+                    .map(|l| serde_json::to_string(&l).expect("limits serialize"));
+                stmt.execute(params![
+                    id,
+                    to_i64(s.seed_ms / 1000),
+                    limits,
+                    i64::from(s.reached)
+                ])?;
+            }
         }
         tx.commit()
     }

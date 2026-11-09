@@ -198,6 +198,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         )
         .route("/stats", get(routes::stats))
         .route("/torrents/{id}/limits", put(routes::set_limits))
+        .route("/torrents/{id}/seed-limits", put(routes::set_seed_limits))
         .route("/torrents/{id}/label", put(routes::set_label))
         .route("/torrents/{id}/queue", post(routes::queue_move))
         .route("/import/deluge", post(routes::import_deluge))

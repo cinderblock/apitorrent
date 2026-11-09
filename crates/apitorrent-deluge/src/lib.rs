@@ -55,6 +55,11 @@ pub struct DelugeTorrent {
     pub trackers: Option<Vec<Vec<String>>>,
     /// The magnet link, for torrents that were still fetching metadata.
     pub magnet: Option<String>,
+    /// `stop_at_ratio`, `stop_ratio` and `remove_at_ratio`: stop seeding at this ratio,
+    /// removing the torrent if the flag is set. `None` when it doesn't stop at a ratio.
+    pub stop_at_ratio: Option<(f64, bool)>,
+    /// libtorrent's `seeding_time`, in seconds.
+    pub seeding_secs: u64,
 }
 
 /// Deluge's settings that matter to apitorrent.
@@ -71,6 +76,8 @@ pub struct DelugeSettings {
     /// `dont_count_slow_torrents`. Deluge leaves the thresholds at libtorrent's defaults,
     /// which are ours too.
     pub dont_count_slow: bool,
+    /// `stop_seed_at_ratio`, `stop_seed_ratio` and `remove_seed_at_ratio`.
+    pub stop_at_ratio: Option<(f64, bool)>,
 }
 
 /// What was found, and what couldn't be read.
@@ -185,6 +192,8 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
             max_connections: None,
             trackers: None,
             magnet: None,
+            stop_at_ratio: None,
+            seeding_secs: 0,
         };
         if let Some(r) = resume.get(&id)
             && let Err(e) = apply_resume(&mut t, r)
@@ -250,6 +259,9 @@ fn apply_resume(t: &mut DelugeTorrent, data: &[u8]) -> Result<(), String> {
     if d.get_int(b"paused") == Some(1) {
         t.paused = true;
     }
+    t.seeding_secs = d
+        .get_int(b"seeding_time")
+        .map_or(0, |n| u64::try_from(n).unwrap_or(0));
     if let Some(list) = d.get_list(b"mapped_files") {
         for (i, p) in list.iter().enumerate() {
             if let Some(p) = p.as_str().filter(|p| !p.is_empty()) {
@@ -313,6 +325,11 @@ fn apply_deluge_state(t: &mut DelugeTorrent, d: &pickle::Value) {
             t.trackers = Some(tiers.into_iter().map(|(_, u)| u).collect());
         }
     }
+    if d.get("stop_at_ratio").and_then(Value::as_bool) == Some(true) {
+        let ratio = d.get("stop_ratio").and_then(Value::as_f64).unwrap_or(2.0);
+        let remove = d.get("remove_at_ratio").and_then(Value::as_bool) == Some(true);
+        t.stop_at_ratio = Some((ratio, remove));
+    }
     if let Some(m) = d
         .get("magnet")
         .and_then(Value::as_str)
@@ -367,5 +384,19 @@ fn settings_from(core: &serde_json::Value) -> DelugeSettings {
             .get("dont_count_slow_torrents")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
+        stop_at_ratio: (core
+            .get("stop_seed_at_ratio")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true))
+        .then(|| {
+            (
+                core.get("stop_seed_ratio")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(2.0),
+                core.get("remove_seed_at_ratio")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true),
+            )
+        }),
     }
 }
