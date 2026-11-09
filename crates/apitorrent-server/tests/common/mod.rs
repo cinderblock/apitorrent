@@ -135,6 +135,7 @@ pub fn server_config(auth: AuthMode) -> ServerConfig {
         auth,
         trusted_proxies: TrustedProxies::parse(&["10.0.0.0/8".into()]).unwrap(),
         allow_insecure_lan: false,
+        plugins: None,
     }
 }
 

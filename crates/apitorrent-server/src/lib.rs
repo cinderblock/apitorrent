@@ -22,6 +22,7 @@ mod auth_routes;
 mod authn;
 mod embed;
 mod guard;
+mod plugin_routes;
 mod routes;
 mod sync;
 mod tls;
@@ -31,6 +32,7 @@ pub use tls::{HANDSHAKE_TIMEOUT, MAX_HANDSHAKES, TlsServe, TlsServer, serve_tls}
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -109,7 +111,7 @@ impl WebUi {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerConfig {
     pub listen: SocketAddr,
     /// Hostnames (without port) the server answers to besides loopback names, such as the
@@ -122,6 +124,23 @@ pub struct ServerConfig {
     /// Allow plain HTTP on a non-loopback address without a trusted proxy. Credentials then
     /// cross the network unencrypted.
     pub allow_insecure_lan: bool,
+    /// The plugin host, for `/api/v1/plugins`. `None` (`--no-plugins`) answers those
+    /// endpoints with `plugins_disabled`.
+    pub plugins: Option<Arc<dyn apitorrent_plugin_api::PluginService>>,
+}
+
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("listen", &self.listen)
+            .field("public_hosts", &self.public_hosts)
+            .field("web_root", &self.web_root)
+            .field("auth", &self.auth)
+            .field("trusted_proxies", &self.trusted_proxies)
+            .field("allow_insecure_lan", &self.allow_insecure_lan)
+            .field("plugins", &self.plugins.is_some())
+            .finish()
+    }
 }
 
 /// The page may load only its own scripts, styles and images, talk only to its own origin
@@ -164,6 +183,7 @@ pub(crate) struct AppState {
     pub(crate) proxies: TrustedProxies,
     /// Built-in TLS, when this server is the HTTPS endpoint.
     pub(crate) tls: Option<tls::TlsCtx>,
+    pub(crate) plugins: Option<Arc<dyn apitorrent_plugin_api::PluginService>>,
 }
 
 /// Build the router. Exposed separately from [`serve`] for tests and embedding.
@@ -179,6 +199,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         auth: config.auth.clone(),
         proxies: config.trusted_proxies.clone(),
         tls,
+        plugins: config.plugins.clone(),
     };
     let api = Router::new()
         .route("/info", get(routes::info))
@@ -249,6 +270,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/auth/tokens/{id}", delete(auth_routes::token_delete))
         .route("/auth/sessions", get(auth_routes::sessions))
         .route("/auth/sessions/{id}", delete(auth_routes::session_delete))
+        .merge(plugin_routes::router())
         .fallback(routes::not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

@@ -10,6 +10,7 @@ pub mod import;
 pub mod library;
 mod roots;
 pub mod seeding;
+pub mod plugin_api;
 pub mod settings;
 pub mod store;
 

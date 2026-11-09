@@ -12,6 +12,7 @@ repository.workspace = true
 apitorrent-auth.workspace = true
 apitorrent-core.workspace = true
 apitorrent-tls.workspace = true
+apitorrent-plugin-api.workspace = true
 apitorrent-types.workspace = true
 apitorrent-webui.workspace = true
 # http2: ALPN h2 on the built-in TLS listener.

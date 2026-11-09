@@ -1,6 +1,7 @@
 //! `apitorrentd`: the headless apitorrent daemon.
 
 mod tls;
+mod plugins;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -184,6 +185,11 @@ struct Args {
     #[arg(long, env = "APITORRENT_WRITE_SETUP_TOKEN")]
     write_setup_token: bool,
 
+    /// Don't run plugins. Installed plugins stay installed, and the plugin endpoints answer
+    /// that plugins are turned off.
+    #[arg(long, env = "APITORRENT_NO_PLUGINS")]
+    no_plugins: bool,
+
     /// DEVELOPMENT ONLY: no sign-in for requests from this machine. Refused with a
     /// non-loopback --api or with --trusted-proxy. Every local program and user gets full
     /// control.
@@ -335,7 +341,7 @@ async fn main() -> ExitCode {
     }
 
     let core = match Core::start(CoreConfig {
-        data_dir,
+        data_dir: data_dir.clone(),
         download_dir,
         session: SessionConfig {
             listen: args.peer_listen,
@@ -393,6 +399,14 @@ async fn main() -> ExitCode {
             WebUi::None
         }),
     };
+
+    let plugins = if args.no_plugins {
+        tracing::info!("plugins are turned off (--no-plugins)");
+        None
+    } else {
+        plugins::start(&data_dir, &core)
+    };
+
     let server = ServerConfig {
         listen: args.api,
         public_hosts,
@@ -400,6 +414,7 @@ async fn main() -> ExitCode {
         auth,
         trusted_proxies,
         allow_insecure_lan: args.allow_insecure_lan,
+        plugins: plugins.clone(),
     };
     let result = match tls {
         None => apitorrent_server::serve(core.clone(), server, shutdown_signal()).await,
@@ -412,6 +427,9 @@ async fn main() -> ExitCode {
             Err(e) => Err(e),
         },
     };
+    if let Some(p) = &plugins {
+        p.shutdown().await;
+    }
     if let Err(e) = core.shutdown().await {
         tracing::error!(error = %e, "shutdown failed");
     }

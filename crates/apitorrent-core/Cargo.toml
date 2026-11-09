@@ -16,6 +16,7 @@ apitorrent-dht.workspace = true
 apitorrent-mse.workspace = true
 apitorrent-engine.workspace = true
 apitorrent-metainfo.workspace = true
+apitorrent-plugin-api.workspace = true
 apitorrent-types.workspace = true
 base64.workspace = true
 rand.workspace = true
