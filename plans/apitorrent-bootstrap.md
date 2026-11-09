@@ -111,8 +111,8 @@ engine core stays in the main thread, because its pieces interlock.
     self-signed with a pairing code. Plan: `plans/tls.md`
   - M7 Tauri desktop app: Remote mode first, then Local, with pinned-key trust and path
     mappings. Plan: `plans/m7-desktop.md`
-- **Main thread meanwhile:** M3.2 rest (~~embed `web/dist` in release binaries~~, column
-  chooser, ~~the "slow torrents don't count" queue option~~), then content library step 8.
+- **Main thread meanwhile:** ~~M3.2 rest (embed `web/dist`, column chooser, slow-torrent
+  queue option)~~ done; now content library step 8.
 - **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
   host and first plugins (qbittorrent-api, RSS, Ubuntu, Raspberry Pi, tracker adapters),
   M9 Deluge importer, rules and channels, TLS (bring-your-own certificates, ACME), M10 CI.
@@ -488,7 +488,11 @@ engine core stays in the main thread, because its pieces interlock.
   (below 2 KiB/s for 60 s; slow torrents skip the download and seed limits but count
   toward the total, and are placed first so they don't flap). Imported from Deluge's
   `dont_count_slow_torrents`
-- [ ] M3.2 rest: column chooser
+- [x] M3.2: column chooser (show, hide and move columns; right-click the header; saved
+  per browser; new columns arrive in their default place). New columns: ETA (now
+  sortable), Downloaded, Uploaded, Label, Save path. Fixed a NaN in the ratio sort when
+  both torrents have an infinite ratio
+- [ ] Phone layout for the web UI (logged in `ISSUES.md`)
 - [ ] M7, M8, TLS, M10
 
 ## Open questions for the user

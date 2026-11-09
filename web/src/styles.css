@@ -256,10 +256,96 @@ code {
 /* Table */
 
 .table {
+  position: relative;
   display: grid;
   grid-template-rows: auto 1fr;
   min-height: 0;
   background: var(--surface);
+}
+
+.th-columns {
+  text-align: center;
+  padding-inline: 0;
+}
+
+.th-columns:hover,
+.th-columns[aria-expanded="true"] {
+  color: var(--text);
+}
+
+.cell-path {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+/* Under the header, at its right end. */
+.column-chooser {
+  position: absolute;
+  top: 2.1rem;
+  right: 8px;
+  z-index: 5;
+  width: min(22rem, calc(100% - 16px));
+  max-height: calc(100% - 2.5rem);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+
+.column-chooser ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.column-chooser li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.column-chooser .check {
+  margin: 3px 0;
+}
+
+.column-moves {
+  display: flex;
+  gap: 4px;
+}
+
+.column-moves button {
+  min-width: 2rem;
+  padding: 2px 6px;
+}
+
+.column-chooser-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.column-chooser li .check {
+  min-width: 0;
+}
+
+.column-moves button {
+  flex-shrink: 0;
+}
+
+/* On a phone the table can be narrower than the panel: pin it to the viewport instead. */
+@media (max-width: 640px) {
+  .column-chooser {
+    position: fixed;
+    top: 4.5rem;
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-height: calc(100dvh - 6rem);
+  }
 }
 
 .table-head,

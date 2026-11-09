@@ -79,7 +79,12 @@ export type SortKey =
   | "uploadRate"
   | "peers"
   | "ratio"
-  | "addedAt";
+  | "addedAt"
+  | "eta"
+  | "downloaded"
+  | "uploaded"
+  | "label"
+  | "savePath";
 
 export interface Sort {
   key: SortKey;
@@ -92,14 +97,32 @@ function ratio(t: TorrentSummary): number {
   return t.downloaded > 0 ? t.uploaded / t.downloaded : t.uploaded > 0 ? Infinity : 0;
 }
 
+/** Seconds left at the current rate; Infinity when not downloading. */
+export function etaSeconds(t: TorrentSummary): number {
+  if (t.state !== "downloading" || t.downloadRate <= 0) return Infinity;
+  return (t.size * (1 - t.progress)) / t.downloadRate;
+}
+
+/** Infinity minus Infinity is NaN, which would break the sort. */
+function byNumber(a: number, b: number): number {
+  return a === b ? 0 : a < b ? -1 : 1;
+}
+
 function compare(a: TorrentSummary, b: TorrentSummary, key: SortKey): number {
   switch (key) {
     case "name":
       return collator.compare(a.name, b.name);
+    case "label":
+      // Unlabelled torrents sort after labelled ones.
+      return a.label === b.label ? 0 : a.label === null ? 1 : b.label === null ? -1 : collator.compare(a.label, b.label);
+    case "savePath":
+      return collator.compare(a.savePath, b.savePath);
+    case "eta":
+      return byNumber(etaSeconds(a), etaSeconds(b));
     case "state":
       return collator.compare(a.state, b.state);
     case "ratio":
-      return ratio(a) - ratio(b);
+      return byNumber(ratio(a), ratio(b));
     case "peers":
       return a.peers - b.peers;
     default:

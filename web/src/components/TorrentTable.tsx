@@ -1,14 +1,16 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef, type KeyboardEvent, type MouseEvent } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio } from "../format";
-import type { Sort, SortKey } from "../state/torrents";
+import { loadColumnPrefs, saveColumnPrefs, visibleColumns, type ColumnInfo, type ColumnPrefs } from "../state/columns";
+import { etaSeconds, type Sort, type SortKey } from "../state/torrents";
+import { ColumnChooser } from "./ColumnChooser";
 
 const ROW_HEIGHT = 30;
 
-interface Column {
-  key: SortKey;
+export interface Column extends ColumnInfo {
+  id: SortKey;
   label: string;
   width: string;
   align?: "end";
@@ -26,25 +28,27 @@ const STATE_LABEL: Record<TorrentSummary["state"], string> = {
 };
 
 function eta(t: TorrentSummary): string {
-  if (t.state !== "downloading" || t.downloadRate <= 0) return "";
-  const left = t.size * (1 - t.progress);
-  return formatEta(left / t.downloadRate);
+  const s = etaSeconds(t);
+  return Number.isFinite(s) ? formatEta(s) : "";
 }
 
-const COLUMNS: Column[] = [
+export const COLUMNS: Column[] = [
   // Queue order: lower numbers get the free slots first.
-  { key: "queuePosition", label: "#", width: "2.5rem", align: "end", render: (t) => `${t.queuePosition + 1}` },
+  { id: "queuePosition", label: "#", width: "2.5rem", align: "end", defaultVisible: true, render: (t) => `${t.queuePosition + 1}` },
   {
-    key: "name",
+    id: "name",
     label: "Name",
     width: "minmax(8rem, 1fr)",
+    defaultVisible: true,
+    required: true,
     render: (t) => <span className="cell-name">{t.name}</span>,
   },
-  { key: "size", label: "Size", width: "5.5rem", align: "end", render: (t) => formatBytes(t.size) },
+  { id: "size", label: "Size", width: "5.5rem", align: "end", defaultVisible: true, render: (t) => formatBytes(t.size) },
   {
-    key: "progress",
+    id: "progress",
     label: "Progress",
     width: "7rem",
+    defaultVisible: true,
     render: (t) => (
       <div className={`progress progress-${t.state}`} role="progressbar" aria-valuenow={Math.round(t.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
         <div className="progress-fill" style={{ width: `${t.progress * 100}%` }} />
@@ -53,31 +57,45 @@ const COLUMNS: Column[] = [
     ),
   },
   {
-    key: "state",
+    id: "state",
     label: "Status",
     width: "6rem",
+    defaultVisible: true,
     render: (t) => <span className={`state state-${t.state}`}>{STATE_LABEL[t.state]}</span>,
   },
-  { key: "downloadRate", label: "Down", width: "5.25rem", align: "end", render: (t) => formatRate(t.downloadRate) },
-  { key: "uploadRate", label: "Up", width: "5.25rem", align: "end", render: (t) => formatRate(t.uploadRate) },
+  { id: "downloadRate", label: "Down", width: "5.25rem", align: "end", defaultVisible: true, render: (t) => formatRate(t.downloadRate) },
+  { id: "uploadRate", label: "Up", width: "5.25rem", align: "end", defaultVisible: true, render: (t) => formatRate(t.uploadRate) },
   {
-    key: "peers",
+    id: "peers",
     label: "Peers (seeds)",
     width: "6.25rem",
     align: "end",
+    defaultVisible: true,
     // Connected peers, with how many of them are seeds.
     render: (t) => (t.peers > 0 ? `${t.peers} (${t.seeds})` : ""),
   },
-  { key: "ratio", label: "Ratio", width: "3.5rem", align: "end", render: (t) => formatRatio(t.uploaded, t.downloaded) },
+  { id: "ratio", label: "Ratio", width: "3.5rem", align: "end", defaultVisible: true, render: (t) => formatRatio(t.uploaded, t.downloaded) },
+  { id: "eta", label: "ETA", width: "4rem", align: "end", defaultVisible: true, render: eta },
+  { id: "downloaded", label: "Downloaded", width: "6rem", align: "end", defaultVisible: false, render: (t) => formatBytes(t.downloaded) },
+  { id: "uploaded", label: "Uploaded", width: "6rem", align: "end", defaultVisible: false, render: (t) => formatBytes(t.uploaded) },
+  { id: "label", label: "Label", width: "7rem", defaultVisible: false, render: (t) => t.label ?? "" },
   {
-    key: "addedAt",
+    id: "savePath",
+    label: "Save path",
+    width: "minmax(6rem, 0.6fr)",
+    defaultVisible: false,
+    render: (t) => <span className="cell-path">{t.savePath}</span>,
+  },
+  {
+    id: "addedAt",
     label: "Added",
     width: "8.75rem",
+    defaultVisible: true,
     render: (t) => formatDateTime(t.addedAt),
   },
 ];
 
-const TEMPLATE = `${COLUMNS.map((c) => c.width).join(" ")} 3.5rem`;
+const BY_ID = new Map(COLUMNS.map((c) => [c.id as string, c]));
 
 interface Props {
   rows: TorrentSummary[];
@@ -92,12 +110,22 @@ interface Props {
 
 export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, onOpen, onKey }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
+  const [prefs, setPrefs] = useState<ColumnPrefs | null>(loadColumnPrefs);
+  const [choosing, setChoosing] = useState(false);
+  const columns = useMemo(() => visibleColumns(COLUMNS, prefs).map((id) => BY_ID.get(id)!), [prefs]);
+  // The last track is the column chooser's button.
+  const template = `${columns.map((c) => c.width).join(" ")} 1.75rem`;
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 12,
   });
+
+  function changePrefs(next: ColumnPrefs | null) {
+    setPrefs(next);
+    saveColumnPrefs(next);
+  }
 
   function click(e: MouseEvent, index: number) {
     const id = rows[index]!.id;
@@ -136,22 +164,40 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
 
   return (
     <div className="table" role="grid" aria-rowcount={rows.length} aria-multiselectable="true">
-      <div className="table-head" role="row" style={{ gridTemplateColumns: TEMPLATE }}>
-        {COLUMNS.map((c) => (
+      <div
+        className="table-head"
+        role="row"
+        style={{ gridTemplateColumns: template }}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setChoosing(true);
+        }}
+      >
+        {columns.map((c) => (
           <button
-            key={c.key}
+            key={c.id}
             type="button"
             role="columnheader"
             className={`th ${c.align === "end" ? "end" : ""}`}
-            aria-sort={sort.key === c.key ? (sort.descending ? "descending" : "ascending") : "none"}
-            onClick={() => onSort(c.key)}
+            aria-sort={sort.key === c.id ? (sort.descending ? "descending" : "ascending") : "none"}
+            onClick={() => onSort(c.id)}
           >
             {c.label}
-            {sort.key === c.key && <span className="sort-arrow">{sort.descending ? "▾" : "▴"}</span>}
+            {sort.key === c.id && <span className="sort-arrow">{sort.descending ? "▾" : "▴"}</span>}
           </button>
         ))}
-        <div className="th end" role="columnheader">ETA</div>
+        <button
+          type="button"
+          className="th th-columns"
+          aria-label="Choose columns"
+          aria-haspopup="dialog"
+          aria-expanded={choosing}
+          onClick={() => setChoosing((v) => !v)}
+        >
+          ⋮
+        </button>
       </div>
+      {choosing && <ColumnChooser columns={COLUMNS} prefs={prefs} onChange={changePrefs} onClose={() => setChoosing(false)} />}
       <div className="table-body" ref={scroller} tabIndex={0} onKeyDown={move}>
         {rows.length === 0 ? (
           <div className="empty">No torrents here. Drop a .torrent file anywhere to add one.</div>
@@ -166,19 +212,19 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
                   role="row"
                   aria-selected={isSelected}
                   className={`tr ${isSelected ? "selected" : ""} ${focus === t.id ? "focused" : ""}`}
-                  style={{ gridTemplateColumns: TEMPLATE, transform: `translateY(${v.start}px)`, height: ROW_HEIGHT }}
+                  style={{ gridTemplateColumns: template, transform: `translateY(${v.start}px)`, height: ROW_HEIGHT }}
                   onMouseDown={(e) => {
                     if (e.shiftKey) e.preventDefault(); // don't select text
                   }}
                   onClick={(e) => click(e, v.index)}
                   onDoubleClick={() => onOpen(t.id)}
                 >
-                  {COLUMNS.map((c) => (
-                    <div key={c.key} role="gridcell" className={`td ${c.align === "end" ? "end" : ""}`}>
+                  {columns.map((c) => (
+                    <div key={c.id} role="gridcell" className={`td ${c.align === "end" ? "end" : ""}`}>
                       {c.render(t)}
                     </div>
                   ))}
-                  <div role="gridcell" className="td end">{eta(t)}</div>
+                  <div role="presentation" />
                 </div>
               );
             })}
