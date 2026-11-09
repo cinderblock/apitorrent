@@ -520,7 +520,11 @@ engine core stays in the main thread, because its pieces interlock.
   per browser; new columns arrive in their default place). New columns: ETA (now
   sortable), Downloaded, Uploaded, Label, Save path. Fixed a NaN in the ratio sort when
   both torrents have an infinite ratio
-- [ ] Phone layout for the web UI (logged in `ISSUES.md`)
+- [x] Phone layout (720 px and below): filters drawer, wrapping toolbar, a card list with
+  a sort control and checkboxes, a selection action bar, details as a full-screen sheet.
+  Checked headless at 390×844 (no horizontal scroll, no console errors) and at 1280×720.
+  The column chooser's button is now pinned outside the column grid; at 1280 px the
+  columns overflowed and pushed it out of sight
 - [x] TLS: built-in rustls (ring) with bring-your-own certificates (reloaded), a
   self-signed certificate with pairing codes, and ACME (instant-acme) over TLS-ALPN-01
   and HTTP-01, with a DNS-01 plugin trait; tested against a local Pebble. See

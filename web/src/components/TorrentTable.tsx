@@ -75,7 +75,7 @@ export const COLUMNS: Column[] = [
     render: (t) => (t.peers > 0 ? `${t.peers} (${t.seeds})` : ""),
   },
   { id: "ratio", label: "Ratio", width: "3.5rem", align: "end", defaultVisible: true, render: (t) => formatRatio(t.uploaded, t.downloaded) },
-  { id: "eta", label: "ETA", width: "4rem", align: "end", defaultVisible: true, render: eta },
+  { id: "eta", label: "ETA", width: "3.5rem", align: "end", defaultVisible: true, render: eta },
   { id: "downloaded", label: "Downloaded", width: "6rem", align: "end", defaultVisible: false, render: (t) => formatBytes(t.downloaded) },
   { id: "uploaded", label: "Uploaded", width: "6rem", align: "end", defaultVisible: false, render: (t) => formatBytes(t.uploaded) },
   { id: "label", label: "Label", width: "7rem", defaultVisible: false, render: (t) => t.label ?? "" },
@@ -113,8 +113,7 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
   const [prefs, setPrefs] = useState<ColumnPrefs | null>(loadColumnPrefs);
   const [choosing, setChoosing] = useState(false);
   const columns = useMemo(() => visibleColumns(COLUMNS, prefs).map((id) => BY_ID.get(id)!), [prefs]);
-  // The last track is the column chooser's button.
-  const template = `${columns.map((c) => c.width).join(" ")} 1.75rem`;
+  const template = columns.map((c) => c.width).join(" ");
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
@@ -224,7 +223,6 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
                       {c.render(t)}
                     </div>
                   ))}
-                  <div role="presentation" />
                 </div>
               );
             })}

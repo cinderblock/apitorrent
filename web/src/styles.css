@@ -263,9 +263,20 @@ code {
   background: var(--surface);
 }
 
+/* Pinned to the header's right end, outside the column grid, so however many columns
+   are shown it stays reachable. Header and rows keep room for it on the right. */
 .th-columns {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  width: 1.75rem;
   text-align: center;
   padding-inline: 0;
+}
+
+.table-head,
+.tr {
+  padding-right: calc(12px + 1.75rem);
 }
 
 .th-columns:hover,
@@ -336,24 +347,13 @@ code {
   flex-shrink: 0;
 }
 
-/* On a phone the table can be narrower than the panel: pin it to the viewport instead. */
-@media (max-width: 640px) {
-  .column-chooser {
-    position: fixed;
-    top: 4.5rem;
-    left: 16px;
-    right: 16px;
-    width: auto;
-    max-height: calc(100dvh - 6rem);
-  }
-}
 
 .table-head,
 .tr {
   display: grid;
   align-items: center;
   column-gap: 8px;
-  padding: 0 12px;
+  padding-left: 12px;
 }
 
 .table-head {
@@ -940,5 +940,237 @@ button.link.danger-text {
   .list th:nth-child(n + 3),
   .list td:nth-child(n + 3):not(.end) {
     display: none;
+  }
+}
+
+/* Phone layout. Keep the width in step with NARROW_QUERY in useNarrow.ts. */
+
+.narrow-only {
+  display: none;
+}
+
+.cards {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.cards-sort {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.cards-body {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+}
+
+.card.selected {
+  background: var(--row-selected);
+}
+
+.card-check {
+  margin-top: 4px;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.card-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  border: none;
+  background: none;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  max-height: 1.4em;
+}
+
+.card .progress {
+  display: block;
+}
+
+.selection-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 -4px 16px rgb(0 0 0 / 0.12);
+}
+
+.selection-bar .muted {
+  margin-right: auto;
+}
+
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
+  background: rgb(0 0 0 / 0.35);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sheet-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+@media (max-width: 720px) {
+  .narrow-only {
+    display: inline-flex;
+  }
+
+  .wide-only {
+    display: none;
+  }
+
+  .app {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .toolbar {
+    flex-wrap: wrap;
+    padding: 8px 16px;
+  }
+
+  .brand {
+    margin-right: auto;
+  }
+
+  .search {
+    order: 10;
+    flex: 1 1 100%;
+    width: auto;
+    margin-left: 0;
+  }
+
+  .rates {
+    order: 11;
+    flex: 1;
+    min-width: 0;
+    justify-content: flex-start;
+  }
+
+  .conn {
+    order: 12;
+  }
+
+  .account-button {
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The filters become a drawer from the left. */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    width: min(18rem, 85vw);
+    padding: 16px 12px;
+    transform: translateX(-100%);
+    /* Hidden when closed, so its buttons can't take focus; visible at once when opening,
+       and only after sliding out when closing. */
+    visibility: hidden;
+    transition:
+      transform 0.18s ease-out,
+      visibility 0s linear 0.18s;
+  }
+
+  .sidebar.open {
+    transform: none;
+    visibility: visible;
+    box-shadow: 4px 0 24px rgb(0 0 0 / 0.2);
+    transition:
+      transform 0.18s ease-out,
+      visibility 0s;
+  }
+
+  .filter {
+    padding: 10px 8px;
+  }
+
+  /* The details cover the screen, with a way back. */
+  .detail-sheet {
+    position: fixed;
+    inset: 0;
+    z-index: 18;
+    height: auto;
+    border-top: none;
+    grid-template-rows: auto auto 1fr;
+  }
+
+  .app.has-selection .cards-body {
+    padding-bottom: 64px;
+  }
+
+  .statusbar {
+    padding: 3px 16px;
+  }
+}
+
+@media (max-width: 720px) and (prefers-reduced-motion: reduce) {
+  .sidebar {
+    transition: none;
   }
 }

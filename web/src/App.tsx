@@ -10,10 +10,12 @@ import { ImportDeluge } from "./components/ImportDeluge";
 import { StatusBar } from "./components/StatusBar";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
+import { TorrentCards } from "./components/TorrentCards";
 import { TorrentTable } from "./components/TorrentTable";
 import { formatRate } from "./format";
 import { navigate } from "./router";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
+import { useNarrow } from "./useNarrow";
 
 const sync = SyncClient.forCurrentPage();
 
@@ -48,6 +50,9 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const [dragging, setDragging] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const narrow = useNarrow();
+  // The filters drawer, on a phone.
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const rows = useMemo(() => visibleTorrents(state.torrents, view), [state.torrents, view]);
   const counts = useMemo(() => countByFilter(state.torrents), [state.torrents]);
@@ -138,19 +143,28 @@ export function App({ status: auth }: { status: AuthStatus }) {
   }, []);
 
   return (
-    <div className={`app ${dragging ? "dragging" : ""}`}>
+    <div className={`app ${dragging ? "dragging" : ""} ${narrow && selection.length > 0 ? "has-selection" : ""}`}>
       <header className="toolbar">
+        <button
+          type="button"
+          className="narrow-only"
+          aria-expanded={filtersOpen}
+          aria-controls="filters"
+          onClick={() => setFiltersOpen((o) => !o)}
+        >
+          ☰ Filters
+        </button>
         <h1 className="brand">apitorrent</h1>
         <button type="button" className="primary" onClick={() => setAdding([])}>
           Add
         </button>
-        <button type="button" disabled={selection.length === 0} onClick={() => pauseOrResume(selection)}>
+        <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => pauseOrResume(selection)}>
           Pause / Resume
         </button>
-        <button type="button" disabled={selection.length === 0} onClick={() => setRemoving(selection)}>
+        <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => setRemoving(selection)}>
           Remove
         </button>
-        <div className="button-group" role="group" aria-label="Queue">
+        <div className="button-group wide-only" role="group" aria-label="Queue">
           <button type="button" disabled={selection.length === 0} aria-label="Move to the top of the queue" onClick={() => queueMove("top")}>
             ⤒
           </button>
@@ -190,29 +204,69 @@ export function App({ status: auth }: { status: AuthStatus }) {
         </button>
       </header>
       <Sidebar
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
         filter={view.filter}
         label={view.label}
         counts={counts}
         labels={labels}
-        onFilter={(filter) => setView({ ...view, filter })}
-        onLabel={(label) => setView({ ...view, label })}
+        onFilter={(filter) => {
+          setView({ ...view, filter });
+          setFiltersOpen(false);
+        }}
+        onLabel={(label) => {
+          setView({ ...view, label });
+          setFiltersOpen(false);
+        }}
       />
       <main className="main">
-        <TorrentTable
-          rows={rows}
-          selected={selected}
-          sort={view.sort}
-          onSort={onSort}
-          focus={focus}
-          onSelect={(ids, f) => {
-            setSelected(ids);
-            setFocus(f);
-          }}
-          onOpen={(id) => setFocus(id)}
-          onKey={onKey}
-        />
-        {focused && <DetailPane summary={focused} />}
+        {narrow ? (
+          <TorrentCards
+            rows={rows}
+            selected={selected}
+            sort={view.sort}
+            onSort={onSort}
+            focus={focus}
+            onSelect={(ids, f) => {
+              setSelected(ids);
+              setFocus(f);
+            }}
+            onOpen={(id) => setFocus(id)}
+          />
+        ) : (
+          <TorrentTable
+            rows={rows}
+            selected={selected}
+            sort={view.sort}
+            onSort={onSort}
+            focus={focus}
+            onSelect={(ids, f) => {
+              setSelected(ids);
+              setFocus(f);
+            }}
+            onOpen={(id) => setFocus(id)}
+            onKey={onKey}
+          />
+        )}
+        {focused && <DetailPane summary={focused} onClose={narrow ? () => setFocus(null) : undefined} />}
       </main>
+      {narrow && selection.length > 0 && (
+        <div className="selection-bar" role="toolbar" aria-label={`${selection.length} selected`}>
+          <span className="muted">{selection.length} selected</span>
+          <button type="button" onClick={() => pauseOrResume(selection)}>
+            Pause / Resume
+          </button>
+          <button type="button" onClick={() => setRemoving(selection)}>
+            Remove
+          </button>
+          <button type="button" aria-label="Move up the queue" onClick={() => queueMove("up")}>
+            ↑
+          </button>
+          <button type="button" aria-label="Move down the queue" onClick={() => queueMove("down")}>
+            ↓
+          </button>
+        </div>
+      )}
       <StatusBar />
       {adding && <AddTorrent initialFiles={adding} onClose={() => setAdding(null)} />}
       {settingsOpen && (

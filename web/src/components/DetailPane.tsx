@@ -317,12 +317,21 @@ function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detai
   );
 }
 
-export function DetailPane({ summary }: { summary: TorrentSummary }) {
+/** `onClose` is given on a phone, where the details cover the screen. */
+export function DetailPane({ summary, onClose }: { summary: TorrentSummary; onClose?: () => void }) {
   const [tab, setTab] = useState<Tab>("general");
   const { detail, error, refetch } = useDetail(summary.id, summary);
 
   return (
-    <section className="detail" aria-label={`Details of ${summary.name}`}>
+    <section className={`detail ${onClose ? "detail-sheet" : ""}`} aria-label={`Details of ${summary.name}`}>
+      {onClose && (
+        <div className="sheet-head">
+          <button type="button" onClick={onClose}>
+            ← Back
+          </button>
+          <span className="sheet-title">{summary.name}</span>
+        </div>
+      )}
       <div className="tabs" role="tablist">
         {(["general", "files", "peers", "trackers"] as const).map((t) => (
           <button key={t} type="button" role="tab" aria-selected={tab === t} className={`tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
