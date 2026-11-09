@@ -807,6 +807,24 @@ impl Auth {
         })
     }
 
+    /// For privileged actions outside this crate, such as approving a plugin's
+    /// capabilities: the caller must be a browser session (not an API token) that signed in
+    /// or re-authenticated recently, as for creating a token. The synthetic local admin of
+    /// `--insecure-no-auth-loopback` passes.
+    pub fn require_recent(&self, p: &Principal) -> Result<()> {
+        if matches!(p.credential, Credential::Local) {
+            return Ok(());
+        }
+        self.recent_session(p).map(|_| ())
+    }
+
+    /// Record a security-relevant action taken outside this crate (such as installing a
+    /// plugin) in the audit log, next to sign-ins and credential changes.
+    pub fn audit(&self, kind: &str, p: &Principal, meta: &ClientMeta, detail: &str) {
+        let user = (!matches!(p.credential, Credential::Local)).then_some(p.user.id.as_str());
+        self.log(kind, user, meta, detail);
+    }
+
     /// A full session that signed in (or re-authenticated) recently.
     fn recent_session<'p>(&self, p: &'p Principal) -> Result<&'p SessionCredential> {
         let s = account_session(p)?;

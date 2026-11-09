@@ -447,3 +447,46 @@ fn relying_parties() {
     assert_eq!(host_without_port("[::1]:8742"), "[::1]");
     assert_eq!(host_without_port("LocalHost:1"), "localhost");
 }
+
+#[test]
+fn privileged_actions_outside_the_crate() {
+    let f = fixture(PasswordMode::Fallback);
+    let admin = f.admin();
+    f.auth.require_recent(&admin).unwrap();
+    f.auth.require_recent(&Principal::local()).unwrap();
+    // A token never passes, however fresh.
+    let created = f
+        .auth
+        .create_token(
+            &admin,
+            &CreateTokenRequest {
+                name: "script".into(),
+                scope: TokenScope::Full,
+                expires_in_days: None,
+            },
+            &meta(),
+        )
+        .unwrap();
+    let token = f.auth.authenticate_token(&created.token).unwrap().unwrap();
+    assert!(matches!(
+        f.auth.require_recent(&token),
+        Err(AuthError::Forbidden(_))
+    ));
+    f.clock.advance(Duration::from_secs(11 * 60));
+    assert!(matches!(
+        f.auth.require_recent(&admin),
+        Err(AuthError::ReauthRequired)
+    ));
+    f.auth
+        .audit("plugin_approved", &admin, &meta(), "rss 1.0.0");
+    let kinds: Vec<String> = f
+        .auth
+        .db()
+        .prepare("SELECT kind FROM auth_events ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert_eq!(kinds.last().map(String::as_str), Some("plugin_approved"));
+}

@@ -342,6 +342,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "apitorrent-plugin-api"
+version = "0.1.0"
+dependencies = [
+ "apitorrent-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "ts-rs",
+ "url",
+]
+
+[[package]]
 name = "apitorrent-server"
 version = "0.1.0"
 dependencies = [

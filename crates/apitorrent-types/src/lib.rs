@@ -12,6 +12,7 @@ use ts_rs::TS;
 
 pub mod auth;
 pub mod tls;
+pub mod plugins;
 
 /// The API version in the URL prefix.
 pub const API_VERSION: u32 = 1;

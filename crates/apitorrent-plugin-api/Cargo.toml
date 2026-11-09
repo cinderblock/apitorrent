@@ -1,0 +1,21 @@
+[package]
+name = "apitorrent-plugin-api"
+description = "The contract between apitorrent and its plugin host: manifests, capabilities, settings schemas and the host traits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+apitorrent-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, default-features = false, features = ["sync"] }
+ts-rs.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

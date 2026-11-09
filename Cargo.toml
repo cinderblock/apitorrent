@@ -31,6 +31,7 @@ apitorrent-auth = { path = "crates/apitorrent-auth" }
 apitorrent-webui = { path = "crates/apitorrent-webui" }
 apitorrent-tls = { path = "crates/apitorrent-tls" }
 apitorrent-client = { path = "crates/apitorrent-client" }
+apitorrent-plugin-api = { path = "crates/apitorrent-plugin-api" }
 
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }

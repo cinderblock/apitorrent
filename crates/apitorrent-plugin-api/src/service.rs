@@ -1,0 +1,100 @@
+//! What the HTTP server asks of the plugin host.
+
+use apitorrent_types::plugins::{
+    InstallPluginResponse, PluginBundle, PluginCaller, PluginInfo, PluginLogEntry, PluginSettings,
+};
+
+use crate::BoxFuture;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PluginError {
+    #[error("no such plugin")]
+    NotFound,
+    #[error("{0}")]
+    InvalidRequest(String),
+    #[error("{0}")]
+    Conflict(String),
+    /// The plugin isn't running, so it can't answer.
+    #[error("{0}")]
+    NotRunning(String),
+    /// The plugin has no route for this method and path.
+    #[error("the plugin has no such route")]
+    NoRoute,
+    /// The plugin took too long to answer.
+    #[error("the plugin did not answer in time")]
+    Timeout,
+    #[error("{0}")]
+    Internal(String),
+}
+
+impl PluginError {
+    /// A stable code for API clients.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotFound => "not_found",
+            Self::InvalidRequest(_) => "invalid_request",
+            Self::Conflict(_) => "conflict",
+            Self::NotRunning(_) => "plugin_not_running",
+            Self::NoRoute => "no_route",
+            Self::Timeout => "plugin_timeout",
+            Self::Internal(_) => "internal",
+        }
+    }
+}
+
+/// A request to one of a plugin's routes. The server strips credentials (`Cookie`,
+/// `Authorization`) before a plugin sees the headers.
+#[derive(Debug, Clone)]
+pub struct PluginHttpRequest {
+    pub method: String,
+    /// Relative to `/api/v1/plugins/<id>`, starting with `/`.
+    pub path: String,
+    /// The query string, without `?`.
+    pub query: Option<String>,
+    /// The URL the client used, for building links (`https://host/api/v1/plugins/<id>/…`).
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub caller: PluginCaller,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginHttpResponse {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// Plugin management and routing, as the HTTP server uses it.
+pub trait PluginService: Send + Sync + 'static {
+    fn list(&self) -> Vec<PluginInfo>;
+    fn get(&self, id: &str) -> Result<PluginInfo, PluginError>;
+    /// Install a new plugin, or a new version of an installed one. A new plugin, or a
+    /// version that asks for more than was granted, waits for [`Self::approve`].
+    fn install(
+        &self,
+        bundle: PluginBundle,
+    ) -> BoxFuture<Result<InstallPluginResponse, PluginError>>;
+    /// Grant the pending version's capabilities and make it the active version. `version`
+    /// must name the pending version, so an admin approves what they looked at.
+    fn approve(&self, id: String, version: String) -> BoxFuture<Result<PluginInfo, PluginError>>;
+    fn set_enabled(&self, id: String, enabled: bool) -> BoxFuture<Result<PluginInfo, PluginError>>;
+    /// Stop the plugin and delete its code, settings and data.
+    fn uninstall(&self, id: String) -> BoxFuture<Result<(), PluginError>>;
+    /// Log entries after `after` (all retained entries when `None`), oldest first.
+    fn logs(&self, id: &str, after: Option<u64>) -> Result<Vec<PluginLogEntry>, PluginError>;
+    fn settings(&self, id: &str) -> Result<PluginSettings, PluginError>;
+    fn set_settings(
+        &self,
+        id: String,
+        values: serde_json::Value,
+    ) -> BoxFuture<Result<PluginSettings, PluginError>>;
+    /// Hand a request to the plugin's route handler.
+    fn http(
+        &self,
+        id: String,
+        req: PluginHttpRequest,
+    ) -> BoxFuture<Result<PluginHttpResponse, PluginError>>;
+    /// Stop every plugin, giving each a moment to run its `stop` hook.
+    fn shutdown(&self) -> BoxFuture<()>;
+}
