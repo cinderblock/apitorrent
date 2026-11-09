@@ -98,4 +98,10 @@
     flex-direction: column;
     gap: 0;
   }
+
+  /* Stacked, each control takes the full width (centred, they shrank to fit). */
+  .rule-editor .rule-match {
+    align-items: stretch;
+    gap: 4px;
+  }
 }
