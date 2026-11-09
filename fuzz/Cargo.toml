@@ -1,0 +1,84 @@
+# Fuzz targets for everything that parses input from the network or from files a stranger
+# could hand us. Run with cargo-fuzz on nightly, e.g.
+#   cargo +nightly fuzz run bencode -- -max_total_time=60
+# A separate workspace, so the stable build never sees libfuzzer.
+[package]
+name = "apitorrent-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+apitorrent-bencode = { path = "../crates/apitorrent-bencode" }
+apitorrent-metainfo = { path = "../crates/apitorrent-metainfo" }
+apitorrent-wire = { path = "../crates/apitorrent-wire" }
+apitorrent-dht = { path = "../crates/apitorrent-dht" }
+apitorrent-tracker = { path = "../crates/apitorrent-tracker" }
+apitorrent-deluge = { path = "../crates/apitorrent-deluge" }
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "bencode"
+path = "fuzz_targets/bencode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "metainfo"
+path = "fuzz_targets/metainfo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "magnet"
+path = "fuzz_targets/magnet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peer_wire"
+path = "fuzz_targets/peer_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "extensions"
+path = "fuzz_targets/extensions.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "krpc"
+path = "fuzz_targets/krpc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tracker"
+path = "fuzz_targets/tracker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pickle"
+path = "fuzz_targets/pickle.rs"
+test = false
+doc = false
+bench = false

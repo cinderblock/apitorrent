@@ -88,6 +88,13 @@ environment variable.
 
 For UI work, run `bun run dev` in `web/` alongside the daemon: Vite proxies `/api` to it,
 and you sign in at http://localhost:5173 as usual.
+Everything that parses input from the network or from files has a fuzz target in `fuzz/`
+(bencode, `.torrent` files, magnet links, the peer wire protocol and its extensions, DHT
+messages, tracker responses, Deluge's pickle). With nightly and `cargo install cargo-fuzz`:
+`cd fuzz && cargo +nightly fuzz run bencode -- -max_total_time=60`. On Windows, put MSVC's
+`clang_rt.asan_dynamic-x86_64.dll` directory (`VC/Tools/MSVC/<version>/bin/Hostx64/x64`)
+on `PATH` first.
+
 The UI's API types in `web/src/api/generated` are generated from the Rust types with
 `cargo test -p apitorrent-types`.
 

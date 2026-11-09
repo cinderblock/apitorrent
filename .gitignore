@@ -7,3 +7,5 @@ dist/
 /fuzz/artifacts
 /fuzz/corpus
 /.claude/
+/fuzz/target
+/fuzz/coverage

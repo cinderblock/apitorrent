@@ -617,6 +617,10 @@ them, restarts, and reports. On this machine (release build, NVMe):
 - [x] PEX flags (BEP 11): peers we pass on carry what we know first-hand (encrypted, seed,
   uTP, reachable); a peer PEX lists without the uTP flag is dialed over TCP first, so it
   doesn't cost a 5 s uTP timeout. Unit test `pex_hints_order_the_transports`
+- [x] Fuzzing: `fuzz/` (cargo-fuzz, its own workspace), 8 targets covering every parser
+  of untrusted input. First runs on Windows with AddressSanitizer, 60 s each, 0 crashes
+  (330k to 1.1M runs per target). A CI job fuzzes each for 60 s on Linux. Windows needs
+  MSVC's ASan DLL on `PATH` (it exits with `STATUS_DLL_NOT_FOUND` otherwise)
 - [ ] Code signing for the desktop installers (Windows Authenticode, Apple Developer ID):
   needs certificates as repository secrets
 - [x] M8 plugin host: `apitorrent-plugin-api` (contract), `apitorrent-plugins` (deno_core

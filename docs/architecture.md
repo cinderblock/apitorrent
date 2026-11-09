@@ -83,7 +83,7 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 
 | Path | Role |
 |---|---|
-| `crates/apitorrent-bencode` | A strict, depth-limited, zero-copy bencode codec. Fuzzed. |
+| `crates/apitorrent-bencode` | A strict, depth-limited, zero-copy bencode codec. Fuzzed (see `fuzz/`). |
 | `crates/apitorrent-metainfo` | `.torrent` and magnet parsing for v1, v2 and hybrid torrents. Info-hashes, file trees, merkle trees, path sanitising, torrent creation. |
 | `crates/apitorrent-wire` | The sans-IO peer wire protocol: handshake, messages, extension protocol. Pure state machines, no sockets. |
 | `crates/apitorrent-mse` | Message Stream Encryption (MSE/PE): sans-IO initiator and receiver handshakes, and `MseStream` over any async byte stream. |
