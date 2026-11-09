@@ -5,6 +5,7 @@
   "workspaces": ["packages/*", "plugins/*"],
   "scripts": {
     "build:plugins": "bun run --filter './plugins/*' build",
+    "build:first-party": "bun scripts/build-first-party.ts",
     "test:plugins": "bun test ./packages ./plugins",
     "typecheck:plugins": "bun run --filter './packages/*' --filter './plugins/*' typecheck"
   }

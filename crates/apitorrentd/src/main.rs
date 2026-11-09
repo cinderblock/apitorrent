@@ -1,5 +1,6 @@
 //! `apitorrentd`: the headless apitorrent daemon.
 
+mod bundled;
 mod plugins;
 mod tls;
 
@@ -198,6 +199,9 @@ struct Args {
 
     #[command(flatten)]
     tls: tls::TlsArgs,
+
+    #[command(flatten)]
+    plugin: plugins::PluginArgs,
 }
 
 fn default_dirs() -> Option<(PathBuf, PathBuf)> {
@@ -285,7 +289,14 @@ async fn main() -> ExitCode {
     );
     let mut public_urls = args.public_urls;
     // Built-in TLS: its names become hosts we answer to and passkey relying parties.
-    let tls = match tls::setup(&args.tls, args.api, &data_dir, &public_hosts, &public_urls) {
+    let tls = match tls::setup(
+        &args.tls,
+        args.api,
+        &data_dir,
+        &public_hosts,
+        &public_urls,
+        !args.no_plugins,
+    ) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{e}");
@@ -404,7 +415,13 @@ async fn main() -> ExitCode {
         tracing::info!("plugins are turned off (--no-plugins)");
         None
     } else {
-        plugins::start(&data_dir, &core)
+        plugins::start(
+            &data_dir,
+            &core,
+            &auth,
+            tls.as_ref().and_then(|t| t.dns_provider.as_ref()),
+        )
+        .await
     };
 
     let server = ServerConfig {
@@ -416,6 +433,19 @@ async fn main() -> ExitCode {
         allow_insecure_lan: args.allow_insecure_lan,
         plugins: plugins.clone(),
     };
+    match plugins::bind_listeners(&args.plugin, &core, &server, tls.as_ref().map(|t| &t.serve))
+        .await
+    {
+        Ok(listeners) => {
+            for l in listeners {
+                tokio::spawn(l.run(shutdown_signal()));
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    }
     let result = match tls {
         None => apitorrent_server::serve(core.clone(), server, shutdown_signal()).await,
         Some(tls) => match TlsServer::bind(core.clone(), server, tls.serve).await {

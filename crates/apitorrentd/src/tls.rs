@@ -2,11 +2,13 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use clap::{Args, ValueEnum};
 use url::Url;
 
+use apitorrent_plugins::dns::PluginDnsProvider;
 use apitorrent_server::TlsServe;
 use apitorrent_tls::acme::{self, AcmeConfig, AcmeManager, ChallengeKind};
 use apitorrent_tls::{CertSource, CertStore};
@@ -22,6 +24,10 @@ pub enum ChallengeArg {
     /// Answered by the HTTPS listener itself: it must be reachable as port 443.
     #[value(name = "tls-alpn-01")]
     TlsAlpn01,
+    /// A TXT record published by a `dns-provider` plugin (--acme-dns-plugin). The only way
+    /// to get wildcard names, and it needs no inbound port.
+    #[value(name = "dns-01")]
+    Dns01,
 }
 
 /// Built-in HTTPS. Without any of these flags the API serves plain HTTP.
@@ -96,6 +102,45 @@ pub struct TlsArgs {
     /// HTTP-01 challenges and redirects everything else to HTTPS.
     #[arg(long, env = "APITORRENT_HTTP_REDIRECT_PORT")]
     pub http_redirect_port: Option<u16>,
+
+    /// The `dns-provider` plugin that publishes DNS-01 records (`cloudflare-dns`, say). It
+    /// must be installed, approved and enabled, with its settings filled in.
+    #[arg(long, env = "APITORRENT_ACME_DNS_PLUGIN", requires = "acme_domain")]
+    pub acme_dns_plugin: Option<String>,
+
+    /// Check that DNS-01 records are visible through these resolvers (`1.1.1.1`,
+    /// `10.0.0.53:5353`) instead of asking the zone's authoritative servers directly.
+    /// Repeatable. For networks that block outbound DNS, and for split-horizon DNS.
+    #[arg(
+        long,
+        env = "APITORRENT_ACME_DNS_RESOLVERS",
+        value_delimiter = ',',
+        value_parser = parse_resolver,
+        requires = "acme_dns_plugin"
+    )]
+    pub acme_dns_resolver: Vec<SocketAddr>,
+
+    /// How long a DNS-01 record may take to appear on every name server, in seconds.
+    #[arg(
+        long,
+        env = "APITORRENT_ACME_DNS_TIMEOUT",
+        default_value_t = 300,
+        requires = "acme_dns_plugin"
+    )]
+    pub acme_dns_timeout: u64,
+}
+
+/// A resolver address: an IP, with or without a port (53 by default).
+fn parse_resolver(s: &str) -> Result<SocketAddr, String> {
+    let s = s.trim();
+    if let Ok(a) = s.parse::<SocketAddr>() {
+        return Ok(a);
+    }
+    s.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>()
+        .map(|ip| SocketAddr::new(ip, 53))
+        .map_err(|_| format!("{s:?} is not an IP address or address:port"))
 }
 
 /// What the daemon needs from TLS setup.
@@ -109,6 +154,8 @@ pub struct TlsSetup {
     pub public_hosts: Vec<String>,
     /// Start it once the listeners are bound (see [`AcmeManager`]).
     pub acme: Option<AcmeManager>,
+    /// The DNS-01 provider plugin, to attach to the plugin host once it runs.
+    pub dns_provider: Option<Arc<PluginDnsProvider>>,
 }
 
 impl TlsArgs {
@@ -118,13 +165,15 @@ impl TlsArgs {
 }
 
 /// Set up the certificate store and its source (file watcher, self-signed renewer or ACME).
-/// `None` when TLS isn't configured.
+/// `None` when TLS isn't configured. `plugins`: the plugin host will run (no
+/// `--no-plugins`), which DNS-01 needs.
 pub fn setup(
     args: &TlsArgs,
     api: SocketAddr,
     data_dir: &Path,
     public_hosts: &[String],
     public_urls: &[Url],
+    plugins: bool,
 ) -> Result<Option<TlsSetup>, String> {
     if !args.enabled() {
         if args.http_redirect_port.is_some() {
@@ -134,6 +183,7 @@ pub fn setup(
     }
     let store = CertStore::new();
     let mut acme_manager = None;
+    let mut dns_provider = None;
     // Names whose HTTPS origin should become a public URL.
     let mut names: Vec<String> = Vec::new();
 
@@ -184,10 +234,36 @@ pub fn setup(
                 ChallengeKind::Http01
             }
             ChallengeArg::TlsAlpn01 => ChallengeKind::TlsAlpn01,
+            ChallengeArg::Dns01 => {
+                let Some(id) = &args.acme_dns_plugin else {
+                    return Err(
+                        "--acme-challenge dns-01 needs --acme-dns-plugin (the dns-provider \
+                         plugin that publishes the records)"
+                            .into(),
+                    );
+                };
+                if !plugins {
+                    return Err(format!(
+                        "--acme-challenge dns-01 uses the {id} plugin, but plugins are turned \
+                         off (--no-plugins)"
+                    ));
+                }
+                let provider = PluginDnsProvider::new(id.clone());
+                dns_provider = Some(provider.clone());
+                ChallengeKind::Dns01(provider)
+            }
         };
+        if args.acme_dns_plugin.is_some() && !matches!(args.acme_challenge, ChallengeArg::Dns01) {
+            return Err("--acme-dns-plugin needs --acme-challenge dns-01".into());
+        }
         let mut config =
             AcmeConfig::new(args.acme_domain.clone(), data_dir.join("acme"), challenge);
         config.contact_email.clone_from(&args.acme_email);
+        config
+            .dns_propagation
+            .resolvers
+            .clone_from(&args.acme_dns_resolver);
+        config.dns_propagation.timeout = Duration::from_secs(args.acme_dns_timeout.max(10));
         config.directory_url = match (&args.acme_directory, args.acme_staging) {
             (Some(url), _) => url.to_string(),
             (None, true) => acme::LETS_ENCRYPT_STAGING.to_owned(),
@@ -201,7 +277,15 @@ pub fn setup(
         config
             .validate()
             .map_err(|e| format!("--acme-domain: {e}"))?;
-        names.extend(config.domains.iter().cloned());
+        // A wildcard isn't a host name to answer to or a passkey origin; name the hosts
+        // under it with --public-url.
+        names.extend(
+            config
+                .domains
+                .iter()
+                .filter(|d| !d.starts_with("*."))
+                .cloned(),
+        );
         acme_manager = Some(AcmeManager::new(store.clone(), config).map_err(|e| e.to_string())?);
     }
 
@@ -241,6 +325,7 @@ pub fn setup(
         public_urls: extra_urls,
         public_hosts: extra_hosts,
         acme: acme_manager,
+        dns_provider,
     }))
 }
 
