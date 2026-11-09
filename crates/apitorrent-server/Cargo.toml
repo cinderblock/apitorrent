@@ -12,6 +12,7 @@ repository.workspace = true
 apitorrent-auth.workspace = true
 apitorrent-core.workspace = true
 apitorrent-types.workspace = true
+apitorrent-webui.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 ipnet = "2"

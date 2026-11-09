@@ -22,13 +22,14 @@ mod authn;
 mod guard;
 mod routes;
 mod sync;
+mod webui;
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
-use axum::http::{HeaderName, HeaderValue, header};
+use axum::http::{HeaderName, HeaderValue, Method, header};
 use axum::routing::{delete, get, patch, post, put};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -81,15 +82,34 @@ impl TrustedProxies {
     }
 }
 
+/// Where the web UI comes from. Either way, unknown paths outside `/assets/` get its
+/// `index.html`, so client-side routes work on reload.
+#[derive(Debug, Clone, Default)]
+pub enum WebUi {
+    /// API only.
+    #[default]
+    None,
+    /// A built UI on disk (`web/dist`), read per request: for development.
+    Dir(PathBuf),
+    /// The UI compiled into the binary (`apitorrent-webui` with its `embed` feature).
+    Embedded(&'static apitorrent_webui::Bundle),
+}
+
+impl WebUi {
+    /// The embedded UI, if this build has one.
+    pub fn embedded() -> Option<Self> {
+        apitorrent_webui::bundle().map(Self::Embedded)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub listen: SocketAddr,
     /// Hostnames (without port) the server answers to besides loopback names, such as the
     /// name a reverse proxy forwards. Include the host of every public URL.
     pub public_hosts: Vec<String>,
-    /// A built web UI (`web/dist`) to serve at `/`. Unknown paths fall back to its
-    /// `index.html`, so client-side routes work on reload.
-    pub web_root: Option<PathBuf>,
+    /// The web UI to serve at `/`.
+    pub web_ui: WebUi,
     pub auth: AuthMode,
     pub trusted_proxies: TrustedProxies,
     /// Allow plain HTTP on a non-loopback address without a trusted proxy. Credentials then
@@ -214,9 +234,19 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
             authn::layer,
         ));
     let mut app = Router::new().nest("/api/v1", api);
-    if let Some(dir) = &config.web_root {
-        let index = ServeFile::new(dir.join("index.html"));
-        app = app.fallback_service(ServeDir::new(dir).fallback(index));
+    match &config.web_ui {
+        WebUi::None => {}
+        WebUi::Dir(dir) => {
+            let index = ServeFile::new(dir.join("index.html"));
+            app = app.fallback_service(ServeDir::new(dir).fallback(index));
+        }
+        &WebUi::Embedded(bundle) => {
+            app = app.fallback(
+                move |method: Method, uri: axum::http::Uri, headers: axum::http::HeaderMap| {
+                    std::future::ready(webui::serve(bundle, &method, &uri, &headers))
+                },
+            );
+        }
     }
     app.layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(SetResponseHeaderLayer::if_not_present(

@@ -10,7 +10,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use apitorrent_auth::PasswordMode;
-use apitorrent_server::{AuthMode, ServeError, ServerConfig, TrustedProxies, router};
+use apitorrent_server::{AuthMode, ServeError, ServerConfig, TrustedProxies, WebUi, router};
 use apitorrent_types::{SyncMessage, TorrentDetail, TorrentSummary};
 
 use common::{AuthFixture, Req, app, core, send, server_config, torrent_json};
@@ -327,7 +327,7 @@ async fn serves_the_ui_with_security_headers() {
     let core = core(root.path()).await;
     let f = AuthFixture::new(root.path(), PasswordMode::Off, &[]);
     let cfg = ServerConfig {
-        web_root: Some(web),
+        web_ui: WebUi::Dir(web),
         ..server_config(AuthMode::Enabled(f.auth.clone()))
     };
     let app = router(core.clone(), &cfg);
@@ -352,6 +352,93 @@ async fn serves_the_ui_with_security_headers() {
     let resp = send(&app, Req::get("/api/v1/nope")).await;
     assert_eq!(resp.status, StatusCode::UNAUTHORIZED);
     assert_eq!(resp.code(), "unauthenticated");
+    core.shutdown().await.unwrap();
+}
+
+static EMBEDDED: &[apitorrent_webui::Asset] = &[
+    apitorrent_webui::Asset {
+        path: "/assets/app-abc123.js",
+        content_type: "text/javascript; charset=utf-8",
+        etag: "js1",
+        immutable: true,
+        raw: b"console.log(1)",
+        br: Some(b"BR"),
+        gzip: Some(b"GZ"),
+    },
+    apitorrent_webui::Asset {
+        path: "/index.html",
+        content_type: "text/html; charset=utf-8",
+        etag: "ix1",
+        immutable: false,
+        raw: b"<!doctype html><title>embedded</title>",
+        br: None,
+        gzip: None,
+    },
+];
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serves_the_embedded_ui() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Off, &[]);
+    let bundle: &'static _ = Box::leak(Box::new(apitorrent_webui::Bundle::new(EMBEDDED)));
+    let cfg = ServerConfig {
+        web_ui: WebUi::Embedded(bundle),
+        ..server_config(AuthMode::Enabled(f.auth.clone()))
+    };
+    let app = router(core.clone(), &cfg);
+
+    let resp = send(&app, Req::get("/")).await;
+    assert_eq!(resp.status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&resp.body).contains("<title>embedded</title>"));
+    assert_eq!(resp.headers["cache-control"], "no-cache");
+    assert_eq!(resp.headers["content-type"], "text/html; charset=utf-8");
+    // The security headers apply to the embedded UI too.
+    assert!(resp.headers.contains_key("content-security-policy"));
+    // Client-side routes get the page.
+    let resp = send(&app, Req::get("/settings")).await;
+    assert_eq!(resp.status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&resp.body).contains("embedded"));
+
+    // Hashed assets are immutable, and the best accepted encoding wins.
+    let js = "/assets/app-abc123.js";
+    let resp = send(&app, Req::get(js).header("accept-encoding", "gzip, br")).await;
+    assert_eq!(resp.status, StatusCode::OK);
+    assert_eq!(resp.headers["content-encoding"], "br");
+    assert_eq!(resp.body, b"BR");
+    assert_eq!(resp.headers["vary"], "Accept-Encoding");
+    assert!(
+        resp.headers["cache-control"]
+            .to_str()
+            .unwrap()
+            .contains("immutable")
+    );
+    let br_etag = resp.headers["etag"].to_str().unwrap().to_owned();
+    let resp = send(&app, Req::get(js).header("accept-encoding", "gzip")).await;
+    assert_eq!(resp.headers["content-encoding"], "gzip");
+    assert_eq!(resp.body, b"GZ");
+    let resp = send(&app, Req::get(js)).await;
+    assert!(!resp.headers.contains_key("content-encoding"));
+    assert_eq!(resp.body, b"console.log(1)");
+    // Revalidation: the same encoding's ETag gives 304, another encoding's doesn't.
+    let resp = send(
+        &app,
+        Req::get(js)
+            .header("accept-encoding", "br")
+            .header("if-none-match", &br_etag),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::NOT_MODIFIED);
+    assert!(resp.body.is_empty());
+    let resp = send(&app, Req::get(js).header("if-none-match", &br_etag)).await;
+    assert_eq!(resp.status, StatusCode::OK);
+
+    // A missing asset is a 404, not the page.
+    let resp = send(&app, Req::get("/assets/gone-123.js")).await;
+    assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    // API paths stay JSON.
+    let resp = send(&app, Req::get("/api/v1/nope")).await;
+    assert_eq!(resp.status, StatusCode::UNAUTHORIZED);
     core.shutdown().await.unwrap();
 }
 

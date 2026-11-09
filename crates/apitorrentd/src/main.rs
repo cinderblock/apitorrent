@@ -13,7 +13,7 @@ use url::Url;
 use apitorrent_auth::{Auth, AuthConfig, Clock, PasswordMode, SetupToken, SystemClock};
 use apitorrent_core::{Core, CoreConfig};
 use apitorrent_engine::SessionConfig;
-use apitorrent_server::{AuthMode, ServerConfig, TrustedProxies};
+use apitorrent_server::{AuthMode, ServerConfig, TrustedProxies, WebUi};
 
 /// The default API port. Chosen to avoid the ports of Deluge (8112), Transmission (9091),
 /// qBittorrent (8080) and the *arr apps.
@@ -126,7 +126,8 @@ struct Args {
     #[arg(long, env = "APITORRENT_MEMORY_LIMIT_MIB", default_value_t = 256)]
     memory_limit_mib: u64,
 
-    /// A built web UI to serve (the `web/dist` directory).
+    /// A built web UI to serve (the `web/dist` directory), in place of the one embedded in
+    /// release builds.
     #[arg(long, env = "APITORRENT_WEB_ROOT")]
     web_root: Option<PathBuf>,
 
@@ -363,10 +364,19 @@ async fn main() -> ExitCode {
         }
     }
 
+    let web_ui = match args.web_root {
+        Some(dir) => WebUi::Dir(dir),
+        None => WebUi::embedded().unwrap_or_else(|| {
+            tracing::info!(
+                "this build has no embedded web UI (the `embedded-ui` feature); serving the API                  only. Pass --web-root to serve a built one"
+            );
+            WebUi::None
+        }),
+    };
     let server = ServerConfig {
         listen: args.api,
         public_hosts,
-        web_root: args.web_root,
+        web_ui,
         auth,
         trusted_proxies,
         allow_insecure_lan: args.allow_insecure_lan,

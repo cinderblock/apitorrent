@@ -49,7 +49,7 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
     API on the LAN, like a daemon.
   - **Remote**: a thin client to one or more daemons. Path mappings let you open remote
     download folders in Explorer, Finder or your file manager (see "Remote file access").
-- **The web UI** is the same frontend as the desktop app, built once. The server embeds it.
+- **The web UI** is the same frontend as the desktop app, built once. Release builds of the server embed it (`apitorrent-webui`).
   Desktop-only features, such as revealing a file in Explorer, are behind a capability
   check.
 
@@ -68,6 +68,7 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `crates/apitorrent-types` | Shared domain and API DTO types. Exported to TypeScript. |
 | `crates/apitorrent-core` | Orchestration: registry, persistence, queue, labels, rules, content library, feeds, the event store. |
 | `crates/apitorrent-auth` | Users, passkeys (WebAuthn), optional passwords (Argon2id), sessions, scoped API tokens, device pairing. |
+| `crates/apitorrent-webui` | The built web UI, compiled into release binaries (`embed` feature) with brotli and gzip copies and ETags. |
 | `crates/apitorrent-server` | axum HTTP/WS API, static web UI, TLS (rustls), ACME. |
 | `crates/apitorrent-client` | A Rust client for the API with strict TLS and certificate pinning. Used by the desktop thin client and the CLI. |
 | `crates/apitorrent-plugin-host` | Embedded V8 (`deno_core`): one isolate per plugin, capability-checked ops, the plugin lifecycle. |

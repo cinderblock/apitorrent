@@ -23,7 +23,7 @@ use apitorrent_auth::{
 use apitorrent_core::{Core, CoreConfig};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
-use apitorrent_server::{AuthMode, ServerConfig, TrustedProxies, router};
+use apitorrent_server::{AuthMode, ServerConfig, TrustedProxies, WebUi, router};
 
 pub const CHEAP: PasswordCost = PasswordCost {
     memory_kib: 256,
@@ -131,7 +131,7 @@ pub fn server_config(auth: AuthMode) -> ServerConfig {
     ServerConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
         public_hosts: vec!["torrents.example.com".into()],
-        web_root: None,
+        web_ui: WebUi::None,
         auth,
         trusted_proxies: TrustedProxies::parse(&["10.0.0.0/8".into()]).unwrap(),
         allow_insecure_lan: false,

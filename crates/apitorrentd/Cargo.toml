@@ -15,12 +15,18 @@ apitorrent-dht.workspace = true
 apitorrent-mse.workspace = true
 apitorrent-engine.workspace = true
 apitorrent-server.workspace = true
+apitorrent-webui.workspace = true
 clap.workspace = true
 directories.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
+
+[features]
+# Compile the built web UI into the binary (release builds). Needs `bun run build` in web/
+# first; see the README.
+embedded-ui = ["apitorrent-webui/embed"]
 
 [lints]
 workspace = true

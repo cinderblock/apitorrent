@@ -103,6 +103,16 @@ engine core stays in the main thread, because its pieces interlock.
   - `apitorrent-utp` (BEP 29) and `apitorrent-mse` (MSE/PE)
   - ~~M4 auth: passkeys, sessions, API tokens, so the API can leave loopback~~ done
     (`plans/m4-auth.md`)
+- **Delegated streams, started 2026-11-08 (background agents in worktrees, cherry-picked
+  when done):**
+  - M8 plugin host (`apitorrent-plugins`, plugin SDK, rss and ubuntu-releases plugins,
+    Plugins page). Plan: `plans/m8-plugins.md`
+  - Built-in TLS: bring-your-own certificates, ACME HTTP-01 and TLS-ALPN-01, DNS-01 hook,
+    self-signed with a pairing code. Plan: `plans/tls.md`
+  - M7 Tauri desktop app: Remote mode first, then Local, with pinned-key trust and path
+    mappings. Plan: `plans/m7-desktop.md`
+- **Main thread meanwhile:** M3.2 rest (embed `web/dist` in release binaries, column
+  chooser, the "slow torrents don't count" queue option), then content library step 8.
 - **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
   host and first plugins (qbittorrent-api, RSS, Ubuntu, Raspberry Pi, tracker adapters),
   M9 Deluge importer, rules and channels, TLS (bring-your-own certificates, ACME), M10 CI.
@@ -378,6 +388,18 @@ engine core stays in the main thread, because its pieces interlock.
   `127.0.0.1` users at `localhost`. Plain-HTTP cookies drop the `__Host-` prefix because
   Safari refuses `Secure` cookies on `http://localhost`.
 
+### Embedded web UI (2026-11-08)
+
+- **Cargo reruns a build script every build when a `rerun-if-changed` path doesn't
+  exist**, and recompiles everything downstream of it. Checked with a throwaway crate: with
+  `missing/dist` absent, every `cargo build` printed `Compiling`. So embedding can't be "on
+  by default, skipped when `web/dist` is missing". It is a feature (`embedded-ui`) that
+  fails the build with instructions when `web/dist` is missing.
+- Source maps (`*.map`, 1.4 MB) stay out of the binary. The 327 KB script ships as 84 KB of
+  brotli.
+- Port 18742 is inside a Windows reserved range on this machine. The daemon's error says
+  so. Use 8799 or similar for smoke tests.
+
 ## Progress log
 
 - [x] Research the engine options and prior art
@@ -458,8 +480,11 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] M3.2 (part): Peers tab (client, progress, rates, flags with a legend), Trackers tab
   with live status, status bar (`GET /stats`), bans list in Settings, wanted-piece
   progress
-- [ ] M3.2 rest: column chooser, embedding `web/dist` in release binaries, "slow
-  torrents don't count" queue option
+- [x] M3.2: `web/dist` embedded in release binaries (`apitorrent-webui`, daemon feature
+  `embedded-ui`): brotli and gzip copies made at build time, an entity tag per encoding,
+  immutable caching for hashed assets, `no-cache` for the page, a real 404 for missing
+  assets. Off by default, so a fresh clone builds without Bun
+- [ ] M3.2 rest: column chooser, "slow torrents don't count" queue option
 - [ ] M7, M8, TLS, M10
 
 ## Open questions for the user

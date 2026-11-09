@@ -59,6 +59,18 @@ cd web && bun run build && cd ..
 cargo run -p apitorrentd -- --web-root web/dist
 ```
 
+For a release build, compile the UI into the binary, so the daemon is a single file with
+nothing to deploy beside it:
+
+```sh
+cd web && bun install && bun run build && cd ..
+cargo build --release -p apitorrentd --features embedded-ui
+```
+
+The embedded UI is served with brotli or gzip, ETags, and year-long caching for Vite's
+hashed assets. `--web-root` still overrides it. Without the feature, the daemon serves the
+API only unless `--web-root` is given.
+
 `apitorrentd --help` lists the options; each one can also be set with an `APITORRENT_*`
 environment variable.
 

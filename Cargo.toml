@@ -24,6 +24,7 @@ apitorrent-deluge = { path = "crates/apitorrent-deluge" }
 apitorrent-mse = { path = "crates/apitorrent-mse" }
 apitorrent-utp = { path = "crates/apitorrent-utp" }
 apitorrent-auth = { path = "crates/apitorrent-auth" }
+apitorrent-webui = { path = "crates/apitorrent-webui" }
 
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }

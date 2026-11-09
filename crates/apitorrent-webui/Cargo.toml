@@ -1,0 +1,23 @@
+[package]
+name = "apitorrent-webui"
+description = "The apitorrent web UI, optionally embedded in the binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+# Embed the built web UI (`web/dist`, or `APITORRENT_WEB_DIST`) at compile time. The build
+# fails if it hasn't been built: run `bun run build` in `web/` first.
+embed = []
+
+[build-dependencies]
+brotli = "9"
+flate2 = "1"
+hex.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
