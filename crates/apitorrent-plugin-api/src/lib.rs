@@ -8,6 +8,8 @@
 //! - [`AppApi`]: what plugins may ask of apitorrent. `apitorrent-core` implements it.
 //! - [`PluginService`]: what the HTTP server asks of the plugin host. `apitorrent-plugins`
 //!   implements it.
+//! - [`SourceFetcher`]: fetching a `source` plugin's links with that plugin's grants.
+//!   `apitorrent-plugins` implements it; the core's rules use it.
 //!
 //! Keeping these here, apart from the V8 host, means only the host and the daemon link V8;
 //! the core and the server don't.
@@ -19,10 +21,12 @@ pub mod validate;
 
 mod app;
 mod service;
+mod sources;
 
 pub use apitorrent_types::plugins::*;
 pub use app::{AddOutcome, AppApi, AppError, AppEvent, TorrentControl};
 pub use service::{PluginError, PluginHttpRequest, PluginHttpResponse, PluginService};
+pub use sources::SourceFetcher;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -50,6 +54,8 @@ mod export {
             apitorrent_types::AddTorrentRequest::export_all(&cfg),
             crate::PluginCaller::export_all(&cfg),
             crate::PluginManifest::export_all(&cfg),
+            apitorrent_types::automation::ReleaseCandidate::export_all(&cfg),
+            apitorrent_types::automation::SubmitCandidatesOutcome::export_all(&cfg),
         ] {
             result.expect("export SDK types");
         }

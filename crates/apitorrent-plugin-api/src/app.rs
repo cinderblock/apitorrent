@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use ts_rs::TS;
 
+use apitorrent_types::automation::{ReleaseCandidate, SubmitCandidatesOutcome};
 use apitorrent_types::{AddTorrentRequest, TorrentDetail, TorrentId, TorrentState, TorrentSummary};
 
 use crate::BoxFuture;
@@ -75,4 +76,21 @@ pub trait AppApi: Send + Sync + 'static {
     fn remove(&self, id: TorrentId, delete_files: bool) -> BoxFuture<Result<(), AppError>>;
     /// A stream of events from now on. A receiver that falls behind skips ahead (`Lagged`).
     fn events(&self) -> broadcast::Receiver<AppEvent>;
+
+    /// Store release candidates from `source`, a plugin with the `source` role (the host
+    /// checks the role), for the core's rules. Submitting a candidate again updates it.
+    /// Implementations without rules refuse.
+    fn submit_candidates(
+        &self,
+        source: &str,
+        candidates: Vec<ReleaseCandidate>,
+    ) -> BoxFuture<Result<SubmitCandidatesOutcome, AppError>> {
+        let _ = (source, candidates);
+        Box::pin(async {
+            Err(AppError::new(
+                "unsupported",
+                "this server doesn't take release candidates",
+            ))
+        })
+    }
 }
