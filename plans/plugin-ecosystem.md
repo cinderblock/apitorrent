@@ -64,7 +64,18 @@ integrations:
 - **Pack lookups are triggered by "unregistered"**: a torrent whose tracker says it is gone,
   and which nothing supersedes yet, is offered to its adapter's `findPack`; a pack it returns
   is added next to it, library matching supersedes the single, and the next pass retires
-  it. *(mine)*
+  it. Gated by the existing `retireSuperseded` setting and by approving the adapter; a
+  separate core setting would mean touching `apitorrent-types/src/lib.rs`. *(mine)*
+- **M8's open question 1 (first-party plugins in the box), resolved:** `bun run
+  build:first-party` builds `plugins/*` into `dist/first-party-plugins/`; `apitorrentd`'s
+  `first-party-plugins` feature embeds them (a build script, like the web UI's `embed`); on
+  every start the daemon offers them through `PluginHost::offer_bundled`, which installs
+  each like an upload: new ones wait for approval and start disabled, a newer version
+  within the grants upgrades, one asking for more waits. Offered once per version, never
+  older than what's installed, never again after an admin uninstalls (an `offers` table in
+  `plugins.db`). Release and CI daemon builds use the feature. The embedding lives in
+  `apitorrentd` (no new crate) because only the daemon runs plugins. *(mine; M8 recommended
+  "yes, once release builds exist", which they do)*
 
 ## Plan / steps
 
@@ -78,10 +89,10 @@ integrations:
 5. ✅ Server: plugin-authenticated routes, cookies, the credentials check, `--plugin-listen`.
 6. ✅ `plugins/qbittorrent-api` with Bun tests on pinned *arr request fixtures, and a Rust end
    to end test (real core, auth, server and host).
-7. **(current)** TLS: DNS-01 propagation check, daemon flags, `plugins/cloudflare-dns`, mock-API and Pebble
-   tests.
-8. Bundled first-party plugins; `ci.yml` and `release.yml`.
-9. Docs (README, architecture, this plan), web UI capability wording, final checks.
+7. ✅ TLS: DNS-01 propagation check, daemon flags, `plugins/cloudflare-dns`, mock-API and
+   Pebble tests.
+8. ✅ Bundled first-party plugins; `ci.yml` and `release.yml`.
+9. ✅ Docs (README, architecture, this plan), web UI capability wording, final checks.
 
 ## Findings / gotchas
 
@@ -97,9 +108,30 @@ integrations:
   marker `SID` cookie.
 - **A category without a folder saves in the download directory** (qBittorrent's manual
   mode), which the Rust end-to-end test first got wrong.
-- `cargo fmt` reorders `mod` lines that master leaves unsorted in
-  `apitorrent-types/src/lib.rs`, `apitorrentd/src/main.rs` and `apitorrent-core/src/lib.rs`;
-  those hunks are kept out of these commits so the shared files only carry real changes.
+- **Master isn't rustfmt-clean**: `mod` lists in `apitorrent-types/src/lib.rs`,
+  `apitorrentd/src/main.rs` and `apitorrent-core/src/lib.rs` are unsorted, so `cargo fmt
+  --check` (CI) fails there. Fixed in a commit of its own (`91de713`, plus the main.rs
+  block in `4029f2c`); a one-line conflict with another branch's new `mod` is possible.
+- **Disk full again, 2026-11-09 1:50 AM PST (09:50Z)**: C: went from 52 GB free to 0 during
+  a build (this worktree's build dir was 23 GB of it). Removed only this worktree's
+  incremental cache (8.3 GB) and built with `CARGO_INCREMENTAL=0` from then on; others
+  freed space later (38 GB free at 2:05 AM PST).
+- **The propagation check's tests bind 127.0.0.2-4 on one UDP port** (referrals carry only
+  addresses, so the fake name servers share the port); that works on Windows. They skip
+  with a message if the addresses can't be bound.
+- **Pebble validated a wildcard and its base name end to end** through the real plugin host
+  and the mock Cloudflare, which mirrors records into `pebble-challtestsrv` (2026-11-09
+  2:00 AM PST). The first run failed only in cleanup: the plugin sent `Content-Type:
+  application/json` on body-less GETs, which axum's `Json` extractor refuses; the plugin
+  now sends it only with a body.
+- **Windows reserves ports** (Hyper-V/WSL ranges): the smoke test's fixed port 18743 was
+  refused with the daemon's own explanation; the script now picks free ports.
+- **Daemon smoke test** (2026-11-09 ~2:12 AM PST (10:12Z), everything on 127.0.0.1,
+  `--insecure-no-auth-loopback`, no DHT/LSD/uTP, script in the scratchpad): the three DNS-01
+  flag errors read right; four bundled plugins offered as awaiting approval; approving
+  `qbittorrent-api` left it disabled until enabled; its `--plugin-listen` port and URL base
+  answered `v4.6.7`/`2.9.3`; a magnet add landed with its category; `/-/approve` on the
+  plugin port was a 404; after uninstalling `rss` and restarting it wasn't offered again.
 - **Two `bun install`s at once fail** (`EEXIST: failed to link package`): the rss e2e tests
   raced in a fresh checkout. Serialised with a lock (`eee511e`).
 - Bash heredocs in this environment break on some quoting (a Python edit with `\r\n`
@@ -116,13 +148,27 @@ integrations:
 - [x] SDK types and harness (`3cb8897`)
 - [x] qbittorrent-api (`d871c3d`): 10 Bun tests (3 pinned client conversations), Rust end
   to end through the URL base and its own listener
-- [ ] DNS-01 and Cloudflare
-- [ ] Bundled plugins and workflows
-- [ ] Docs and final checks
+- [x] DNS-01 propagation check (`c547e34`): wire client, iterative lookup, 3 fake-DNS tests
+- [x] `cloudflare-dns` (`3273515`): 4 Bun tests; Rust tests against a mock API, and with
+  Pebble (ignored by default; passes) a wildcard certificate
+- [x] Daemon wiring (`4029f2c`): DNS-01 flags, `--plugin-listen`, credentials, tracker
+  adapters, bundled plugins (feature + build script + offers)
+- [x] Web UI wording (`b55fa71`), workflows, README, architecture, M8 plan
+- [x] Final checks: `cargo clippy --all-targets -D warnings`, `cargo test` (default
+  members), web `typecheck` and `test`, `bun run test:plugins`, the two Pebble tests
 
 ## Open questions for the user
 
-*(none yet)*
+1. **Try the compatibility layer against a real Sonarr/Radarr when convenient.** The
+   fixtures follow the clients' source, not captured traffic (no *arr install was allowed
+   here). Recommendation: point a test Sonarr at a dev daemon once; any mismatch becomes a
+   new pinned fixture.
+2. **qBittorrent usernames are ignored** (any value; the token carries the user).
+   Recommendation: keep it; checking it adds no secret and breaks clients set up with a
+   placeholder name.
+3. **Pack fetching follows `retireSuperseded`**, not a setting of its own. Recommendation:
+   keep it, and have each tracker adapter offer its own on/off setting (it downloads whole
+   packs), as the SDK docs advise.
 
 ## Things not to do
 

@@ -104,7 +104,7 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `apps/desktop` | Tauri 2 app. |
 | `web/` | The web UI (TypeScript, React, Vite, Bun), shared with the desktop app. |
 | `packages/plugin-sdk` | `@apitorrent/plugin-sdk`: types, a `bun test` harness and a build script for plugin authors. |
-| `plugins/` | First-party plugins: `rss` and `ubuntu-releases` so far; planned: qBittorrent API, Raspberry Pi images, ACME DNS providers. |
+| `plugins/` | First-party plugins: `rss`, `ubuntu-releases`, `qbittorrent-api` and `cloudflare-dns`; planned: Raspberry Pi images. Release daemons embed them (the `first-party-plugins` feature). |
 
 ## Engine
 
@@ -226,11 +226,20 @@ Resume state is a versioned, serialisable struct that the core stores.
     Challenges: **TLS-ALPN-01** (default; the HTTPS listener answers validators that
     offer only `acme-tls/1`, and closes those connections after the handshake) or
     **HTTP-01** (`--acme-challenge http-01`, answered by the plain-HTTP listener on
-    `--http-redirect-port`). **DNS-01** goes through a `dns-provider` plugin implementing
-    `apitorrent_tls::acme::DnsProvider` (publish a TXT record and resolve once it is
-    visible on the authoritative servers; remove it afterwards); it is required for
-    wildcards. The ACME state machine stays in the core, so the TLS listener owns its
-    certificates; only "publish this TXT record" is pluggable. The account key and the
+    `--http-redirect-port`). **DNS-01** (`--acme-challenge dns-01 --acme-dns-plugin <id>`)
+    goes through a `dns-provider` plugin, which `apitorrent_plugins::dns::PluginDnsProvider`
+    turns into an `apitorrent_tls::acme::DnsProvider` (publish a TXT record, remove it
+    afterwards); it is required for wildcards and needs no inbound port. After a record is
+    published, the ACME manager waits until every authoritative name server of the zone
+    serves it (found by iterative resolution from the root servers, following referrals
+    and a CNAME on the `_acme-challenge` name, asked directly so no resolver cache holds
+    a stale answer), up to `--acme-dns-timeout` (300 s), before telling the CA; or asks
+    the resolvers named by `--acme-dns-resolver` instead (restricted or split-horizon
+    networks). If no DNS server answers at all it waits a minute and lets the CA try. A
+    small DNS client of our own (`acme::wire`: UDP, TCP when truncated) does the asking.
+    The ACME state machine stays in the core, so the TLS listener owns its certificates;
+    only "publish this TXT record" is pluggable. Wildcard names don't become public hosts
+    or passkey origins; name the hosts under them with `--public-url`. The account key and the
     certificates live in `<data dir>/acme/<CA directory>/` (owner-only on Unix), with
     each certificate and its key in one file so it's replaced atomically. Renewal starts
     at 2/3 of the lifetime (less up to 1/30 of it as jitter); failures back off from 5
@@ -421,10 +430,12 @@ plugins.
   `WebAssembly` (its memories escape the budget), `SharedArrayBuffer` and `Atomics` are
   removed. An uncaught error in a timer, a handler or a promise is logged, not fatal.
 - **The `apitorrent` API** is the object passed to the plugin's `start(api)`: `torrents`
-  (list, get, add, pause, resume, set label, remove), `events.on` (torrent added, removed,
-  state changed, finished), `kv` (JSON values, 16 MiB per plugin), `schedule.every` (jobs
-  that don't overlap and resume their cadence after a restart), `settings` (with defaults
-  and change notifications), `http.route`, and `roles.provide`. The host reaches the app
+  (list, get, add, pause, resume, set label, seed limits, rate limits, queue moves,
+  remove), `app.info` (version, download directory, instance seed limits and queue),
+  `events.on` (torrent added, removed, state changed, finished), `kv` (JSON values, 16 MiB
+  per plugin), `schedule.every` (jobs that don't overlap and resume their cadence after a
+  restart), `settings` (with defaults and change notifications), `http.route`, `auth`
+  (sign-in with API tokens, below), and `roles.provide`. The host reaches the app
   through the `AppApi` trait, which the core implements; those calls run on the daemon's
   runtime, never on a plugin's thread.
 
@@ -445,12 +456,34 @@ plugin runs. Undeclared calls throw `NotCapable`.
   can reach the feeds an admin types in. A URL grants its origin; anything else is read as
   a pattern. Grants update when the settings change.
 - **`api`**: `torrents:read`, `torrents:add`, `torrents:control`, `torrents:remove`,
-  `events:read`. A plugin's save path is relative to the download directory; absolute
-  paths and `..` are refused.
+  `events:read`, `tokens:verify`. A plugin's save path is relative to the download
+  directory; absolute paths and `..` are refused.
+- **`tokens:verify`** (only with the `api-compat` role): `api.auth.login(token)` checks an
+  apitorrent API token a client presented (as a password, say) and returns an opaque
+  session id and the caller; `api.auth.session(id)` returns the caller while the session
+  lives. The host keeps the sessions, in memory: an hour unused ends one, a restart ends
+  all, and every use re-checks the token, so revoking or expiring it ends the session at
+  once. The plugin never holds a token, and nothing weaker than a token signs anyone in.
+  The caller carries `mayWrite` (false for viewers and read tokens), which a plugin must
+  honour on routes it authenticates itself.
 - **`routes`**, **`kv`**, **`schedule`**, **`roles`** (`source`, `api-compat`,
-  `dns-provider`, `tracker-adapter`).
+  `dns-provider`, `tracker-adapter`). A route may declare `"auth": "plugin"` (only with
+  `api-compat`): see "Management API and plugin routes".
 
-Plugins get **no** filesystem, process, environment or socket access, and no listeners (yet).
+Plugins get **no** filesystem, process, environment or socket access, and open no
+listeners. An admin can mount one plugin's routes at the root of an extra listener with
+`--plugin-listen <id>=<address>` (below); the daemon owns that socket.
+
+**Roles** the host calls into:
+
+- `source`: `candidates()` (release candidates for rules).
+- `dns-provider`: `setTxt({ domain, name, value })` and `removeTxt(…)`, for ACME DNS-01
+  (see "Transport").
+- `tracker-adapter`: declares `trackers` (host names, or `*.` and a domain) and provides
+  `isUnregistered({ torrent, name, tracker, message })` and optionally
+  `findPack({ torrent, name, infoHashV1, infoHashV2, tracker, files })` returning
+  `{ magnet }`, `{ torrent: bytes }` or `null` (see "Pack switchover").
+- `api-compat`: no calls; it permits routes the plugin authenticates and `tokens:verify`.
 
 **Approval and upgrades.** A new plugin waits for approval; the admin approves a specific
 version, and the grants become exactly what it declares. A new version within the grants
@@ -475,6 +508,19 @@ validates and the UI renders; unsupported keywords are refused at install. Top-l
   `Cookie` or `Authorization`, can't set cookies, and its responses carry
   `Content-Security-Policy: sandbox; default-src 'none'`, so it can't run script as this
   origin.
+- **Routes the plugin authenticates** (`"auth": "plugin"`, `api-compat` plugins only, and
+  said in words at approval) take requests without apitorrent sign-in, for other clients'
+  logins (qBittorrent's `auth/login` and `SID` cookie). The server asks the host how the
+  matched route authenticates before deciding; the host checks again before calling the
+  plugin. A request that did sign in (bearer token, session, loopback with auth off) still
+  names its caller, and a bad bearer token is still a 401. Such a route sees the request's
+  cookies other than apitorrent's session cookies, and may set host-only cookies (no
+  `Domain`) not named like apitorrent's. The Origin and Host checks apply as everywhere.
+- **`--plugin-listen <id>=<address>`** serves one plugin's routes at the root of an extra
+  listener (`/api/v2/…` there is `/api/v1/plugins/<id>/api/v2/…`), for clients that can't
+  take a URL base. It is the API's router with the path rewritten, so the host check,
+  authentication, sandboxing and listen rules are the same, and it shares built-in TLS.
+  Management paths (`/-/…`) and dot segments get a 404.
 - The UI's Plugins page (`/plugins`) installs, approves, enables, shows logs and permissions,
   and renders each plugin's settings form.
 - On disk: `<data dir>/plugins/plugins.db` (versions, grants, settings, KV, schedule) and
@@ -499,24 +545,38 @@ They prove the plugin API, and they ship in the box:
 - **`ubuntu-releases`** (built): new Ubuntu release torrents (LTS or all, chosen flavours
   and architecture) from `meta-release` and the release directories. Provides `source`:
   offers each release to rules (see "Automation"); adds directly only if asked.
-- **`qbittorrent-api`** (planned): a qBittorrent WebAPI v2 compatibility layer, so Sonarr,
-  Radarr, autobrr, cross-seed and friends work unchanged. Categories and tags map to
-  labels. Off by default. It fits the `api-compat` role and routes under
-  `/api/v1/plugins/qbittorrent-api/` (the *arr apps accept a URL base). What's still
-  missing:
-  - **Plugin-authenticated routes.** qBittorrent clients log in with `POST
-    /api/v2/auth/login` and a `SID` cookie, not our session or token, so `api-compat`
-    routes need an auth mode where the server lets the request through and the plugin
-    authenticates it, with Set-Cookie allowed for those routes only.
-  - **A way to check credentials**: an op that verifies an apitorrent API token (or a
-    password) and returns the user, so "login maps to scoped API tokens".
-  - **More of the torrent API**: files, trackers, peers, per-torrent limits, recheck,
-    reannounce, categories as labels, tags, and properties such as ratio and ETA, plus a
-    `torrents:read` that includes the detail the sync endpoint uses.
-  - **Optionally its own listener** (a `listeners` capability) for clients that can't set a
-    URL base.
+- **`qbittorrent-api`** (built): qBittorrent's Web API v2, so Sonarr, Radarr, Prowlarr,
+  autobrr, cross-seed and friends work unchanged. It answers as qBittorrent 4.6.7 (Web API
+  2.9.3) under `/api/v1/plugins/qbittorrent-api/api/v2/` (the *arr apps take
+  `/api/v1/plugins/qbittorrent-api` as their URL base) or at the root of a
+  `--plugin-listen` port. Off until approved and enabled.
+  - **Sign-in**: `auth/login` takes any username and an API token as the password
+    (`tokens:verify`); the `SID` cookie is the host's session id. Unauthenticated calls
+    get 403, which tells clients to sign in again. Writes need `mayWrite`.
+  - **Mapping**: categories are labels (a category's folder, kept by the plugin, is a path
+    inside the download directory); tags are kept by the plugin; `hash` is the v1
+    info-hash (or the truncated v2 one); states map to qBittorrent's (`stalledUP`,
+    `pausedDL`, `metaDL`, …); share limits map to seed limits (`-2` follows the instance,
+    `-1` none); `topPrio` and friends move the queue (409 without queueing, as
+    qBittorrent); save paths outside the download directory are refused.
+  - **Approximations**: `recheck` and `reannounce` succeed without doing anything,
+    force-start resumes, completion time and last activity are approximate, session
+    totals are all-time totals, and `sync/maindata` is always a full update.
+  - Tested by replaying pinned conversations of Sonarr (shared by Radarr and Prowlarr),
+    autobrr and cross-seed, multipart layouts included, and end to end in Rust.
 - **Sources** (planned): Raspberry Pi images, open-data publishers.
-- **DNS providers** for ACME DNS-01 (planned; the `dns-provider` role and HMAC are ready).
+- **`cloudflare-dns`** (built): ACME DNS-01 through Cloudflare's API with a token scoped
+  to the zone; finds the zone by walking up the name unless a zone id is set; quoted TXT
+  content; removes only the record with the given value.
+
+**Shipping them.** `bun run build:first-party` builds every `plugins/*` into
+`dist/first-party-plugins/`; `apitorrentd` built with the `first-party-plugins` feature
+(release builds) embeds them. On every start the daemon offers them to the host, which
+installs each as an upload would: a new plugin waits for approval (nothing runs until an
+admin approves its capabilities, and it starts disabled), a newer version within the
+grants upgrades, one asking for more waits as pending. A version is offered once; an older
+version than the installed one never is; a plugin an admin uninstalled is never offered
+again (the store remembers offers). Decided 2026-11-09, `plans/plugin-ecosystem.md`.
 
 ## Content library (cross-torrent file sharing)
 
@@ -640,9 +700,16 @@ singles. apitorrent automates the switch:
    reports it unregistered, or a rule or the user retires it. Its content stays, because
    the pack references it.
 3. Spotting "unregistered" is tracker-specific. Core ships a default set of
-   announce-failure patterns. A **tracker adapter** plugin can replace them, query the
-   tracker's API for packs that contain a torrent's files, and fetch the pack
-   automatically.
+   announce-failure patterns. A **tracker adapter** plugin replaces them for the trackers
+   it names (`isUnregistered`); one that doesn't answer retires nothing.
+4. **Pack lookups.** A torrent whose (adapted) tracker says it is gone, and which nothing
+   supersedes yet, is offered to the adapter's `findPack`, at most every six hours. The
+   pack it names (a magnet or `.torrent` bytes, fetched by the plugin under its own
+   network grants) is added next to it, with its label; library matching reuses the
+   files, the pack supersedes the single once its check proves them, and the next pass
+   retires the single. All of this follows the `retireSuperseded` setting. The core sees
+   adapters through `apitorrent_plugin_api::TrackerAdapters` (`apitorrent-core`'s
+   `adapters` module); the plugin host implements it.
 
 ## Resource limits
 

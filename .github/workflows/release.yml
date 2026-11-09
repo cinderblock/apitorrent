@@ -37,9 +37,24 @@ jobs:
           name: web-dist
           path: web/dist
 
+  # The first-party plugins the daemon ships (offered for approval at startup).
+  plugins:
+    name: First-party plugins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: bun install --frozen-lockfile
+      - run: bun run test:plugins
+      - run: bun run build:first-party
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: first-party-plugins
+          path: dist/first-party-plugins
+
   daemon:
     name: apitorrentd (${{ matrix.target }})
-    needs: web
+    needs: [web, plugins]
     permissions:
       contents: read
       id-token: write
@@ -59,6 +74,10 @@ jobs:
         with:
           name: web-dist
           path: web/dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: first-party-plugins
+          path: dist/first-party-plugins
       - name: Toolchain
         shell: bash
         run: |
@@ -66,7 +85,7 @@ jobs:
           rustup default stable
       - name: Build
         shell: bash
-        run: cargo build --release --locked -p apitorrentd --features embedded-ui --target ${{ matrix.target }}
+        run: cargo build --release --locked -p apitorrentd --features embedded-ui,first-party-plugins --target ${{ matrix.target }}
       - name: Package
         id: package
         shell: bash

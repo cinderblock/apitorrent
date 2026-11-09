@@ -81,11 +81,11 @@ minimal Plugins page. The design was decided earlier: `docs/architecture.md`, "P
 9. ✅ Web UI: `web/src/plugins/` (`76c5449`).
 10. ✅ Docs (README, architecture), daemon smoke test, workspace checks.
 
-**Follow-ups, not in this milestone:** `qbittorrent-api` (what it needs is listed in the
-architecture doc, "First-party plugins"), plugin-authenticated routes and listeners, a
-`raspberry-pi` source, DNS-provider plugins, ~~core rules consuming `source` candidates~~
-(done in M9, `plans/m9-automation.md`),
-shipping first-party bundles with the daemon (today they are built and installed by hand).
+**Follow-ups, not in this milestone:** `qbittorrent-api`, plugin-authenticated routes and
+listeners, DNS-provider plugins, tracker adapters and shipping first-party bundles with the
+daemon were done afterwards in `plans/plugin-ecosystem.md` (2026-11-09). Core rules
+consuming `source` candidates were done in M9 (`plans/m9-automation.md`). Still open: a
+`raspberry-pi` source.
 
 ## Findings / gotchas
 
@@ -162,9 +162,10 @@ shipping first-party bundles with the daemon (today they are built and installed
 
 ## Open questions for the user
 
-1. **First-party plugins in the box.** They are built and installed by hand today. Should
-   the daemon embed the built bundles and offer them on the Plugins page (installed but
-   not approved)? Recommendation: yes, once release builds exist (M10).
+1. ~~**First-party plugins in the box.**~~ Resolved 2026-11-09 (`plans/plugin-ecosystem.md`):
+   release daemons embed the bundles (the `first-party-plugins` feature) and offer them at
+   startup, installed but waiting for approval; one an admin uninstalls isn't offered
+   again.
 2. **`+crt-static` on Windows** (see the LNK4098 finding). Recommendation: leave it until
    CI; decide with the desktop app, which links V8 too.
 

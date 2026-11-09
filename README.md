@@ -15,8 +15,7 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 
 ## Highlights
 
-Most of this is built. Still to come: plugins (the sources, the qBittorrent API), rules over
-feeds, and distribution channels.
+Most of this is built. Still to come: rules over feeds, and distribution channels.
 
 - **Its own Rust engine.** BitTorrent v1, v2 and hybrid torrents, uTP, DHT, PEX, LSD,
   encryption and webseeds. The protocol core is deterministic, so it can be tested by
@@ -43,15 +42,17 @@ feeds, and distribution channels.
 - **A content library.** A new torrent reuses files other torrents already have (hard
   links, so no extra space), instead of downloading them again. A season pack picks up
   the single episodes you have; they keep seeding until their tracker drops them, then
-  retire on their own. Shared files are copy-on-write, so one torrent never changes
-  another's data.
+  retire on their own. A tracker-adapter plugin can tell what "dropped" means on its
+  tracker, and fetch the pack that replaced a deleted single. Shared files are
+  copy-on-write, so one torrent never changes another's data.
 - **Automation.** Plugins watch sources such as feeds and Ubuntu releases and offer what
   they find. Rules decide what to fetch (the latest N, with a label, a folder and only the
   files you want) and what to retire, keep a stable "latest" path, and signed channels push
   it to your other servers.
 - **Moving from Deluge.** Import a Deluge config directory: torrents keep their files,
   progress, labels, queue order, limits and totals, with no rehash and no re-download.
-- **qBittorrent WebAPI compatibility** (a plugin), for the *arr ecosystem.
+- **qBittorrent Web API compatibility** (a plugin), so Sonarr, Radarr, Prowlarr, autobrr
+  and cross-seed work unchanged, signing in with apitorrent API tokens.
 
 ## Development
 
@@ -66,6 +67,8 @@ cargo test                             # Rust tests, all but the desktop app (th
 cargo test -p apitorrent-desktop       # the desktop app: build web/ first, it embeds the UI
 cd web && bun install && bun test      # web UI tests (web/ has its own lockfile)
 bun run test:plugins                   # plugin SDK and plugin tests, from the root
+bun run build:first-party              # the bundles a release daemon ships
+cargo build -p apitorrentd --features first-party-plugins   # ...embedded, offered at start
 
 # Run the daemon with the web UI at http://localhost:8742
 cd web && bun run build && cd ..
@@ -127,6 +130,12 @@ current version keeps running.
   Offers items to rules, and adds them directly per feed (on by default).
 - `plugins/ubuntu-releases`: new Ubuntu release torrents as they come out, offered to rules
   (or added directly, if you ask).
+- `plugins/qbittorrent-api`: qBittorrent's Web API v2 (see below).
+- `plugins/cloudflare-dns`: ACME DNS-01 records through Cloudflare's API (see "HTTPS").
+
+Release builds ship these first-party plugins: on start the daemon installs any it hasn't
+offered before, and each waits on the Plugins page for an admin to approve what it asks
+for. One you uninstall isn't offered again. To build and install one by hand:
 
 ```sh
 cd plugins/rss && bun test && bun run build   # then install dist/rss-1.1.0.plugin.json
@@ -134,6 +143,28 @@ cd plugins/rss && bun test && bun run build   # then install dist/rss-1.1.0.plug
 
 Plugins live in `<data dir>/plugins`; `--no-plugins` turns them off. See "Plugins" in
 [`docs/architecture.md`](docs/architecture.md) for the design and the full API.
+
+### qBittorrent clients (Sonarr, Radarr, Prowlarr, autobrr, cross-seed)
+
+Approve and enable `qbittorrent-api` on the Plugins page, then add apitorrent to the client
+as a qBittorrent download client:
+
+- **Host and port**: apitorrent's, and **URL base** `/api/v1/plugins/qbittorrent-api`.
+  A client that can't take a URL base gets a port of its own:
+  `--plugin-listen qbittorrent-api=127.0.0.1:8080` serves the API at that port's root
+  (the same rules as `--api` apply to where it may listen).
+- **Username**: anything. **Password**: an apitorrent API token (Account page, API
+  tokens). A `read` token can watch but not change anything. Revoking the token signs
+  the client out at once. There is no other password: the token is the credential.
+- **Category**: a label. A category's folder must be inside the download directory, as
+  must any save path a client asks for; tags are kept by the plugin.
+
+It reports itself as qBittorrent 4.6.7 (Web API 2.9.3). What differs from qBittorrent:
+`recheck` and `reannounce` succeed without doing anything (apitorrent checks data when a
+torrent is added and announces on its own schedule), "force start" resumes, completion
+times are approximate, and `sync/maindata` always sends a full update. Adding by `.torrent`
+URL works for the hosts listed in the plugin's "download hosts" setting (a Prowlarr or
+Jackett address, say); magnet links and uploaded files always work.
 
 ## Rules, aliases and channels
 
@@ -242,8 +273,23 @@ apitorrentd --api 0.0.0.0:443 --http-redirect-port 80 \
 ```
 
 `--acme-directory` (and `--acme-directory-ca` for a root your OS doesn't trust) points at
-another CA, such as a private step-ca. Wildcard names need the DNS-01 challenge, which
-will come from a `dns-provider` plugin.
+another CA, such as a private step-ca.
+
+**DNS-01 and wildcards.** With `--acme-challenge dns-01` the CA checks a TXT record instead
+of connecting to the daemon, so no port needs to be reachable, and wildcard names work.
+A `dns-provider` plugin publishes the records: approve `cloudflare-dns`, give it an API
+token limited to the zone (Zone > DNS > Edit, and Zone > Zone > Read unless you also set
+the zone ID), enable it, and name it:
+
+```sh
+apitorrentd --api 0.0.0.0:443   --acme-domain example.com --acme-domain '*.example.com'   --acme-challenge dns-01 --acme-dns-plugin cloudflare-dns
+```
+
+After the plugin publishes a record, the daemon waits until every authoritative name server
+of the zone serves it before the CA looks (up to `--acme-dns-timeout`, 300 s). Where
+outbound DNS is blocked, or for split-horizon DNS, name resolvers to ask instead with
+`--acme-dns-resolver`. A wildcard isn't a host name the server answers to: name the hosts
+you use under it with `--public-url`.
 
 The names on the certificate become passkey hosts at `https://<name>:<port>`. If a port
 forward makes the public port differ from `--api`'s (say 443 outside, 8443 inside), pass
