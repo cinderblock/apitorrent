@@ -6,6 +6,7 @@ import type { GroupSettings } from "../api/generated/GroupSettings";
 import type { Settings } from "../api/generated/Settings";
 import { formatDateTime, fromKiB, toKiB } from "../format";
 import { SeedLimitsFields } from "./SeedLimitsFields";
+import { TlsSection } from "./TlsSection";
 
 const BAN_REASONS: Record<Ban["reason"], string> = {
   badData: "sent data that failed verification",
@@ -206,6 +207,7 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
               <SeedLimitsFields idPrefix="seed" value={settings.seedLimits} onChange={(seedLimits) => update({ seedLimits })} />
             </fieldset>
             <BansSection />
+            <TlsSection />
             <fieldset className="settings-section">
               <legend>Library</legend>
               <label className="check">

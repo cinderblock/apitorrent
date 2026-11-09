@@ -544,7 +544,9 @@ engine core stays in the main thread, because its pieces interlock.
 - [x] TLS: built-in rustls (ring) with bring-your-own certificates (reloaded), a
   self-signed certificate with pairing codes, and ACME (instant-acme) over TLS-ALPN-01
   and HTTP-01, with a DNS-01 plugin trait; tested against a local Pebble. See
-  `plans/tls.md`. Cherry-picked from `t3/ae0674d1` on 2026-11-08
+  `plans/tls.md`. Cherry-picked from `t3/ae0674d1` on 2026-11-08. Settings shows the
+  certificate, its pairing code and ACME progress (`GET /tls`); checked against a
+  `--tls-self-signed` daemon, the code matching its console banner
 - [x] M7 desktop app: Tauri 2 (`apps/desktop`, not a default workspace member),
   `apitorrent-client` (strict TLS: OS, private CA or a strict pin), storage-root markers
   and `GET /roots`, in-process API for Local mode, path mappings, tray, notifications,

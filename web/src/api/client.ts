@@ -6,6 +6,7 @@ import type { AddPasskeyFinishRequest } from "./generated/AddPasskeyFinishReques
 import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
 import type { Ban } from "./generated/Ban";
 import type { SeedLimits } from "./generated/SeedLimits";
+import type { TlsStatus } from "./generated/TlsStatus";
 import type { SessionStats } from "./generated/SessionStats";
 import type { AddTorrentResponse } from "./generated/AddTorrentResponse";
 import type { ApiError } from "./generated/ApiError";
@@ -98,6 +99,8 @@ export const api = {
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),
   setLimits: (id: string, limits: TorrentLimits) => request<void>("PUT", `/torrents/${enc(id)}/limits`, limits),
   setLabel: (id: string, label: string | null) => request<void>("PUT", `/torrents/${enc(id)}/label`, { label }),
+  /** The server's HTTPS: certificate, pairing code, ACME progress. */
+  tls: () => request<TlsStatus>("GET", "/tls"),
   /** A torrent's own seed limits; null follows its group's or the instance's. */
   setSeedLimits: (id: string, limits: SeedLimits | null) => request<void>("PUT", `/torrents/${enc(id)}/seed-limits`, { limits }),
   queueMove: (id: string, to: QueueMove) => request<void>("POST", `/torrents/${enc(id)}/queue`, { to }),
