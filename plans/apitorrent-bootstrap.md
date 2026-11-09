@@ -554,7 +554,16 @@ engine core stays in the main thread, because its pieces interlock.
 - [ ] M7 follow-ups: run the GUI once (needs your OK to use the screen, or a hidden
   desktop), build installers and test link registration, TLS for Local mode's LAN listener,
   a folder picker, share locators on the daemon
-- [ ] M8, M10
+- [x] M10 (written, not yet run): `.github/workflows/ci.yml` (web; Rust on Linux, Windows
+  and macOS with fmt, clippy, tests and an embedded-UI daemon build; the desktop app on
+  all three; ACME against Pebble v2.10.1), `release.yml` (on a `v*` tag: daemons for
+  x86_64 and aarch64 Linux, Windows and Apple silicon with the UI embedded, desktop
+  installers through the Tauri CLI, provenance attestations, a **draft** release for a
+  person to publish), `dependabot.yml`. Actions pinned by commit. `actionlint` passes.
+  They run only once the repo is on GitHub, which waits on you
+- [ ] Code signing for the desktop installers (Windows Authenticode, Apple Developer ID):
+  needs certificates as repository secrets
+- [ ] M8
 
 ## Open questions for the user
 

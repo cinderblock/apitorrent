@@ -1,0 +1,131 @@
+# Checks every push to master and every pull request: the web UI, the Rust workspace on
+# Linux, Windows and macOS, the desktop app, and ACME against a local Pebble.
+#
+# Actions are pinned by commit, with the release in a comment. Bump them together.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # CI builds once; incremental state is wasted cache space.
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  web:
+    name: Web UI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+      # The desktop app and release builds embed the built UI.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 7
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+      # The default members: everything but the desktop app, which has its own job.
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      # A release daemon with the UI compiled in.
+      - run: cargo build --locked -p apitorrentd --features embedded-ui
+
+  desktop:
+    name: Desktop app (${{ matrix.os }})
+    needs: web
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web-dist
+          path: web/dist
+      - name: Linux libraries for the webview and tray
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: desktop
+      - run: cargo clippy --locked -p apitorrent-desktop --all-targets -- -D warnings
+      - run: cargo test --locked -p apitorrent-desktop -p apitorrent-client
+
+  acme:
+    name: ACME against Pebble
+    runs-on: ubuntu-latest
+    env:
+      APITORRENT_PEBBLE_DIR: ${{ github.workspace }}/pebble
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Pebble
+        run: |
+          GOBIN="$APITORRENT_PEBBLE_DIR" go install github.com/letsencrypt/pebble/v2/cmd/pebble@v2.10.1
+          GOBIN="$APITORRENT_PEBBLE_DIR" go install github.com/letsencrypt/pebble/v2/cmd/pebble-challtestsrv@v2.10.1
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: acme
+      - run: cargo test --locked -p apitorrent-server --test acme_pebble -- --ignored

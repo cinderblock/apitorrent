@@ -12,7 +12,10 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 > [`plans/apitorrent-bootstrap.md`](plans/apitorrent-bootstrap.md) for progress, and
 > [`docs/architecture.md`](docs/architecture.md) for the design.
 
-## Highlights (planned)
+## Highlights
+
+Most of this is built. Still to come: plugins (the sources, the qBittorrent API), rules over
+feeds, and distribution channels.
 
 - **Its own Rust engine.** BitTorrent v1, v2 and hybrid torrents, uTP, DHT, PEX, LSD,
   encryption and webseeds. The protocol core is deterministic, so it can be tested by
@@ -50,10 +53,13 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 
 ## Development
 
-You need Rust (stable) and Bun.
+You need Rust (stable) and Bun. CI (`.github/workflows/ci.yml`) runs the same checks on
+Linux, Windows and macOS; `release.yml` builds the release binaries and installers from a
+version tag into a draft release.
 
 ```sh
-cargo test --workspace                 # Rust tests
+cargo test                             # Rust tests (all but the desktop app)
+cargo test -p apitorrent-desktop       # the desktop app: build web/ first, it embeds the UI
 cd web && bun install && bun test      # web UI tests
 
 # Run the daemon with the web UI at http://localhost:8742
