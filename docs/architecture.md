@@ -51,7 +51,33 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
     download folders in Explorer, Finder or your file manager (see "Remote file access").
 - **The web UI** is the same frontend as the desktop app, built once. Release builds of the server embed it (`apitorrent-webui`).
   Desktop-only features, such as revealing a file in Explorer, are behind a capability
-  check.
+  check (`isDesktop()` in `web/src/desktop/`), and live in that directory.
+
+### The desktop app (built in M7)
+
+- **The webview never talks to the network.** It loads only the bundled UI (navigation
+  elsewhere opens the default browser). Every API call goes through a Tauri command and
+  the sync WebSocket through a Tauri channel, so Rust does the TLS (with the profile's
+  trust setting) and adds the API token, which JavaScript never sees. The web app has one
+  seam for this, `web/src/api/transport.ts`.
+- **Remote mode signs in with a scoped API token, not a passkey.** A passkey's relying
+  party must be the page's own host, and the app's page is `tauri.localhost`. Loading the
+  daemon's origin instead would put TLS in the webview's hands (so pinned keys and private
+  CAs couldn't work), would need IPC for a remote origin, and still fails on macOS
+  (WKWebView allows WebAuthn only for an app's signed Associated Domains, which can't name
+  every user's server) and Linux (WebKitGTK has no WebAuthn). The token is made on the
+  daemon's Account page and kept in the OS keychain (`keyring`).
+- **Local mode** runs the core in the app process and talks to it through
+  `apitorrent_server::Embedded`: requests go straight through the router, the sync socket
+  over an in-memory HTTP connection, and nothing listens on a port. Such requests carry a
+  marker type no network request can, and are the machine's owner. Serving the UI on the
+  LAN starts a normal listener next to it, with the daemon's rules.
+- Profiles (`profiles.json`, atomic writes) are Remote (URL, trust, path mappings) or Local
+  (folders, peer port, optional LAN listener). The window closes to the tray; a second
+  launch hands its arguments (magnet links, `.torrent` files) to the first; finished
+  downloads raise a notification.
+- `apps/desktop/src-tauri` is a workspace member but not a default member, so plain
+  `cargo build`/`cargo test` skip Tauri.
 
 ## Crates and packages
 
@@ -254,6 +280,17 @@ certificate errors" switch. A server is trusted in one of three ways:
      keys whenever the operator rotates them; trust those through the platform verifier
      or a private CA instead.
 
+Built in `crates/apitorrent-client` (rustls with the ring provider). The pairing code is
+the SHA-256 of the server certificate's DER `SubjectPublicKeyInfo`, accepted as 64 hex
+digits (any grouping, `:`/`-`/space separators) or base64/base64url, with an optional
+`sha256/` prefix. Pairing succeeds only when the server presents exactly that key. The
+pinned verifier then accepts the pinned key, or else a chain the OS verifier accepts (so a
+server that later gets a CA-signed certificate keeps working); handshake signatures are
+always checked against the certificate's key. For a pinned key the host name and the
+certificate's dates aren't checked: the key is the identity. A private CA is checked by
+webpki with only that CA as a root. Plain `http://` is allowed only to loopback (an SSH
+tunnel), and the token is only ever sent to `/api/` paths.
+
 ### Authentication
 
 Built in M4 (`crates/apitorrent-auth`, wired into `apitorrent-server`). Credentials live in
@@ -333,7 +370,8 @@ from the torrent database.
   (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`) don't get the free pass, since a local
   proxy would make remote clients look local.
 - **Device pairing** (planned): the desktop thin client gets a device credential. It is a
-  bearer token bound to the pinned key, and can be revoked per device.
+  bearer token bound to the pinned key, and can be revoked per device. Until then the
+  desktop app uses an ordinary API token, pasted once and kept in the OS keychain.
 - **Roles**: `admin`, `user` (owns its torrents) and `viewer` are stored, and viewers may
   only read. The first user is the admin. Creating further users (invitations) is still to
   come.
@@ -581,6 +619,16 @@ hashes, never disk names.
   local path, so "open folder" never lands in the wrong place.
 - The desktop actions are open folder, reveal file and open file, using the mapped path and
   the OS shell (`explorer /select,`, `open -R`, `xdg-open`, or DBus FileManager1).
+
+Built in M7. The daemon's download directory is its storage root for now: it gets a random
+id per path (a moved root is a new root) and a marker `{"kind": "apitorrent-storage-root",
+"id": …}`, and `GET /api/v1/roots` lists the roots. A mapping may name a root, a directory
+above it, or one inside it; every root it relates to must have its marker at the matching
+local place. The app re-checks the mapping on every action, not just when it was saved,
+since shares get unmounted and remounted. Server-supplied paths with `.` or `..` parts, or
+with names that mean something else locally (`a:b` on Windows), are refused, and "open
+file" refuses programs and scripts (use "show in folder"). Share locators aren't built
+yet; suggestions offer each root's own path, filled in when it already works here.
 
 ## Automation
 

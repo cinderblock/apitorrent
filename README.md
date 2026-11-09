@@ -6,8 +6,8 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 > **Status: early development.** The engine downloads and seeds v1, v2 and hybrid
 > torrents from `.torrent` files and magnet links, finds peers through HTTP, HTTPS and UDP
 > trackers, the DHT, local discovery and peer exchange, over TCP or uTP with optional
-> encryption, and can be driven from the web UI, with passkey sign-in. The desktop app is
-> next. Don't point it at
+> encryption, and can be driven from the web UI, with passkey sign-in, or from the desktop
+> app (a thin client to a daemon, or the engine built in). Don't point it at
 > anything you care about yet. See
 > [`plans/apitorrent-bootstrap.md`](plans/apitorrent-bootstrap.md) for progress, and
 > [`docs/architecture.md`](docs/architecture.md) for the design.
@@ -80,6 +80,17 @@ For UI work, run `bun run dev` in `web/` alongside the daemon: Vite proxies `/ap
 and you sign in at http://localhost:5173 as usual.
 The UI's API types in `web/src/api/generated` are generated from the Rust types with
 `cargo test -p apitorrent-types`.
+
+The desktop app (`apps/desktop`, Tauri 2) is a workspace member but not a default one, so
+plain `cargo build` and `cargo test` skip its slow build; name it to include it. It embeds
+the built web UI, so build that first:
+
+```sh
+cd web && bun run build && cd ..
+cargo build -p apitorrent-desktop      # or: cargo test -p apitorrent-desktop
+cd apps/desktop/src-tauri && cargo tauri dev     # runs Vite and the app together
+cd apps/desktop/src-tauri && cargo tauri build   # installers in target/release/bundle
+```
 
 ## Signing in
 
@@ -180,6 +191,32 @@ it received. Pair only if the two match. The app then trusts exactly that key. B
 warn about a self-signed certificate (and won't offer passkeys behind the warning), so
 for browser use prefer your own certificate or ACME. The code is also shown by
 `GET /api/v1/tls`, which reports the current certificate and ACME progress.
+
+## The desktop app
+
+The desktop app keeps a list of **connections**, each one of two kinds:
+
+- **A server**: a thin client to a daemon (a seedbox, a NAS). It signs in with an **API
+  token**, not a passkey: passkeys belong to the server's own web address, and the app's
+  window isn't it. Make a token on the server's Account page and paste it in; it's kept
+  in the system keychain. The server's certificate is trusted in one of three ways, and
+  never skipped:
+  - it's from a public CA, or one this computer already trusts;
+  - it's from your own CA (import its certificate into the connection);
+  - **pairing**: enter the code the server shows (the SHA-256 of its public key), and the
+    app pins that key.
+- **This computer**: the engine runs inside the app. It can also serve the web UI to your
+  network, with the same rules as the daemon (sign-in required; plain HTTP only behind a
+  trusted proxy or if you accept the risk).
+
+**Path mappings** let a server connection open downloads in your file manager: map a
+folder on the server (`/srv/torrents`) to where this computer sees it (`\\nas\torrents`,
+`/mnt/torrents`). A mapping is used only after the app reads the server's
+`.apitorrent-root` marker through it, so "Show in folder" never opens the wrong place.
+
+Closing the window keeps apitorrent in the tray (downloads go on, and a notification says
+when one finishes); quit from the tray menu. Clicking a `magnet:` link or opening a
+`.torrent` file brings up the Add dialog; installers register both.
 
 ## Licence
 

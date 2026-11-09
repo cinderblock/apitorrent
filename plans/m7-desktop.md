@@ -61,7 +61,7 @@ Delegated stream from `plans/apitorrent-bootstrap.md`.
 
 ## Plan / steps
 
-1. Plan doc ← (this)
+1. Plan doc
 2. `crates/apitorrent-client`: trust kinds, pin parsing, pinned verifier, HTTP, sync,
    certificate probe; unit and loopback TLS tests.
 3. `.apitorrent-root` marker in core plus `GET /api/v1/roots` (separate commit).
@@ -73,24 +73,110 @@ Delegated stream from `plans/apitorrent-bootstrap.md`.
 7. Builds: clippy, tests, `cargo build -p apitorrent-desktop`; bun typecheck and tests.
 8. Docs: architecture, README, this plan.
 
+All eight are done. Follow-ups are under "Open questions" and "Not done".
+
+## Layout (for the merge)
+
+- `crates/apitorrent-client/` (new crate): `trust.rs` (Trust, SpkiHash, PinnedVerifier,
+  probe recorder), `remote.rs` (Remote: reqwest + tokio-tungstenite over tokio-rustls).
+- `crates/apitorrent-core/src/roots.rs` (new) plus 10 lines in core `lib.rs` (`mod roots`,
+  an `Inner.roots` field, two lines in `start`, `storage_roots()`); `rand` dep.
+- `crates/apitorrent-types`: `StorageRoot`, `RootMarker` (+ generated TS).
+- `crates/apitorrent-server`: `embed.rs` (new), one `.route("/roots", …)` line and two
+  `mod`/`pub use` lines in `lib.rs`, a `roots` handler and a `storage-roots` capability in
+  `routes.rs`, the in-process check in `authn.rs`, `tower` promoted to a normal dep.
+- `apps/desktop/src-tauri/` (new): `profiles.rs`, `mapping.rs`, `links.rs`, `finish.rs`
+  (pure, unit-tested), `backend.rs`, `local.rs`, `state.rs`, `notify.rs`, `commands.rs`,
+  `lib.rs`; `tauri.conf.json`, `capabilities/default.json`, `icons/` (from `icon.svg`).
+- Root `Cargo.toml`: `members` gains `apps/desktop/src-tauri`, new `default-members`, a
+  workspace dep for `apitorrent-client`.
+- `web/`: `src/api/transport.ts` (new seam), `src/desktop/*` (new), and small hooks in
+  `main.tsx`, `auth/AuthGate.tsx`, `App.tsx`, `components/AddTorrent.tsx` (an
+  `initialMagnet` prop), `components/DetailPane.tsx` (path actions), `api/client.ts` and
+  `api/sync.ts` (use the transport); `@tauri-apps/api` 2.12.4.
+
 ## Findings / gotchas
 
-*(filled in as work proceeds)*
+- **Passkeys in the webview: don't work**, see Decisions. Sources checked 2026-11-08:
+  WebKit bug 250912 / Apple forum threads (WKWebView allows WebAuthn only for entitled
+  browsers or matching Associated Domains); no WebAuthn in WebKitGTK.
+- **WebSockets can't go through a Tauri custom protocol**, so the sync socket runs in Rust
+  and its messages go to the page over a `tauri::ipc::Channel`. The web side wraps that in
+  a `SocketLike` (`DesktopSocket`) and fires real `MessageEvent`/`CloseEvent`s, so
+  `SyncClient` is unchanged; a 401 on the handshake becomes close code 4401.
+- **axum 0.8's `serve::Listener` trait** makes an in-memory server easy: a listener that
+  yields `tokio::io::duplex` ends from a channel. `ConnectInfo` can't be implemented for a
+  custom listener (orphan rule), so `embed.rs` inserts `ConnectInfo` and the in-process
+  marker with a `map_request` layer instead.
+- **reqwest hides the cause** of a TLS failure behind "error sending request"; the pin
+  mismatch travels as a `rustls::Error::InvalidCertificate(Other(..))` inside io errors.
+  `trust::find_pin_mismatch` walks `source()` and io `get_ref()` to find it, so the UI can
+  show the key the server actually presented.
+- **`tauri::generate_context!` needs `web/dist` to exist at compile time** (it embeds the
+  UI), so `cargo build -p apitorrent-desktop`, clippy and tests need `bun run build` in
+  `web/` first. CI must build the web UI before any `--workspace` cargo command.
+- **`beforeBuildCommand.cwd` is relative to the Tauri config's directory**
+  (`apps/desktop/src-tauri`), not to `apps/desktop`: `"../../web"` failed with
+  `The directory name is invalid. (os error 267)`; `"../../../web"` is right. (Verified
+  with `cargo tauri build --debug --no-bundle`; see the progress log.)
+- `cargo tauri icon` takes an SVG directly. Only the desktop sizes are committed (the
+  Android/iOS/Windows Store sets were deleted).
+- `keyring` 4.x: the `v1` default feature keeps the old `Entry::new(service, user)` API on
+  top of `keyring-core`, with the native stores (Credential Manager, Keychain, Secret
+  Service).
+- Rust 2024 edition: a returned `impl Fn` captures every argument lifetime; a test helper
+  needed `+ use<>`.
+- Tauri passes `State` by value, so clippy's `needless_pass_by_value` fires on sync
+  commands; allowed there with a comment.
+- The bash tool turned a `\\n` inside a Python heredoc into a real newline in TSX once;
+  check generated edits (or use the Edit tool).
 
 ## Progress log
 
-- [ ] 1 plan
-- [ ] 2 client crate
-- [ ] 3 root marker
-- [ ] 4 embedded transport
-- [ ] 5 desktop crate
-- [ ] 6 web
-- [ ] 7 builds
-- [ ] 8 docs
+Times are US Pacific (UTC alongside).
+
+- [x] 1 plan (2026-11-08 ~10:25 PM PST, 06:25Z)
+- [x] 2 client crate: 10 unit + 6 loopback TLS tests (pinned, wrong pin, private CA, other
+  CA, OS refusing self-signed, probe) (`8a1258e`)
+- [x] 3 root marker and `GET /roots`, with a server test (after autosquash: `2878061`)
+- [x] 4 embedded transport, with a server test (`79ea41d`)
+- [x] 5 desktop crate: 24 unit tests (profiles, mapping, links, finish watcher, navigation)
+- [x] 6 web: transport seam, profiles and mapping UI, path actions, link handling; 5 new
+  bun tests (24 total) with Tauri's `mockIPC`
+- [x] 7 builds: `cargo build -p apitorrent-desktop` and clippy clean; `cargo tauri build
+  --debug --no-bundle` (hook + embedding check)
+- [x] 8 docs: architecture (desktop, client trust, remote file access), README (desktop
+  app, development), this plan
+
+## Not done (follow-ups)
+
+- **Installers weren't built** (bundling is optional; no NSIS/WiX run). The bundle config
+  registers `magnet:` (deep-link plugin) and `.torrent` (fileAssociations); that path is
+  untested until someone runs `cargo tauri build`.
+- **The GUI was never launched** (rule: nothing on the user's screen). The Rust logic and
+  the web transport are unit-tested; the window, tray, notification and keychain paths are
+  only compiled. A hidden-desktop smoke run is a good next step.
+- **No end-to-end test against a TLS daemon**: the daemon's built-in TLS is being built in
+  parallel. The client is tested against rustls servers on 127.0.0.1 instead.
+- No native folder picker (paths are typed); `tauri-plugin-dialog` would add one.
+- Share locators (UNC/smb/nfs hints per root) aren't in the daemon yet; suggestions use
+  the root's own path.
+- Device credentials bound to the pinned key (architecture "Device pairing").
 
 ## Open questions for the user
 
-*(none yet)*
+1. **Pairing code format.** The client accepts the SPKI SHA-256 as hex (any grouping) or
+   base64. If the TLS stream shows a *short* code (the architecture says "a short pairing
+   code"), pairing needs the full hash some other way, or a short-code-to-key exchange.
+   Recommendation: have the daemon show the full hash grouped in fours (what
+   `SpkiHash`'s `Display` prints).
+2. **Pinned profiles also accept an OS-verified chain** (as the brief says: "the pinned
+   key or a properly verified chain"). If you'd rather a pin be strict (only that key),
+   it's a one-line change in `trust::verifier`.
+3. **Plain HTTP to a LAN daemon** (`--allow-insecure-lan`) is refused by the desktop
+   client; only loopback `http://` is allowed. Recommendation: keep it refused.
+4. **Local mode's sign-in policy for LAN users**: passwords (`fallback`) are on when no
+   public `https://` URL is set, since passkeys can't work on a LAN IP over HTTP. OK?
 
 ## Things not to do
 
