@@ -193,6 +193,26 @@ fn u64_of(v: Option<i64>) -> Option<u64> {
     v.and_then(|v| u64::try_from(v).ok())
 }
 
+/// Make the database and its WAL files readable by the owner only.
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+    let mut files = vec![path.to_path_buf()];
+    if let Some(name) = name {
+        files.push(path.with_file_name(format!("{name}-wal")));
+        files.push(path.with_file_name(format!("{name}-shm")));
+    }
+    for p in files {
+        if p.exists() {
+            let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) {}
+
 fn i64_of(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
 }
@@ -200,7 +220,11 @@ fn i64_of(v: u64) -> i64 {
 impl AutoDb {
     pub fn open(path: &Path) -> DbResult<Self> {
         let conn = Connection::open(path)?;
-        Self::init(conn)
+        let db = Self::init(conn)?;
+        // It holds subscription tokens for other instances: owner-only, like `auth.db`. On
+        // Windows the data directory is already per-user.
+        restrict_permissions(path);
+        Ok(db)
     }
 
     #[cfg(test)]

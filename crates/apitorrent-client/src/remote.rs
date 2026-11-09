@@ -21,6 +21,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 const USER_AGENT: &str = concat!("apitorrent-client/", env!("CARGO_PKG_VERSION"));
 
+/// The largest API response read into memory. A channel feed with many torrents is the
+/// biggest legitimate one; this leaves it plenty of room.
+pub const MAX_RESPONSE: usize = 256 * 1024 * 1024;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("{0}")]
@@ -35,6 +39,8 @@ pub enum ClientError {
     Status { status: u16, body: String },
     #[error("WebSocket error: {0}")]
     WebSocket(String),
+    #[error("the server's answer is larger than {0} bytes")]
+    TooLarge(usize),
 }
 
 impl ClientError {
@@ -261,11 +267,22 @@ impl Remote {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| ClientError::transport(&e))?
-            .to_vec();
+        // Read at most MAX_RESPONSE bytes: a broken or hostile server must not make us
+        // buffer without end.
+        if resp
+            .content_length()
+            .is_some_and(|n| n > MAX_RESPONSE as u64)
+        {
+            return Err(ClientError::TooLarge(MAX_RESPONSE));
+        }
+        let mut resp = resp;
+        let mut body = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(|e| ClientError::transport(&e))? {
+            if body.len() + chunk.len() > MAX_RESPONSE {
+                return Err(ClientError::TooLarge(MAX_RESPONSE));
+            }
+            body.extend_from_slice(&chunk);
+        }
         Ok(RawResponse {
             status,
             content_type,

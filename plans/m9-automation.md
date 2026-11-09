@@ -154,13 +154,14 @@ Seed limits (`apitorrent-core/src/seeding.rs`) already exist and are reused, not
 
 ## Open questions for the user
 
-1. **Plaintext subscription tokens.** A subscription's API token for the publisher is
-   stored in `automation.db` as is (it must be sent), never returned by the API.
-   Recommendation: fine for now (same trust as the data dir); an OS keychain later for the
-   desktop app.
-2. **A response size cap for `apitorrent-client`.** `Remote::request` reads whole bodies.
-   Recommendation: add a capped variant when the client crate is next touched; channels
-   are small (at most 1000 entries).
+*(none: both settled at merge, 2026-11-09)*
+
+1. **Subscription tokens stay in `automation.db`**, as the *arr apps keep their API keys.
+   The file and its WAL are now owner-only (0600) on Unix, like `auth.db`; on Windows the
+   data directory is per-user. An OS keychain can come later for the desktop app.
+2. **`apitorrent-client` caps responses at 256 MiB** (`MAX_RESPONSE`): it refuses an
+   announced larger body unread, and cuts off a chunked one while reading. Tests in
+   `crates/apitorrent-client/tests/limits.rs`.
 
 ## How to run it
 

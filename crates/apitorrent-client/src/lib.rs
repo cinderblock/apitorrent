@@ -8,5 +8,5 @@
 pub mod remote;
 pub mod trust;
 
-pub use remote::{ClientError, Probe, RawResponse, Remote, SyncSocket, Token, probe};
+pub use remote::{ClientError, MAX_RESPONSE, Probe, RawResponse, Remote, SyncSocket, Token, probe};
 pub use trust::{PinMismatch, SpkiHash, Trust, TrustError};
