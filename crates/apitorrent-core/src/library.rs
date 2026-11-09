@@ -40,6 +40,10 @@ pub struct Source {
     /// Where each file is on disk, or `None` where it isn't in the save path (deselected).
     pub paths: Vec<Option<PathBuf>>,
     pub have: Bitfield,
+    /// Fingerprints of the files (see `crate::fingerprint`), giving a `pieces root` to
+    /// files whose torrent has none. Empty when there are none. One is used only if the
+    /// file still has the size and time it was fingerprinted at.
+    pub fingerprints: Vec<Option<crate::fingerprint::Fingerprint>>,
 }
 
 impl Source {
@@ -60,6 +64,21 @@ pub struct Match {
     /// match is cloned or copied instead. Either way, only the new torrent's own check
     /// proves the bytes (see [`supersede_candidates`]).
     pub full: bool,
+    pub by: MatchedBy,
+}
+
+/// What a match rests on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchedBy {
+    /// The torrents' `pieces root`s agree. No I/O.
+    Root,
+    /// The new torrent's root agrees with a fingerprint of the file. No I/O.
+    Fingerprint,
+    /// Pieces read from the file checked out against the new torrent's hashes.
+    Pieces,
+    /// The same name and length, and no whole piece to check. The check after linking
+    /// settles it.
+    Name,
 }
 
 /// How a match was put in place.
@@ -122,7 +141,13 @@ pub fn find_matches(
                 continue;
             }
             if let Some(root) = f.pieces_root {
-                by_root.entry((root, f.length)).or_insert((si, fi));
+                by_root.entry((root, f.length)).or_insert((si, fi, false));
+            } else if let Some(fp) = s.fingerprints.get(fi).copied().flatten()
+                && fp.size == f.length
+            {
+                by_root
+                    .entry((fp.pieces_root, f.length))
+                    .or_insert((si, fi, true));
             }
             by_length.entry(f.length).or_default().push((si, fi));
         }
@@ -136,7 +161,21 @@ pub fn find_matches(
         let found = f
             .pieces_root
             .and_then(|r| by_root.get(&(r, f.length)).copied())
-            .map(|c| (c, true))
+            .filter(|&(si, fi, from_fingerprint)| {
+                // A fingerprint is only good while the file is unchanged since.
+                !from_fingerprint
+                    || sources[si].fingerprints[fi].is_some_and(|fp| {
+                        fp.current(sources[si].paths[fi].as_ref().expect("indexed with a path"))
+                    })
+            })
+            .map(|(si, fi, fp)| {
+                let by = if fp {
+                    MatchedBy::Fingerprint
+                } else {
+                    MatchedBy::Root
+                };
+                ((si, fi), true, by)
+            })
             .or_else(|| {
                 let name = f.path.last();
                 let mut cands = by_length.get(&f.length).cloned().unwrap_or_default();
@@ -151,8 +190,10 @@ pub fn find_matches(
                         .as_ref()
                         .expect("indexed only with a path");
                     match check_pieces(&hashes, &layout, f.offset, f.length, i, from) {
-                        Fit::Full => return Some(((si, fi), true)),
-                        Fit::Unknown if same_name => return Some(((si, fi), true)),
+                        Fit::Full => return Some(((si, fi), true, MatchedBy::Pieces)),
+                        Fit::Unknown if same_name => {
+                            return Some(((si, fi), true, MatchedBy::Name));
+                        }
                         Fit::Partial { passed, checked } if partial => {
                             #[allow(clippy::cast_precision_loss)]
                             let score = passed as f64 / checked as f64;
@@ -163,9 +204,9 @@ pub fn find_matches(
                         _ => {}
                     }
                 }
-                best.map(|(c, _)| (c, false))
+                best.map(|(c, _)| (c, false, MatchedBy::Pieces))
             });
-        if let Some(((si, fi), full)) = found {
+        if let Some(((si, fi), full, by)) = found {
             out.push(Match {
                 file: i,
                 source_id: sources[si].id.clone(),
@@ -174,6 +215,7 @@ pub fn find_matches(
                     .clone()
                     .expect("indexed only with a path"),
                 full,
+                by,
             });
         }
     }
@@ -402,6 +444,7 @@ mod tests {
             torrent: t.clone(),
             paths,
             have: Bitfield::full(u32::try_from(t.info.piece_count()).unwrap()),
+            fingerprints: Vec::new(),
         }
     }
 
@@ -520,6 +563,44 @@ mod tests {
     fn a_repack_is_a_partial_match_v2() {
         // The roots differ, so v2 pieces are checked against the piece layers.
         repack_case(Version::V2);
+    }
+
+    /// A v2 torrent of a file a v1 torrent has, under another name: a fingerprint finds it
+    /// without reading the file, and a stale one isn't trusted.
+    #[test]
+    fn a_fingerprint_lets_a_v2_torrent_match_a_v1_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = data(10_000, 6);
+        let s = build("old-name.bin", Version::V1, &[("old-name.bin", &bytes)]);
+        let mut src = source("s", &s, dir.path());
+        std::fs::write(src.paths[0].as_ref().unwrap(), &bytes).unwrap();
+        let new = build("new-name.bin", Version::V2, &[("new-name.bin", &bytes)]);
+        let targets = vec![dir.path().join("new").join("new-name.bin")];
+        // Without a fingerprint the file is found by reading it.
+        let m = find_matches(&new, &targets, &[4], std::slice::from_ref(&src), true);
+        assert_eq!(m[0].by, MatchedBy::Pieces);
+        let fp = crate::fingerprint::compute(
+            src.paths[0].as_ref().unwrap(),
+            0,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        src.fingerprints = vec![Some(fp)];
+        let m = find_matches(&new, &targets, &[4], std::slice::from_ref(&src), true);
+        assert_eq!(m.len(), 1);
+        assert!(m[0].full);
+        assert_eq!(
+            m[0].by,
+            MatchedBy::Fingerprint,
+            "with one, without reading it"
+        );
+
+        // Once the file changes, the fingerprint is stale and not trusted.
+        let mut changed = bytes.clone();
+        changed[0] ^= 1;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(src.paths[0].as_ref().unwrap(), &changed).unwrap();
+        assert!(find_matches(&new, &targets, &[4], &[src], true).is_empty());
     }
 
     #[test]

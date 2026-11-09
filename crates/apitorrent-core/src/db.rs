@@ -69,6 +69,17 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE torrents ADD COLUMN file_paths TEXT;
     ",
+    // 8: fingerprints of files on disk (see `fingerprint`), keyed by absolute path.
+    "
+    CREATE TABLE fingerprints (
+        path        TEXT PRIMARY KEY,
+        size        INTEGER NOT NULL,
+        mtime_ns    INTEGER NOT NULL,
+        pieces_root BLOB NOT NULL,
+        sha256      BLOB NOT NULL,
+        computed_at INTEGER NOT NULL
+    );
+    ",
 ];
 
 /// A torrent as stored.
@@ -391,6 +402,74 @@ impl Database {
             .prepare("SELECT torrent, by_torrent FROM superseded")?;
         stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect()
+    }
+
+    pub fn set_fingerprint(
+        &self,
+        path: &str,
+        fp: &crate::fingerprint::Fingerprint,
+    ) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO fingerprints (path, size, mtime_ns, pieces_root, sha256, computed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(path) DO UPDATE SET size = excluded.size,
+                 mtime_ns = excluded.mtime_ns, pieces_root = excluded.pieces_root,
+                 sha256 = excluded.sha256, computed_at = excluded.computed_at",
+            params![
+                path,
+                i64::try_from(fp.size).unwrap_or(i64::MAX),
+                fp.mtime_ns,
+                fp.pieces_root.as_bytes().as_slice(),
+                fp.sha256.as_slice(),
+                crate::fingerprint::now_secs(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Every stored fingerprint. Malformed rows are skipped.
+    pub fn fingerprints(&self) -> rusqlite::Result<Vec<(String, crate::fingerprint::Fingerprint)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, size, mtime_ns, pieces_root, sha256 FROM fingerprints")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+                r.get::<_, Vec<u8>>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (path, size, mtime_ns, root, sha) = row?;
+            let (Ok(root), Ok(sha256), Ok(size)) = (
+                <[u8; 32]>::try_from(root.as_slice()),
+                <[u8; 32]>::try_from(sha.as_slice()),
+                u64::try_from(size),
+            ) else {
+                continue;
+            };
+            out.push((
+                path,
+                crate::fingerprint::Fingerprint {
+                    size,
+                    mtime_ns,
+                    pieces_root: apitorrent_metainfo::Sha256Hash(root),
+                    sha256,
+                },
+            ));
+        }
+        Ok(out)
+    }
+
+    pub fn delete_fingerprints(&mut self, paths: &[String]) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
+        for p in paths {
+            tx.execute("DELETE FROM fingerprints WHERE path = ?1", [p])?;
+        }
+        tx.commit()
     }
 
     pub fn meta(&self, key: &str) -> rusqlite::Result<Option<String>> {

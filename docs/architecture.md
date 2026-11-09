@@ -477,8 +477,11 @@ still references it.
   alone can miss a changed region, and retiring a torrent on a guess would be wrong.
 - **v2 needs no bookends.** v2 files start on piece boundaries, so `pieces root` matches
   exactly. Piece layers then pinpoint which pieces differ when the roots don't match.
-- **Fingerprints for future torrents.** In idle time the library computes each file's v2
-  `pieces root` and full SHA-256, even for files that came from v1 torrents. A later v2 or
+- **Fingerprints for future torrents.** Built. In idle time the library computes the v2
+  `pieces root` and full SHA-256 of each complete file that came from a v1 torrent (one
+  read, rate-limited, default 16 MiB/s, paused while a torrent is checking). They are
+  stored by path with the file's size and modification time, and a stale one is never
+  used. A later v2 or
   hybrid torrent of the same file then matches with no I/O at all. v1 candidates are
   still found by length (and name) and then checked by hashing at the new torrent's
   alignment, which costs one read of the candidate file.

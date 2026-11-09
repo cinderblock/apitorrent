@@ -221,6 +221,17 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
                 />
                 Also reuse files that match only in places, such as a repack, and download just the parts that differ (needs a copy of the file)
               </label>
+              <div className="settings-grid">
+                <NumberField
+                  label="Fingerprint files in idle time"
+                  hint="KiB/s, 0 is off"
+                  value={toKiB(settings.library.fingerprintRate)}
+                  onChange={(v) => update({ library: { ...settings.library, fingerprintRate: fromKiB(v) } })}
+                />
+              </div>
+              <p className="hint muted">
+                Reads files that came from v1 torrents once, slowly, so a later v2 torrent of the same file is found without reading it again.
+              </p>
               <label className="check">
                 <input
                   type="checkbox"

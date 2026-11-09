@@ -489,7 +489,12 @@ engine core stays in the main thread, because its pieces interlock.
   `a_repack_downloads_only_what_changed` covers a change the sampling misses and one it
   catches: about one piece downloaded each time, the old file untouched, nothing
   superseded
-- [ ] Content library, next: idle fingerprints, tracker-adapter hook (after M8 lands)
+- [x] Idle fingerprints: `fingerprint.rs` (v2 root and SHA-256 in one read, rate-limited,
+  gives up if the file changes mid-read), DB migration 8 `fingerprints`, a background
+  pass every 5 minutes (skipped while checking), setting `fingerprintRate`, matches
+  tagged `MatchedBy::{Root, Fingerprint, Pieces, Name}`. Core test
+  `fingerprints_let_v2_torrents_reuse_v1_files`
+- [ ] Content library, next: tracker-adapter hook (after M8 lands)
 - [ ] Reflinks are untested on a filesystem that clones: this machine has only NTFS (C:,
   28 GB free on 2026-11-08). Test in CI on a loop-mounted Btrfs or XFS
 - [x] M9 (part): Deluge importer. `apitorrent-deluge` reads `state/*.torrent`,

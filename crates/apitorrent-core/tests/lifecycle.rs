@@ -750,6 +750,48 @@ async fn a_repack_downloads_only_what_changed() {
     core.shutdown().await.unwrap();
 }
 
+/// A v1 torrent's file is fingerprinted, the fingerprint survives a restart, and a later
+/// v2 torrent of the same file, under another name, reuses it with nothing downloaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fingerprints_let_v2_torrents_reuse_v1_files() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let data: Vec<u8> = (0..150_000u32)
+        .map(|i| u8::try_from((i * 11 + 3) % 251).unwrap())
+        .collect();
+    let v1 = TorrentBuilder::new("old.iso", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&[], data.clone()))
+        .build()
+        .unwrap();
+    std::fs::write(cfg.download_dir.join("old.iso"), &data).unwrap();
+    let old = core.add(add_bytes(&v1)).await.unwrap();
+    wait_for(&core, &old, TorrentState::Seeding).await;
+    assert_eq!(core.fingerprint_now().await, 1);
+    assert_eq!(core.fingerprint_now().await, 0, "nothing left to do");
+    core.shutdown().await.unwrap();
+    drop(core);
+
+    let core = Core::start(cfg.clone()).await.unwrap();
+    wait_for(&core, &old, TorrentState::Seeding).await;
+    assert_eq!(core.fingerprint_now().await, 0, "the fingerprint was kept");
+    let v2 = TorrentBuilder::new("new.iso", Version::V2)
+        .piece_length(32 * 1024)
+        .file(FileSource::from_bytes(&[], data.clone()))
+        .build()
+        .unwrap();
+    let new = core.add(add_bytes(&v2)).await.unwrap();
+    // No peers: it can only finish from the library.
+    wait_for(&core, &new, TorrentState::Seeding).await;
+    assert_eq!(
+        std::fs::read(cfg.download_dir.join("new.iso")).unwrap(),
+        data
+    );
+    assert_eq!(core.store().get(&new).unwrap().downloaded, 0);
+    core.shutdown().await.unwrap();
+}
+
 /// Importing from Deluge: data where Deluge left it (one file renamed there), progress
 /// from its resume data, labels and totals carried over.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

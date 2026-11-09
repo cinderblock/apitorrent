@@ -5,6 +5,7 @@
 //! layer over [`Core`].
 
 pub mod db;
+pub mod fingerprint;
 pub mod import;
 pub mod library;
 pub mod settings;
@@ -41,6 +42,8 @@ pub use crate::store::{Patch, Snapshot, Store};
 const REFRESH: Duration = Duration::from_secs(1);
 /// How often resume state is saved.
 const SAVE_EVERY: Duration = Duration::from_secs(30);
+/// How often the fingerprinter looks for files to fingerprint.
+const FINGERPRINT_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often superseded torrents are checked for retirement.
 const RETIRE_EVERY: Duration = Duration::from_secs(60);
 
@@ -176,6 +179,10 @@ struct Inner {
     /// Torrents whose library matches may supersede others, decided once their first
     /// check is done (see `settle_supersedes`).
     supersede_pending: Mutex<HashMap<TorrentId, Vec<library::SupersedeCandidate>>>,
+    /// Fingerprints by absolute path (see `fingerprint`), mirrored in the database.
+    fingerprints: RwLock<HashMap<PathBuf, fingerprint::Fingerprint>>,
+    /// Set at shutdown, so a fingerprint in progress stops reading.
+    stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -236,12 +243,16 @@ impl Core {
                 stop: Notify::new(),
                 settings: RwLock::new(settings),
                 supersede_pending: Mutex::new(HashMap::new()),
+                fingerprints: RwLock::new(HashMap::new()),
+                stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             }),
         };
         core.apply_session_settings();
         core.restore().await?;
+        core.load_fingerprints().await;
         core.apply_queue().await;
         tokio::spawn(core.clone().background());
+        tokio::spawn(core.clone().fingerprinter());
         Ok(core)
     }
 
@@ -499,51 +510,7 @@ impl Core {
         if !lib.enabled {
             return Vec::new();
         }
-        // A snapshot of every torrent's files: where they are and what's complete.
-        let entries: Vec<LibrarySnapshot> = self
-            .inner
-            .torrents
-            .read()
-            .expect("torrents lock poisoned")
-            .iter()
-            .filter(|(k, _)| k.as_str() != id)
-            .map(|(k, e)| {
-                (
-                    k.clone(),
-                    e.torrent.clone(),
-                    e.save_path.clone(),
-                    e.naming,
-                    e.file_paths.clone(),
-                    e.handle.clone(),
-                )
-            })
-            .collect();
-        let mut sources = Vec::with_capacity(entries.len());
-        for (sid, t, save, naming, custom, handle) in entries {
-            let Some(have) = handle.have().await else {
-                continue;
-            };
-            let placements = handle.placements();
-            let paths = custom
-                .map_or_else(
-                    || Self::disk_paths(&t, &save, naming),
-                    |c| {
-                        c.into_iter()
-                            .map(|p| p.iter().fold(save.clone(), |a, x| a.join(x)))
-                            .collect::<Vec<_>>()
-                    },
-                )
-                .into_iter()
-                .zip(placements)
-                .map(|(p, pl)| (pl == Placement::Save).then_some(p))
-                .collect();
-            sources.push(library::Source {
-                id: sid,
-                torrent: t,
-                paths,
-                have,
-            });
-        }
+        let sources = self.library_sources(Some(id)).await;
         if sources.is_empty() {
             return Vec::new();
         }
@@ -562,6 +529,7 @@ impl Core {
                             from = %m.source_id,
                             ?how,
                             full = m.full,
+                            by = ?m.by,
                             "reused a file from the library"
                         );
                         if how.shared() {
@@ -586,6 +554,228 @@ impl Core {
                 .insert(id.to_owned(), superseded);
         }
         linked
+    }
+
+    /// A snapshot of every torrent's files, except `except`'s: where they are, what's
+    /// complete, and their fingerprints.
+    async fn library_sources(&self, except: Option<&str>) -> Vec<library::Source> {
+        let entries: Vec<LibrarySnapshot> = self
+            .inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .iter()
+            .filter(|(k, _)| Some(k.as_str()) != except)
+            .map(|(k, e)| {
+                (
+                    k.clone(),
+                    e.torrent.clone(),
+                    e.save_path.clone(),
+                    e.naming,
+                    e.file_paths.clone(),
+                    e.handle.clone(),
+                )
+            })
+            .collect();
+        let mut sources = Vec::with_capacity(entries.len());
+        for (sid, t, save, naming, custom, handle) in entries {
+            let Some(have) = handle.have().await else {
+                continue;
+            };
+            let placements = handle.placements();
+            let paths: Vec<Option<PathBuf>> = custom
+                .map_or_else(
+                    || Self::disk_paths(&t, &save, naming),
+                    |c| {
+                        c.into_iter()
+                            .map(|p| p.iter().fold(save.clone(), |a, x| a.join(x)))
+                            .collect::<Vec<_>>()
+                    },
+                )
+                .into_iter()
+                .zip(placements)
+                .map(|(p, pl)| (pl == Placement::Save).then_some(p))
+                .collect();
+            // Whether each one is still current is checked only if a match would use it.
+            let fingerprints = {
+                let fps = self
+                    .inner
+                    .fingerprints
+                    .read()
+                    .expect("fingerprints lock poisoned");
+                if fps.is_empty() {
+                    Vec::new()
+                } else {
+                    paths
+                        .iter()
+                        .map(|p| p.as_ref().and_then(|p| fps.get(p).copied()))
+                        .collect()
+                }
+            };
+            sources.push(library::Source {
+                id: sid,
+                torrent: t,
+                paths,
+                have,
+                fingerprints,
+            });
+        }
+        sources
+    }
+
+    async fn load_fingerprints(&self) {
+        match self.db(|db| db.fingerprints()).await {
+            Ok(rows) => {
+                let mut map = self
+                    .inner
+                    .fingerprints
+                    .write()
+                    .expect("fingerprints lock poisoned");
+                for (path, fp) in rows {
+                    map.insert(PathBuf::from(path), fp);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not load file fingerprints"),
+        }
+    }
+
+    /// The files worth fingerprinting: complete, in a save path, with no `pieces root` from
+    /// their torrent, and no current fingerprint. Also drops fingerprints of files no
+    /// torrent has any more.
+    async fn fingerprint_work(&self) -> Vec<PathBuf> {
+        let sources = self.library_sources(None).await;
+        let mut wanted = Vec::new();
+        let mut known: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        for s in &sources {
+            let layout = apitorrent_engine::layout::Layout::from_info(&s.torrent.info);
+            for (i, (f, p)) in s.torrent.info.files.iter().zip(&s.paths).enumerate() {
+                let Some(p) = p else { continue };
+                known.insert(p.clone());
+                if f.is_pad() || f.length == 0 || f.pieces_root.is_some() {
+                    continue;
+                }
+                if !layout.file_pieces(i).all(|piece| s.have.get(piece)) {
+                    continue;
+                }
+                let current = self
+                    .inner
+                    .fingerprints
+                    .read()
+                    .expect("fingerprints lock poisoned")
+                    .get(p)
+                    .is_some_and(|fp| fp.current(p));
+                if !current {
+                    wanted.push(p.clone());
+                }
+            }
+        }
+        let gone: Vec<String> = {
+            let mut map = self
+                .inner
+                .fingerprints
+                .write()
+                .expect("fingerprints lock poisoned");
+            let gone: Vec<PathBuf> = map
+                .keys()
+                .filter(|p| !known.contains(*p))
+                .cloned()
+                .collect();
+            for p in &gone {
+                map.remove(p);
+            }
+            gone.iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        };
+        if !gone.is_empty() {
+            let _ = self.db(move |db| db.delete_fingerprints(&gone)).await;
+        }
+        wanted.sort();
+        wanted.dedup();
+        wanted
+    }
+
+    /// Fingerprint every file that needs it now, at the configured rate (or flat out with
+    /// `rate` 0 here meaning the setting). Returns how many were done. The background task
+    /// calls this; tests call it directly.
+    pub async fn fingerprint_now(&self) -> usize {
+        let rate = self.settings().library.fingerprint_rate;
+        let mut done = 0;
+        for path in self.fingerprint_work().await {
+            if self
+                .inner
+                .stopping
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
+            }
+            let stop = self.inner.stopping.clone();
+            let p = path.clone();
+            let result =
+                tokio::task::spawn_blocking(move || fingerprint::compute(&p, rate, &stop)).await;
+            match result {
+                Ok(Ok(fp)) => {
+                    let key = path.to_string_lossy().into_owned();
+                    if self
+                        .db(move |db| db.set_fingerprint(&key, &fp))
+                        .await
+                        .is_ok()
+                    {
+                        self.inner
+                            .fingerprints
+                            .write()
+                            .expect("fingerprints lock poisoned")
+                            .insert(path, fp);
+                        done += 1;
+                    }
+                }
+                Ok(Err(fingerprint::Error::Stopped)) => break,
+                Ok(Err(e)) => {
+                    tracing::debug!(path = %path.display(), error = %e, "fingerprint skipped");
+                }
+                Err(e) => tracing::warn!(error = %e, "fingerprint task failed"),
+            }
+        }
+        if done > 0 {
+            tracing::info!(files = done, "fingerprinted files for future v2 matches");
+        }
+        done
+    }
+
+    /// Fingerprints files in idle time: a pass every few minutes, skipped while the library
+    /// or fingerprinting is off, or while a torrent is being checked (both read the disk).
+    async fn fingerprinter(self) {
+        let mut tick = tokio::time::interval(FINGERPRINT_EVERY);
+        tick.tick().await;
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {}
+                () = self.inner.stop.notified() => return,
+            }
+            // A shutdown while a pass was running missed the notification above.
+            if self
+                .inner
+                .stopping
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return;
+            }
+            let lib = self.settings().library;
+            if !lib.enabled || lib.fingerprint_rate == 0 {
+                continue;
+            }
+            let checking = self
+                .inner
+                .torrents
+                .read()
+                .expect("torrents lock poisoned")
+                .values()
+                .any(|e| e.handle.stats().state == EngineState::Checking);
+            if checking {
+                continue;
+            }
+            self.fingerprint_now().await;
+        }
     }
 
     /// Record the supersessions that the new torrents' checks proved: a candidate counts
@@ -1914,6 +2104,9 @@ impl Core {
 
     /// Save resume state and stop every torrent.
     pub async fn shutdown(&self) -> Result<(), CoreError> {
+        self.inner
+            .stopping
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.inner.stop.notify_waiters();
         for p in self
             .inner

@@ -18,6 +18,12 @@ allowCopy: boolean,
  */
 partialReuse: boolean, 
 /**
+ * Fingerprint files from v1 torrents in idle time (their v2 root and SHA-256), so a
+ * later v2 torrent of the same file matches without reading it. At most this many
+ * bytes per second; 0 turns it off.
+ */
+fingerprintRate: number, 
+/**
  * Remove a torrent whose files another torrent has fully taken over (a season pack
  * replacing single episodes) once its tracker says it is unregistered. Its files stay.
  */

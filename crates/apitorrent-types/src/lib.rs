@@ -291,6 +291,11 @@ pub struct LibrarySettings {
     /// Reuse a file that matches only in places (a repack that changed one part, say): it
     /// is cloned or copied, and only the pieces that differ are downloaded.
     pub partial_reuse: bool,
+    /// Fingerprint files from v1 torrents in idle time (their v2 root and SHA-256), so a
+    /// later v2 torrent of the same file matches without reading it. At most this many
+    /// bytes per second; 0 turns it off.
+    #[ts(type = "number")]
+    pub fingerprint_rate: u64,
     /// Remove a torrent whose files another torrent has fully taken over (a season pack
     /// replacing single episodes) once its tracker says it is unregistered. Its files stay.
     pub retire_superseded: bool,
@@ -302,6 +307,7 @@ impl Default for LibrarySettings {
             enabled: true,
             allow_copy: true,
             partial_reuse: true,
+            fingerprint_rate: 16 * 1024 * 1024,
             retire_superseded: true,
         }
     }
