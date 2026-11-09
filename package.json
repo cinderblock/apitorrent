@@ -1,0 +1,11 @@
+{
+  "name": "apitorrent-workspace",
+  "private": true,
+  "description": "Bun workspace for the plugin SDK and first-party plugins. The web UI (web/) keeps its own lockfile.",
+  "workspaces": ["packages/*", "plugins/*"],
+  "scripts": {
+    "build:plugins": "bun run --filter './plugins/*' build",
+    "test:plugins": "bun test packages plugins",
+    "typecheck:plugins": "bun run --filter './packages/*' --filter './plugins/*' typecheck"
+  }
+}

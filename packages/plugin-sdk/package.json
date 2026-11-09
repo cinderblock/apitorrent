@@ -1,0 +1,24 @@
+{
+  "name": "@apitorrent/plugin-sdk",
+  "version": "0.1.0",
+  "description": "Types, a test harness and a build helper for apitorrent plugins",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts",
+    "./build": "./src/build.ts",
+    "./tsconfig.plugin.json": "./tsconfig.plugin.json"
+  },
+  "bin": {
+    "apitorrent-plugin-build": "./src/build.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}

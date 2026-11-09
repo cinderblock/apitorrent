@@ -1,0 +1,16 @@
+{
+  "//": "For plugin sources: only the globals the apitorrent runtime has (no DOM, no Node, no Bun). Extend it and set include to your src directory.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "files": ["./src/globals.d.ts"]
+}
