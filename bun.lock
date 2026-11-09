@@ -16,8 +16,21 @@
         "typescript": "^7.0.2",
       },
     },
+    "plugins/rss": {
+      "name": "@apitorrent/plugin-rss",
+      "version": "1.0.0",
+      "dependencies": {
+        "@apitorrent/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.4.4",
+        "typescript": "^7.0.2",
+      },
+    },
   },
   "packages": {
+    "@apitorrent/plugin-rss": ["@apitorrent/plugin-rss@workspace:plugins/rss"],
+
     "@apitorrent/plugin-sdk": ["@apitorrent/plugin-sdk@workspace:packages/plugin-sdk"],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],

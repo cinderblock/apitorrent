@@ -25,6 +25,7 @@ import type {
   Interval,
   Plugin,
   PluginCaller,
+  PluginCapabilities,
   PluginManifest,
   RoleImpls,
   RouteHandler,
@@ -76,7 +77,17 @@ function routeMatches(declared: string, path: string): boolean {
 
 export function createTestHost<S = Record<string, unknown>>(options: TestHostOptions<S>) {
   const manifest = options.manifest;
-  const caps = manifest.capabilities;
+  // Manifests on disk leave out what defaults to empty, as the host allows.
+  const declared: Partial<PluginCapabilities> = manifest.capabilities ?? {};
+  const caps: PluginCapabilities = {
+    network: declared.network ?? [],
+    networkFromSettings: declared.networkFromSettings ?? [],
+    api: declared.api ?? [],
+    routes: declared.routes ?? [],
+    kv: declared.kv ?? false,
+    schedule: declared.schedule ?? false,
+    roles: declared.roles ?? [],
+  };
   let settings = withDefaults(manifest.settings, options.settings ?? {}) as S;
   const settingsListeners = new Set<(s: S) => void>();
   const kv = new Map<string, unknown>();

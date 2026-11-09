@@ -1,0 +1,75 @@
+{
+  "id": "rss",
+  "name": "RSS feeds",
+  "version": "1.0.0",
+  "description": "Polls RSS, Atom and JSON feeds and adds the torrents and magnet links whose titles pass each feed's filters. Each item is added once.",
+  "author": "apitorrent",
+  "apiVersion": 1,
+  "capabilities": {
+    "networkFromSettings": ["feeds[].url", "downloadHosts[]"],
+    "api": ["torrents:add"],
+    "routes": [
+      { "path": "/status", "methods": ["GET"] },
+      { "path": "/poll", "methods": ["POST"] }
+    ],
+    "kv": true,
+    "schedule": true,
+    "roles": ["source"]
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "feeds": {
+        "type": "array",
+        "title": "Feeds",
+        "default": [],
+        "maxItems": 200,
+        "items": {
+          "type": "object",
+          "required": ["url"],
+          "properties": {
+            "name": { "type": "string", "title": "Name", "maxLength": 200 },
+            "url": { "type": "string", "format": "uri", "title": "Feed URL" },
+            "enabled": { "type": "boolean", "title": "Enabled", "default": true },
+            "include": {
+              "type": "string",
+              "title": "Include titles matching (regular expression, empty for all)",
+              "default": ""
+            },
+            "exclude": {
+              "type": "string",
+              "title": "Exclude titles matching (regular expression)",
+              "default": ""
+            },
+            "label": { "type": "string", "title": "Label", "maxLength": 100 },
+            "savePath": {
+              "type": "string",
+              "title": "Folder, relative to the download directory",
+              "maxLength": 500
+            },
+            "paused": { "type": "boolean", "title": "Add paused", "default": false }
+          }
+        }
+      },
+      "intervalMinutes": {
+        "type": "integer",
+        "title": "Check every (minutes)",
+        "minimum": 5,
+        "maximum": 1440,
+        "default": 15
+      },
+      "backfill": {
+        "type": "boolean",
+        "title": "Add items already in a feed when it is added (otherwise only new ones)",
+        "default": false
+      },
+      "downloadHosts": {
+        "type": "array",
+        "title": "Other hosts .torrent links may come from (URL or host, such as *.example.org)",
+        "default": [],
+        "maxItems": 50,
+        "items": { "type": "string" }
+      }
+    }
+  }
+}

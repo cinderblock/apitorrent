@@ -90,20 +90,29 @@ async function control(id, action) {
   unwrap(await op_at_torrent_control(String(id), JSON.stringify(action)));
 }
 
-async function runJob(name) {
+/**
+ * Run a scheduled job. A tick that arrives while the last run is still going is skipped;
+ * `runNow` (`wait`) waits for that run instead of starting a second one.
+ */
+async function runJob(name, wait = false) {
   const job = jobs.get(name);
   if (!job) return;
   if (job.running) {
+    if (wait) return await job.running;
     op_at_log(LEVEL.debug, `skipped scheduled job "${name}": the last run is still going`);
     return;
   }
-  job.running = true;
+  job.running = (async () => {
+    try {
+      await job.handler();
+    } catch (e) {
+      reportError(e, `scheduled job "${name}"`);
+    }
+  })();
   try {
-    await job.handler();
-  } catch (e) {
-    reportError(e, `scheduled job "${name}"`);
+    await job.running;
   } finally {
-    job.running = false;
+    job.running = null;
   }
 }
 
@@ -178,7 +187,7 @@ export const api = Object.freeze({
     every(name, interval, handler) {
       if (typeof handler !== "function") throw new TypeError("every() needs a handler function");
       op_at_schedule(String(name), intervalMs(interval));
-      jobs.set(String(name), { handler, running: false });
+      jobs.set(String(name), { handler, running: null });
     },
     cancel(name) {
       op_at_unschedule(String(name));
@@ -186,7 +195,7 @@ export const api = Object.freeze({
     },
     async runNow(name) {
       if (!jobs.has(String(name))) throw new TypeError(`no scheduled job "${name}"`);
-      await runJob(String(name));
+      await runJob(String(name), true);
     },
   }),
 
