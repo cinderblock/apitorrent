@@ -54,7 +54,7 @@ pub(crate) struct RequestCtx {
     pub meta: ClientMeta,
     /// The `Host` header (already checked by the guard).
     pub host: String,
-    /// Reached us over HTTPS (through a trusted proxy that says so).
+    /// Reached us over HTTPS: built-in TLS, or a trusted proxy that says so.
     pub secure: bool,
     pub principal: Option<Principal>,
 }
@@ -176,11 +176,15 @@ fn unauthorized(code: &str, message: &str) -> Response {
     r
 }
 
-pub(crate) fn is_websocket(headers: &HeaderMap) -> bool {
-    headers
-        .get(header::UPGRADE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+/// A WebSocket handshake: HTTP/1.1 `Upgrade: websocket`, or an HTTP/2 extended CONNECT
+/// (RFC 8441), which carries no `Upgrade` header. The API serves CONNECT only for the sync
+/// socket, so any CONNECT is treated as one.
+pub(crate) fn is_websocket(method: &Method, headers: &HeaderMap) -> bool {
+    *method == Method::CONNECT
+        || headers
+            .get(header::UPGRADE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
 pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
@@ -204,7 +208,8 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned),
         },
-        secure: forwarded_https(peer, headers, &s.proxies),
+        // Built-in TLS, or a trusted proxy that terminated it.
+        secure: s.tls.is_some() || forwarded_https(peer, headers, &s.proxies),
         host,
         principal: None,
     };
@@ -259,7 +264,8 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
             .into_response())
         }
         Some(p) => {
-            let reads = matches!(*req.method(), Method::GET | Method::HEAD);
+            // Opening the sync socket is a read, whether by GET (HTTP/1.1) or CONNECT (h2).
+            let reads = matches!(*req.method(), Method::GET | Method::HEAD | Method::CONNECT);
             if path.starts_with("/auth/") || (reads && p.may_read()) || (!reads && p.may_write()) {
                 Ok(())
             } else {
@@ -274,7 +280,7 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
     };
     // A browser always sends `Origin` on a WebSocket handshake; one riding on a cookie
     // without it isn't a page of ours.
-    if via_cookie && is_websocket(headers) && !headers.contains_key(header::ORIGIN) {
+    if via_cookie && is_websocket(req.method(), headers) && !headers.contains_key(header::ORIGIN) {
         return error(
             StatusCode::FORBIDDEN,
             "cross_origin",

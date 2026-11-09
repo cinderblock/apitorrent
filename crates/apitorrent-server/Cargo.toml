@@ -11,15 +11,18 @@ repository.workspace = true
 [dependencies]
 apitorrent-auth.workspace = true
 apitorrent-core.workspace = true
+apitorrent-tls.workspace = true
 apitorrent-types.workspace = true
 apitorrent-webui.workspace = true
-axum.workspace = true
+# http2: ALPN h2 on the built-in TLS listener.
+axum = { workspace = true, features = ["http2"] }
 futures-util.workspace = true
 ipnet = "2"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 
@@ -37,6 +40,14 @@ tempfile.workspace = true
 tokio-tungstenite.workspace = true
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# The TLS tests: a test CA, a strict rustls client, and raw HTTP/1.1 and HTTP/2.
+bytes.workspace = true
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+rcgen.workspace = true
+rustls.workspace = true
+# The ACME test runs Pebble.
+tokio = { workspace = true, features = ["process"] }
 
 [lints]
 workspace = true

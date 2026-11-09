@@ -15,14 +15,18 @@
 //! endpoints needs a session cookie or an API token, and so does the sync WebSocket.
 //!
 //! [`serve`] listens on a non-loopback address only with authentication enabled, and only
-//! behind a trusted reverse proxy or with `allow_insecure_lan`.
+//! behind a trusted reverse proxy or with `allow_insecure_lan`. [`serve_tls`] serves HTTPS
+//! itself (see the `tls` module), so it needs neither.
 
 mod auth_routes;
 mod authn;
 mod guard;
 mod routes;
 mod sync;
+mod tls;
 mod webui;
+
+pub use tls::{HANDSHAKE_TIMEOUT, MAX_HANDSHAKES, TlsServe, TlsServer, serve_tls};
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -146,6 +150,8 @@ pub enum ServeError {
     Reserved(SocketAddr),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("TLS: {0}")]
+    Tls(String),
 }
 
 #[derive(Clone)]
@@ -153,15 +159,23 @@ pub(crate) struct AppState {
     pub(crate) core: Core,
     pub(crate) auth: AuthMode,
     pub(crate) proxies: TrustedProxies,
+    /// Built-in TLS, when this server is the HTTPS endpoint.
+    pub(crate) tls: Option<tls::TlsCtx>,
 }
 
 /// Build the router. Exposed separately from [`serve`] for tests and embedding.
 pub fn router(core: Core, config: &ServerConfig) -> Router {
+    build_router(core, config, None)
+}
+
+pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::TlsCtx>) -> Router {
     let guard = guard::Guard::new(&config.public_hosts);
+    let https = tls.is_some();
     let state = AppState {
         core,
         auth: config.auth.clone(),
         proxies: config.trusted_proxies.clone(),
+        tls,
     };
     let api = Router::new()
         .route("/info", get(routes::info))
@@ -189,7 +203,9 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
         .route("/import/deluge", post(routes::import_deluge))
         .route("/bans", get(routes::bans).post(routes::ban))
         .route("/bans/{ip}", delete(routes::unban))
-        .route("/sync", get(sync::handler))
+        // CONNECT: the WebSocket over HTTP/2 (RFC 8441).
+        .route("/sync", get(sync::handler).connect(sync::handler))
+        .route("/tls", get(tls::status))
         .route("/auth/status", get(auth_routes::status))
         .route("/auth/setup/start", post(auth_routes::setup_start))
         .route("/auth/setup/finish", post(auth_routes::setup_finish))
@@ -248,6 +264,9 @@ pub fn router(core: Core, config: &ServerConfig) -> Router {
             );
         }
     }
+    if https {
+        app = app.layer(axum::middleware::from_fn(tls::hsts));
+    }
     app.layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CONTENT_SECURITY_POLICY,
@@ -276,7 +295,7 @@ pub async fn serve(
     config: ServerConfig,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), ServeError> {
-    check_listen(&config)?;
+    check_listen(&config, false)?;
     let listener = match tokio::net::TcpListener::bind(config.listen).await {
         Ok(l) => l,
         Err(e) if cfg!(windows) && e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -295,8 +314,8 @@ pub async fn serve(
     Ok(())
 }
 
-/// The rules for where the API may listen (see the crate docs).
-fn check_listen(config: &ServerConfig) -> Result<(), ServeError> {
+/// The rules for where the API may listen (see the crate docs). `tls`: built-in HTTPS.
+fn check_listen(config: &ServerConfig, tls: bool) -> Result<(), ServeError> {
     let loopback = config.listen.ip().is_loopback();
     if matches!(config.auth, AuthMode::DisabledOnLoopback) {
         if !loopback {
@@ -310,7 +329,7 @@ fn check_listen(config: &ServerConfig) -> Result<(), ServeError> {
              this machine has full control of the daemon. Use this for development only."
         );
     }
-    if loopback {
+    if loopback || tls {
         return Ok(());
     }
     if config.trusted_proxies.is_empty() && !config.allow_insecure_lan {

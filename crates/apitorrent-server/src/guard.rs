@@ -29,7 +29,7 @@ impl Guard {
     }
 
     /// Whether `authority` (`host` or `host:port`) names this server.
-    fn allows_authority(&self, authority: &str) -> bool {
+    pub(crate) fn allows_authority(&self, authority: &str) -> bool {
         let authority = authority.to_ascii_lowercase();
         let host = strip_port(&authority);
         self.hosts.iter().any(|h| h == host)
@@ -79,7 +79,7 @@ fn normalize_host(host: &str) -> String {
 }
 
 /// Remove a trailing `:port`, leaving bracketed IPv6 literals intact.
-fn strip_port(authority: &str) -> &str {
+pub(crate) fn strip_port(authority: &str) -> &str {
     if authority.starts_with('[') {
         return authority
             .find(']')
@@ -113,7 +113,7 @@ pub(crate) async fn check(State(guard): State<Guard>, req: Request, next: Next) 
     // can't be forged by another site and skip the CSRF checks.
     let bearer = headers.contains_key(header::AUTHORIZATION);
     let changes_state = !matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS);
-    if !bearer && (changes_state || is_websocket(headers)) {
+    if !bearer && (changes_state || is_websocket(req.method(), headers)) {
         if let Some(origin) = headers.get(header::ORIGIN) {
             let ok = origin.to_str().is_ok_and(|o| guard.same_origin(o, host));
             if !ok {
