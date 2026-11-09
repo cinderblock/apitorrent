@@ -115,10 +115,16 @@ engine core stays in the main thread, because its pieces interlock.
 - **Main thread meanwhile:** done: M3.2, content library step 8, seed limits, phone
   layout, CI, fuzzing, scale fixes, real-world v2 tests. Every delegated stream is
   merged.
-- **What remains needs you:** a real Sonarr or Radarr to try `qbittorrent-api` against
-  once; a real Deluge config to test the importer on; an OK to run
-  the desktop GUI once (idle 5 min, muted); code-signing certificates; a GitHub remote
-  and push so CI and releases run. Optional: a Raspberry Pi images source plugin.
+- **What remains (2026-11-09):**
+  - Your call on *spaces* (several separate "instances" in one daemon); see "Open
+    questions". You run two Deluge instances for this today, and both are to be imported.
+  - The Deluge importer against your two real configs (where they live is an open
+    question).
+  - Self-signed update signing (no Authenticode or Apple certificates for now).
+  - A GitHub remote and push so CI and releases run.
+  - Someone else with Sonarr or Radarr to try `qbittorrent-api` against (you don't run
+    them).
+  - Optional: a Raspberry Pi images source plugin.
 
 ## Findings / gotchas
 
@@ -629,7 +635,18 @@ them, restarts, and reports. On this machine (release build, NVMe):
   (330k to 1.1M runs per target). A CI job fuzzes each for 60 s on Linux. Windows needs
   MSVC's ASan DLL on `PATH` (it exits with `STATUS_DLL_NOT_FOUND` otherwise)
 - [ ] Code signing for the desktop installers (Windows Authenticode, Apple Developer ID):
-  needs certificates as repository secrets
+  needs certificates as repository secrets. **Not for now** (user, 2026-11-09): sign
+  updates with our own key instead
+- [ ] Self-signed update signing: a key of our own signs update manifests, and the app
+  (and daemon) check it before installing
+- [x] First desktop GUI run (2026-11-09, user OK'd the foreground): Remote profile against
+  a loopback daemon with `--tls-self-signed`: OS trust refused, pairing by code, save,
+  connect, live sync, add by dialog and by a `magnet:` link to a second launch (forwarded
+  to the running app), remove profile (token left the keychain). Fixed: pairing without
+  pressing Pair (`431d352`), hovered primary/danger buttons (`1ff4c01`), passkey hint on
+  HTTPS (`2a1bd6a`); added a DevTools switch for automated runs (`ad65877`). Logged: a
+  one-time API hang and toolbar wrapping (`ISSUES.md`). Local mode not run: it listens on
+  every interface, which brings up Windows Firewall's prompt
 - [x] M8 plugin host: `apitorrent-plugin-api` (contract), `apitorrent-plugins` (deno_core
   0.413 / V8 150.4, an isolate per plugin, heap and ArrayBuffer limits, watchdog, checked
   ops and `fetch` with strict TLS), `/api/v1/plugins` endpoints and plugin routes,
@@ -641,7 +658,20 @@ them, restarts, and reports. On this machine (release build, NVMe):
 
 ## Open questions for the user
 
-*(none right now)*
+1. **Spaces: several separate setups in one daemon** (asked 2026-11-09; you run two
+   Deluge instances to keep two parts of your hosting apart: storage, speed limits,
+   access). Recommendation: a *space* is a named partition with its own storage roots and
+   download folder, its own bandwidth/connection limits (a level between session and
+   group), its own labels, rules, channels and plugin settings, and its own members with
+   a role each (admin, user, viewer). Server admins see every space. Built on what exists
+   (storage roots, the limits hierarchy, roles). Questions inside it:
+   - Does each part need its own network identity (listen port, interface or VPN)?
+   - Who uses each part: different people, or you plus different apps?
+   - Should identical files be shared between the two parts' storage, or never?
+2. **Where are the two Deluge configs**, and how should I read them (a copy here, or SSH
+   to the seedbox)?
+3. **Update signing**: desktop app only, or the daemon too? Where the private key lives
+   (recommendation: generated here, kept outside the repo, later a GitHub secret).
 
 ## How to run it
 

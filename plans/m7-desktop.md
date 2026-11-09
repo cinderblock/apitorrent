@@ -154,9 +154,16 @@ Times are US Pacific (UTC alongside).
 - **Installers weren't built** (bundling is optional; no NSIS/WiX run). The bundle config
   registers `magnet:` (deep-link plugin) and `.torrent` (fileAssociations); that path is
   untested until someone runs `cargo tauri build`.
-- **The GUI was never launched** (rule: nothing on the user's screen). The Rust logic and
-  the web transport are unit-tested; the window, tray, notification and keychain paths are
-  only compiled. A hidden-desktop smoke run is a good next step.
+- ~~The GUI was never launched~~: first run 2026-11-09, with the user's OK, against a
+  loopback daemon (Remote profile, pairing, sync, adds, deep link, keychain). See the
+  bootstrap plan's progress log. Not yet run: Local mode, the tray, notifications.
+  - **How to drive it**: build with `cargo build -p apitorrent-desktop --features
+    tauri/custom-protocol` (a plain debug build loads the UI from Vite on :5173), start it
+    with `APITORRENT_WEBVIEW_DEBUG_PORT=9333`, and attach Playwright with
+    `connect_over_cdp("http://127.0.0.1:9333")`. A debug build registers itself as the
+    `magnet:` handler under `HKCU\Software\Classes\magnet`, and keeps data in
+    `%APPDATA%\apitorrent` and `%LOCALAPPDATA%\io.github.cinderblock.apitorrent`: remove
+    all three afterwards.
 - **No end-to-end test against a TLS daemon**: the daemon's built-in TLS is being built in
   parallel. The client is tested against rustls servers on 127.0.0.1 instead.
 - No native folder picker (paths are typed); `tauri-plugin-dialog` would add one.
