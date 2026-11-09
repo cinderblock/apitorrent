@@ -1,0 +1,40 @@
+[package]
+name = "apitorrent-tls"
+description = "Server certificates for apitorrent: bring-your-own, self-signed with pairing, and ACME"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytes.workspace = true
+data-encoding.workspace = true
+hex.workspace = true
+http = "1"
+http-body-util = "0.1"
+# ACME (RFC 8555). ring, not aws-lc-rs, and no bundled HTTP client: requests go through
+# our reqwest with the strict platform verifier (see `acme::http`).
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring"] }
+rand.workspace = true
+rcgen.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "time", "sync", "rt"] }
+tracing.workspace = true
+x509-parser = { version = "0.18", default-features = false }
+time = { version = "0.3", features = ["formatting"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "process"] }
+tokio-rustls.workspace = true
+
+[lints]
+workspace = true
