@@ -54,8 +54,12 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setError(null);
+    if (initial.mode === "remote" && trust.kind === "pinned" && trust.spkiSha256 === "") {
+      setError("Pair with the server's code (Pair, under \"Trusting the server's certificate\") before saving.");
+      return;
+    }
+    setBusy(true);
     const profile: Profile =
       initial.mode === "remote"
         ? { id: initial.id, name: name.trim(), mode: "remote", baseUrl: baseUrl.trim(), trust, mappings }
@@ -184,6 +188,18 @@ function TrustField({ baseUrl, trust, setTrust }: { baseUrl: string; trust: Trus
 
   const check = () =>
     run(async () => {
+      // Not paired yet: there is no key to check against. Pairing with the typed code checks
+      // the connection too.
+      if (trust.kind === "pinned" && trust.spkiSha256 === "") {
+        if (code.trim() === "") {
+          setMessage({ ok: false, text: "Type the pairing code the server shows, then press Pair." });
+          return;
+        }
+        const t = await desktop.pair(baseUrl.trim(), code);
+        setTrust(t);
+        setMessage({ ok: true, text: "Paired: the server's key matches the code. Save to keep it." });
+        return;
+      }
       const p = await desktop.probe(baseUrl.trim(), trust);
       setProbe(p);
       setMessage(p.accepted ? { ok: true, text: "The server's certificate is trusted with this setting." } : { ok: false, text: p.error ?? "Not trusted." });
@@ -248,6 +264,7 @@ function TrustField({ baseUrl, trust, setTrust }: { baseUrl: string; trust: Trus
           <div className="inline-edit">
             <input
               aria-label="Pairing code"
+              className="pairing-code"
               value={code}
               spellCheck={false}
               placeholder="Pairing code from the server"

@@ -85,10 +85,6 @@
   font-size: 12px;
 }
 
-button.danger {
-  color: var(--err);
-}
-
 .desktop-notices {
   position: fixed;
   right: 16px;
@@ -109,4 +105,11 @@ button.danger {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 4px 16px var(--shadow);
+}
+
+/* A pairing code is 24 characters (ABCD-EFGH-IJKL-MNOP-QRST): show all of it. */
+.inline-edit input.pairing-code {
+  width: 17rem;
+  max-width: 100%;
+  font-family: var(--mono);
 }
