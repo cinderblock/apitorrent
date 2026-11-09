@@ -113,13 +113,13 @@ engine core stays in the main thread, because its pieces interlock.
   - Plugin ecosystem: `qbittorrent-api` plugin, first-party plugins shipped with the
     daemon, `dns-provider` role for ACME DNS-01 (Cloudflare plugin, mock-tested only),
     `tracker-adapter` role in retirement. Plan: `plans/plugin-ecosystem.md`
-  - M9 automation: release candidates and rules, stable "latest" aliases, signed
-    distribution channels. Plan: `plans/m9-automation.md`
-- **Main thread meanwhile:** ~~M3.2 rest (embed `web/dist`, column chooser, slow-torrent
-  queue option)~~ done; now content library step 8.
-- **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
-  host and first plugins (qbittorrent-api, RSS, Ubuntu, Raspberry Pi, tracker adapters),
-  M9 Deluge importer, rules and channels, TLS (bring-your-own certificates, ACME), M10 CI.
+  - ~~M9 automation~~ done, merged. Plan: `plans/m9-automation.md`
+- **Main thread meanwhile:** done: M3.2, content library step 8, seed limits, phone
+  layout, CI, fuzzing, scale fixes, real-world v2 tests. Next, merge the plugin-ecosystem
+  stream when it reports.
+- **What remains needs you:** a real Deluge config to test the importer on; an OK to run
+  the desktop GUI once (idle 5 min, muted); code-signing certificates; a GitHub remote
+  and push so CI and releases run. Optional: a Raspberry Pi images source plugin.
 
 ## Findings / gotchas
 
@@ -562,7 +562,9 @@ them, restarts, and reports. On this machine (release build, NVMe):
   per-torrent limits, `PUT /torrents/{id}/seed-limits`, UI in Settings, groups and the
   details, Deluge import). Core test `seed_limits_pause_then_remove`
 - [x] M9 rest: rules over source candidates, stable "latest" aliases, distribution
-  channels (`plans/m9-automation.md`)
+  channels (`plans/m9-automation.md`). Cherry-picked from
+  `t3/m9-automation-rules-aliases-channels` on 2026-11-09; at merge the client got a
+  256 MiB response cap and `automation.db` became owner-only
 - [x] M3.2 (part): Peers tab (client, progress, rates, flags with a legend), Trackers tab
   with live status, status bar (`GET /stats`), bans list in Settings, wanted-piece
   progress
