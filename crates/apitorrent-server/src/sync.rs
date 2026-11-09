@@ -1,5 +1,10 @@
 //! The `/api/v1/sync` WebSocket: a snapshot, then patches.
 //!
+//! The snapshot holds every torrent (about 6 MiB of JSON for 10,000), and neither axum nor
+//! tungstenite offers `permessage-deflate`. So a client that asks with `?compress=gzip`
+//! gets a large snapshot as one gzip-compressed binary message instead, which browsers
+//! unpack with `DecompressionStream`. Patches stay plain text.
+//!
 //! The upgrade is authenticated like any other request. Because the socket can stay open
 //! for days, its credential is checked again whenever any session or token is revoked
 //! (sign-out, revocation, rotation on sign-in) and on every ping, which catches expiry. A
@@ -7,8 +12,10 @@
 
 use std::time::Duration;
 
+use std::io::Write as _;
+
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
@@ -21,6 +28,15 @@ use crate::{AppState, AuthMode};
 
 const PING_EVERY: Duration = Duration::from_secs(30);
 
+/// Messages smaller than this go out as text even when compression was asked for.
+const COMPRESS_FROM: usize = 32 * 1024;
+
+#[derive(Debug, serde::Deserialize)]
+pub(crate) struct SyncQuery {
+    /// `gzip`: send large messages gzip-compressed, as binary.
+    compress: Option<String>,
+}
+
 /// Close code: the credential the socket was opened with is no longer valid.
 pub const CLOSE_UNAUTHORIZED: u16 = 4401;
 
@@ -28,17 +44,27 @@ pub(crate) async fn handler(
     ws: WebSocketUpgrade,
     State(s): State<AppState>,
     Extension(ctx): Extension<RequestCtx>,
+    Query(q): Query<SyncQuery>,
 ) -> Response {
     let principal = ctx.principal;
-    ws.on_upgrade(move |socket| run(socket, s, principal))
+    let gzip = q.compress.as_deref() == Some("gzip");
+    ws.on_upgrade(move |socket| run(socket, s, principal, gzip))
 }
 
-fn encode(msg: &SyncMessage) -> Message {
-    Message::Text(
-        serde_json::to_string(msg)
-            .expect("sync messages always serialise")
-            .into(),
-    )
+fn encode(msg: &SyncMessage, gzip: bool) -> Message {
+    let json = serde_json::to_string(msg).expect("sync messages always serialise");
+    if gzip && json.len() >= COMPRESS_FROM {
+        let mut z = flate2::write::GzEncoder::new(
+            Vec::with_capacity(json.len() / 8),
+            flate2::Compression::fast(),
+        );
+        if z.write_all(json.as_bytes()).is_ok()
+            && let Ok(bytes) = z.finish()
+        {
+            return Message::Binary(bytes.into());
+        }
+    }
+    Message::Text(json.into())
 }
 
 fn still_valid(s: &AppState, principal: Option<&Principal>) -> bool {
@@ -52,14 +78,14 @@ fn still_valid(s: &AppState, principal: Option<&Principal>) -> bool {
     }
 }
 
-async fn run(socket: WebSocket, s: AppState, principal: Option<Principal>) {
+async fn run(socket: WebSocket, s: AppState, principal: Option<Principal>, gzip: bool) {
     let (mut tx, mut rx) = socket.split();
     let (snapshot, mut patches) = s.core.subscribe();
     let first = SyncMessage::Snapshot {
         revision: snapshot.revision,
         torrents: snapshot.torrents,
     };
-    if tx.send(encode(&first)).await.is_err() {
+    if tx.send(encode(&first, gzip)).await.is_err() {
         return;
     }
     let mut revoked = match &s.auth {
@@ -88,7 +114,7 @@ async fn run(socket: WebSocket, s: AppState, principal: Option<Principal>) {
                     }
                     Err(RecvError::Closed) => break,
                 };
-                if tx.send(encode(&msg)).await.is_err() {
+                if tx.send(encode(&msg, gzip)).await.is_err() {
                     break;
                 }
                 false
@@ -123,5 +149,44 @@ async fn run(socket: WebSocket, s: AppState, principal: Option<Principal>) {
                 .await;
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read as _;
+
+    use super::*;
+
+    fn patch(ids: usize) -> SyncMessage {
+        SyncMessage::Patch {
+            revision: 7,
+            upserted: Vec::new(),
+            removed: (0..ids).map(|i| format!("{i:040x}")).collect(),
+        }
+    }
+
+    #[test]
+    fn large_messages_are_gzipped_only_when_asked() {
+        let big = patch(2000);
+        let json = serde_json::to_string(&big).unwrap();
+        assert!(json.len() > COMPRESS_FROM);
+        let Message::Binary(bytes) = encode(&big, true) else {
+            panic!("a large message is binary when gzip was asked for");
+        };
+        assert!(
+            bytes.len() < json.len() / 2,
+            "{} of {}",
+            bytes.len(),
+            json.len()
+        );
+        let mut unpacked = String::new();
+        flate2::read::GzDecoder::new(&bytes[..])
+            .read_to_string(&mut unpacked)
+            .unwrap();
+        assert_eq!(unpacked, json);
+
+        assert!(matches!(encode(&big, false), Message::Text(_)), "not asked");
+        assert!(matches!(encode(&patch(3), true), Message::Text(_)), "small");
     }
 }

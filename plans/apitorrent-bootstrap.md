@@ -429,8 +429,11 @@ them, restarts, and reports. On this machine (release build, NVMe):
 - Restart: `Core::start` returned in 1.4 s with all 10,000 listed, and all were seeding
   5 ms later. The target is under 5 s.
 - Memory: about 315 MiB with 10,000 loaded (about 31 KiB per torrent).
-- `list()` in 5 ms. The UI's first sync snapshot is 6.2 MiB of JSON, which is large for
-  a phone on a slow link. Compression or a leaner first snapshot is a follow-up.
+- `list()` in 5 ms. The UI's first sync snapshot is 6.2 MiB of JSON. Neither axum nor
+  tungstenite has `permessage-deflate`, so a client that asks with `?compress=gzip` (the
+  browser, when it has `DecompressionStream`) gets messages of 32 KiB or more as gzip
+  binary. Checked headless: 300 torrents' snapshot arrived as one 16 KB binary frame,
+  about 12 times smaller, so roughly 0.5 MB for 10,000.
 - Adding was O(n) per add, so O(n²) in total. At 1,000 it was 15.5 ms per add, and at
   10,000 it ran past 10 minutes. There were two causes:
   - The content library asked every torrent's actor for its bitfield. It now asks only
