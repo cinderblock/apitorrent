@@ -202,7 +202,9 @@ engine core stays in the main thread, because its pieces interlock.
   ambiguous by one about which proof layers are omitted, so the verifier folds whatever
   uncles arrive and accepts only an exact root match (also trying with one redundant
   leading uncle dropped). We answer piece-layer requests and reject leaf-layer ones.
-  **Interop with libtorrent is untested**: check it in the interop matrix (M10).
+  Tested against real peers on 2026-11-09: a v2-only magnet link to libtorrent's
+  `bittorrent-v2-test` fetched all 11 piece layers from peers (qBittorrent 5.3, which is
+  libtorrent 2, plus BiglyBT and BitSiphon) and verified them, with 0 failures.
 - **Pieces waiting for their layer must stay *wanted*.** The first version held them at
   priority 0, and a v2 magnet torrent then reported itself finished before downloading
   anything. The picker now has a separate "held" state: wanted, but not started.
@@ -579,7 +581,9 @@ engine core stays in the main thread, because its pieces interlock.
   `bittorrent-v2-test` (v2 only) and `bittorrent-v2-hybrid-test`, with no trackers, so
   peers came from the DHT; first byte in about 7 s. About 43 MiB of each from qBittorrent
   5.2 and 5.3, BiglyBT 4.1, Transmission 4.0.5, BitSiphon and spill, with 0 verification
-  failures. Data deleted, and the temporary firewall rule removed (none left)
+  failures. The same as a v2-only magnet link: metadata from the DHT swarm, all 11
+  piece layers by BEP 52 hash requests, 0 failures. Data deleted, and the temporary
+  firewall rule removed (none left)
 - [x] PEX flags (BEP 11): peers we pass on carry what we know first-hand (encrypted, seed,
   uTP, reachable); a peer PEX lists without the uTP flag is dialed over TCP first, so it
   doesn't cost a 5 s uTP timeout. Unit test `pex_hints_order_the_transports`
