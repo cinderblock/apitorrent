@@ -174,17 +174,62 @@ Resume state is a versioned, serialisable struct that the core stores.
   honoured only from those peers. The client address is the right-most untrusted entry of
   `X-Forwarded-For`. The proxy must pass the `Host` header through, because the Host,
   Origin and passkey checks all use it. `--public-url https://…` names the public origin.
-- **Built-in TLS** (rustls) is for direct exposure. It supports:
-  - Bring your own certificate and key, reloaded on change.
-  - ACME HTTP-01 and TLS-ALPN-01, built in.
-  - ACME DNS-01 through a `dns-provider` plugin (Cloudflare, Route53, RFC 2136, …). The
-    ACME state machine stays in the core, so the TLS listener owns its certificates. Only
-    "publish this TXT record" is pluggable.
+- **Built-in TLS** (rustls, `crates/apitorrent-tls`) is for direct exposure. It runs on the
+  **ring** provider, always passed explicitly: ring builds on Windows MSVC with only a C
+  compiler, where aws-lc-rs needs CMake and NASM, and nothing depends on rustls's
+  process-wide default. ALPN offers `h2` and `http/1.1`; the sync WebSocket works over
+  both (HTTP/1.1 `Upgrade`, or HTTP/2 extended CONNECT per RFC 8441). Handshakes run off
+  the accept loop with a 10-second timeout and at most 512 in flight. The certificate is
+  resolved per handshake from a store that is swapped atomically, so a new certificate
+  applies to the next connection with no restart. Certificates come from one of:
+  - **Bring your own** (`--tls-cert`, `--tls-key`): a PEM chain (leaf first) and key.
+    The files are polled every 10 seconds (polling sees in-place rewrites, renames and
+    repointed symlinks on every platform and filesystem). A replacement must load, have a
+    matching key and be within its validity period; otherwise it is refused with a loud
+    error and the previous certificate keeps serving.
+  - **Self-signed** (`--tls-self-signed`): for LAN use with pinning. Its P-256 key is
+    kept in `<data dir>/tls/self-signed/` so the pairing code survives restarts; the
+    certificate (one year) is reissued with the same key 30 days before expiry or when
+    the names change.
+  - **ACME** (RFC 8555, through `instant-acme`): `--acme-domain` (repeatable),
+    `--acme-email` (optional), Let's Encrypt production by default or `--acme-staging`,
+    or any CA by `--acme-directory` (with `--acme-directory-ca` for a private CA's root).
+    Challenges: **TLS-ALPN-01** (default; the HTTPS listener answers validators that
+    offer only `acme-tls/1`, and closes those connections after the handshake) or
+    **HTTP-01** (`--acme-challenge http-01`, answered by the plain-HTTP listener on
+    `--http-redirect-port`). **DNS-01** goes through a `dns-provider` plugin implementing
+    `apitorrent_tls::acme::DnsProvider` (publish a TXT record and resolve once it is
+    visible on the authoritative servers; remove it afterwards); it is required for
+    wildcards. The ACME state machine stays in the core, so the TLS listener owns its
+    certificates; only "publish this TXT record" is pluggable. The account key and the
+    certificates live in `<data dir>/acme/<CA directory>/` (owner-only on Unix), with
+    each certificate and its key in one file so it's replaced atomically. Renewal starts
+    at 2/3 of the lifetime (less up to 1/30 of it as jitter); failures back off from 5
+    minutes, doubling, to 6 hours (1 hour within a week of expiry or with no
+    certificate). Each order uses a fresh key.
+- With built-in TLS:
+  - A non-loopback bind needs neither `--trusted-proxy` nor `--allow-insecure-lan`
+    (authentication is still required).
+  - Responses carry `Strict-Transport-Security: max-age=31536000`, except for loopback
+    names and IP literals: HSTS covers every port of a host, so on `localhost` it would
+    force the user's other local servers to HTTPS.
+  - Session cookies are `__Host-…; Secure`.
+  - Passkey relying parties follow the TLS origin: each ACME domain, and each
+    non-wildcard DNS name in a bring-your-own certificate (read at startup), becomes an
+    `https://name[:port]` public URL unless `--public-url` already names that host. Pass
+    `--public-url` yourself when a port forward makes the public port differ from the
+    listen port. A self-signed certificate adds none, since browsers refuse WebAuthn on a
+    page with a certificate error.
+  - `--http-redirect-port` adds a plain-HTTP listener on the API's address that answers
+    ACME HTTP-01 and redirects (308) everything else to HTTPS, only for host names the
+    server answers to (never an open redirect). Redirects go to the port of the first
+    `https` `--public-url`, or the listen port.
+  - `GET /api/v1/tls` (signed in) reports the certificate's source, validity, names, SPKI
+    SHA-256 and pairing code, and ACME progress.
 - A non-loopback bind needs authentication enabled, and plain HTTP there is refused unless
   `--trusted-proxy` is set or the operator passes `--allow-insecure-lan`. Either way the
-  daemon logs a loud warning recommending a TLS reverse proxy, and the UI shows a
-  persistent warning on any page reached over plain HTTP from a non-loopback host.
-  (Built-in TLS isn't implemented yet.)
+  daemon logs a loud warning recommending TLS, and the UI shows a persistent warning on any
+  page reached over plain HTTP from a non-loopback host.
 
 ### Client trust (desktop thin client, CLI, instance-to-instance)
 
@@ -197,6 +242,17 @@ certificate errors" switch. A server is trusted in one of three ways:
 3. **Pinned key, established by pairing.** The server shows a short pairing code, and the
    client verifies the server's SPKI hash against it out of band before pinning it. This
    replaces Deluge's accept-any-self-signed behaviour with something you actually checked.
+   - The pin is the SHA-256 of the leaf certificate's DER `SubjectPublicKeyInfo`. The
+     pairing code is the first 100 bits of it as RFC 4648 base32, in five groups of four
+     (`ABCD-EFGH-IJKL-MNOP-QRST`): matching it takes about 2^100 key generations. Compare
+     case-insensitively, ignoring `-` and spaces; the alphabet has no `0`, `1` or `8`, so
+     those may be read as `O`, `I` and `B`.
+   - The daemon prints the code at startup with `--tls-self-signed` (and logs it for any
+     certificate), and `GET /api/v1/tls` returns it, for a signed-in page reached over a
+     trusted path such as `https://localhost`.
+   - Pin self-signed keys only. ACME keys change on every renewal, and bring-your-own
+     keys whenever the operator rotates them; trust those through the platform verifier
+     or a private CA instead.
 
 ### Authentication
 
@@ -239,8 +295,8 @@ from the torrent database.
   (7 days by default) and absolute expiry (30 days), both configurable. Every sign-in,
   re-authentication and second-factor step issues a new id and ends the old one. Sign-out
   deletes it; users can list their sessions and end any of them.
-  - Over HTTPS (a trusted proxy reporting `X-Forwarded-Proto: https`) the cookie is
-    `__Host-apitorrent-session` with `Secure; HttpOnly; SameSite=Strict; Path=/`.
+  - Over HTTPS (built-in TLS, or a trusted proxy reporting `X-Forwarded-Proto: https`)
+    the cookie is `__Host-apitorrent-session` with `Secure; HttpOnly; SameSite=Strict; Path=/`.
   - Over plain HTTP (loopback, or a LAN with `--allow-insecure-lan`) it is
     `apitorrent-session` with the same attributes minus `Secure`: browsers reject
     `__Host-` without `Secure`, and Safari refuses `Secure` cookies on `http://localhost`

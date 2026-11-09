@@ -128,6 +128,58 @@ unless you pass `--allow-insecure-lan` and accept plain HTTP on your network (pa
 won't work there; use `--passwords fallback`). See "Security model" in
 [`docs/architecture.md`](docs/architecture.md) for the details.
 
+### Built-in HTTPS
+
+The daemon can also serve HTTPS itself. With built-in TLS a non-loopback `--api` needs no
+proxy and no `--allow-insecure-lan`; responses carry HSTS, and sign-in cookies are
+`Secure`. TLS is always strict: there is no option to accept a certificate that fails
+verification, on either end.
+
+**Your own certificate.** Give a PEM chain (leaf first) and its key. The files are
+checked every 10 seconds and a new certificate is picked up without a restart. If the
+new files don't load (bad PEM, a key that doesn't match, already expired) the daemon logs
+an error and keeps serving the previous certificate.
+
+```sh
+apitorrentd --api 0.0.0.0:443 \
+  --tls-cert /etc/apitorrent/fullchain.pem --tls-key /etc/apitorrent/privkey.pem
+```
+
+**Let's Encrypt (ACME).** The names must resolve to this machine, and the CA must reach
+it on port 443 (the default `tls-alpn-01` challenge) or on port 80 (`http-01`, which
+needs `--http-redirect-port`; that listener also redirects plain HTTP to HTTPS).
+Certificates renew on their own, two thirds of the way through their lifetime. Using
+`--acme-domain` accepts the CA's terms of service. Try a setup with `--acme-staging`
+first: its certificates aren't trusted, but its rate limits are generous.
+
+```sh
+apitorrentd --api 0.0.0.0:443 --http-redirect-port 80 \
+  --acme-domain torrents.example.com --acme-email you@example.com
+```
+
+`--acme-directory` (and `--acme-directory-ca` for a root your OS doesn't trust) points at
+another CA, such as a private step-ca. Wildcard names need the DNS-01 challenge, which
+will come from a `dns-provider` plugin.
+
+The names on the certificate become passkey hosts at `https://<name>:<port>`. If a port
+forward makes the public port differ from `--api`'s (say 443 outside, 8443 inside), pass
+`--public-url https://torrents.example.com` so passkeys and redirects use the public one.
+
+**Self-signed, for the desktop app on a LAN.** `--tls-self-signed` makes a certificate
+whose key is kept in the data directory, and prints a pairing code at startup:
+
+```
+ To pair the desktop app or CLI, check that it shows this code:
+
+   K3QZ-7XWA-PL2M-ND4R-B6TE
+```
+
+When the desktop app first connects, it shows the code it computed from the certificate
+it received. Pair only if the two match. The app then trusts exactly that key. Browsers
+warn about a self-signed certificate (and won't offer passkeys behind the warning), so
+for browser use prefer your own certificate or ACME. The code is also shown by
+`GET /api/v1/tls`, which reports the current certificate and ACME progress.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).

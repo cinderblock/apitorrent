@@ -107,8 +107,8 @@ engine core stays in the main thread, because its pieces interlock.
   when done):**
   - M8 plugin host (`apitorrent-plugins`, plugin SDK, rss and ubuntu-releases plugins,
     Plugins page). Plan: `plans/m8-plugins.md`
-  - Built-in TLS: bring-your-own certificates, ACME HTTP-01 and TLS-ALPN-01, DNS-01 hook,
-    self-signed with a pairing code. Plan: `plans/tls.md`
+  - ~~Built-in TLS: bring-your-own certificates, ACME HTTP-01 and TLS-ALPN-01, DNS-01 hook,
+    self-signed with a pairing code~~ done, merged. Plan: `plans/tls.md`
   - M7 Tauri desktop app: Remote mode first, then Local, with pinned-key trust and path
     mappings. Plan: `plans/m7-desktop.md`
 - **Main thread meanwhile:** ~~M3.2 rest (embed `web/dist`, column chooser, slow-torrent
@@ -516,7 +516,11 @@ engine core stays in the main thread, because its pieces interlock.
   sortable), Downloaded, Uploaded, Label, Save path. Fixed a NaN in the ratio sort when
   both torrents have an infinite ratio
 - [ ] Phone layout for the web UI (logged in `ISSUES.md`)
-- [ ] M7, M8, TLS, M10
+- [x] TLS: built-in rustls (ring) with bring-your-own certificates (reloaded), a
+  self-signed certificate with pairing codes, and ACME (instant-acme) over TLS-ALPN-01
+  and HTTP-01, with a DNS-01 plugin trait; tested against a local Pebble. See
+  `plans/tls.md`. Cherry-picked from `t3/ae0674d1` on 2026-11-08
+- [ ] M7, M8, M10
 
 ## Open questions for the user
 
