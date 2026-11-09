@@ -1,7 +1,7 @@
 //! `apitorrentd`: the headless apitorrent daemon.
 
-mod tls;
 mod plugins;
+mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
