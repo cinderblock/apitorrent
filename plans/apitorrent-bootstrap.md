@@ -400,6 +400,20 @@ engine core stays in the main thread, because its pieces interlock.
 - Port 18742 is inside a Windows reserved range on this machine. The daemon's error says
   so. Use 8799 or similar for smoke tests.
 
+### Piece-level reuse (2026-11-08)
+
+- **Sampling can't prove a file identical.** The first version classed a repack with
+  piece 9 changed as a full match: 8 samples over 20 pieces read pieces 0, 2, 5, 8, 10,
+  13, 16 and 19. That's safe for the data (the file is hard-linked, and the engine
+  unshares it before writing), but it would have marked the old torrent superseded, and
+  retiring it could follow. Supersession now waits for the new torrent's check.
+- A finished engine session doesn't dial peers, so `seed.add_peers(core)` never
+  connected in a test. Use a tracker that hands out the seeder's address
+  (`tracker_with_peer` in the core tests).
+- Supersession candidates are kept in memory only. If the daemon restarts during the
+  new torrent's first check, the old torrent is simply not marked. Harmless, since it
+  keeps seeding.
+
 ## Progress log
 
 - [x] Research the engine options and prior art
@@ -468,7 +482,16 @@ engine core stays in the main thread, because its pieces interlock.
   for linked files, DB migration 6 (`linked`, `superseded` table), retirement every 60 s,
   settings and UI. A season pack replacing two single episodes finished with nothing
   downloaded (core test `a_pack_reuses_and_supersedes_single_episodes`)
-- [ ] Content library, next: piece-level reuse, fingerprints, reflinks, tracker adapters
+- [x] Content library: piece-level reuse (8-piece sampling; full matches hard-linked,
+  partial ones cloned or copied; the check keeps what verifies), reflinks (`reflink-copy`,
+  also for the engine's unshare step), supersession decided after the new torrent's check
+  (`settle_supersedes`). Setting `partialReuse`, on by default. Core test
+  `a_repack_downloads_only_what_changed` covers a change the sampling misses and one it
+  catches: about one piece downloaded each time, the old file untouched, nothing
+  superseded
+- [ ] Content library, next: idle fingerprints, tracker-adapter hook (after M8 lands)
+- [ ] Reflinks are untested on a filesystem that clones: this machine has only NTFS (C:,
+  28 GB free on 2026-11-08). Test in CI on a loop-mounted Btrfs or XFS
 - [x] M9 (part): Deluge importer. `apitorrent-deluge` reads `state/*.torrent`,
   `torrents.fastresume`, the `torrents.state` pickle (safe unpickler; fixture made by
   Python), `label.conf` and `core.conf`. `Core::import_deluge` keeps files where they are

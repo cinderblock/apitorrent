@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+reflink-copy.workspace = true
 apitorrent-bencode.workspace = true
 apitorrent-dht.workspace = true
 apitorrent-mse.workspace = true

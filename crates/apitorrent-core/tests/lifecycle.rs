@@ -529,6 +529,40 @@ async fn unregistered_tracker() -> String {
     format!("http://{addr}/announce")
 }
 
+/// A tracker that hands out one peer (an IPv4 address) to everyone.
+async fn tracker_with_peer(peer: std::net::SocketAddr) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let std::net::SocketAddr::V4(v4) = peer else {
+        panic!("IPv4 only")
+    };
+    let mut compact = v4.ip().octets().to_vec();
+    compact.extend_from_slice(&v4.port().to_be_bytes());
+    let mut body = b"d8:intervali60e5:peers6:".to_vec();
+    body.extend_from_slice(&compact);
+    body.push(b'e');
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let body = body.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+            });
+        }
+    });
+    format!("http://{addr}/announce")
+}
+
 fn add_bytes(bytes: &[u8]) -> AddTorrentRequest {
     AddTorrentRequest {
         source: AddSource::TorrentFile {
@@ -598,6 +632,13 @@ async fn a_pack_reuses_and_supersedes_single_episodes() {
         0,
         "nothing downloaded"
     );
+    // Supersession waits for the pack's check to prove the files, then lands within a
+    // refresh.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while core.store().get(&s2).unwrap().superseded_by.is_none() {
+        assert!(tokio::time::Instant::now() < deadline, "never superseded");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(
         core.store().get(&s1).unwrap().superseded_by.as_deref(),
         Some(pack.as_str())
@@ -629,6 +670,83 @@ async fn a_pack_reuses_and_supersedes_single_episodes() {
         core.store().get(&pack).unwrap().state,
         TorrentState::Seeding
     );
+    core.shutdown().await.unwrap();
+}
+
+/// A repack that changed one piece reuses the rest of the old file: only that piece is
+/// downloaded, the old torrent's file is untouched, and the repack doesn't supersede the
+/// old torrent, since their files differ. Two variants: the changed piece is one the
+/// sampling misses (the file is hard-linked, and the engine unshares it before writing),
+/// and one it catches (the file is copied).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repack_downloads_only_what_changed() {
+    use apitorrent_engine::{AddTorrent, Session};
+
+    const PIECE: usize = 16 * 1024;
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let old: Vec<u8> = (0..PIECE * 20)
+        .map(|i| u8::try_from((i * 13 + 5) % 251).unwrap())
+        .collect();
+    let single = TorrentBuilder::new("show.mkv", Version::V1)
+        .piece_length(PIECE as u64)
+        .file(FileSource::from_bytes(&[], old.clone()))
+        .build()
+        .unwrap();
+    std::fs::write(cfg.download_dir.join("show.mkv"), &old).unwrap();
+    let s = core.add(add_bytes(&single)).await.unwrap();
+    wait_for(&core, &s, TorrentState::Seeding).await;
+
+    let seeder = Session::start(SessionConfig {
+        listen: "127.0.0.1:0".parse().unwrap(),
+        ..SessionConfig::default()
+    })
+    .await
+    .unwrap();
+    let tracker = tracker_with_peer(seeder.listen_addr()).await;
+
+    // Of 20 pieces, the sampling reads 0, 2, 5, 8, 10, 13, 16 and 19.
+    for (dir, changed) in [("Repack A", 9usize), ("Repack B", 10)] {
+        let mut new = old.clone();
+        for b in &mut new[PIECE * changed..PIECE * (changed + 1)] {
+            *b = b.wrapping_add(1);
+        }
+        let bytes = TorrentBuilder::new(dir, Version::V1)
+            .piece_length(PIECE as u64)
+            .file(FileSource::from_bytes(&["show.mkv"], new.clone()))
+            .tracker_tier(vec![tracker.clone()])
+            .build()
+            .unwrap();
+        let torrent =
+            std::sync::Arc::new(apitorrent_metainfo::Torrent::from_bytes(&bytes).unwrap());
+        let seed_dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(seed_dir.path().join(dir)).unwrap();
+        std::fs::write(seed_dir.path().join(dir).join("show.mkv"), &new).unwrap();
+        let seed = seeder
+            .add_torrent(AddTorrent::new(torrent, seed_dir.path().to_path_buf()))
+            .unwrap();
+        seed.wait_finished().await;
+
+        let id = core.add(add_bytes(&bytes)).await.unwrap();
+        wait_for(&core, &id, TorrentState::Seeding).await;
+
+        let path = cfg.download_dir.join(dir).join("show.mkv");
+        assert_eq!(std::fs::read(&path).unwrap(), new, "{dir}");
+        let downloaded = core.store().get(&id).unwrap().downloaded;
+        assert!(
+            downloaded >= PIECE as u64 && downloaded < 3 * PIECE as u64,
+            "{dir}: downloaded {downloaded} bytes, expected about one piece"
+        );
+        assert_eq!(
+            std::fs::read(cfg.download_dir.join("show.mkv")).unwrap(),
+            old,
+            "{dir}: the old torrent's file must not change"
+        );
+        // Settling happens within a refresh after the check; give it a few.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(core.store().get(&s).unwrap().superseded_by, None, "{dir}");
+    }
     core.shutdown().await.unwrap();
 }
 

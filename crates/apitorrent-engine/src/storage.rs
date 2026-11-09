@@ -204,11 +204,14 @@ impl FileStorage {
             return Ok(());
         }
         drop(f);
-        // Unshare: copy beside it, then rename the copy over the link. The other torrent
-        // keeps the original inode.
+        // Unshare: clone (copy-on-write, where the filesystem can) or copy beside it, then
+        // rename the copy over the link. The other torrent keeps the original inode.
         self.close(file);
         let tmp = path.with_extension("apitorrent-unshare");
-        std::fs::copy(path, &tmp)?;
+        let _ = std::fs::remove_file(&tmp);
+        if reflink_copy::reflink(path, &tmp).is_err() {
+            std::fs::copy(path, &tmp)?;
+        }
         OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
         std::fs::rename(&tmp, path)?;
         self.files[file].linked.store(false, Ordering::Release);

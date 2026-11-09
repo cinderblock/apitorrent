@@ -10,9 +10,13 @@
 //! How a candidate is trusted:
 //!
 //! - **v2 and hybrid files**: the same `pieces root` and length mean the same content.
-//! - **v1 files**: the same length, preferring the same name, and one piece that lies
-//!   wholly inside the file is hashed at the new torrent's alignment. Files too small to
-//!   hold a whole piece need a matching name as well; the check after linking settles it.
+//! - **Otherwise**: the same length, preferring the same name. Up to [`SAMPLES`] pieces
+//!   that lie wholly inside the file are read from the candidate at the new torrent's
+//!   alignment and checked against its hashes (v1 or v2). All passing is a full match,
+//!   which is hard-linked. Some passing is a **partial** match (a repack that changed one
+//!   part, say): the file is cloned or copied, never linked, and the check after that
+//!   keeps the pieces that verify, so only the rest is downloaded. Files too small to hold
+//!   a whole piece need a matching name; the check after linking settles it.
 //!
 //! See `docs/architecture.md`, "Content library".
 
@@ -22,7 +26,11 @@ use std::sync::Arc;
 
 use apitorrent_engine::bitfield::Bitfield;
 use apitorrent_engine::layout::Layout;
-use apitorrent_metainfo::{Sha1Hash, Torrent};
+use apitorrent_engine::verify::{PieceHashes, Verdict};
+use apitorrent_metainfo::Torrent;
+
+/// How many pieces of a candidate are checked before trusting it.
+pub const SAMPLES: usize = 8;
 
 /// A torrent whose files may be reused.
 #[derive(Debug, Clone)]
@@ -48,25 +56,56 @@ pub struct Match {
     pub source_id: String,
     pub source_file: usize,
     pub from: PathBuf,
+    /// Every checked piece passed (or the roots matched), so it is hard-linked. A partial
+    /// match is cloned or copied instead. Either way, only the new torrent's own check
+    /// proves the bytes (see [`supersede_candidates`]).
+    pub full: bool,
 }
 
 /// How a match was put in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linked {
+    /// Shares the source's file: copy-on-write in the engine.
     HardLink,
+    /// A copy-on-write clone (Btrfs, XFS, APFS, ReFS): a private file sharing extents.
+    Reflink,
+    /// A private copy.
     Copy,
+}
+
+impl Linked {
+    /// Whether the file is shared with the source, so writes must not go through it.
+    pub fn shared(self) -> bool {
+        matches!(self, Self::HardLink)
+    }
+}
+
+/// What checking a candidate's pieces found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fit {
+    /// Every checked piece passed.
+    Full,
+    /// Some passed: `passed` of `checked`.
+    Partial { passed: usize, checked: usize },
+    /// None passed.
+    Different,
+    /// No piece could be checked (the file holds no whole piece).
+    Unknown,
 }
 
 /// Find existing complete copies of the new torrent's files. `targets` is where each file
 /// of the new torrent would go; files already there, and files with priority 0, are left
-/// alone.
+/// alone. With `partial`, files that match only in places are returned too (see
+/// [`Match::full`]).
 pub fn find_matches(
     new: &Torrent,
     targets: &[PathBuf],
     priorities: &[u8],
     sources: &[Source],
+    partial: bool,
 ) -> Vec<Match> {
     let layout = Layout::from_info(&new.info);
+    let hashes = PieceHashes::new(new);
     let source_layouts: Vec<Layout> = sources
         .iter()
         .map(|s| Layout::from_info(&s.torrent.info))
@@ -97,6 +136,7 @@ pub fn find_matches(
         let found = f
             .pieces_root
             .and_then(|r| by_root.get(&(r, f.length)).copied())
+            .map(|c| (c, true))
             .or_else(|| {
                 let name = f.path.last();
                 let mut cands = by_length.get(&f.length).cloned().unwrap_or_default();
@@ -104,18 +144,28 @@ pub fn find_matches(
                 cands.sort_by_key(|&(si, fi)| {
                     sources[si].torrent.info.files[fi].path.last() != name
                 });
-                cands.into_iter().find(|&(si, fi)| {
+                let mut best: Option<((usize, usize), f64)> = None;
+                for (si, fi) in cands {
                     let same_name = sources[si].torrent.info.files[fi].path.last() == name;
                     let from = sources[si].paths[fi]
                         .as_ref()
                         .expect("indexed only with a path");
-                    match sample_check(new, &layout, i, from) {
-                        Some(ok) => ok,
-                        None => same_name,
+                    match check_pieces(&hashes, &layout, f.offset, f.length, i, from) {
+                        Fit::Full => return Some(((si, fi), true)),
+                        Fit::Unknown if same_name => return Some(((si, fi), true)),
+                        Fit::Partial { passed, checked } if partial => {
+                            #[allow(clippy::cast_precision_loss)]
+                            let score = passed as f64 / checked as f64;
+                            if best.is_none_or(|(_, b)| score > b) {
+                                best = Some(((si, fi), score));
+                            }
+                        }
+                        _ => {}
                     }
-                })
+                }
+                best.map(|(c, _)| (c, false))
             });
-        if let Some((si, fi)) = found {
+        if let Some(((si, fi), full)) = found {
             out.push(Match {
                 file: i,
                 source_id: sources[si].id.clone(),
@@ -123,70 +173,124 @@ pub fn find_matches(
                 from: sources[si].paths[fi]
                     .clone()
                     .expect("indexed only with a path"),
+                full,
             });
         }
     }
     out
 }
 
-/// Hash one piece of the new torrent that lies wholly inside file `i`, reading it from the
-/// candidate. `None` when there is no such piece (or no v1 hashes to check against).
-fn sample_check(new: &Torrent, layout: &Layout, i: usize, candidate: &Path) -> Option<bool> {
-    let f = &new.info.files[i];
-    let pl = layout.piece_length();
-    let first_whole = f.offset.div_ceil(pl);
-    let piece_end = (first_whole + 1) * pl;
-    if new.info.v1_pieces.is_empty() || piece_end > f.offset + f.length {
-        return None;
+/// Check up to [`SAMPLES`] pieces of the new torrent that lie wholly inside its file `i`
+/// (at `offset`, `length` bytes), reading them from the candidate, spread evenly from the
+/// first such piece to the last.
+fn check_pieces(
+    hashes: &PieceHashes,
+    layout: &Layout,
+    offset: u64,
+    length: u64,
+    i: usize,
+    candidate: &Path,
+) -> Fit {
+    let inside: Vec<u32> = layout
+        .file_pieces(i)
+        .filter(|&p| {
+            let start = layout.piece_offset(p);
+            start >= offset && start + u64::from(layout.piece_size(p)) <= offset + length
+        })
+        .collect();
+    if inside.is_empty() {
+        return Fit::Unknown;
     }
-    let piece = u32::try_from(first_whole).ok()?;
-    let expected = *new.info.v1_pieces.get(piece as usize)?;
-    let mut buf = vec![0u8; usize::try_from(pl).ok()?];
-    let at = first_whole * pl - f.offset;
-    let ok = read_at(candidate, at, &mut buf).is_ok() && Sha1Hash::digest(&buf) == expected;
-    Some(ok)
+    let picks: Vec<u32> = if inside.len() <= SAMPLES {
+        inside
+    } else {
+        (0..SAMPLES)
+            .map(|k| inside[k * (inside.len() - 1) / (SAMPLES - 1)])
+            .collect()
+    };
+    let Ok(mut file) = std::fs::File::open(candidate) else {
+        return Fit::Different;
+    };
+    let (mut passed, mut checked) = (0, 0);
+    for p in picks {
+        let mut buf = vec![0u8; layout.piece_size(p) as usize];
+        if read_at(&mut file, layout.piece_offset(p) - offset, &mut buf).is_err() {
+            return Fit::Different;
+        }
+        match hashes.verify(p, &buf) {
+            Verdict::Valid => {
+                passed += 1;
+                checked += 1;
+            }
+            Verdict::Invalid => checked += 1,
+            // A v2 piece whose layer isn't here yet tells us nothing.
+            Verdict::Unknown => {}
+        }
+    }
+    match (passed, checked) {
+        (_, 0) => Fit::Unknown,
+        (p, c) if p == c => Fit::Full,
+        (0, _) => Fit::Different,
+        (passed, checked) => Fit::Partial { passed, checked },
+    }
 }
 
-fn read_at(path: &Path, at: u64, buf: &mut [u8]) -> std::io::Result<()> {
+fn read_at(f: &mut std::fs::File, at: u64, buf: &mut [u8]) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path)?;
     f.seek(SeekFrom::Start(at))?;
     f.read_exact(buf)
 }
 
-/// Put a match in place: a hard link when the volume allows, otherwise a copy (when
-/// `allow_copy`). Returns `None` if neither worked.
-pub fn materialize(from: &Path, to: &Path, allow_copy: bool) -> Option<Linked> {
+/// Put a match in place. A full match is hard-linked when the volume allows; a partial one
+/// never is, since its bytes will change. Otherwise a copy-on-write clone, and failing
+/// that a copy (when `allow_copy`). Returns `None` if nothing worked.
+pub fn materialize(from: &Path, to: &Path, full: bool, allow_copy: bool) -> Option<Linked> {
     if let Some(dir) = to.parent() {
         std::fs::create_dir_all(dir).ok()?;
     }
-    if std::fs::hard_link(from, to).is_ok() {
+    if full && std::fs::hard_link(from, to).is_ok() {
         return Some(Linked::HardLink);
     }
-    if !allow_copy {
-        return None;
-    }
+    // Clone or copy beside the target, then rename, so a half-made file never sits at the
+    // target path.
     let tmp = to.with_extension("apitorrent-copy");
-    let copied = std::fs::copy(from, &tmp).is_ok() && std::fs::rename(&tmp, to).is_ok();
-    if copied {
-        Some(Linked::Copy)
+    let _ = std::fs::remove_file(&tmp);
+    let how = if reflink_copy::reflink(from, &tmp).is_ok() {
+        Linked::Reflink
+    } else if allow_copy && std::fs::copy(from, &tmp).is_ok() {
+        Linked::Copy
+    } else {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
+    };
+    if std::fs::rename(&tmp, to).is_ok() {
+        Some(how)
     } else {
         let _ = std::fs::remove_file(&tmp);
         None
     }
 }
 
-/// The sources every one of whose files was matched: the new torrent supersedes them.
-pub fn superseded(matches: &[Match], sources: &[Source]) -> Vec<String> {
-    let mut used: HashMap<&str, HashSet<usize>> = HashMap::new();
+/// A source every one of whose files was matched, and the new torrent's files that took
+/// them over. The new torrent supersedes it once its check proves those files
+/// ([`files_verified`]): sampling a few pieces can miss a changed region.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupersedeCandidate {
+    pub source_id: String,
+    pub files: Vec<usize>,
+}
+
+/// The sources every one of whose files was matched (see [`SupersedeCandidate`]).
+pub fn supersede_candidates(matches: &[Match], sources: &[Source]) -> Vec<SupersedeCandidate> {
+    let mut used: HashMap<&str, HashMap<usize, usize>> = HashMap::new();
     for m in matches {
         used.entry(m.source_id.as_str())
             .or_default()
-            .insert(m.source_file);
+            .insert(m.source_file, m.file);
     }
     sources
         .iter()
-        .filter(|s| {
+        .filter_map(|s| {
             let files: HashSet<usize> = s
                 .torrent
                 .info
@@ -196,10 +300,39 @@ pub fn superseded(matches: &[Match], sources: &[Source]) -> Vec<String> {
                 .filter(|(_, f)| !f.is_pad() && f.length > 0)
                 .map(|(i, _)| i)
                 .collect();
-            !files.is_empty() && used.get(s.id.as_str()).is_some_and(|u| files.is_subset(u))
+            let u = used.get(s.id.as_str())?;
+            (!files.is_empty() && files.iter().all(|f| u.contains_key(f))).then(|| {
+                let mut ours: Vec<usize> = u.values().copied().collect();
+                ours.sort_unstable();
+                SupersedeCandidate {
+                    source_id: s.id.clone(),
+                    files: ours,
+                }
+            })
         })
-        .map(|s| s.id.clone())
         .collect()
+}
+
+/// Whether the check proved files `files` of a torrent: every piece wholly inside each one
+/// is had. Pieces shared with a neighbouring file aren't required, since that neighbour
+/// may still be downloading (v2 files share no pieces, so for them this is every piece).
+/// A file too small to hold a whole piece needs all the pieces it touches.
+pub fn files_verified(layout: &Layout, have: &Bitfield, files: &[usize]) -> bool {
+    files.iter().all(|&i| {
+        let span = &layout.files()[i];
+        let (start, end) = (span.offset, span.offset + span.length);
+        let pieces: Vec<u32> = layout.file_pieces(i).collect();
+        let inside: Vec<u32> = pieces
+            .iter()
+            .copied()
+            .filter(|&p| {
+                let at = layout.piece_offset(p);
+                at >= start && at + u64::from(layout.piece_size(p)) <= end
+            })
+            .collect();
+        let needed = if inside.is_empty() { pieces } else { inside };
+        needed.iter().all(|&p| have.get(p))
+    })
 }
 
 /// Whether a tracker's error says the torrent is gone from it. Trackers word this
@@ -291,9 +424,19 @@ mod tests {
             .iter()
             .map(|f| f.path.iter().fold(target_dir.clone(), |p, c| p.join(c)))
             .collect();
-        let matches = find_matches(&pack, &targets, &[4, 4], &[src1.clone(), src2.clone()]);
+        let matches = find_matches(
+            &pack,
+            &targets,
+            &[4, 4],
+            &[src1.clone(), src2.clone()],
+            true,
+        );
         assert_eq!(matches.len(), 2, "{matches:?}");
-        assert_eq!(superseded(&matches, &[src1, src2]), ["s1", "s2"]);
+        let ids: Vec<String> = supersede_candidates(&matches, &[src1, src2])
+            .into_iter()
+            .map(|c| c.source_id)
+            .collect();
+        assert_eq!(ids, ["s1", "s2"]);
     }
 
     #[test]
@@ -306,7 +449,7 @@ mod tests {
         std::fs::write(src.paths[0].as_ref().unwrap(), &other).unwrap();
         let new = build("x.bin", Version::V1, &[("x.bin", &real)]);
         let targets = vec![dir.path().join("new").join("x.bin")];
-        assert!(find_matches(&new, &targets, &[4], &[src]).is_empty());
+        assert!(find_matches(&new, &targets, &[4], &[src], true).is_empty());
     }
 
     #[test]
@@ -318,7 +461,7 @@ mod tests {
         std::fs::write(src.paths[0].as_ref().unwrap(), &bytes).unwrap();
         let new = build("original.bin", Version::V2, &[("original.bin", &bytes)]);
         let targets = vec![dir.path().join("new").join("original.bin")];
-        let m = find_matches(&new, &targets, &[4], &[src]);
+        let m = find_matches(&new, &targets, &[4], &[src], true);
         assert_eq!(m.len(), 1);
     }
 
@@ -331,9 +474,52 @@ mod tests {
         std::fs::write(src.paths[0].as_ref().unwrap(), &bytes).unwrap();
         let new = build("x.bin", Version::V1, &[("x.bin", &bytes)]);
         let targets = vec![dir.path().join("new").join("x.bin")];
-        assert!(find_matches(&new, &targets, &[0], std::slice::from_ref(&src)).is_empty());
+        assert!(find_matches(&new, &targets, &[0], std::slice::from_ref(&src), true).is_empty());
         src.have.clear(2);
-        assert!(find_matches(&new, &targets, &[4], &[src]).is_empty());
+        assert!(find_matches(&new, &targets, &[4], &[src], true).is_empty());
+    }
+
+    /// A repack that changed one region: the file matches only in places, so it is
+    /// offered as a partial match, which never supersedes the source.
+    fn repack_case(version: Version) {
+        let dir = tempfile::tempdir().unwrap();
+        let old = data(16 * 1024 * 20, 5);
+        let mut new_bytes = old.clone();
+        // Change one piece in the middle, one the sampling checks (of 20 pieces it reads
+        // 0, 2, 5, 8, 10, 13, 16 and 19).
+        for b in &mut new_bytes[16 * 1024 * 10..16 * 1024 * 11] {
+            *b = b.wrapping_add(1);
+        }
+        let s = build("show.mkv", version, &[("show.mkv", &old)]);
+        let src = source("s", &s, dir.path());
+        std::fs::write(src.paths[0].as_ref().unwrap(), &old).unwrap();
+        let new = build("show.mkv", version, &[("show.mkv", &new_bytes)]);
+        let targets = vec![dir.path().join("new").join("show.mkv")];
+
+        let m = find_matches(&new, &targets, &[4], std::slice::from_ref(&src), true);
+        assert_eq!(m.len(), 1, "{version:?}");
+        assert!(!m[0].full, "{version:?}");
+        assert!(
+            find_matches(&new, &targets, &[4], std::slice::from_ref(&src), false).is_empty(),
+            "partial reuse can be turned off"
+        );
+
+        // It is cloned or copied, never linked, so changing it leaves the source alone.
+        let how = materialize(&m[0].from, &targets[0], false, true).unwrap();
+        assert!(!how.shared(), "{how:?}");
+        std::fs::write(&targets[0], &new_bytes).unwrap();
+        assert_eq!(std::fs::read(src.paths[0].as_ref().unwrap()).unwrap(), old);
+    }
+
+    #[test]
+    fn a_repack_is_a_partial_match_v1() {
+        repack_case(Version::V1);
+    }
+
+    #[test]
+    fn a_repack_is_a_partial_match_v2() {
+        // The roots differ, so v2 pieces are checked against the piece layers.
+        repack_case(Version::V2);
     }
 
     #[test]
@@ -342,7 +528,7 @@ mod tests {
         let from = dir.path().join("a.bin");
         std::fs::write(&from, b"hello").unwrap();
         let to = dir.path().join("sub").join("b.bin");
-        assert_eq!(materialize(&from, &to, false), Some(Linked::HardLink));
+        assert_eq!(materialize(&from, &to, true, false), Some(Linked::HardLink));
         assert_eq!(std::fs::read(&to).unwrap(), b"hello");
     }
 

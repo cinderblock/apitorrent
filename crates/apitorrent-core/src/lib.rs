@@ -173,6 +173,9 @@ struct Inner {
     store: Store,
     stop: Notify,
     settings: RwLock<Settings>,
+    /// Torrents whose library matches may supersede others, decided once their first
+    /// check is done (see `settle_supersedes`).
+    supersede_pending: Mutex<HashMap<TorrentId, Vec<library::SupersedeCandidate>>>,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -232,6 +235,7 @@ impl Core {
                 store: Store::new(),
                 stop: Notify::new(),
                 settings: RwLock::new(settings),
+                supersede_pending: Mutex::new(HashMap::new()),
             }),
         };
         core.apply_session_settings();
@@ -480,7 +484,9 @@ impl Core {
     }
 
     /// Link files the library already has into a new torrent's save path. Returns the
-    /// linked file indices, and records torrents the new one fully takes over.
+    /// indices of files shared with another torrent (hard links, which the engine treats
+    /// as copy-on-write). Torrents the new one may take over wait for its check (see
+    /// `settle_supersedes`).
     async fn link_from_library(
         &self,
         id: &str,
@@ -544,17 +550,23 @@ impl Core {
         let targets = Self::disk_paths(torrent, save_path, naming);
         let (new, prios) = (torrent.clone(), priorities.to_vec());
         let (linked, superseded) = tokio::task::spawn_blocking(move || {
-            let matches = library::find_matches(&new, &targets, &prios, &sources);
+            let matches =
+                library::find_matches(&new, &targets, &prios, &sources, lib.partial_reuse);
             let mut done = Vec::new();
+            let mut shared = Vec::new();
             for m in &matches {
-                match library::materialize(&m.from, &targets[m.file], lib.allow_copy) {
+                match library::materialize(&m.from, &targets[m.file], m.full, lib.allow_copy) {
                     Some(how) => {
                         tracing::info!(
                             file = %targets[m.file].display(),
                             from = %m.source_id,
                             ?how,
+                            full = m.full,
                             "reused a file from the library"
                         );
+                        if how.shared() {
+                            shared.push(m.file);
+                        }
                         done.push(m.clone());
                     }
                     None => {
@@ -562,32 +574,88 @@ impl Core {
                     }
                 }
             }
-            let superseded = library::superseded(&done, &sources);
-            (
-                done.into_iter().map(|m| m.file).collect::<Vec<_>>(),
-                superseded,
-            )
+            (shared, library::supersede_candidates(&done, &sources))
         })
         .await
         .unwrap_or_default();
-        for s in superseded {
-            let (key, by) = (s.clone(), id.to_owned());
-            if self
-                .db(move |db| db.set_superseded(&key, &by))
-                .await
-                .is_ok()
-                && let Some(e) = self
-                    .inner
-                    .torrents
-                    .write()
-                    .expect("torrents lock poisoned")
-                    .get_mut(&s)
-            {
-                tracing::info!(torrent = %s, by = %id, "torrent superseded by a pack");
-                e.superseded_by = Some(id.to_owned());
-            }
+        if !superseded.is_empty() {
+            self.inner
+                .supersede_pending
+                .lock()
+                .expect("supersede lock poisoned")
+                .insert(id.to_owned(), superseded);
         }
         linked
+    }
+
+    /// Record the supersessions that the new torrents' checks proved: a candidate counts
+    /// only if every file that took it over verified. Decided once, when the check ends;
+    /// pieces downloaded later don't count, since they would be a different version.
+    async fn settle_supersedes(&self) {
+        let ready: Vec<(TorrentId, TorrentHandle, Arc<Torrent>)> = {
+            let pending = self
+                .inner
+                .supersede_pending
+                .lock()
+                .expect("supersede lock poisoned");
+            if pending.is_empty() {
+                return;
+            }
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            pending
+                .keys()
+                .filter_map(|id| {
+                    let e = torrents.get(id)?;
+                    (e.handle.stats().state != EngineState::Checking)
+                        .then(|| (id.clone(), e.handle.clone(), e.torrent.clone()))
+                })
+                .collect()
+        };
+        for (id, handle, torrent) in ready {
+            let Some(have) = handle.have().await else {
+                continue;
+            };
+            let Some(cands) = self
+                .inner
+                .supersede_pending
+                .lock()
+                .expect("supersede lock poisoned")
+                .remove(&id)
+            else {
+                continue;
+            };
+            let layout = apitorrent_engine::layout::Layout::from_info(&torrent.info);
+            for c in cands {
+                if !library::files_verified(&layout, &have, &c.files) {
+                    tracing::info!(torrent = %c.source_id, by = %id, "not superseded: the matched files differ");
+                    continue;
+                }
+                let (key, by) = (c.source_id.clone(), id.clone());
+                if self
+                    .db(move |db| db.set_superseded(&key, &by))
+                    .await
+                    .is_ok()
+                    && let Some(e) = self
+                        .inner
+                        .torrents
+                        .write()
+                        .expect("torrents lock poisoned")
+                        .get_mut(&c.source_id)
+                {
+                    tracing::info!(torrent = %c.source_id, by = %id, "torrent superseded by a pack");
+                    e.superseded_by = Some(id.clone());
+                }
+            }
+        }
+        // Torrents removed before their check ended. (Locks in the same order as above:
+        // the pending map first.)
+        let mut pending = self
+            .inner
+            .supersede_pending
+            .lock()
+            .expect("supersede lock poisoned");
+        let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+        pending.retain(|id, _| torrents.contains_key(id));
     }
 
     /// Bring in a Deluge installation's torrents: files where Deluge left them, progress from
@@ -1830,6 +1898,7 @@ impl Core {
                 _ = refresh.tick() => {
                     // Torrents that finish move from the download limit to the seed limit.
                     self.apply_queue().await;
+                    self.settle_supersedes().await;
                     self.refresh();
                 }
                 _ = save.tick() => {

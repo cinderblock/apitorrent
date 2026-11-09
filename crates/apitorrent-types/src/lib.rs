@@ -279,13 +279,17 @@ pub enum EncryptionPolicy {
 
 /// Reusing files that other torrents already have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 #[ts(export)]
+#[allow(clippy::struct_excessive_bools, reason = "independent on/off settings")]
 pub struct LibrarySettings {
     /// Look for a new torrent's files among existing torrents before downloading them.
     pub enabled: bool,
     /// Copy matches that can't be hard-linked (another volume). Off means download them.
     pub allow_copy: bool,
+    /// Reuse a file that matches only in places (a repack that changed one part, say): it
+    /// is cloned or copied, and only the pieces that differ are downloaded.
+    pub partial_reuse: bool,
     /// Remove a torrent whose files another torrent has fully taken over (a season pack
     /// replacing single episodes) once its tracker says it is unregistered. Its files stay.
     pub retire_superseded: bool,
@@ -296,6 +300,7 @@ impl Default for LibrarySettings {
         Self {
             enabled: true,
             allow_copy: true,
+            partial_reuse: true,
             retire_superseded: true,
         }
     }

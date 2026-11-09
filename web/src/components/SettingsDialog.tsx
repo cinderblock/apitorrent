@@ -215,6 +215,15 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
               <label className="check">
                 <input
                   type="checkbox"
+                  checked={settings.library.partialReuse}
+                  disabled={!settings.library.enabled}
+                  onChange={(e) => update({ library: { ...settings.library, partialReuse: e.target.checked } })}
+                />
+                Also reuse files that match only in places, such as a repack, and download just the parts that differ (needs a copy of the file)
+              </label>
+              <label className="check">
+                <input
+                  type="checkbox"
                   checked={settings.library.retireSuperseded}
                   onChange={(e) => update({ library: { ...settings.library, retireSuperseded: e.target.checked } })}
                 />

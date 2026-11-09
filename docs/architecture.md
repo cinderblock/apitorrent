@@ -364,7 +364,9 @@ already has:
 
 1. **Hardlink** on the same volume (NTFS, ext4, APFS, …). Built: no extra space, and
    each torrent keeps a normal file at its own path.
-2. **Reflink / copy-on-write clone** (Btrfs, XFS, APFS, ReFS). Planned.
+2. **Reflink / copy-on-write clone** (Btrfs, XFS, APFS, ReFS). Built, through the
+   `reflink-copy` crate. It is also how the engine unshares a linked file before
+   changing it, so that costs no space or time where the filesystem can clone.
 3. **Copy**, when the volumes differ and the library setting allows it (on by default:
    reading a local disk beats downloading).
 
@@ -407,10 +409,16 @@ still references it.
   piece is hashed in the staging area. If it fails, the piece is downloaded again entirely
   from peers. Only if that clean copy disagrees with the library bytes in X's range is the
   candidate marked as a different version.
-- **Piece-level reuse.** Every piece that verifies is genuinely the torrent's data, even
-  when the file as a whole doesn't match (a repack that changed one region, say). Those
-  pieces are copied into the new torrent's own file, and only the failing ones are
-  downloaded. The two files stay separate content items, because their bytes differ.
+- **Piece-level reuse.** Built. Every piece that verifies is genuinely the torrent's data,
+  even when the file as a whole doesn't match (a repack that changed one region, say).
+  Matching reads up to 8 pieces spread across a same-length candidate. All passing is a
+  full match, which is hard-linked. Some passing is a partial match, which is cloned or
+  copied. Either way the new torrent's check keeps every piece that verifies, so only the
+  rest is downloaded. A change the sampling misses is still safe: the file is linked, and
+  the engine unshares it before writing the differing piece.
+- **Supersession waits for proof.** A source counts as superseded only once the new
+  torrent's own check has verified every piece wholly inside each matched file. Sampling
+  alone can miss a changed region, and retiring a torrent on a guess would be wrong.
 - **v2 needs no bookends.** v2 files start on piece boundaries, so `pieces root` matches
   exactly. Piece layers then pinpoint which pieces differ when the roots don't match.
 - **Fingerprints for future torrents.** In idle time the library computes each file's v2

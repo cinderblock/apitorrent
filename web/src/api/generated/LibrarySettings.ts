@@ -13,6 +13,11 @@ enabled: boolean,
  */
 allowCopy: boolean, 
 /**
+ * Reuse a file that matches only in places (a repack that changed one part, say): it
+ * is cloned or copied, and only the pieces that differ are downloaded.
+ */
+partialReuse: boolean, 
+/**
  * Remove a torrent whose files another torrent has fully taken over (a season pack
  * replacing single episodes) once its tracker says it is unregistered. Its files stay.
  */
