@@ -18,7 +18,7 @@
     },
     "plugins/rss": {
       "name": "@apitorrent/plugin-rss",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "dependencies": {
         "@apitorrent/plugin-sdk": "workspace:*",
       },
@@ -29,7 +29,7 @@
     },
     "plugins/ubuntu-releases": {
       "name": "@apitorrent/plugin-ubuntu-releases",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "dependencies": {
         "@apitorrent/plugin-sdk": "workspace:*",
       },

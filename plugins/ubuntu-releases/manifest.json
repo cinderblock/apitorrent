@@ -1,8 +1,8 @@
 {
   "id": "ubuntu-releases",
   "name": "Ubuntu releases",
-  "version": "1.0.0",
-  "description": "Adds the torrents of supported Ubuntu releases (LTS only, or all) for the flavours and architecture you choose, as they come out.",
+  "version": "1.1.0",
+  "description": "Offers the torrents of supported Ubuntu releases (LTS only, or all) for the flavours and architecture you choose to the server's rules as they come out; a rule keeps the latest and can keep a stable \"latest\" path. Can also add them directly.",
   "author": "apitorrent",
   "apiVersion": 1,
   "capabilities": {
@@ -32,9 +32,14 @@
         "enum": ["lts", "all"],
         "default": "lts"
       },
-      "label": { "type": "string", "title": "Label", "default": "ubuntu", "maxLength": 100 },
-      "savePath": { "type": "string", "title": "Folder, relative to the download directory", "maxLength": 500 },
-      "paused": { "type": "boolean", "title": "Add paused", "default": false },
+      "addDirectly": {
+        "type": "boolean",
+        "title": "Also add every torrent directly, without a rule",
+        "default": false
+      },
+      "label": { "type": "string", "title": "Label (direct adds)", "default": "ubuntu", "maxLength": 100 },
+      "savePath": { "type": "string", "title": "Folder, relative to the download directory (direct adds)", "maxLength": 500 },
+      "paused": { "type": "boolean", "title": "Add paused (direct adds)", "default": false },
       "intervalHours": { "type": "integer", "title": "Check every (hours)", "minimum": 1, "maximum": 168, "default": 12 }
     }
   }

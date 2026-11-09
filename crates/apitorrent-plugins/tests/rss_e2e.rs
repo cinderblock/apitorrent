@@ -111,7 +111,8 @@ async fn rss_plugin_polls_a_local_feed() {
         wants.iter().any(|w| w.contains("feeds[].url")),
         "approval shows the settings-based grant: {wants:?}"
     );
-    h.approve("rss".into(), "1.0.0".into()).await.unwrap();
+    let version = r.plugin.pending.as_ref().unwrap().manifest.version.clone();
+    h.approve("rss".into(), version).await.unwrap();
     let feed_url = format!("http://127.0.0.1:{port}/feed.xml");
     h.set_settings(
         "rss".into(),
@@ -187,6 +188,33 @@ async fn rss_plugin_polls_a_local_feed() {
     poll().await;
     assert_eq!(app.added.lock().unwrap().len(), 4);
 
+    // Items that pass the filters were offered to the rules as candidates, with absolute
+    // .torrent links; the 720p one wasn't.
+    let offered: Vec<String> = app
+        .candidates
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(source, _)| source == "rss")
+        .map(|(_, c)| c.id.clone())
+        .collect();
+    for id in ["ep1", "ep3", "ep5", "ep6"] {
+        assert!(offered.iter().any(|o| o == id), "{id} offered: {offered:?}");
+    }
+    assert!(!offered.iter().any(|o| o == "ep2"), "{offered:?}");
+    let ep5 = app
+        .candidates
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(_, c)| c.id == "ep5")
+        .map(|(_, c)| c.links.torrent.clone())
+        .unwrap();
+    assert_eq!(
+        ep5,
+        Some(format!("http://127.0.0.1:{port}/files/ep5.torrent"))
+    );
+
     // The source role lists what the feed offered.
     let candidates = h
         .call_role("rss", PluginRole::Source, "candidates", json!([10]))
@@ -198,7 +226,7 @@ async fn rss_plugin_polls_a_local_feed() {
         .iter()
         .filter_map(|c| c["id"].as_str())
         .collect();
-    assert!(ids.contains(&"ep5") && ids.contains(&"ep2"), "{ids:?}");
+    assert!(ids.contains(&"ep5") && !ids.contains(&"ep2"), "{ids:?}");
 
     // Seen items survive a restart of the host.
     drop(h);

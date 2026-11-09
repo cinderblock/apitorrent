@@ -124,6 +124,7 @@ test("the harness enforces the manifest like the host", async () => {
     () => host.api.torrents.list(),
     async () => host.api.http.route("GET", "/other", () => null),
     async () => host.api.events.on("torrent.added", () => {}),
+    () => host.api.candidates.submit([]),
   ]) {
     await attempt().then(() => denied.push(null), (e) => denied.push(e));
   }
@@ -131,4 +132,26 @@ test("the harness enforces the manifest like the host", async () => {
   await host.stop();
   // The real fetch is back.
   expect(globalThis.fetch).not.toBe(undefined);
+});
+
+test("sources submit candidates; bad ones are listed, not stored", async () => {
+  const host = createTestHost({
+    manifest: { ...manifest, capabilities: { ...manifest.capabilities, roles: ["source"] } },
+  });
+  let outcome: unknown;
+  await host.start(definePlugin({
+    async start(api) {
+      outcome = await api.candidates.submit([
+        { id: "a", title: "A 1.0", version: "1.0", links: { magnet: `magnet:?xt=urn:btih:${"a".repeat(40)}` } },
+        { id: "b", title: "B", links: { torrent: "ftp://example.com/b.torrent" } },
+        { id: "", title: "nameless", links: {} },
+      ]);
+    },
+  }));
+  expect(outcome).toEqual({
+    accepted: 1,
+    rejected: ["b: links must be http(s) URLs", ": `id` and `title` are required"],
+  });
+  expect([...host.candidates.keys()]).toEqual(["a"]);
+  await host.stop();
 });

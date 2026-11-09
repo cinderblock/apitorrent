@@ -14,6 +14,7 @@
 import type { AddOutcome } from "./generated/AddOutcome";
 import type { AppEvent } from "./generated/AppEvent";
 import type { PluginCaller } from "./generated/PluginCaller";
+import type { SubmitCandidatesOutcome } from "./generated/SubmitCandidatesOutcome";
 import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { TorrentSummary } from "./generated/TorrentSummary";
 
@@ -22,6 +23,7 @@ export type { AppEvent } from "./generated/AppEvent";
 export type { PluginCaller } from "./generated/PluginCaller";
 export type { PluginCapabilities } from "./generated/PluginCapabilities";
 export type { PluginManifest } from "./generated/PluginManifest";
+export type { SubmitCandidatesOutcome } from "./generated/SubmitCandidatesOutcome";
 export type { TorrentDetail } from "./generated/TorrentDetail";
 export type { TorrentState } from "./generated/TorrentState";
 export type { TorrentSummary } from "./generated/TorrentSummary";
@@ -124,15 +126,34 @@ export interface Http {
   route(method: HttpMethod, path: string, handler: RouteHandler): void;
 }
 
-/** A release a `source` offers (see the architecture doc, "Sources"). */
+/**
+ * A release a `source` offers (see the architecture doc, "Automation"). The server's rules
+ * match candidates, order them by version and keep the latest as torrents.
+ */
 export interface ReleaseCandidate {
+  /** Unique within this plugin, and stable: the same release always has the same id. */
   id: string;
   title: string;
+  /** As the upstream names it (`24.04.1`, `2026.11.08`); rules order by it. */
   version?: string;
-  /** ISO 8601. */
+  /** ISO 8601 / RFC 3339 (`2026-11-08T12:00:00Z`). */
   published?: string;
+  /**
+   * Where the data is. A `.torrent` link is fetched with this plugin's own network grants,
+   * and only once a rule takes the candidate. A web seed is added to a magnet link.
+   */
   links: { torrent?: string; magnet?: string; webseed?: string };
+  /** Anything rules may match on: flavour, architecture, size, … */
   metadata?: Record<string, unknown>;
+}
+
+/** Hand release candidates to the server's rules. Needs the `source` role. */
+export interface Candidates {
+  /**
+   * Offer candidates (at most 1000 per call). Submitting one again updates it. Candidates
+   * the server refuses are listed in `rejected` with the reason; the rest are stored.
+   */
+  submit(candidates: ReleaseCandidate[]): Promise<SubmitCandidatesOutcome>;
 }
 
 export interface SourceRole {
@@ -165,6 +186,7 @@ export interface Roles {
 export interface Api<S = Record<string, unknown>> {
   plugin: { readonly id: string; readonly version: string };
   torrents: Torrents;
+  candidates: Candidates;
   events: Events;
   kv: Kv;
   schedule: Schedule;

@@ -1,8 +1,8 @@
 {
   "id": "rss",
   "name": "RSS feeds",
-  "version": "1.0.0",
-  "description": "Polls RSS, Atom and JSON feeds and adds the torrents and magnet links whose titles pass each feed's filters. Each item is added once.",
+  "version": "1.1.0",
+  "description": "Polls RSS, Atom and JSON feeds, offers the items whose titles pass each feed's filters to the server's rules, and adds their torrents and magnet links (each item once) unless a feed is set to leave that to the rules.",
   "author": "apitorrent",
   "apiVersion": 1,
   "capabilities": {
@@ -47,7 +47,12 @@
               "title": "Folder, relative to the download directory",
               "maxLength": 500
             },
-            "paused": { "type": "boolean", "title": "Add paused", "default": false }
+            "paused": { "type": "boolean", "title": "Add paused", "default": false },
+            "addDirectly": {
+              "type": "boolean",
+              "title": "Add items directly (off: only offer them to rules)",
+              "default": true
+            }
           }
         }
       },

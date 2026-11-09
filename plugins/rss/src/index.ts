@@ -1,9 +1,11 @@
 /**
  * RSS, Atom and JSON feeds: poll each feed, keep the items whose titles pass its filters,
- * and add their magnets or .torrent files. Items are deduplicated by guid, per feed, so an
- * item is added once however often the feed repeats it. A newly added feed's existing
- * items are only marked seen unless "backfill" is on, so adding a feed doesn't flood the
- * client.
+ * offer them to the server's rules as release candidates, and (unless a feed's
+ * `addDirectly` is off) add their magnets or .torrent files. Items are deduplicated by
+ * guid, per feed, so an item is added once however often the feed repeats it. A newly
+ * added feed's existing items are only marked seen unless "backfill" is on, so adding a
+ * feed doesn't flood the client; they are still offered to the rules, which decide for
+ * themselves (keep the latest N, say).
  *
  * The plugin may fetch only its feeds' own origins, plus the hosts an admin lists in
  * `downloadHosts` (for .torrent links served elsewhere): both come from its settings
@@ -25,6 +27,8 @@ export interface FeedSettings {
   label?: string;
   savePath?: string;
   paused: boolean;
+  /** Add passing items straight away. Off: only offer them to the server's rules. */
+  addDirectly: boolean;
 }
 
 export interface Settings {
@@ -44,6 +48,8 @@ export interface FeedState {
   lastPoll?: number;
   lastError?: string | null;
   added: number;
+  /** Items offered to the rules at the last poll that changed. */
+  offered?: number;
 }
 
 /** How many guids are remembered per feed; feeds rarely list more than a few hundred. */
@@ -71,6 +77,27 @@ export function passes(title: string, feed: Pick<FeedSettings, "include" | "excl
   const include = compile(feed.include ?? "", "include");
   const exclude = compile(feed.exclude ?? "", "exclude");
   return (!include || include.test(title)) && !(exclude && exclude.test(title));
+}
+
+/** A feed item as a release candidate. */
+export function candidateOf(feed: FeedSettings, item: FeedItem): ReleaseCandidate {
+  return {
+    id: item.guid,
+    title: item.title,
+    published: isoDate(item.published),
+    links: {
+      magnet: item.magnet,
+      torrent: item.torrentUrl ? new URL(item.torrentUrl, feed.url).href : undefined,
+    },
+    metadata: { feed: feed.name ?? feed.url, ...(item.size ? { size: item.size } : {}) },
+  };
+}
+
+/** Feed dates (RFC 822 in RSS, RFC 3339 in Atom and JSON Feed) as ISO 8601. */
+export function isoDate(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const t = Date.parse(text);
+  return Number.isNaN(t) ? undefined : new Date(t).toISOString();
 }
 
 /** Add one item; returns whether it was handled (added, a duplicate, or nothing to add). */
@@ -121,18 +148,22 @@ export async function pollFeed(
     const seen = new Set(state.seen);
     const fresh: string[] = [];
     let failed = 0;
+    // Everything that passes the filters is offered to the rules.
+    const offered = items
+      .filter((item) => passes(item.title, feed) && (item.magnet || item.torrentUrl))
+      .map((item) => candidateOf(feed, item));
+    for (const c of offered) recent.set(c.id, c);
+    if (offered.length) {
+      const outcome = await api.candidates.submit(offered.slice(0, 1000));
+      for (const why of outcome.rejected) console.warn(`candidate refused: ${why}`);
+      state.offered = outcome.accepted;
+    }
     // Feeds list the newest first; add oldest first.
     for (const item of [...items].reverse()) {
-      recent.set(item.guid, {
-        id: item.guid,
-        title: item.title,
-        published: item.published,
-        links: { magnet: item.magnet, torrent: item.torrentUrl },
-        metadata: { feed: feed.name ?? feed.url, size: item.size },
-      });
       const id = (await sha256Hex(item.guid)).slice(0, 32);
       if (seen.has(id)) continue;
-      const take = (state.initialized || backfill) && passes(item.title, feed);
+      const take = feed.addDirectly !== false && (state.initialized || backfill) &&
+        passes(item.title, feed);
       if (take) {
         try {
           await addItem(api, feed, item);
@@ -189,6 +220,7 @@ export default definePlugin<Settings>({
           lastPoll: state?.lastPoll ?? null,
           lastError: state?.lastError ?? null,
           added: state?.added ?? 0,
+          offered: state?.offered ?? 0,
           seen: state?.seen.length ?? 0,
         });
       }

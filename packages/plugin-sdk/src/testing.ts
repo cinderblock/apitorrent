@@ -9,6 +9,7 @@
  * await host.start(plugin);
  * await host.runJob("poll");
  * expect(host.added).toHaveLength(1);
+ * expect(host.candidates.size).toBe(3);
  * await host.stop();
  * ```
  *
@@ -27,6 +28,7 @@ import type {
   PluginCaller,
   PluginCapabilities,
   PluginManifest,
+  ReleaseCandidate,
   RoleImpls,
   RouteHandler,
   TorrentDetail,
@@ -95,6 +97,7 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
   const controls: { id: string; action: string; label?: string | null }[] = [];
   const removed: { id: string; deleteFiles: boolean }[] = [];
   const fetches: Request[] = [];
+  const candidates = new Map<string, ReleaseCandidate>();
   const jobs = new Map<string, { handler: () => unknown; interval: Interval }>();
   const routes: { method: string; path: string; handler: RouteHandler }[] = [];
   const roles = new Map<string, unknown>();
@@ -164,6 +167,34 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
       async remove(id: string, o?: { deleteFiles?: boolean }) {
         scope("torrents:remove");
         removed.push({ id, deleteFiles: Boolean(o?.deleteFiles) });
+      },
+    },
+    candidates: {
+      async submit(list: ReleaseCandidate[]) {
+        need((caps.roles as string[]).includes("source"), "the `source` role");
+        if (!Array.isArray(list)) throw new TypeError("submit() needs an array of candidates");
+        if (list.length > 1000) {
+          throw new ApitorrentError("invalid_request", "at most 1000 candidates at a time");
+        }
+        const rejected: string[] = [];
+        let accepted = 0;
+        for (const c of list) {
+          // The checks the server makes that a plugin can get wrong.
+          const links = c?.links ?? {};
+          const bad = !c?.id || !c.title ? "`id` and `title` are required"
+            : [links.torrent, links.webseed].some((l) => l !== undefined && !/^https?:\/\//.test(l))
+            ? "links must be http(s) URLs"
+            : links.magnet !== undefined && !infoHashOf(links.magnet) && !/xt=urn:btmh:/.test(links.magnet)
+            ? "`links.magnet` isn't a magnet link"
+            : null;
+          if (bad) {
+            rejected.push(`${c?.id}: ${bad}`);
+            continue;
+          }
+          candidates.set(c.id, structuredClone(c));
+          accepted++;
+        }
+        return { accepted, rejected };
       },
     },
     events: {
@@ -240,6 +271,8 @@ export function createTestHost<S = Record<string, unknown>>(options: TestHostOpt
     removed,
     /** Every request the plugin's `fetch` made (and was allowed to make). */
     fetches,
+    /** Release candidates the plugin submitted, by id (the latest submission of each). */
+    candidates,
     /** The plugin's key-value data. */
     kv,
     jobs,

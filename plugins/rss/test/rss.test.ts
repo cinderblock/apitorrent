@@ -179,3 +179,39 @@ test("a broken feed reports its error and the others carry on", async () => {
   expect(status.feeds[1].lastError).toContain("include filter");
   await host.stop();
 });
+
+test("items that pass the filters are offered to the rules; adding can be left to them", async () => {
+  const server = feedServer();
+  server.set(
+    item(2) + item(3, "Other S02E01") +
+      `<item><title>Show S01E01</title><guid>g1</guid><pubDate>Sat, 07 Nov 2026 10:00:00 GMT</pubDate>
+        <enclosure url="/t/1.torrent" type="application/x-bittorrent" length="99"/></item>`,
+    "v1",
+  );
+  const feeds = [{
+    name: "Shows",
+    url: "https://feeds.example.com/feed.xml",
+    include: "S01",
+    exclude: "",
+    enabled: true,
+    paused: false,
+    addDirectly: false,
+  }];
+  const host = createTestHost<Settings>({ manifest, settings: { feeds, backfill: true }, fetch: (r) => server.handle(r) });
+  await host.start(plugin);
+  await host.runJob("poll");
+  // Nothing is added, and no .torrent is downloaded: the core fetches it if a rule wants it.
+  expect(host.added).toHaveLength(0);
+  expect(server.requests.some((p) => p.endsWith(".torrent"))).toBe(false);
+  expect([...host.candidates.keys()].sort()).toEqual(["g1", "g2"]);
+  expect(host.candidates.get("g1")).toEqual({
+    id: "g1",
+    title: "Show S01E01",
+    published: "2026-11-07T10:00:00.000Z",
+    links: { magnet: undefined, torrent: "https://feeds.example.com/t/1.torrent" },
+    metadata: { feed: "Shows", size: 99 },
+  });
+  const status = await (await host.request("GET", "/status")).json();
+  expect(status.feeds[0]).toMatchObject({ added: 0, offered: 2 });
+  await host.stop();
+});
