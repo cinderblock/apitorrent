@@ -15,7 +15,7 @@ a full web UI with passkey login, and sandboxed TypeScript plugins.
 
 ## Highlights
 
-Most of this is built. Still to come: rules over feeds, and distribution channels.
+Most of this is built.
 
 - **Its own Rust engine.** BitTorrent v1, v2 and hybrid torrents, uTP, DHT, PEX, LSD,
   encryption and webseeds. The protocol core is deterministic, so it can be tested by

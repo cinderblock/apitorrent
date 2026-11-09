@@ -163,12 +163,13 @@ integrations:
    fixtures follow the clients' source, not captured traffic (no *arr install was allowed
    here). Recommendation: point a test Sonarr at a dev daemon once; any mismatch becomes a
    new pinned fixture.
-2. **qBittorrent usernames are ignored** (any value; the token carries the user).
-   Recommendation: keep it; checking it adds no secret and breaks clients set up with a
-   placeholder name.
-3. **Pack fetching follows `retireSuperseded`**, not a setting of its own. Recommendation:
-   keep it, and have each tracker adapter offer its own on/off setting (it downloads whole
-   packs), as the SDK docs advise.
+
+**Settled at merge (2026-11-09):**
+
+- qBittorrent usernames stay ignored: the token carries the user, and checking a name
+  adds no secret but breaks clients set up with a placeholder.
+- Pack fetching stays under `retireSuperseded`; each tracker adapter offers its own on/off
+  setting, since it downloads whole packs.
 
 ## Things not to do
 

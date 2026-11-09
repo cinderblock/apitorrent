@@ -110,14 +110,13 @@ engine core stays in the main thread, because its pieces interlock.
     self-signed with a pairing code~~ done, merged. Plan: `plans/tls.md`
   - ~~M7 Tauri desktop app~~ done, merged. Plan: `plans/m7-desktop.md`
 - **Delegated streams, started 2026-11-09 about 12:55 AM PST (08:55Z):**
-  - Plugin ecosystem: `qbittorrent-api` plugin, first-party plugins shipped with the
-    daemon, `dns-provider` role for ACME DNS-01 (Cloudflare plugin, mock-tested only),
-    `tracker-adapter` role in retirement. Plan: `plans/plugin-ecosystem.md`
+  - ~~Plugin ecosystem~~ done, merged. Plan: `plans/plugin-ecosystem.md`
   - ~~M9 automation~~ done, merged. Plan: `plans/m9-automation.md`
 - **Main thread meanwhile:** done: M3.2, content library step 8, seed limits, phone
-  layout, CI, fuzzing, scale fixes, real-world v2 tests. Next, merge the plugin-ecosystem
-  stream when it reports.
-- **What remains needs you:** a real Deluge config to test the importer on; an OK to run
+  layout, CI, fuzzing, scale fixes, real-world v2 tests. Every delegated stream is
+  merged.
+- **What remains needs you:** a real Sonarr or Radarr to try `qbittorrent-api` against
+  once; a real Deluge config to test the importer on; an OK to run
   the desktop GUI once (idle 5 min, muted); code-signing certificates; a GitHub remote
   and push so CI and releases run. Optional: a Raspberry Pi images source plugin.
 
@@ -565,6 +564,12 @@ them, restarts, and reports. On this machine (release build, NVMe):
   channels (`plans/m9-automation.md`). Cherry-picked from
   `t3/m9-automation-rules-aliases-channels` on 2026-11-09; at merge the client got a
   256 MiB response cap and `automation.db` became owner-only
+- [x] Plugin ecosystem: `qbittorrent-api` (token sign-in, Sonarr/Radarr/Prowlarr, autobrr
+  and cross-seed conversations pinned), `--plugin-listen`, first-party plugins embedded in
+  release builds and offered for approval on start, ACME DNS-01 through `cloudflare-dns`
+  (propagation check, wildcards; Pebble and a mock Cloudflare only), tracker adapters in
+  pack switchover. Cherry-picked from `t3/plugin-ecosystem-qbittorrent-dns-tracker` on
+  2026-11-09. See `plans/plugin-ecosystem.md`
 - [x] M3.2 (part): Peers tab (client, progress, rates, flags with a legend), Trackers tab
   with live status, status bar (`GET /stats`), bans list in Settings, wanted-piece
   progress

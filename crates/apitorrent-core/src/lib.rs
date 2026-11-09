@@ -4,8 +4,8 @@
 //! revisioned store that clients sync from, and saves resume state. The API server is a thin
 //! layer over [`Core`].
 
-pub mod automation;
 pub mod adapters;
+pub mod automation;
 pub mod db;
 pub mod fingerprint;
 pub mod import;
