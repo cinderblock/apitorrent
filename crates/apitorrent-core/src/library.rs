@@ -31,6 +31,8 @@ use apitorrent_metainfo::Torrent;
 
 /// How many pieces of a candidate are checked before trusting it.
 pub const SAMPLES: usize = 8;
+/// How many same-length candidates are read for one file, same-named ones first.
+pub const MAX_CANDIDATES: usize = 32;
 
 /// A torrent whose files may be reused.
 #[derive(Debug, Clone)]
@@ -184,7 +186,9 @@ pub fn find_matches(
                     sources[si].torrent.info.files[fi].path.last() != name
                 });
                 let mut best: Option<((usize, usize), f64)> = None;
-                for (si, fi) in cands {
+                // Each candidate costs reads, so a length shared by many files (a library of
+                // same-size samples, say) is capped. Roots and fingerprints aren't.
+                for (si, fi) in cands.into_iter().take(MAX_CANDIDATES) {
                     let same_name = sources[si].torrent.info.files[fi].path.last() == name;
                     let from = sources[si].paths[fi]
                         .as_ref()

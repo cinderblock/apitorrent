@@ -420,6 +420,28 @@ engine core stays in the main thread, because its pieces interlock.
   new torrent's first check, the old torrent is simply not marked. Harmless, since it
   keeps seeding.
 
+### Scale: 10,000 torrents (2026-11-09)
+
+`cargo run --release -p apitorrent-core --example scale -- 10000 <empty dir>` makes N
+single-file hybrid torrents (about 64 KiB each, distinct lengths) with their data, adds
+them, restarts, and reports. On this machine (release build, NVMe):
+
+- Restart: `Core::start` returned in 1.4 s with all 10,000 listed, and all were seeding
+  5 ms later. The target is under 5 s.
+- Memory: about 315 MiB with 10,000 loaded (about 31 KiB per torrent).
+- `list()` in 5 ms. The UI's first sync snapshot is 6.2 MiB of JSON, which is large for
+  a phone on a slow link. Compression or a leaner first snapshot is a follow-up.
+- Adding was O(n) per add, so O(n²) in total. At 1,000 it was 15.5 ms per add, and at
+  10,000 it ran past 10 minutes. There were two causes:
+  - The content library asked every torrent's actor for its bitfield. It now asks only
+    torrents with a file of a wanted length, since matching only pairs equal lengths, and
+    reads at most 32 same-length candidates per file.
+  - Each add ran a full queue pass and summary refresh. It now refreshes only the new
+    torrent, and runs the queue pass only when limits are set; both still run every
+    second.
+  Now 5.0 ms per add at 10,000, flat, and most of that is the database's FULL `fsync`.
+  A bulk add (Deluge import) could batch its inserts.
+
 ### Magnet metadata gap (2026-11-09)
 
 - Found by the real-world v2 magnet test: `GET /torrents/{id}` answered 404 about half a

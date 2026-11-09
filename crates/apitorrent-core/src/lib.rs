@@ -8,9 +8,9 @@ pub mod db;
 pub mod fingerprint;
 pub mod import;
 pub mod library;
+pub mod plugin_api;
 mod roots;
 pub mod seeding;
-pub mod plugin_api;
 pub mod settings;
 pub mod store;
 
@@ -556,7 +556,25 @@ impl Core {
         if !lib.enabled {
             return Vec::new();
         }
-        let sources = self.library_sources(Some(id)).await;
+        // Matching only ever pairs files of the same length, so only torrents with a file of
+        // a wanted length can be sources. Asking all of them made adding the n-th torrent
+        // cost n actor round trips.
+        let lengths: std::collections::HashSet<u64> = torrent
+            .info
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(i, f)| !f.is_pad() && f.length > 0 && priorities.get(*i) != Some(&0))
+            .map(|(_, f)| f.length)
+            .collect();
+        if lengths.is_empty() {
+            return Vec::new();
+        }
+        let sources = self
+            .library_sources(Some(id), |t| {
+                t.info.files.iter().any(|f| lengths.contains(&f.length))
+            })
+            .await;
         if sources.is_empty() {
             return Vec::new();
         }
@@ -602,16 +620,21 @@ impl Core {
         linked
     }
 
-    /// A snapshot of every torrent's files, except `except`'s: where they are, what's
-    /// complete, and their fingerprints.
-    async fn library_sources(&self, except: Option<&str>) -> Vec<library::Source> {
+    /// A snapshot of the files of every torrent `keep` accepts, except `except`'s: where
+    /// they are, what's complete, and their fingerprints. Each one costs a round trip to the
+    /// torrent's actor, so callers narrow it down first.
+    async fn library_sources(
+        &self,
+        except: Option<&str>,
+        keep: impl Fn(&Torrent) -> bool,
+    ) -> Vec<library::Source> {
         let entries: Vec<LibrarySnapshot> = self
             .inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
             .iter()
-            .filter(|(k, _)| Some(k.as_str()) != except)
+            .filter(|(k, e)| Some(k.as_str()) != except && keep(&e.torrent))
             .map(|(k, e)| {
                 (
                     k.clone(),
@@ -689,7 +712,7 @@ impl Core {
     /// their torrent, and no current fingerprint. Also drops fingerprints of files no
     /// torrent has any more.
     async fn fingerprint_work(&self) -> Vec<PathBuf> {
-        let sources = self.library_sources(None).await;
+        let sources = self.library_sources(None, |_| true).await;
         let mut wanted = Vec::new();
         let mut known: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         for s in &sources {
@@ -1822,8 +1845,12 @@ impl Core {
             return Err(e);
         }
         tracing::info!(%id, "torrent added");
-        self.apply_queue().await;
-        self.refresh();
+        // Only the new torrent changed. A full queue pass and refresh walk every torrent,
+        // which made adding the n-th torrent cost O(n); both run every second anyway.
+        if self.queue_limited() {
+            self.apply_queue().await;
+        }
+        self.refresh_one(&id);
         Ok(id)
     }
 
@@ -2270,6 +2297,20 @@ impl Core {
     }
 
     /// Rebuild every summary from the engine and publish the changes.
+    /// Publish one torrent's summary, when only it changed.
+    fn refresh_one(&self, id: &str) {
+        let summary = self
+            .inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .get(id)
+            .map(|e| summarize(id, e));
+        if let Some(s) = summary {
+            self.inner.store.apply(vec![s], Vec::new());
+        }
+    }
+
     fn refresh(&self) {
         let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
         let mut summaries: Vec<TorrentSummary> =
