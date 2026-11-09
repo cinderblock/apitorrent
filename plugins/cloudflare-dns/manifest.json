@@ -1,0 +1,45 @@
+{
+  "id": "cloudflare-dns",
+  "name": "Cloudflare DNS",
+  "version": "1.0.0",
+  "description": "Publishes ACME DNS-01 records through Cloudflare's DNS API, so apitorrent can get certificates (wildcards too) for names whose zone is on Cloudflare. Give it an API token limited to the zone, with Zone > DNS > Edit and Zone > Zone > Read, and start the daemon with --acme-challenge dns-01 --acme-dns-plugin cloudflare-dns.",
+  "author": "apitorrent",
+  "apiVersion": 1,
+  "capabilities": {
+    "network": ["api.cloudflare.com"],
+    "networkFromSettings": ["apiBase"],
+    "routes": [{ "path": "/verify", "methods": ["POST"] }],
+    "roles": ["dns-provider"]
+  },
+  "settings": {
+    "type": "object",
+    "required": ["apiToken"],
+    "properties": {
+      "apiToken": {
+        "type": "string",
+        "title": "API token (Zone > DNS > Edit and Zone > Zone > Read, for this zone only)",
+        "writeOnly": true,
+        "maxLength": 200
+      },
+      "zoneId": {
+        "type": "string",
+        "title": "Zone ID (leave empty to find the zone from the name)",
+        "maxLength": 64,
+        "default": ""
+      },
+      "ttl": {
+        "type": "integer",
+        "title": "TTL of the records, in seconds",
+        "minimum": 60,
+        "maximum": 3600,
+        "default": 120
+      },
+      "apiBase": {
+        "type": "string",
+        "format": "uri",
+        "title": "API address (change it only to test against a mock)",
+        "default": "https://api.cloudflare.com/client/v4"
+      }
+    }
+  }
+}

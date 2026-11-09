@@ -24,19 +24,26 @@ directories.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+serde_json.workspace = true
 url.workspace = true
 
 [dev-dependencies]
 apitorrent-metainfo.workspace = true
 apitorrent-types.workspace = true
 axum.workspace = true
-serde_json.workspace = true
+rcgen.workspace = true
 tempfile.workspace = true
+# The DNS-01 test runs Pebble.
+tokio = { workspace = true, features = ["process"] }
 
 [features]
 # Compile the built web UI into the binary (release builds). Needs `bun run build` in web/
 # first; see the README.
 embedded-ui = ["apitorrent-webui/embed"]
+# Ship the first-party plugins (release builds): embeds every bundle in
+# `dist/first-party-plugins` (or `APITORRENT_PLUGIN_DIST`), which `bun run
+# build:first-party` at the repository root makes. The daemon offers them for approval.
+first-party-plugins = []
 
 [lints]
 workspace = true

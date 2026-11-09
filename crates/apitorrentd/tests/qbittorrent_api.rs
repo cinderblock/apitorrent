@@ -9,10 +9,11 @@
     reason = "a long conversation of short-lived responses"
 )]
 
+mod common;
+
 use std::fmt::Write as _;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -24,57 +25,13 @@ use apitorrent_core::plugin_api::CorePluginApi;
 use apitorrent_core::{Core, CoreConfig};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
-use apitorrent_plugin_api::{PluginBundle, PluginService, PluginStatus};
+use apitorrent_plugin_api::{PluginService, PluginStatus};
 use apitorrent_plugins::{HostConfig, PluginHost};
 use apitorrent_server::{
     AuthMode, PluginListener, ServerConfig, TrustedProxies, WebUi, plugin_credentials, router,
 };
 use apitorrent_types::TorrentState;
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .unwrap()
-}
-
-fn bun(args: &[&str], dir: &Path) {
-    let out = Command::new("bun")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .unwrap_or_else(|e| panic!("this test needs bun on the PATH (https://bun.sh): {e}"));
-    assert!(
-        out.status.success(),
-        "bun {args:?} failed:\n{}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn build_plugin(name: &str, out: &Path) -> PluginBundle {
-    let root = repo();
-    if !root.join("node_modules/@apitorrent/plugin-sdk").exists() {
-        bun(&["install", "--frozen-lockfile"], &root);
-    }
-    let build = root.join("packages/plugin-sdk/src/build.ts");
-    let plugin = root.join("plugins").join(name);
-    bun(
-        &[
-            build.to_str().unwrap(),
-            plugin.to_str().unwrap(),
-            "--out",
-            out.to_str().unwrap(),
-        ],
-        &root,
-    );
-    let file = std::fs::read_dir(out)
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.to_string_lossy().ends_with(".plugin.json"))
-        .expect("a bundle");
-    serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap()
-}
+use common::build_plugin;
 
 /// A response: status, headers (lowercase names), body.
 struct Resp {

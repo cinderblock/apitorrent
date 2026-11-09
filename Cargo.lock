@@ -539,6 +539,7 @@ dependencies = [
  "axum",
  "clap",
  "directories",
+ "rcgen",
  "serde_json",
  "tempfile",
  "tokio",
