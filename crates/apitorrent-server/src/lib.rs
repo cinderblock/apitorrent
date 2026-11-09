@@ -20,6 +20,7 @@
 
 mod auth_routes;
 mod authn;
+mod embed;
 mod guard;
 mod routes;
 mod sync;
@@ -40,6 +41,8 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use apitorrent_auth::Auth;
 use apitorrent_core::Core;
+
+pub use embed::{EMBEDDED_HOST, Embedded, EmbeddedError, EmbeddedResponse};
 
 /// Large enough for a base64-encoded `.torrent` with a long piece list.
 const MAX_BODY: usize = 64 * 1024 * 1024;

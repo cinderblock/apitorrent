@@ -23,6 +23,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+tower = { version = "0.5", features = ["util"] }
 tower-http.workspace = true
 tracing.workspace = true
 
@@ -38,7 +39,6 @@ apitorrent-metainfo.workspace = true
 base64.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true
-tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # The TLS tests: a test CA, a strict rustls client, and raw HTTP/1.1 and HTTP/2.
 bytes.workspace = true

@@ -8,6 +8,9 @@
 //! 2. With `--insecure-no-auth-loopback`: a direct loopback request is the local admin.
 //! 3. The session cookie.
 //!
+//! Requests from an app in the same process (see `embed`) are the machine's owner, before
+//! any of that: they carry a marker no network request can.
+//!
 //! Everything except [`PUBLIC`] needs a caller. Writes (anything but `GET`/`HEAD`) need one
 //! that may write: not a `read` token and not a viewer. Under `/auth/`, the auth crate makes
 //! its own, finer decisions.
@@ -169,6 +172,20 @@ fn bearer(headers: &HeaderMap) -> Option<Result<&str, ()>> {
     }
 }
 
+/// Whoever runs the app that embeds the server: the desktop app's own UI in Local mode.
+fn owner() -> Principal {
+    Principal {
+        user: apitorrent_auth::UserInfo {
+            id: "local".to_owned(),
+            name: "local".to_owned(),
+            display_name: "This computer".to_owned(),
+            role: apitorrent_auth::Role::Admin,
+            has_password: false,
+        },
+        credential: apitorrent_auth::Credential::Local,
+    }
+}
+
 fn unauthorized(code: &str, message: &str) -> Response {
     let mut r = error(StatusCode::UNAUTHORIZED, code, message).into_response();
     r.headers_mut()
@@ -216,7 +233,9 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
     let mut stale_cookie = false;
     let mut via_cookie = false;
 
+    let in_process = req.extensions().get::<crate::embed::InProcess>().is_some();
     match (&s.auth, bearer(headers)) {
+        _ if in_process => ctx.principal = Some(owner()),
         (_, Some(Err(()))) => {
             return unauthorized("invalid_token", "use `Authorization: Bearer <token>`");
         }
