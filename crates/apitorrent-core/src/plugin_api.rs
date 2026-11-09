@@ -116,6 +116,16 @@ impl AppApi for CorePluginApi {
     fn events(&self) -> broadcast::Receiver<AppEvent> {
         self.events.subscribe()
     }
+
+    fn submit_candidates(
+        &self,
+        source: &str,
+        candidates: Vec<apitorrent_types::automation::ReleaseCandidate>,
+    ) -> BoxFuture<Result<apitorrent_types::automation::SubmitCandidatesOutcome, AppError>> {
+        let core = self.core.clone();
+        let source = format!("plugin:{source}");
+        Box::pin(async move { Ok(core.submit_candidates(&source, candidates).await?) })
+    }
 }
 
 /// What the translator remembers about each torrent.

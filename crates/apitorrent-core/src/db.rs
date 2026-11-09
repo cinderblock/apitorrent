@@ -234,6 +234,18 @@ impl Database {
             .map(|r| r.is_some())
     }
 
+    /// A torrent's `.torrent` file; `None` for an unknown id or a magnet link still
+    /// waiting for its metadata (stored empty).
+    pub fn torrent_file(&self, id: &str) -> rusqlite::Result<Option<Vec<u8>>> {
+        Ok(self
+            .conn
+            .query_row("SELECT torrent FROM torrents WHERE id = ?1", [id], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
+            .optional()?
+            .filter(|t| !t.is_empty()))
+    }
+
     pub fn torrents(&self) -> rusqlite::Result<Vec<TorrentRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,

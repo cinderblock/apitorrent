@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 reflink-copy.workspace = true
 apitorrent-bencode.workspace = true
+apitorrent-client.workspace = true
 apitorrent-deluge.workspace = true
 apitorrent-dht.workspace = true
 apitorrent-mse.workspace = true
@@ -20,12 +21,15 @@ apitorrent-plugin-api.workspace = true
 apitorrent-types.workspace = true
 base64.workspace = true
 rand.workspace = true
+regex.workspace = true
+ring.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 # The scale example's memory report.

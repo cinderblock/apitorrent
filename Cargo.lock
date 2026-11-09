@@ -202,6 +202,7 @@ name = "apitorrent-core"
 version = "0.1.0"
 dependencies = [
  "apitorrent-bencode",
+ "apitorrent-client",
  "apitorrent-deluge",
  "apitorrent-dht",
  "apitorrent-engine",
@@ -213,6 +214,8 @@ dependencies = [
  "memory-stats",
  "rand 0.9.5",
  "reflink-copy",
+ "regex",
+ "ring",
  "rusqlite",
  "serde_json",
  "sha2 0.10.9",
@@ -221,6 +224,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

@@ -4,6 +4,7 @@
 //! revisioned store that clients sync from, and saves resume state. The API server is a thin
 //! layer over [`Core`].
 
+pub mod automation;
 pub mod db;
 pub mod fingerprint;
 pub mod import;
@@ -215,6 +216,8 @@ struct Inner {
     /// When seeding time was last counted.
     seed_clock: Mutex<std::time::Instant>,
     roots: Vec<apitorrent_types::StorageRoot>,
+    /// Rules, aliases and channels (see `automation`).
+    automation: automation::Automation,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -264,6 +267,7 @@ impl Core {
         {
             dht.state = apitorrent_dht::PersistedState::from_bytes(&bytes).ok();
         }
+        let automation = automation::Automation::open(&config.data_dir)?;
         let session = Session::start(session_config).await?;
         tracing::info!(peer_port = session.listen_addr().port(), "engine started");
         let core = Core {
@@ -282,6 +286,7 @@ impl Core {
                 seeding: Mutex::new(HashMap::new()),
                 seed_clock: Mutex::new(std::time::Instant::now()),
                 roots: vec![root],
+                automation,
             }),
         };
         core.apply_session_settings();
@@ -299,6 +304,7 @@ impl Core {
         core.apply_queue().await;
         tokio::spawn(core.clone().background());
         tokio::spawn(core.clone().fingerprinter());
+        tokio::spawn(core.clone().automation_loop());
         Ok(core)
     }
 

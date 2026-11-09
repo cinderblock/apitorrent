@@ -77,6 +77,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-platform-verifier = "0.7"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Automation (M9): rule patterns, and Ed25519 channel signatures from the ring already used
+# by rustls.
+regex = "1"
+ring = "0.17"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
