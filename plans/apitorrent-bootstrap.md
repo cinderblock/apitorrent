@@ -105,8 +105,7 @@ engine core stays in the main thread, because its pieces interlock.
     (`plans/m4-auth.md`)
 - **Delegated streams, started 2026-11-08 (background agents in worktrees, cherry-picked
   when done):**
-  - M8 plugin host (`apitorrent-plugins`, plugin SDK, rss and ubuntu-releases plugins,
-    Plugins page). Plan: `plans/m8-plugins.md`
+  - ~~M8 plugin host~~ done, merged. Plan: `plans/m8-plugins.md`
   - ~~Built-in TLS: bring-your-own certificates, ACME HTTP-01 and TLS-ALPN-01, DNS-01 hook,
     self-signed with a pairing code~~ done, merged. Plan: `plans/tls.md`
   - ~~M7 Tauri desktop app~~ done, merged. Plan: `plans/m7-desktop.md`
@@ -589,7 +588,14 @@ engine core stays in the main thread, because its pieces interlock.
   doesn't cost a 5 s uTP timeout. Unit test `pex_hints_order_the_transports`
 - [ ] Code signing for the desktop installers (Windows Authenticode, Apple Developer ID):
   needs certificates as repository secrets
-- [ ] M8
+- [x] M8 plugin host: `apitorrent-plugin-api` (contract), `apitorrent-plugins` (deno_core
+  0.413 / V8 150.4, an isolate per plugin, heap and ArrayBuffer limits, watchdog, checked
+  ops and `fetch` with strict TLS), `/api/v1/plugins` endpoints and plugin routes,
+  `--no-plugins`, `@apitorrent/plugin-sdk`, the `rss` and `ubuntu-releases` plugins, and a
+  Plugins page. Cherry-picked from `t3/m8-plugin-host-v8` on 2026-11-09. See
+  `plans/m8-plugins.md`
+- [ ] M8 follow-ups: the `qbittorrent-api` plugin, shipping first-party plugin bundles
+  with the daemon, the tracker-adapter hook, the `dns-provider` role for ACME DNS-01
 
 ## Open questions for the user
 

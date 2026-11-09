@@ -192,6 +192,8 @@ impl LocalNode {
             auth: AuthMode::Enabled(self.auth.clone()),
             trusted_proxies: TrustedProxies::parse(&settings.trusted_proxies).unwrap_or_default(),
             allow_insecure_lan: settings.allow_insecure_lan,
+            // The desktop app runs no plugins yet.
+            plugins: None,
         };
         let (stop, stopped) = oneshot::channel::<()>();
         let core = self.core.clone();

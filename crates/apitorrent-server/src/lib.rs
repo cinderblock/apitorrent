@@ -134,7 +134,7 @@ impl std::fmt::Debug for ServerConfig {
         f.debug_struct("ServerConfig")
             .field("listen", &self.listen)
             .field("public_hosts", &self.public_hosts)
-            .field("web_root", &self.web_root)
+            .field("web_ui", &self.web_ui)
             .field("auth", &self.auth)
             .field("trusted_proxies", &self.trusted_proxies)
             .field("allow_insecure_lan", &self.allow_insecure_lan)
