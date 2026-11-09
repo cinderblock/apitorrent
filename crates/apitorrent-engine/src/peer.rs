@@ -98,13 +98,14 @@ impl Dialer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
     }
 
-    /// The transports to try for `addr`, in order: `true` is uTP.
-    fn order(&self, addr: SocketAddr) -> &'static [bool] {
+    /// The transports to try for `addr`, in order: `true` is uTP. A peer that PEX says
+    /// doesn't speak uTP gets TCP first, so it doesn't cost a uTP connect timeout.
+    fn order(&self, addr: SocketAddr, hint: UtpHint) -> &'static [bool] {
         let utp = self
             .utp
             .as_ref()
             .is_some_and(|s| reaches(s.local_addr(), addr));
-        match (utp, self.prefer_utp) {
+        match (utp, self.prefer_utp && hint != UtpHint::No) {
             (false, _) => &[false],
             (true, true) => &[true, false],
             (true, false) => &[false, true],
@@ -184,9 +185,10 @@ impl Dialer {
         &self,
         addr: SocketAddr,
         ours: &Handshake,
+        hint: UtpHint,
     ) -> Result<(BoxIo, Handshake, Link), String> {
         let mut errors = Vec::new();
-        for &utp in self.order(addr) {
+        for &utp in self.order(addr, hint) {
             match self.handshake_over(addr, ours, utp).await {
                 Ok(done) => return Ok(done),
                 Err(e) => errors.push(format!("{}: {e}", if utp { "uTP" } else { "TCP" })),
@@ -203,9 +205,23 @@ fn reaches(local: SocketAddr, remote: SocketAddr) -> bool {
     local.is_ipv4() == remote.is_ipv4() && (!local.ip().is_loopback() || remote.ip().is_loopback())
 }
 
+/// What PEX (BEP 11) said about a peer's uTP support.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum UtpHint {
+    /// Nobody said (a tracker, the DHT, a magnet link).
+    #[default]
+    Unknown,
+    /// The `0x04` flag was set.
+    Yes,
+    /// PEX listed the peer without the flag.
+    No,
+}
+
 /// Connect to `addr`, handshake, and run the connection until it closes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_outbound(
     addr: SocketAddr,
+    hint: UtpHint,
     ours: Handshake,
     key: PeerKey,
     max_message: u32,
@@ -214,7 +230,7 @@ pub(crate) async fn run_outbound(
     dialer: Arc<Dialer>,
 ) {
     let result = async {
-        let (stream, theirs, link) = dialer.dial(addr, &ours).await?;
+        let (stream, theirs, link) = dialer.dial(addr, &ours, hint).await?;
         if theirs.info_hash != ours.info_hash {
             return Err("peer answered for a different torrent".to_owned());
         }
@@ -439,7 +455,32 @@ pub(crate) fn our_handshake(
 
 #[cfg(test)]
 mod tests {
-    use super::reaches;
+    use super::{Dialer, UtpHint, reaches};
+
+    /// PEX saying a peer has no uTP puts TCP first; it never stops uTP being tried, and
+    /// never overrides a preference for TCP.
+    #[tokio::test]
+    async fn pex_hints_order_the_transports() {
+        let socket = apitorrent_utp::UtpSocket::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let mut d = Dialer {
+            utp: Some(socket),
+            prefer_utp: true,
+            encryption: std::sync::Mutex::new(apitorrent_mse::Policy::Disabled),
+        };
+        let peer = "127.0.0.1:7000".parse().unwrap();
+        assert_eq!(d.order(peer, UtpHint::Unknown), [true, false]);
+        assert_eq!(d.order(peer, UtpHint::Yes), [true, false]);
+        assert_eq!(d.order(peer, UtpHint::No), [false, true]);
+        d.prefer_utp = false;
+        assert_eq!(d.order(peer, UtpHint::Yes), [false, true]);
+        // A loopback socket can't reach a public peer over uTP at all.
+        assert_eq!(
+            d.order("203.0.113.5:51413".parse().unwrap(), UtpHint::Yes),
+            [false]
+        );
+    }
 
     #[test]
     fn utp_reach() {

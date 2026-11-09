@@ -31,6 +31,8 @@ use crate::verify::{PieceHashes, Verdict};
 use crate::webseed::{self, WebSeedEvent, WebSeedTorrent};
 
 const TICK: Duration = Duration::from_secs(1);
+/// At most this many PEX uTP hints are kept per torrent (each PEX message adds up to 50).
+const MAX_UTP_HINTS: usize = 2000;
 const CHOKE_EVERY: u32 = 10;
 const OPTIMISTIC_EVERY: u32 = 3;
 /// How long to wait before reconnecting to a peer whose connection ended normally.
@@ -515,6 +517,8 @@ pub(crate) struct TorrentActor {
     peers: HashMap<PeerKey, Peer>,
     buffers: HashMap<u32, Vec<u8>>,
     candidates: VecDeque<SocketAddr>,
+    /// What PEX said about candidates' uTP support, until they are dialed.
+    utp_hints: HashMap<SocketAddr, peer::UtpHint>,
     /// Candidates we shouldn't dial before the given time.
     retry_at: HashMap<SocketAddr, Instant>,
     /// Addresses we know to be seeds. They aren't dialled while we have every piece.
@@ -641,6 +645,7 @@ impl TorrentActor {
             peers: HashMap::new(),
             buffers: HashMap::new(),
             candidates: VecDeque::new(),
+            utp_hints: HashMap::new(),
             retry_at: HashMap::new(),
             seed_addrs: HashSet::new(),
             known: HashSet::new(),
@@ -1445,8 +1450,10 @@ impl TorrentActor {
             peer.half_open = Some(half_open);
             self.peers.insert(key, peer);
             let ours = self.our_handshake();
+            let hint = self.utp_hints.remove(&addr).unwrap_or_default();
             tokio::spawn(peer::run_outbound(
                 addr,
+                hint,
                 ours,
                 key,
                 self.max_message,
@@ -1748,7 +1755,19 @@ impl TorrentActor {
                 if !self.torrent.info.private {
                     let pex = PexMessage::decode(&payload)
                         .map_err(|e| format!("bad ut_pex message: {e}"))?;
-                    let added = pex.added.into_iter().map(|(addr, _)| addr).collect();
+                    let mut added = Vec::with_capacity(pex.added.len());
+                    for (addr, flags) in pex.added {
+                        // Kept only for peers we haven't dialed yet, and dropped at the dial.
+                        if !self.known.contains(&addr) && self.utp_hints.len() < MAX_UTP_HINTS {
+                            let hint = if flags.supports_utp() {
+                                peer::UtpHint::Yes
+                            } else {
+                                peer::UtpHint::No
+                            };
+                            self.utp_hints.insert(addr, hint);
+                        }
+                        added.push(addr);
+                    }
                     self.add_candidates(added);
                     self.connect_more();
                 }
@@ -1811,11 +1830,28 @@ impl TorrentActor {
         if self.torrent.info.private {
             return;
         }
-        let connected: HashSet<SocketAddr> = self
+        // What we know first-hand about each peer we pass on (BEP 11 flags).
+        let connected: HashMap<SocketAddr, PexFlags> = self
             .peers
             .values()
             .filter(|p| p.tx.is_some())
-            .filter_map(Self::reachable_addr)
+            .filter_map(|p| {
+                let mut flags = 0;
+                if p.link.encrypted {
+                    flags |= 0x01;
+                }
+                if p.is_seed {
+                    flags |= 0x02;
+                }
+                if p.link.utp {
+                    flags |= 0x04;
+                }
+                if p.outbound {
+                    // We reached it, so it accepts incoming connections.
+                    flags |= 0x10;
+                }
+                Some((Self::reachable_addr(p)?, PexFlags(flags)))
+            })
             .collect();
         for peer in self.peers.values_mut() {
             let Some(id) = peer
@@ -1827,14 +1863,14 @@ impl TorrentActor {
             };
             let me = Self::reachable_addr(peer);
             let current: HashSet<SocketAddr> = connected
-                .iter()
+                .keys()
                 .copied()
                 .filter(|a| Some(*a) != me)
                 .collect();
             let added: Vec<(SocketAddr, PexFlags)> = current
                 .difference(&peer.pex_sent)
                 .take(PexMessage::MAX_PEERS)
-                .map(|a| (*a, PexFlags(0)))
+                .map(|a| (*a, connected[a]))
                 .collect();
             let dropped: Vec<SocketAddr> = peer
                 .pex_sent

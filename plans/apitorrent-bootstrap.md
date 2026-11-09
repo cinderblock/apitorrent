@@ -565,6 +565,9 @@ engine core stays in the main thread, because its pieces interlock.
   installers through the Tauri CLI, provenance attestations, a **draft** release for a
   person to publish), `dependabot.yml`. Actions pinned by commit. `actionlint` passes.
   They run only once the repo is on GitHub, which waits on you
+- [x] PEX flags (BEP 11): peers we pass on carry what we know first-hand (encrypted, seed,
+  uTP, reachable); a peer PEX lists without the uTP flag is dialed over TCP first, so it
+  doesn't cost a 5 s uTP timeout. Unit test `pex_hints_order_the_transports`
 - [ ] Code signing for the desktop installers (Windows Authenticode, Apple Developer ID):
   needs certificates as repository secrets
 - [ ] M8

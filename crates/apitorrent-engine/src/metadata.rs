@@ -293,6 +293,7 @@ impl Fetcher {
             );
             tokio::spawn(peer::run_outbound(
                 addr,
+                peer::UtpHint::Unknown,
                 ours,
                 key,
                 2 * 1024 * 1024,
