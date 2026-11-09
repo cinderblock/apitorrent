@@ -430,11 +430,19 @@ impl Core {
         } else {
             None
         };
+        // A `.torrent` is preferred over a magnet link: its files are known at once, so the
+        // file selection applies when it is added. If fetching fails, the magnet will do.
         if metainfo.is_none()
-            && c.links.magnet.is_none()
             && let Some(url) = &c.links.torrent
         {
-            metainfo = Some(self.fetch_torrent(&s.source, url).await?);
+            match self.fetch_torrent(&s.source, url).await {
+                Ok(bytes) => metainfo = Some(bytes),
+                Err(e) if c.links.magnet.is_some() => {
+                    tracing::info!(candidate = %c.title, error = %e,
+                        "using the magnet link instead of the .torrent");
+                }
+                Err(e) => return Err(e),
+            }
         }
         let save_path = self
             .rule_save_path(spec.save_path.as_deref())?
