@@ -5,6 +5,8 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import type { ThemePreference } from "../theme";
+
 /** The capability check: true only in the desktop app's window. */
 export function isDesktop(): boolean {
   return isTauri();
@@ -151,6 +153,8 @@ export const desktop = {
     call<void>("path_action", { action, savePath, file: file ?? null }),
   /** null when the path can be opened here, else why not. */
   pathAvailable: (savePath: string) => call<string | null>("path_available", { savePath }),
+  /** The window's own theme (title bar, background), kept in step with the page's. */
+  setTheme: (theme: ThemePreference) => call<void>("theme_set", { theme }),
   /** Called when the OS hands the app magnet links or .torrent files. */
   onLinks: (handler: () => void) => listen("apitorrent://links", handler),
 };

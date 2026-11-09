@@ -14,6 +14,7 @@ mod mapping;
 mod notify;
 mod profiles;
 mod state;
+mod theme;
 
 use std::sync::Arc;
 
@@ -23,7 +24,7 @@ use tauri::{AppHandle, Manager as _, Runtime, WebviewUrl, WebviewWindowBuilder, 
 
 use crate::state::{AppState, Dirs};
 
-const MAIN_WINDOW: &str = "main";
+pub(crate) const MAIN_WINDOW: &str = "main";
 
 /// Show, unminimise and focus the main window.
 pub(crate) fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
@@ -128,23 +129,34 @@ pub fn run() {
             commands::mapping_suggestions,
             commands::path_action,
             commands::path_available,
+            theme::theme_set,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
-                .title("apitorrent")
-                .inner_size(1280.0, 800.0)
-                .min_inner_size(720.0, 480.0)
-                .on_navigation(move |url| {
-                    if is_app_url(url) {
-                        return true;
-                    }
-                    if matches!(url.scheme(), "http" | "https" | "mailto") {
-                        let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
-                    }
-                    false
-                })
-                .build()?;
+            // Open in the saved theme, never a white flash: the window starts hidden, takes
+            // the theme (resolving System against the OS) and its background, then shows.
+            let theme = theme::load(&app.state::<AppState>().dirs.config);
+            let window =
+                WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
+                    .title("apitorrent")
+                    .inner_size(1280.0, 800.0)
+                    .min_inner_size(720.0, 480.0)
+                    .theme(theme.window_theme())
+                    .visible(false)
+                    .on_navigation(move |url| {
+                        if is_app_url(url) {
+                            return true;
+                        }
+                        if matches!(url.scheme(), "http" | "https" | "mailto") {
+                            let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+                        }
+                        false
+                    })
+                    .build()?;
+            if let Err(e) = theme::apply(&window, theme) {
+                tracing::warn!(error = %e, "couldn't apply the window theme");
+            }
+            window.show()?;
             tray(app)?;
 
             // magnet: links while running: from macOS open events, or from a second launch
@@ -188,6 +200,12 @@ pub fn run() {
             {
                 api.prevent_close();
                 let _ = window.hide();
+            }
+            // The OS theme changed under a window following it: repaint the background.
+            if let WindowEvent::ThemeChanged(t) = event
+                && let Some(w) = window.app_handle().get_webview_window(window.label())
+            {
+                theme::follow(&w, *t);
             }
         })
         .build(tauri::generate_context!())

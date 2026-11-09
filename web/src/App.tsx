@@ -11,6 +11,7 @@ import { StatusBar } from "./components/StatusBar";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
+import { ThemePicker } from "./components/ThemePicker";
 import { TorrentTable } from "./components/TorrentTable";
 import { DesktopMenu } from "./desktop/DesktopGate";
 import { isDesktop } from "./desktop/bridge";
@@ -199,6 +200,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
             Plugins
           </button>
         )}
+        <ThemePicker />
         <input
           type="search"
           className="search"

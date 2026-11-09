@@ -108,5 +108,5 @@ button.danger {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
+  box-shadow: 0 4px 16px var(--shadow);
 }

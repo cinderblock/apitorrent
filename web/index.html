@@ -3,7 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The theme, before anything renders. theme-boot.js narrows color-scheme to the
+         person's choice and sets data-theme; theme.css holds the colours and the page
+         background. Both are same-origin files rather than inline, which the CSP forbids. -->
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" data-scheme="light" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" data-scheme="dark" content="#181c21" media="(prefers-color-scheme: dark)" />
+    <script src="/theme-boot.js"></script>
+    <link rel="stylesheet" href="/src/theme.css" />
     <title>apitorrent</title>
   </head>
   <body>

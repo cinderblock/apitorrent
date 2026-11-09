@@ -1,39 +1,4 @@
-:root {
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #eef0f3;
-  --border: #d9dde3;
-  --text: #1b1f24;
-  --muted: #5d6673;
-  --accent: #2563eb;
-  --accent-soft: #dbe6fd;
-  --ok: #15803d;
-  --warn: #b45309;
-  --err: #b91c1c;
-  --row-selected: #dbe6fd;
-  --row-hover: #f0f3f8;
-  --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
-  color-scheme: light dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111418;
-    --surface: #181c21;
-    --surface-2: #20252c;
-    --border: #2c333c;
-    --text: #e6e9ed;
-    --muted: #97a1ad;
-    --accent: #6b9bff;
-    --accent-soft: #1e2d4a;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-    --err: #f87171;
-    --row-selected: #1e2d4a;
-    --row-hover: #1d2228;
-  }
-}
+/* Colour tokens and the theme live in theme.css, linked from index.html. */
 
 * {
   box-sizing: border-box;
@@ -80,13 +45,13 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 button.danger {
   background: var(--err);
   border-color: var(--err);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 button.link {
@@ -177,6 +142,13 @@ code {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
+}
+
+.theme-picker {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
 }
 
 .rates {
@@ -302,7 +274,7 @@ code {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  box-shadow: 0 8px 24px var(--shadow);
 }
 
 .column-chooser ul {
@@ -676,7 +648,7 @@ code {
 }
 
 .dialog::backdrop {
-  background: rgb(0 0 0 / 35%);
+  background: var(--scrim);
 }
 
 .dialog h2 {
@@ -1042,7 +1014,7 @@ button.link.danger-text {
   padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--border);
   background: var(--surface);
-  box-shadow: 0 -4px 16px rgb(0 0 0 / 0.12);
+  box-shadow: 0 -4px 16px var(--shadow);
 }
 
 .selection-bar .muted {
@@ -1053,7 +1025,7 @@ button.link.danger-text {
   position: fixed;
   inset: 0;
   z-index: 19;
-  background: rgb(0 0 0 / 0.35);
+  background: var(--scrim);
 }
 
 .sheet-head {
@@ -1140,7 +1112,7 @@ button.link.danger-text {
   .sidebar.open {
     transform: none;
     visibility: visible;
-    box-shadow: 4px 0 24px rgb(0 0 0 / 0.2);
+    box-shadow: 4px 0 24px var(--shadow);
     transition:
       transform 0.18s ease-out,
       visibility 0s;
