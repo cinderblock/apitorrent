@@ -1,0 +1,57 @@
+[package]
+name = "apitorrent-desktop"
+description = "The apitorrent desktop app: a thin client to a daemon, or the core embedded"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+# The `_lib` suffix keeps the library's output name apart from the binary's on Windows
+# (cargo issue 8519).
+name = "apitorrent_desktop_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "apitorrent-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+apitorrent-auth.workspace = true
+apitorrent-client.workspace = true
+apitorrent-core.workspace = true
+apitorrent-dht.workspace = true
+apitorrent-engine.workspace = true
+apitorrent-mse.workspace = true
+apitorrent-server.workspace = true
+apitorrent-types.workspace = true
+base64.workspace = true
+directories.workspace = true
+futures-util.workspace = true
+keyring = "4.2"
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12", features = ["tray-icon"] }
+tauri-plugin-deep-link = "2.6"
+tauri-plugin-notification = "2.8"
+tauri-plugin-opener = "2.7"
+tauri-plugin-single-instance = { version = "2.5", features = ["deep-link"] }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

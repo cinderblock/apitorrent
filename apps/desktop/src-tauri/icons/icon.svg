@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- The apitorrent icon: a download arrow into a tray, on a rounded square. -->
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="#1f5fbf"/>
+  <path d="M512 220 V600" stroke="#ffffff" stroke-width="96" stroke-linecap="round" fill="none"/>
+  <path d="M340 440 L512 612 L684 440" stroke="#ffffff" stroke-width="96" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M260 700 V780 H764 V700" stroke="#ffffff" stroke-width="80" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

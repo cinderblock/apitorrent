@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "apitorrent",
+  "identifier": "io.github.cinderblock.apitorrent",
+  "build": {
+    "frontendDist": "../../../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": { "script": "bun run dev", "cwd": "../../../web" },
+    "beforeBuildCommand": { "script": "bun run build", "cwd": "../../../web" }
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "img-src": "'self' data:",
+        "style-src": "'self'",
+        "script-src": "'self'",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'self'",
+        "frame-ancestors": "'none'"
+      },
+      "freezePrototype": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Utility",
+    "shortDescription": "BitTorrent client",
+    "longDescription": "apitorrent: a BitTorrent client with a thin client for remote daemons, strict TLS and passkey sign-in.",
+    "license": "MIT",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["torrent"],
+        "mimeType": "application/x-bittorrent",
+        "name": "BitTorrent file",
+        "description": "BitTorrent metainfo file",
+        "role": "Viewer"
+      }
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["magnet"]
+      }
+    }
+  }
+}

@@ -1,6 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "apps/desktop/src-tauri"]
+# The desktop app (Tauri) is slow to build and needs a webview SDK on Linux, so plain
+# `cargo build` / `cargo test` at the root skip it; `--workspace` or `-p apitorrent-desktop`
+# include it.
+default-members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"

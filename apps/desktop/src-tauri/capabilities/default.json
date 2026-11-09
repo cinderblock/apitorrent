@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window: core events and channels only. The app's own commands carry their own checks; no plugin is exposed to the page (notifications, opening files and deep links are all driven from Rust).",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
