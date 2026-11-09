@@ -57,7 +57,7 @@ export function notifyAuthLost(): void {
   for (const l of authLostListeners) l();
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method, headers: {}, credentials: "same-origin" };
   if (body !== undefined) {
     init.body = JSON.stringify(body);

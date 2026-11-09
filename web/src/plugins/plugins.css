@@ -1,0 +1,152 @@
+/* The Plugins page. Builds on the shared account-page, field and dialog styles. */
+
+.plugins-page .button-like {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.plugin-card .plugin-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.plugin-description {
+  margin: 4px 0 0;
+}
+
+.plugin-meta {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.plugin-card .actions {
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.plugin-status {
+  white-space: nowrap;
+}
+
+.plugin-status-running {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.plugin-status-failed {
+  color: var(--err);
+  border-color: var(--err);
+}
+
+.plugin-status-awaitingApproval {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.plugin-notice {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.plugin-grants {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.plugin-settings {
+  margin-top: 12px;
+  max-width: 40rem;
+}
+
+.plugin-form select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+}
+
+.plugin-check {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+
+.plugin-help {
+  display: block;
+  flex-basis: 100%;
+}
+
+.plugin-fieldset {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px 4px;
+  margin: 0 0 12px;
+}
+
+.plugin-fieldset legend {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.plugin-array-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-bottom: 1px dashed var(--border);
+  margin-bottom: 8px;
+}
+
+.plugin-array-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.plugin-logs {
+  margin-top: 12px;
+  max-height: 22rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.plugin-log {
+  display: grid;
+  grid-template-columns: max-content 6.5rem 1fr;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.plugin-log-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.plugin-log-warn .plugin-log-level {
+  color: var(--warn);
+}
+
+.plugin-log-error .plugin-log-level,
+.plugin-log-error .plugin-log-message {
+  color: var(--err);
+}
+
+.plugin-log-debug {
+  color: var(--muted);
+}

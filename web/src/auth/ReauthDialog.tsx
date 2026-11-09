@@ -9,10 +9,12 @@ interface Props {
   status: AuthStatus;
   onDone: (status: AuthStatus) => void;
   onCancel: () => void;
+  /** Why a fresh sign-in is needed; credential changes by default. */
+  reason?: string;
 }
 
 /** "Confirm it's you": a fresh sign-in before credential changes. */
-export function ReauthDialog({ status, onDone, onCancel }: Props) {
+export function ReauthDialog({ status, onDone, onCancel, reason }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -53,7 +55,7 @@ export function ReauthDialog({ status, onDone, onCancel }: Props) {
     <dialog ref={dialog} className="dialog" onClose={onCancel} aria-labelledby="reauth-title">
       <form onSubmit={withPassword}>
         <h2 id="reauth-title">Confirm it's you</h2>
-        <p className="muted">Changing how you sign in needs a fresh sign-in.</p>
+        <p className="muted">{reason ?? "Changing how you sign in needs a fresh sign-in."}</p>
         {canPasskey && (
           <div className="actions start">
             <button type="button" className="primary" onClick={withPasskey} disabled={busy}>
