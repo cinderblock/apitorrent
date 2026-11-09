@@ -45,9 +45,16 @@ fn bun(args: &[&str], dir: &Path) {
 
 /// Build `plugins/<name>` into `out` and load the bundle.
 fn build_plugin(name: &str, out: &Path) -> PluginBundle {
+    // Tests run in parallel; two `bun install`s at once trip over each other's links.
+    static INSTALL: Mutex<()> = Mutex::new(());
     let root = repo();
-    if !root.join("node_modules/@apitorrent/plugin-sdk").exists() {
-        bun(&["install", "--frozen-lockfile"], &root);
+    {
+        let _one_at_a_time = INSTALL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !root.join("node_modules/@apitorrent/plugin-sdk").exists() {
+            bun(&["install", "--frozen-lockfile"], &root);
+        }
     }
     let build = root.join("packages/plugin-sdk/src/build.ts");
     let plugin = root.join("plugins").join(name);
