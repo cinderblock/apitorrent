@@ -673,6 +673,18 @@ async fn password_fallback_lockout_and_rate_limits() {
         .json();
     assert_eq!(status["passkeysAvailable"], false);
     assert_eq!(status["passkeyHint"], "http://localhost:8742");
+    // Over HTTPS (here, through the trusted proxy), the hint is an HTTPS address.
+    let status = send(
+        &app,
+        Req::get("/api/v1/auth/status")
+            .host("127.0.0.1:8742")
+            .peer("10.0.0.5")
+            .header("x-forwarded-for", "127.0.0.1")
+            .header("x-forwarded-proto", "https"),
+    )
+    .await
+    .json();
+    assert_eq!(status["passkeyHint"], "https://localhost:8742");
     assert_eq!(status["passwordMode"], "fallback");
 
     let setup = post(

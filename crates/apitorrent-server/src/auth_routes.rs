@@ -110,9 +110,11 @@ fn status_for(
             .rsplit_once(':')
             .map(|(_, p)| p)
             .filter(|p| !p.contains(']'));
+        // The same scheme the request came over: an HTTPS listener doesn't speak HTTP.
+        let scheme = if ctx.secure { "https" } else { "http" };
         Some(port.map_or_else(
-            || "http://localhost".to_owned(),
-            |p| format!("http://localhost:{p}"),
+            || format!("{scheme}://localhost"),
+            |p| format!("{scheme}://localhost:{p}"),
         ))
     } else {
         None
