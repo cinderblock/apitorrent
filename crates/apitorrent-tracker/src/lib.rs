@@ -26,7 +26,7 @@ mod tls;
 mod types;
 pub mod udp;
 
-pub use client::{TrackerClient, TrackerConfig, strict_http_client};
+pub use client::{TrackerClient, TrackerConfig, strict_http_client, strict_http_client_builder};
 pub use error::TrackerError;
 /// Re-exported so users of [`strict_http_client`] share the exact same version.
 pub use reqwest;

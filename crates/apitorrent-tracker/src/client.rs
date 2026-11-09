@@ -107,16 +107,32 @@ pub fn strict_http_client(
     timeout: std::time::Duration,
     connect_timeout: std::time::Duration,
 ) -> Result<reqwest::Client, TrackerError> {
-    reqwest::Client::builder()
+    strict_http_client_builder(user_agent, timeout, connect_timeout)?
+        .build()
+        .map_err(TrackerError::network)
+}
+
+/// The builder behind [`strict_http_client`], for callers that must tighten it further:
+/// the plugin host replaces the redirect policy (it follows redirects itself, checking
+/// each hop against the plugin's grants) and the DNS resolver (it refuses private
+/// addresses).
+///
+/// Only tighten. The TLS configuration is preconfigured, so reqwest's own TLS switches
+/// (`danger_accept_invalid_certs` and friends) have no effect on it; don't call them, and
+/// don't add a proxy.
+pub fn strict_http_client_builder(
+    user_agent: &str,
+    timeout: std::time::Duration,
+    connect_timeout: std::time::Duration,
+) -> Result<reqwest::ClientBuilder, TrackerError> {
+    Ok(reqwest::Client::builder()
         .tls_backend_preconfigured(tls::client_config()?)
         .redirect(redirect_policy(5))
         .referer(false)
         .no_proxy()
         .user_agent(user_agent)
         .timeout(timeout)
-        .connect_timeout(connect_timeout)
-        .build()
-        .map_err(TrackerError::network)
+        .connect_timeout(connect_timeout))
 }
 
 impl TrackerClient {
