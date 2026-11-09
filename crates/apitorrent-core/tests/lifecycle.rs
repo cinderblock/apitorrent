@@ -278,6 +278,64 @@ async fn queue_settings_and_groups() {
     core.shutdown().await.unwrap();
 }
 
+/// With slow torrents ignored, a torrent with no peers frees its download slot once it
+/// has been slow long enough, so the next one starts. The total limit still holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn slow_torrents_free_their_queue_slots() {
+    let root = tempfile::tempdir().unwrap();
+    let core = Core::start(config(root.path())).await.unwrap();
+
+    let mut settings = core.settings();
+    settings.queue.max_active_downloads = 1;
+    settings.queue.ignore_slow = true;
+    settings.queue.slow_after_secs = 2;
+    core.set_settings(settings.clone()).await.unwrap();
+
+    let a = core
+        .add(add_req(&small_torrent("a", 1), None))
+        .await
+        .unwrap();
+    let b = core
+        .add(add_req(&small_torrent("b", 2), None))
+        .await
+        .unwrap();
+    // At first a holds the only slot: it hasn't had time to prove itself slow.
+    wait_for(&core, &a, TorrentState::Downloading).await;
+    assert_eq!(core.store().get(&b).unwrap().state, TorrentState::Queued);
+    // Neither has peers, so a turns slow and b starts. Then b turns slow too, and both run.
+    wait_for(&core, &b, TorrentState::Downloading).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert_eq!(
+        core.store().get(&a).unwrap().state,
+        TorrentState::Downloading
+    );
+    assert_eq!(
+        core.store().get(&b).unwrap().state,
+        TorrentState::Downloading
+    );
+
+    // A total limit binds slow torrents too: the first in queue order keeps running.
+    settings.queue.max_active = 1;
+    core.set_settings(settings.clone()).await.unwrap();
+    wait_for(&core, &b, TorrentState::Queued).await;
+    assert_eq!(
+        core.store().get(&a).unwrap().state,
+        TorrentState::Downloading
+    );
+
+    // Turning the option off puts the download limit back in charge.
+    settings.queue.max_active = 0;
+    settings.queue.ignore_slow = false;
+    core.set_settings(settings).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    assert_eq!(
+        core.store().get(&a).unwrap().state,
+        TorrentState::Downloading
+    );
+    assert_eq!(core.store().get(&b).unwrap().state, TorrentState::Queued);
+    core.shutdown().await.unwrap();
+}
+
 /// A magnet link: the metadata comes from a peer, the torrent downloads, and after a
 /// restart it is an ordinary torrent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

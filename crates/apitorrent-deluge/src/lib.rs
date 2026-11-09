@@ -68,6 +68,9 @@ pub struct DelugeSettings {
     pub max_active_downloading: Option<u32>,
     pub max_active_seeding: Option<u32>,
     pub max_active_limit: Option<u32>,
+    /// `dont_count_slow_torrents`. Deluge leaves the thresholds at libtorrent's defaults,
+    /// which are ours too.
+    pub dont_count_slow: bool,
 }
 
 /// What was found, and what couldn't be read.
@@ -360,5 +363,9 @@ fn settings_from(core: &serde_json::Value) -> DelugeSettings {
         max_active_downloading: count("max_active_downloading"),
         max_active_seeding: count("max_active_seeding"),
         max_active_limit: count("max_active_limit"),
+        dont_count_slow: core
+            .get("dont_count_slow_torrents")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
     }
 }

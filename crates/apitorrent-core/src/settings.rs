@@ -98,18 +98,32 @@ pub struct QueueItem {
     pub position: u32,
     /// Every wanted piece is downloaded.
     pub finished: bool,
+    /// Running, but below the slow rate for long enough (and the queue ignores slow
+    /// torrents).
+    pub slow: bool,
 }
 
 /// Which of `items` may run, in queue order: the first downloads up to the download limit,
 /// the first finished torrents up to the seed limit, and no more than the total limit. 0
 /// means unlimited. `items` are the torrents not paused by the user and not in error.
+///
+/// A slow torrent (see [`QueueItem::slow`]) skips the download and seed limits and takes
+/// no slot there, but still counts toward the total, as in libtorrent. Slow torrents are
+/// placed first, so a fast torrent can't push an already running slow one off the total,
+/// only for it to restart, lose its slowness and come back, over and over.
 pub fn plan(items: &[QueueItem], q: &QueueSettings) -> HashSet<String> {
     let mut order: Vec<&QueueItem> = items.iter().collect();
     order.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
     let under = |count: u32, limit: u32| limit == 0 || count < limit;
     let (mut downloads, mut seeds, mut total) = (0, 0, 0);
     let mut active = HashSet::new();
-    for item in order {
+    for item in order.iter().filter(|i| i.slow) {
+        if under(total, q.max_active) {
+            total += 1;
+            active.insert(item.id.clone());
+        }
+    }
+    for item in order.iter().filter(|i| !i.slow) {
         let fits = if item.finished {
             under(seeds, q.max_active_seeds)
         } else {
@@ -137,7 +151,40 @@ mod tests {
             id: id.into(),
             position,
             finished,
+            slow: false,
         }
+    }
+
+    fn sorted(active: &HashSet<String>) -> Vec<&str> {
+        let mut got: Vec<&str> = active.iter().map(String::as_str).collect();
+        got.sort_unstable();
+        got
+    }
+
+    #[test]
+    fn slow_torrents_free_their_slots() {
+        let slow = |id: &str, position: u32, finished: bool| QueueItem {
+            slow: true,
+            ..item(id, position, finished)
+        };
+        let items = [
+            slow("d0", 0, false),
+            item("d1", 1, false),
+            item("d2", 2, false),
+            slow("s3", 3, true),
+            item("s4", 4, true),
+        ];
+        let q = QueueSettings {
+            max_active_downloads: 1,
+            max_active_seeds: 1,
+            ..QueueSettings::default()
+        };
+        // d0 and s3 are slow, so d1 and s4 get the slots.
+        assert_eq!(sorted(&plan(&items, &q)), ["d0", "d1", "s3", "s4"]);
+
+        // The total limit still binds slow torrents, and they keep their place in it.
+        let q = QueueSettings { max_active: 3, ..q };
+        assert_eq!(sorted(&plan(&items, &q)), ["d0", "d1", "s3"]);
     }
 
     #[test]
@@ -159,7 +206,7 @@ mod tests {
         let q = QueueSettings {
             max_active_downloads: 2,
             max_active_seeds: 1,
-            max_active: 0,
+            ..QueueSettings::default()
         };
         let active = plan(&items, &q);
         let mut got: Vec<&str> = active.iter().map(String::as_str).collect();

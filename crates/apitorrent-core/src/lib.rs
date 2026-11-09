@@ -101,6 +101,8 @@ struct Entry {
     limits: TorrentLimits,
     /// Paused by the queue (not by the user) until a slot frees up.
     queued: bool,
+    /// Since when a running torrent has been below the queue's slow rate.
+    slow_since: Option<std::time::Instant>,
     group: Option<String>,
     naming: u8,
     superseded_by: Option<TorrentId>,
@@ -307,16 +309,32 @@ impl Core {
     /// the ones that now fit. Torrents paused by the user or in error don't take part.
     async fn apply_queue(&self) {
         let q = self.settings().queue;
+        let now = std::time::Instant::now();
+        let slow_after = Duration::from_secs(u64::from(q.slow_after_secs));
         let mut actions = Vec::new();
         {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
             let items: Vec<settings::QueueItem> = torrents
-                .iter()
-                .filter(|(_, e)| !e.paused && e.handle.stats().error.is_none())
-                .map(|(id, e)| settings::QueueItem {
-                    id: id.clone(),
-                    position: e.queue_position,
-                    finished: e.handle.stats().finished,
+                .iter_mut()
+                .filter_map(|(id, e)| {
+                    let stats = e.handle.stats();
+                    let running = !e.paused && !e.queued && stats.error.is_none();
+                    let below = if stats.finished {
+                        stats.upload_rate < q.slow_upload_rate
+                    } else {
+                        stats.download_rate < q.slow_download_rate
+                    };
+                    if running && below {
+                        e.slow_since.get_or_insert(now);
+                    } else {
+                        e.slow_since = None;
+                    }
+                    (!e.paused && stats.error.is_none()).then(|| settings::QueueItem {
+                        id: id.clone(),
+                        position: e.queue_position,
+                        finished: stats.finished,
+                        slow: q.ignore_slow && e.slow_since.is_some_and(|t| now - t >= slow_after),
+                    })
                 })
                 .collect();
             let active = settings::plan(&items, &q);
@@ -605,6 +623,7 @@ impl Core {
             s.queue.max_active_downloads = d.max_active_downloading.unwrap_or(0);
             s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
             s.queue.max_active = d.max_active_limit.unwrap_or(0);
+            s.queue.ignore_slow = d.dont_count_slow;
             self.set_settings(s).await?;
         }
         let ours = self.inner.config.download_dir.clone();
@@ -833,7 +852,7 @@ impl Core {
     /// Whether any queue limit is set, so new and restored torrents should wait for the
     /// queue's decision rather than start at once.
     fn queue_limited(&self) -> bool {
-        self.settings().queue != apitorrent_types::QueueSettings::default()
+        self.settings().queue.limited()
     }
 
     pub fn store(&self) -> &Store {
@@ -1298,6 +1317,7 @@ impl Core {
                     queue_position,
                     limits,
                     queued,
+                    slow_since: None,
                     group,
                     naming,
                     superseded_by: None,

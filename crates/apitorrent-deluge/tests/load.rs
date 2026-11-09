@@ -69,7 +69,8 @@ fn fake_deluge() -> tempfile::TempDir {
     "max_connections_global": 200,
     "max_active_downloading": 3,
     "max_active_seeding": 5,
-    "max_active_limit": 8
+    "max_active_limit": 8,
+    "dont_count_slow_torrents": true
 }"#,
     )
     .unwrap();
@@ -128,6 +129,7 @@ fn reads_a_deluge_directory() {
         ),
         (Some(3), Some(5), Some(8))
     );
+    assert!(s.dont_count_slow);
 }
 
 #[test]

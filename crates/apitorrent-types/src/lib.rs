@@ -315,17 +315,51 @@ pub enum NamingPolicy {
     Native,
 }
 
-/// How many torrents run at once. The rest wait, in queue order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
+/// How many torrents run at once. The rest wait, in queue order. 0 means no limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
 #[ts(export)]
 pub struct QueueSettings {
     /// Torrents still downloading.
     pub max_active_downloads: u32,
     /// Finished torrents that are seeding.
     pub max_active_seeds: u32,
-    /// Both together.
+    /// Both together. Slow torrents count toward this one too.
     pub max_active: u32,
+    /// Slow torrents don't count toward the download and seed limits, so a dead swarm
+    /// doesn't hold a slot. They keep running, and the next torrent in the queue starts.
+    pub ignore_slow: bool,
+    /// A downloading torrent is slow below this rate, in bytes per second.
+    #[ts(type = "number")]
+    pub slow_download_rate: u64,
+    /// A seeding torrent is slow below this upload rate, in bytes per second.
+    #[ts(type = "number")]
+    pub slow_upload_rate: u64,
+    /// How long a torrent must stay below its rate to be slow. A torrent that has just
+    /// started gets this long to find peers.
+    pub slow_after_secs: u32,
+}
+
+impl Default for QueueSettings {
+    /// No limits. The slow-torrent thresholds are libtorrent's (2 KiB/s, 60 s).
+    fn default() -> Self {
+        Self {
+            max_active_downloads: 0,
+            max_active_seeds: 0,
+            max_active: 0,
+            ignore_slow: false,
+            slow_download_rate: 2048,
+            slow_upload_rate: 2048,
+            slow_after_secs: 60,
+        }
+    }
+}
+
+impl QueueSettings {
+    /// Whether any limit is set, so torrents wait for the queue's decision.
+    pub fn limited(&self) -> bool {
+        self.max_active_downloads != 0 || self.max_active_seeds != 0 || self.max_active != 0
+    }
 }
 
 /// Limits shared by every torrent whose label is in `labels`.

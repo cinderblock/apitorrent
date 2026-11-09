@@ -163,6 +163,38 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
                 <NumberField label="Active seeds" value={settings.queue.maxActiveSeeds} onChange={(v) => update({ queue: { ...settings.queue, maxActiveSeeds: v } })} />
                 <NumberField label="Active in total" value={settings.queue.maxActive} onChange={(v) => update({ queue: { ...settings.queue, maxActive: v } })} />
               </div>
+              <label className="check">
+                <input type="checkbox" checked={settings.queue.ignoreSlow} onChange={(e) => update({ queue: { ...settings.queue, ignoreSlow: e.target.checked } })} />
+                Slow torrents don&apos;t count toward the download and seed limits
+              </label>
+              {settings.queue.ignoreSlow && (
+                <>
+                  <p className="hint muted">
+                    A torrent that stays below these rates for this long keeps running but frees its slot, so the next one in the queue starts. Slow
+                    torrents still count toward the total.
+                  </p>
+                  <div className="settings-grid">
+                    <NumberField
+                      label="Slow download"
+                      hint="KiB/s"
+                      value={toKiB(settings.queue.slowDownloadRate)}
+                      onChange={(v) => update({ queue: { ...settings.queue, slowDownloadRate: fromKiB(v) } })}
+                    />
+                    <NumberField
+                      label="Slow upload"
+                      hint="KiB/s, seeding"
+                      value={toKiB(settings.queue.slowUploadRate)}
+                      onChange={(v) => update({ queue: { ...settings.queue, slowUploadRate: fromKiB(v) } })}
+                    />
+                    <NumberField
+                      label="For at least"
+                      hint="seconds"
+                      value={settings.queue.slowAfterSecs}
+                      onChange={(v) => update({ queue: { ...settings.queue, slowAfterSecs: v } })}
+                    />
+                  </div>
+                </>
+              )}
             </fieldset>
             <BansSection />
             <fieldset className="settings-section">
