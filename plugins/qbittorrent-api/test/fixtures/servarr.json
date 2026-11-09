@@ -1,0 +1,176 @@
+{
+  "client": "Sonarr v4 (also Radarr, Prowlarr, Lidarr and Readarr, which share its qBittorrent client)",
+  "source": "Written from Sonarr's QBittorrentProxyV2.cs and QBittorrent.cs (develop, 2025): the endpoints it calls, the parameters it sends, and the response fields its QBittorrentTorrent, QBittorrentTorrentProperties, QBittorrentTorrentFile, QBittorrentLabel and QBittorrentPreferences models read. Multipart bodies are laid out the way its HttpFormData writes them.",
+  "hash": "magnet",
+  "multipart": {
+    "boundary": "----------------------------8dd1f6a2b3c4d5e",
+    "file": "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: application/x-bittorrent",
+    "field": "Content-Disposition: form-data; name=\"{name}\""
+  },
+  "steps": [
+    {
+      "name": "test connection: the API is there (asked before signing in)",
+      "method": "GET",
+      "path": "/api/v2/app/webapiVersion",
+      "signedIn": false,
+      "expect": { "status": 403 }
+    },
+    {
+      "name": "sign in",
+      "method": "POST",
+      "path": "/api/v2/auth/login",
+      "form": { "username": "sonarr", "password": "$TOKEN" },
+      "expect": { "status": 200, "body": "Ok.", "cookie": "SID" }
+    },
+    {
+      "name": "API version",
+      "method": "GET",
+      "path": "/api/v2/app/webapiVersion",
+      "expect": { "status": 200, "bodyMatches": "^2\\.\\d+\\.\\d+$" }
+    },
+    {
+      "name": "client version (parsed after a leading v)",
+      "method": "GET",
+      "path": "/api/v2/app/version",
+      "expect": { "status": 200, "bodyMatches": "^v\\d+\\.\\d+\\.\\d+$" }
+    },
+    {
+      "name": "preferences: default save path, global seed limits, queueing",
+      "method": "GET",
+      "path": "/api/v2/app/preferences",
+      "expect": {
+        "status": 200,
+        "object": {
+          "save_path": "string",
+          "max_ratio_enabled": "boolean",
+          "max_ratio": "number",
+          "max_seeding_time_enabled": "boolean",
+          "max_seeding_time": "number",
+          "max_inactive_seeding_time_enabled": "boolean",
+          "max_inactive_seeding_time": "number",
+          "max_ratio_act": "number",
+          "queueing_enabled": "boolean",
+          "dht": "boolean"
+        }
+      }
+    },
+    {
+      "name": "labels (categories)",
+      "method": "GET",
+      "path": "/api/v2/torrents/categories",
+      "expect": { "status": 200, "objectOfObjects": { "name": "string", "savePath": "string" } }
+    },
+    {
+      "name": "create the category it was set up with",
+      "method": "POST",
+      "path": "/api/v2/torrents/createCategory",
+      "form": { "category": "tv-sonarr" },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "add a magnet link, in its category",
+      "method": "POST",
+      "path": "/api/v2/torrents/add",
+      "multipart": [
+        { "name": "urls", "value": "$MAGNET" },
+        { "name": "category", "value": "tv-sonarr" }
+      ],
+      "expect": { "status": 200, "body": "Ok." }
+    },
+    {
+      "name": "add a .torrent file, in its category, with its tags",
+      "method": "POST",
+      "path": "/api/v2/torrents/add",
+      "multipart": [
+        { "name": "torrents", "filename": "Show.S01E01.torrent", "file": "$TORRENT" },
+        { "name": "category", "value": "tv-sonarr" },
+        { "name": "tags", "value": "sonarr,tv" }
+      ],
+      "expect": { "status": 200, "body": "Ok." }
+    },
+    {
+      "name": "the indexer's seed goals",
+      "method": "POST",
+      "path": "/api/v2/torrents/setShareLimits",
+      "form": {
+        "hashes": "$HASH",
+        "ratioLimit": "1.5",
+        "seedingTimeLimit": "120",
+        "inactiveSeedingTimeLimit": "-2"
+      },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "recent priority first: refused without queueing, which Sonarr expects (409)",
+      "method": "POST",
+      "path": "/api/v2/torrents/topPrio",
+      "form": { "hashes": "$HASH" },
+      "expect": { "status": 409 }
+    },
+    {
+      "name": "the queue: its category's torrents",
+      "method": "GET",
+      "path": "/api/v2/torrents/info?category=tv-sonarr",
+      "expect": {
+        "status": 200,
+        "count": 2,
+        "arrayOf": {
+          "hash": "string",
+          "name": "string",
+          "size": "number",
+          "progress": "number",
+          "eta": "number",
+          "state": "string",
+          "category": "string",
+          "save_path": "string",
+          "content_path": "string",
+          "ratio": "number",
+          "ratio_limit": "number",
+          "seeding_time": "number",
+          "seeding_time_limit": "number",
+          "inactive_seeding_time_limit": "number",
+          "last_activity": "number"
+        }
+      }
+    },
+    {
+      "name": "properties of one torrent",
+      "method": "GET",
+      "path": "/api/v2/torrents/properties?hash=$HASH",
+      "expect": { "status": 200, "object": { "save_path": "string", "seeding_time": "number" } }
+    },
+    {
+      "name": "its files",
+      "method": "GET",
+      "path": "/api/v2/torrents/files?hash=$HASH",
+      "expect": { "status": 200, "arrayOf": { "name": "string", "size": "number", "progress": "number", "priority": "number" } }
+    },
+    {
+      "name": "move it to another category",
+      "method": "POST",
+      "path": "/api/v2/torrents/setCategory",
+      "form": { "hashes": "$HASH", "category": "tv-imported" },
+      "expect": { "status": 409 }
+    },
+    {
+      "name": "post-import tags",
+      "method": "POST",
+      "path": "/api/v2/torrents/addTags",
+      "form": { "hashes": "$HASH", "tags": "imported" },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "remove it with its data once imported and seeded",
+      "method": "POST",
+      "path": "/api/v2/torrents/delete",
+      "form": { "hashes": "$HASH", "deleteFiles": "true" },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "one torrent left",
+      "method": "GET",
+      "path": "/api/v2/torrents/info?category=tv-sonarr",
+      "expect": { "status": 200, "count": 1 }
+    }
+  ]
+}

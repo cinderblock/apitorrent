@@ -1,0 +1,141 @@
+{
+  "client": "autobrr (github.com/autobrr/go-qbittorrent)",
+  "source": "Written from go-qbittorrent's client and methods (2025): login with url.Values, adds as Go mime/multipart (files) or url.Values (URLs), the filters its rules use, transfer info, trackers and reannounce. Multipart bodies are laid out the way Go's mime/multipart writes them.",
+  "hash": "torrent",
+  "multipart": {
+    "boundary": "1b8f0b43e4d9c2a7a5f6e3d2c1b0a9f8e7d6c5b4a39281706f5e4d3c2b1a",
+    "file": "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: application/octet-stream",
+    "field": "Content-Disposition: form-data; name=\"{name}\""
+  },
+  "steps": [
+    {
+      "name": "sign in",
+      "method": "POST",
+      "path": "/api/v2/auth/login",
+      "form": { "username": "autobrr", "password": "$TOKEN" },
+      "expect": { "status": 200, "body": "Ok.", "cookie": "SID" }
+    },
+    {
+      "name": "a wrong password says Fails.",
+      "method": "POST",
+      "path": "/api/v2/auth/login",
+      "form": { "username": "autobrr", "password": "hunter2" },
+      "keepCookie": true,
+      "expect": { "status": 200, "body": "Fails." }
+    },
+    {
+      "name": "API version",
+      "method": "GET",
+      "path": "/api/v2/app/webapiVersion",
+      "expect": { "status": 200, "bodyMatches": "^2\\.\\d+\\.\\d+$" }
+    },
+    {
+      "name": "rule check: how many are downloading",
+      "method": "GET",
+      "path": "/api/v2/torrents/info?filter=downloading",
+      "expect": { "status": 200, "count": 0 }
+    },
+    {
+      "name": "rule check: transfer speeds",
+      "method": "GET",
+      "path": "/api/v2/transfer/info",
+      "expect": {
+        "status": 200,
+        "object": {
+          "dl_info_speed": "number",
+          "dl_info_data": "number",
+          "up_info_speed": "number",
+          "up_info_data": "number",
+          "connection_status": "string"
+        }
+      }
+    },
+    {
+      "name": "add a .torrent file with options",
+      "method": "POST",
+      "path": "/api/v2/torrents/add",
+      "multipart": [
+        { "name": "torrents", "filename": "Some.Release.torrent", "file": "$TORRENT" },
+        { "name": "savepath", "value": "$DOWNLOADS/autobrr" },
+        { "name": "category", "value": "autobrr" },
+        { "name": "tags", "value": "autobrr,racing" },
+        { "name": "paused", "value": "false" },
+        { "name": "skip_checking", "value": "false" },
+        { "name": "autoTMM", "value": "false" },
+        { "name": "upLimit", "value": "1048576" },
+        { "name": "dlLimit", "value": "0" },
+        { "name": "ratioLimit", "value": "2" },
+        { "name": "seedingTimeLimit", "value": "-2" }
+      ],
+      "expect": { "status": 200, "body": "Ok." }
+    },
+    {
+      "name": "add a magnet as a URL form",
+      "method": "POST",
+      "path": "/api/v2/torrents/add",
+      "form": { "urls": "$MAGNET", "category": "autobrr", "paused": "true" },
+      "expect": { "status": 200, "body": "Ok." }
+    },
+    {
+      "name": "a save path outside apitorrent's download directory is refused",
+      "method": "POST",
+      "path": "/api/v2/torrents/add",
+      "form": { "urls": "$MAGNET2", "savepath": "/somewhere/else" },
+      "expect": { "status": 200, "body": "Fails." }
+    },
+    {
+      "name": "the new torrent, by hash",
+      "method": "GET",
+      "path": "/api/v2/torrents/info?hashes=$HASH",
+      "expect": {
+        "status": 200,
+        "count": 1,
+        "arrayOf": {
+          "hash": "string",
+          "state": "string",
+          "category": "string",
+          "tags": "string",
+          "save_path": "string",
+          "num_seeds": "number",
+          "num_leechs": "number",
+          "dlspeed": "number",
+          "upspeed": "number",
+          "added_on": "number",
+          "size": "number",
+          "progress": "number"
+        }
+      }
+    },
+    {
+      "name": "reannounce check: trackers",
+      "method": "GET",
+      "path": "/api/v2/torrents/trackers?hash=$HASH",
+      "expect": { "status": 200, "arrayOf": { "url": "string", "status": "number", "tier": "number", "msg": "string", "num_peers": "number" } }
+    },
+    {
+      "name": "reannounce",
+      "method": "POST",
+      "path": "/api/v2/torrents/reannounce",
+      "form": { "hashes": "$HASH" },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "tags it knows",
+      "method": "GET",
+      "path": "/api/v2/torrents/tags",
+      "expect": { "status": 200, "json": ["autobrr", "racing"] }
+    },
+    {
+      "name": "sign out",
+      "method": "POST",
+      "path": "/api/v2/auth/logout",
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "the session is gone",
+      "method": "GET",
+      "path": "/api/v2/torrents/info",
+      "expect": { "status": 403 }
+    }
+  ]
+}

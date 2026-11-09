@@ -1,0 +1,143 @@
+{
+  "client": "cross-seed v6",
+  "source": "Written from cross-seed's src/clients/QBittorrent.ts (2025): login with URLSearchParams and the first Set-Cookie it gets back, the version checks, categories for linking, the lookups it makes before injecting, and the inject itself (a paused add with tags, a save path and skip_checking, then recheck and resume). Multipart bodies are laid out the way Node's fetch (undici) writes FormData.",
+  "hash": "torrent",
+  "multipart": {
+    "boundary": "----formdata-undici-012345678901",
+    "file": "Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\nContent-Type: application/x-bittorrent",
+    "field": "Content-Disposition: form-data; name=\"{name}\""
+  },
+  "steps": [
+    {
+      "name": "sign in",
+      "method": "POST",
+      "path": "/api/v2/auth/login",
+      "form": { "username": "cross-seed", "password": "$TOKEN" },
+      "expect": { "status": 200, "body": "Ok.", "cookie": "SID" }
+    },
+    {
+      "name": "versions",
+      "method": "GET",
+      "path": "/api/v2/app/version",
+      "expect": { "status": 200, "bodyMatches": "^v4\\." }
+    },
+    {
+      "name": "API version",
+      "method": "GET",
+      "path": "/api/v2/app/webapiVersion",
+      "expect": { "status": 200, "bodyMatches": "^2\\.9\\." }
+    },
+    {
+      "name": "preferences (default save path)",
+      "method": "GET",
+      "path": "/api/v2/app/preferences",
+      "expect": { "status": 200, "object": { "save_path": "string" } }
+    },
+    {
+      "name": "categories",
+      "method": "GET",
+      "path": "/api/v2/torrents/categories",
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "the linking category, with its folder",
+      "method": "POST",
+      "path": "/api/v2/torrents/createCategory",
+      "form": { "category": "cross-seed-link", "savePath": "$DOWNLOADS/cross-seed-link" },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "it exists now (a second create conflicts)",
+      "method": "POST",
+      "path": "/api/v2/torrents/createCategory",
+      "form": { "category": "cross-seed-link", "savePath": "$DOWNLOADS/cross-seed-link" },
+      "expect": { "status": 409 }
+    },
+    {
+      "name": "a folder outside the download directory is refused",
+      "method": "POST",
+      "path": "/api/v2/torrents/createCategory",
+      "form": { "category": "elsewhere", "savePath": "/mnt/other" },
+      "expect": { "status": 400 }
+    },
+    {
+      "name": "is it already here?",
+      "method": "GET",
+      "path": "/api/v2/torrents/info?hashes=$HASH",
+      "expect": { "status": 200, "count": 0 }
+    },
+    {
+      "name": "inject: a paused add into the linking folder",
+      "method": "POST",
+      "path": "/api/v2/torrents/add",
+      "multipart": [
+        { "name": "torrents", "filename": "$HASH.cross-seed.torrent", "file": "$TORRENT" },
+        { "name": "tags", "value": "cross-seed" },
+        { "name": "category", "value": "cross-seed-link" },
+        { "name": "autoTMM", "value": "false" },
+        { "name": "savepath", "value": "$DOWNLOADS/cross-seed-link" },
+        { "name": "skip_checking", "value": "true" },
+        { "name": "paused", "value": "true" },
+        { "name": "contentLayout", "value": "Original" }
+      ],
+      "expect": { "status": 200, "body": "Ok." }
+    },
+    {
+      "name": "the injected torrent",
+      "method": "GET",
+      "path": "/api/v2/torrents/info?hashes=$HASH",
+      "expect": {
+        "status": 200,
+        "count": 1,
+        "arrayOf": {
+          "hash": "string",
+          "name": "string",
+          "save_path": "string",
+          "content_path": "string",
+          "category": "string",
+          "tags": "string",
+          "state": "string",
+          "progress": "number",
+          "amount_left": "number",
+          "infohash_v1": "string",
+          "auto_tmm": "boolean",
+          "tracker": "string",
+          "size": "number",
+          "total_size": "number"
+        }
+      }
+    },
+    {
+      "name": "its files",
+      "method": "GET",
+      "path": "/api/v2/torrents/files?hash=$HASH",
+      "expect": { "status": 200, "arrayOf": { "name": "string", "size": "number" } }
+    },
+    {
+      "name": "its properties",
+      "method": "GET",
+      "path": "/api/v2/torrents/properties?hash=$HASH",
+      "expect": { "status": 200, "object": { "save_path": "string", "is_private": "boolean" } }
+    },
+    {
+      "name": "recheck",
+      "method": "POST",
+      "path": "/api/v2/torrents/recheck",
+      "form": { "hashes": "$HASH" },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "resume",
+      "method": "POST",
+      "path": "/api/v2/torrents/resume",
+      "form": { "hashes": "$HASH" },
+      "expect": { "status": 200 }
+    },
+    {
+      "name": "a hash it doesn't have",
+      "method": "GET",
+      "path": "/api/v2/torrents/properties?hash=0000000000000000000000000000000000000000",
+      "expect": { "status": 404 }
+    }
+  ]
+}

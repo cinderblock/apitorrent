@@ -26,6 +26,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 
+[dev-dependencies]
+apitorrent-metainfo.workspace = true
+apitorrent-types.workspace = true
+axum.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
 [features]
 # Compile the built web UI into the binary (release builds). Needs `bun run build` in web/
 # first; see the README.
