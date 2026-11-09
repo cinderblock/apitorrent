@@ -254,7 +254,10 @@ async fn a_different_key_is_refused_and_reported() {
     match remote.request("GET", "/api/v1/info", None, None).await {
         Err(ClientError::PinMismatch(m)) => {
             assert_eq!(m.presented, actual);
-            assert!(m.chain_error.is_some(), "the OS fallback was tried too");
+            assert!(
+                m.chain_error.is_none(),
+                "a pin is strict: nothing else is tried"
+            );
         }
         other => panic!("expected a pin mismatch, got {other:?}"),
     }

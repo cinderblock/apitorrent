@@ -7,8 +7,9 @@
 //! 2. [`Trust::PrivateCa`]: only the CA certificates imported into this profile, checked
 //!    with webpki (chain, validity dates, host name).
 //! 3. [`Trust::Pinned`]: the server's public key, pinned by its SPKI SHA-256 after the user
-//!    compared it with the pairing code the daemon shows. The [`PinnedVerifier`] accepts the
-//!    pinned key, or else a chain the OS verifier accepts, and nothing else.
+//!    compared it with the pairing code the daemon shows. Only that key is accepted: a
+//!    certificate from a public CA for the same name is not the server the user paired
+//!    with.
 //!
 //! In every case the TLS handshake signature is verified against the certificate's key, so
 //! a server must hold the private key of whatever it presents.
@@ -50,6 +51,37 @@ impl SpkiHash {
     /// Lowercase hex, the canonical stored form.
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
+    }
+
+    /// The short code the daemon prints for its key (`apitorrent_tls::pairing_code`): the
+    /// first 100 bits, as 20 characters of RFC 4648 base32 in groups of four.
+    pub fn pairing_code(&self) -> String {
+        let b32 = data_encoding::BASE32_NOPAD.encode(&self.0);
+        b32.as_bytes()[..20]
+            .chunks(4)
+            .map(|c| std::str::from_utf8(c).expect("base32 is ASCII"))
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+
+    /// Whether `code`, as a person typed it, names this key: the short pairing code (any
+    /// case, any spacing or dashes, with `0`, `1` and `8` read as `O`, `I` and `B`), or the
+    /// full hash in any form [`Self::parse`] accepts.
+    pub fn matches_code(&self, code: &str) -> bool {
+        if Self::parse(code).is_ok_and(|full| full == *self) {
+            return true;
+        }
+        let typed: String = code
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '-')
+            .map(|c| match c.to_ascii_uppercase() {
+                '0' => 'O',
+                '1' => 'I',
+                '8' => 'B',
+                c => c,
+            })
+            .collect();
+        typed.len() == 20 && typed == self.pairing_code().replace('-', "")
     }
 
     /// Parse a pairing code or a stored pin.
@@ -98,16 +130,9 @@ impl fmt::Debug for SpkiHash {
 }
 
 impl fmt::Display for SpkiHash {
-    /// Hex in groups of four, the way a user compares it by eye.
+    /// The short pairing code, the form a person compares with what the daemon prints.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hex = self.to_hex();
-        for (i, chunk) in hex.as_bytes().chunks(4).enumerate() {
-            if i > 0 {
-                f.write_str(" ")?;
-            }
-            f.write_str(std::str::from_utf8(chunk).expect("hex is ASCII"))?;
-        }
-        Ok(())
+        f.write_str(&self.pairing_code())
     }
 }
 
@@ -181,11 +206,11 @@ pub fn verifier(trust: &Trust) -> Result<Arc<dyn ServerCertVerifier>, TrustError
                 .build()
                 .map_err(|e| TrustError::Tls(e.to_string()))?
         }
-        Trust::Pinned { spki_sha256 } => Arc::new(PinnedVerifier::new(
-            vec![*spki_sha256],
-            Some(os_verifier(provider.clone())?),
-            &provider,
-        )),
+        // Strict: only the paired key. Falling back to the OS's CAs would let any publicly
+        // trusted certificate for the name stand in for the server the user paired with.
+        Trust::Pinned { spki_sha256 } => {
+            Arc::new(PinnedVerifier::new(vec![*spki_sha256], None, &provider))
+        }
     })
 }
 
@@ -451,7 +476,12 @@ mod tests {
         let bytes: [u8; 32] = std::array::from_fn(|i| u8::try_from(i * 7 + 3).unwrap());
         let want = SpkiHash(bytes);
         let hex = hex::encode(bytes);
-        let grouped = want.to_string();
+        let grouped = hex
+            .as_bytes()
+            .chunks(4)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
         let colons = bytes
             .iter()
             .map(|b| format!("{b:02X}"))
@@ -474,6 +504,27 @@ mod tests {
             assert_eq!(SpkiHash::parse(&code).unwrap(), want, "{code}");
         }
         assert_eq!(grouped.split(' ').count(), 16);
+
+        // The short code is the daemon's, and matches however it is typed.
+        let short = want.pairing_code();
+        assert_eq!(short, apitorrent_tls::pairing_code(&bytes));
+        assert_eq!(want.to_string(), short);
+        for typed in [
+            short.clone(),
+            short.to_lowercase(),
+            short.replace('-', " "),
+            short.replace('-', "").replace('O', "0").replace('I', "1"),
+            hex.clone(),
+        ] {
+            assert!(want.matches_code(&typed), "{typed}");
+        }
+        let mut wrong = short.clone().into_bytes();
+        wrong[0] = if wrong[0] == b'A' { b'B' } else { b'A' };
+        assert!(!want.matches_code(std::str::from_utf8(&wrong).unwrap()));
+        assert!(
+            !want.matches_code(&short[..14]),
+            "a prefix of the code isn't enough"
+        );
         for bad in [
             "",
             "abc",

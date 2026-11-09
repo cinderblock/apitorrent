@@ -280,13 +280,15 @@ certificate errors" switch. A server is trusted in one of three ways:
      keys whenever the operator rotates them; trust those through the platform verifier
      or a private CA instead.
 
-Built in `crates/apitorrent-client` (rustls with the ring provider). The pairing code is
-the SHA-256 of the server certificate's DER `SubjectPublicKeyInfo`, accepted as 64 hex
-digits (any grouping, `:`/`-`/space separators) or base64/base64url, with an optional
-`sha256/` prefix. Pairing succeeds only when the server presents exactly that key. The
-pinned verifier then accepts the pinned key, or else a chain the OS verifier accepts (so a
-server that later gets a CA-signed certificate keeps working); handshake signatures are
-always checked against the certificate's key. For a pinned key the host name and the
+Built in `crates/apitorrent-client` (rustls with the ring provider). The pin is the
+SHA-256 of the server certificate's DER `SubjectPublicKeyInfo`. The user types the short
+pairing code the daemon prints (its first 100 bits in base32, `ABCD-EFGH-IJKL-MNOP-QRST`;
+case, spacing and `0`/`1`/`8` for `O`/`I`/`B` don't matter), or the full hash in hex or
+base64. The client learns the key the server presents, pairs only if the code names it,
+then pins the full hash. A pin is strict: only that key is accepted, not a certificate a
+public CA issued for the same name (a server that moves to a CA-signed certificate is
+re-added with OS trust). Handshake signatures are always checked against the
+certificate's key. For a pinned key the host name and the
 certificate's dates aren't checked: the key is the identity. A private CA is checked by
 webpki with only that CA as a root. Plain `http://` is allowed only to loopback (an SSH
 tunnel), and the token is only ever sent to `/api/` paths.

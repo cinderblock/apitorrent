@@ -13,7 +13,7 @@ use std::time::Duration;
 use apitorrent_auth::{Auth, AuthConfig, Clock as _, PasswordMode, SetupToken, SystemClock};
 use apitorrent_core::{Core, CoreConfig};
 use apitorrent_engine::SessionConfig;
-use apitorrent_server::{AuthMode, Embedded, ServerConfig, TrustedProxies};
+use apitorrent_server::{AuthMode, Embedded, ServerConfig, TrustedProxies, WebUi};
 use serde::Serialize;
 use tokio::sync::oneshot;
 
@@ -62,12 +62,12 @@ impl std::fmt::Debug for LocalNode {
 
 impl LocalNode {
     /// Start the core for a Local profile. `default_data_dir` is used when the profile
-    /// doesn't name one; `web_ui` is a built web UI to serve on the network.
+    /// doesn't name one; `web_ui` is what the network listener serves at `/`.
     pub async fn start(
         profile: &LocalProfile,
         default_data_dir: PathBuf,
         default_download_dir: PathBuf,
-        web_ui: Option<PathBuf>,
+        web_ui: WebUi,
     ) -> Result<Arc<Self>, String> {
         let data_dir = profile.data_dir.clone().unwrap_or(default_data_dir);
         let download_dir = profile.download_dir.clone().unwrap_or(default_download_dir);
@@ -152,7 +152,7 @@ impl LocalNode {
         Ok(node)
     }
 
-    fn start_lan(&self, settings: LanSettings, web_ui: Option<PathBuf>) {
+    fn start_lan(&self, settings: LanSettings, web_ui: WebUi) {
         let mut public_hosts: Vec<String> = settings
             .public_urls
             .iter()
@@ -164,7 +164,7 @@ impl LocalNode {
         let config = ServerConfig {
             listen: settings.listen,
             public_hosts,
-            web_root: web_ui,
+            web_ui,
             auth: AuthMode::Enabled(self.auth.clone()),
             trusted_proxies: TrustedProxies::parse(&settings.trusted_proxies).unwrap_or_default(),
             allow_insecure_lan: settings.allow_insecure_lan,

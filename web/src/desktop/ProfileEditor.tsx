@@ -257,7 +257,10 @@ function TrustField({ baseUrl, trust, setTrust }: { baseUrl: string; trust: Trus
               Pair
             </button>
           </div>
-          <p className="hint muted">The code is the SHA-256 of the server's public key. Pairing succeeds only if the server presents exactly that key.</p>
+          <p className="hint muted">
+            Type the code the server prints when it starts with <code>--tls-self-signed</code> (also under <code>GET /api/v1/tls</code>), such as
+            ABCD-EFGH-IJKL-MNOP-QRST. Pairing succeeds only if the server presents exactly that key, and from then on only that key is trusted.
+          </p>
         </div>
       )}
       <div className="inline-edit">
@@ -265,9 +268,9 @@ function TrustField({ baseUrl, trust, setTrust }: { baseUrl: string; trust: Trus
           Check connection
         </button>
       </div>
-      {probe?.presentedGrouped && (
+      {probe?.presentedCode && (
         <p className="hint">
-          The server presents key <code className="key">{probe.presentedGrouped}</code>
+          The server presents the key with code <code className="key">{probe.presentedCode}</code>
         </p>
       )}
       {message && <p className={message.ok ? "ok-text" : "error-text"}>{message.text}</p>}

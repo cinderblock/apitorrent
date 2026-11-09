@@ -10,7 +10,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Runtime, State};
 use tokio_tungstenite::tungstenite::Message;
 
-use apitorrent_client::{SpkiHash, Trust};
+use apitorrent_client::Trust;
 use apitorrent_types::StorageRoot;
 
 use crate::backend::Backend;
@@ -169,9 +169,10 @@ pub async fn profile_disconnect(state: State<'_, AppState>) -> CmdResult<()> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeView {
-    /// The key the server presented, as hex, and grouped for reading aloud.
+    /// The key the server presented: its full hash in hex, and the short pairing code the
+    /// daemon prints, for comparing by eye.
     pub presented: Option<String>,
-    pub presented_grouped: Option<String>,
+    pub presented_code: Option<String>,
     /// Whether `trust` accepts the server.
     pub accepted: bool,
     pub error: Option<String>,
@@ -187,31 +188,42 @@ pub async fn trust_probe(base_url: String, trust: Option<Trust>) -> CmdResult<Pr
         .map_err(|e| e.to_string())?;
     Ok(ProbeView {
         presented: p.presented.map(|h| h.to_hex()),
-        presented_grouped: p.presented.map(|h| h.to_string()),
+        presented_code: p.presented.map(|h| h.pairing_code()),
         accepted: p.verdict.is_ok(),
         error: p.verdict.err(),
     })
 }
 
-/// Pair with a server: the pairing code the daemon shows must be exactly the key the
-/// server presents. Returns the pinned trust setting to save in the profile.
+/// Pair with a server: the code the user typed (the daemon's short pairing code, or the
+/// full hash) must name exactly the key the server presents. That key is then pinned, and
+/// only it: the returned trust setting is saved in the profile.
 #[tauri::command]
 pub async fn trust_pair(base_url: String, code: String) -> CmdResult<Trust> {
-    let pin = SpkiHash::parse(&code).map_err(|e| e.to_string())?;
-    let trust = Trust::Pinned { spki_sha256: pin };
+    // First learn the key the server presents (whether or not anything trusts it yet).
+    let seen = apitorrent_client::probe(&base_url, &Trust::Os)
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(presented) = seen.presented else {
+        return Err("the server didn't present a certificate (is the URL https://?)".into());
+    };
+    if !presented.matches_code(&code) {
+        return Err(format!(
+            "the server presents the key with code {presented}, which isn't the code you \
+             typed. Don't pair: check that the code came from this server, and that nothing \
+             sits between you and it."
+        ));
+    }
+    // Then connect again trusting only that key, which also proves the server holds it.
+    let trust = Trust::Pinned {
+        spki_sha256: presented,
+    };
     let p = apitorrent_client::probe(&base_url, &trust)
         .await
         .map_err(|e| e.to_string())?;
-    match p.presented {
-        // Exactly the paired key; a different, CA-signed key would also pass the pinned
-        // verifier, but it isn't what the user compared.
-        Some(presented) if presented == pin && p.verdict.is_ok() => Ok(trust),
-        Some(presented) => Err(format!(
-            "the server presented the key {presented}, which is not the pairing code {pin}. \
-             Don't pair: check that you typed the code from this server, and that nothing \
-             sits between you and it."
-        )),
-        None => Err("the server didn't present a certificate (is the URL https://?)".into()),
+    match (p.presented, p.verdict) {
+        (Some(again), Ok(())) if again == presented => Ok(trust),
+        (_, Err(e)) => Err(e),
+        _ => Err("the server presented a different key the second time; don't pair".into()),
     }
 }
 

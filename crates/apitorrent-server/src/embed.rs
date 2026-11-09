@@ -23,7 +23,7 @@ use tower::ServiceExt as _;
 
 use apitorrent_core::Core;
 
-use crate::{AuthMode, ServerConfig, TrustedProxies, router};
+use crate::{AuthMode, ServerConfig, TrustedProxies, WebUi, router};
 
 /// Set on requests that came through [`Embedded`]. Only this module creates it.
 #[derive(Debug, Clone, Copy)]
@@ -102,7 +102,7 @@ impl Embedded {
         let config = ServerConfig {
             listen: loopback(),
             public_hosts: Vec::new(),
-            web_root: None,
+            web_ui: WebUi::None,
             auth,
             trusted_proxies: TrustedProxies::default(),
             allow_insecure_lan: false,

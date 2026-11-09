@@ -72,7 +72,7 @@ export interface DesktopState {
 
 export interface ProbeView {
   presented: string | null;
-  presentedGrouped: string | null;
+  presentedCode: string | null;
   accepted: boolean;
   error: string | null;
 }

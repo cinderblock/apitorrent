@@ -43,7 +43,8 @@ Delegated stream from `plans/apitorrent-bootstrap.md`.
   pinning and private CAs possible and keeps the token out of JavaScript.
 - **Trust is one of three kinds per profile**: OS verifier (`rustls-platform-verifier`),
   an imported private CA (webpki with only that CA as root), or a pinned SPKI SHA-256.
-  The pinned verifier accepts the pinned key, or else a chain the OS verifier accepts;
+  The pinned verifier accepts only the pinned key (decided 2026-11-09: strict, since an
+  OS fallback would let a publicly issued certificate stand in for the paired server);
   nothing else. Handshake signatures are always verified. No "ignore certificate errors".
 - **The client lives in a new crate, `crates/apitorrent-client`** (the architecture's
   planned crate): trust, HTTP and sync over TLS. It has no Tauri dependency, so it is
@@ -165,18 +166,18 @@ Times are US Pacific (UTC alongside).
 
 ## Open questions for the user
 
-1. **Pairing code format.** The client accepts the SPKI SHA-256 as hex (any grouping) or
-   base64. If the TLS stream shows a *short* code (the architecture says "a short pairing
-   code"), pairing needs the full hash some other way, or a short-code-to-key exchange.
-   Recommendation: have the daemon show the full hash grouped in fours (what
-   `SpkiHash`'s `Display` prints).
-2. **Pinned profiles also accept an OS-verified chain** (as the brief says: "the pinned
-   key or a properly verified chain"). If you'd rather a pin be strict (only that key),
-   it's a one-line change in `trust::verifier`.
-3. **Plain HTTP to a LAN daemon** (`--allow-insecure-lan`) is refused by the desktop
-   client; only loopback `http://` is allowed. Recommendation: keep it refused.
-4. **Local mode's sign-in policy for LAN users**: passwords (`fallback`) are on when no
-   public `https://` URL is set, since passkeys can't work on a LAN IP over HTTP. OK?
+*(none: the four below were settled by the main thread on 2026-11-09, at merge)*
+
+1. **Pairing code format**: the daemon prints a short code (the first 100 bits of the SPKI
+   SHA-256, base32, `ABCD-EFGH-IJKL-MNOP-QRST`). The client shows the same code for the
+   key a server presents, accepts it (or the full hash) when pairing, and pins the full
+   hash. 100 bits is far beyond what a key-grinding attacker can match.
+2. **Pins are strict**: only the pinned key. An OS fallback would let any publicly issued
+   certificate for the name stand in for the server the user paired with.
+3. **Plain HTTP to a LAN daemon stays refused**; only loopback `http://`.
+4. **Local mode on the LAN**: rather than passwords over plain HTTP, the LAN listener
+   should use the built-in TLS (self-signed with a pairing code, or ACME). Follow-up, now
+   that `apitorrent-tls` is on master.
 
 ## Things not to do
 

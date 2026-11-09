@@ -109,8 +109,7 @@ engine core stays in the main thread, because its pieces interlock.
     Plugins page). Plan: `plans/m8-plugins.md`
   - ~~Built-in TLS: bring-your-own certificates, ACME HTTP-01 and TLS-ALPN-01, DNS-01 hook,
     self-signed with a pairing code~~ done, merged. Plan: `plans/tls.md`
-  - M7 Tauri desktop app: Remote mode first, then Local, with pinned-key trust and path
-    mappings. Plan: `plans/m7-desktop.md`
+  - ~~M7 Tauri desktop app~~ done, merged. Plan: `plans/m7-desktop.md`
 - **Main thread meanwhile:** ~~M3.2 rest (embed `web/dist`, column chooser, slow-torrent
   queue option)~~ done; now content library step 8.
 - **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
@@ -546,7 +545,16 @@ engine core stays in the main thread, because its pieces interlock.
   self-signed certificate with pairing codes, and ACME (instant-acme) over TLS-ALPN-01
   and HTTP-01, with a DNS-01 plugin trait; tested against a local Pebble. See
   `plans/tls.md`. Cherry-picked from `t3/ae0674d1` on 2026-11-08
-- [ ] M7, M8, M10
+- [x] M7 desktop app: Tauri 2 (`apps/desktop`, not a default workspace member),
+  `apitorrent-client` (strict TLS: OS, private CA or a strict pin), storage-root markers
+  and `GET /roots`, in-process API for Local mode, path mappings, tray, notifications,
+  single instance, link handling. Cherry-picked from `t3/m7-tauri-desktop-app` on
+  2026-11-09. The LAN listener serves the embedded UI (`apitorrent-webui`). Pairing uses
+  the daemon's short code. See `plans/m7-desktop.md`
+- [ ] M7 follow-ups: run the GUI once (needs your OK to use the screen, or a hidden
+  desktop), build installers and test link registration, TLS for Local mode's LAN listener,
+  a folder picker, share locators on the daemon
+- [ ] M8, M10
 
 ## Open questions for the user
 

@@ -28,6 +28,8 @@ url.workspace = true
 x509-parser = "0.18"
 
 [dev-dependencies]
+# Checks the short pairing code against the one the daemon prints.
+apitorrent-tls.workspace = true
 rcgen.workspace = true
 serde_json.workspace = true
 

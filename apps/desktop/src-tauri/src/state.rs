@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter as _, Manager as _, Runtime};
 use tokio::sync::RwLock;
 
 use apitorrent_client::{Remote, Token};
+use apitorrent_server::WebUi;
 use apitorrent_types::StorageRoot;
 
 use crate::backend::Backend;
@@ -140,7 +141,7 @@ pub async fn connect<R: Runtime>(
     profile: Profile,
 ) -> Result<(), String> {
     disconnect(state).await;
-    let result = build(app, state, &profile).await;
+    let result = build(state, &profile).await;
     match result {
         Ok(backend) => {
             *state.connect_error.lock().expect("not poisoned") = None;
@@ -158,11 +159,7 @@ pub async fn connect<R: Runtime>(
     }
 }
 
-async fn build<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &AppState,
-    profile: &Profile,
-) -> Result<Backend, String> {
+async fn build(state: &AppState, profile: &Profile) -> Result<Backend, String> {
     match &profile.kind {
         ProfileKind::Remote(r) => {
             let token = state.token(&profile.id)?.map(Token::new);
@@ -171,51 +168,17 @@ async fn build<R: Runtime>(
         }
         ProfileKind::Local(l) => {
             let default_data = state.dirs.data.join("profiles").join(&profile.id);
+            // The network listener serves the UI compiled into the app, if any.
             let web_ui = if l.lan.is_some() {
-                extract_web_ui(app, &state.dirs.data.join("web-ui"))
+                WebUi::embedded().unwrap_or_default()
             } else {
-                None
+                WebUi::None
             };
             let node =
                 LocalNode::start(l, default_data, state.dirs.downloads.clone(), web_ui).await?;
             Ok(Backend::Local(node))
         }
     }
-}
-
-/// Write the web UI bundled in the app to `dir`, for the LAN listener to serve. `None` when
-/// the app has no bundled UI (a development build that loads it from Vite).
-fn extract_web_ui<R: Runtime>(app: &AppHandle<R>, dir: &std::path::Path) -> Option<PathBuf> {
-    let resolver = app.asset_resolver();
-    let keys: Vec<String> = resolver.iter().map(|(k, _)| k.into_owned()).collect();
-    if !keys
-        .iter()
-        .any(|k| k.trim_start_matches('/') == "index.html")
-    {
-        tracing::info!("no bundled web UI; the network listener serves the API only");
-        return None;
-    }
-    let _ = std::fs::remove_dir_all(dir);
-    for key in keys {
-        let rel = key.trim_start_matches('/');
-        // Asset keys come from our own build, but stay inside `dir` regardless.
-        if rel.split(['/', '\\']).any(|c| c == ".." || c.is_empty()) {
-            continue;
-        }
-        let Some(asset) = resolver.get(key.clone()) else {
-            continue;
-        };
-        let path = dir.join(rel);
-        let written = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(&path, asset.bytes()));
-        if let Err(e) = written {
-            tracing::warn!(path = %path.display(), error = %e, "couldn't write the web UI");
-            return None;
-        }
-    }
-    Some(dir.to_path_buf())
 }
 
 /// Hand links to the UI: queue them (the window may still be loading) and announce them.

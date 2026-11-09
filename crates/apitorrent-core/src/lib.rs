@@ -8,8 +8,8 @@ pub mod db;
 pub mod fingerprint;
 pub mod import;
 pub mod library;
-pub mod seeding;
 mod roots;
+pub mod seeding;
 pub mod settings;
 pub mod store;
 
