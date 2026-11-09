@@ -473,13 +473,18 @@ impl Core {
 
     /// Delete a subscription and its candidates. Torrents rules took from it stay.
     pub async fn delete_subscription(&self, id: &str) -> Result<(), CoreError> {
-        let id = id.to_owned();
+        let (id, id2) = (id.to_owned(), id.to_owned());
         let found = self
             .auto_db(move |db| {
                 db.delete_candidates(&subscription_source(&id))?;
                 db.delete_subscription(&id)
             })
             .await?;
+        self.auto()
+            .polling
+            .lock()
+            .expect("polling lock poisoned")
+            .remove(&id2);
         if found {
             Ok(())
         } else {
@@ -487,8 +492,11 @@ impl Core {
         }
     }
 
-    /// Fetch a subscription's feed now; the result is in its `lastError` and `revision`.
+    /// Fetch a subscription's feed now (after any poll already under way); the result is
+    /// in its `lastError` and `revision`.
     pub async fn refresh_subscription(&self, id: &str) -> Result<SubscriptionInfo, CoreError> {
+        let lock = self.poll_lock(id);
+        let _polling = lock.lock().await;
         let id2 = id.to_owned();
         let row = self
             .auto_db(move |db| db.subscription(&id2))
@@ -496,6 +504,16 @@ impl Core {
             .ok_or(CoreError::NotFound)?;
         self.poll_subscription(row).await;
         self.subscription(id).await
+    }
+
+    fn poll_lock(&self, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+        self.auto()
+            .polling
+            .lock()
+            .expect("polling lock poisoned")
+            .entry(id.to_owned())
+            .or_default()
+            .clone()
     }
 
     pub(crate) async fn poll_due_subscriptions(&self) {
@@ -506,26 +524,22 @@ impl Core {
         for row in rows {
             let interval = i64::from(row.spec.interval_minutes) * 60_000;
             let due = row.last_checked.is_none_or(|t| now - t >= interval);
-            if row.spec.enabled && due {
-                self.poll_subscription(row).await;
+            if !(row.spec.enabled && due) {
+                continue;
             }
+            // One being refreshed by hand right now is left to that.
+            let lock = self.poll_lock(&row.id);
+            let Ok(_polling) = lock.try_lock() else {
+                continue;
+            };
+            self.poll_subscription(row).await;
         }
     }
 
+    /// Poll once and record the outcome. Callers hold the subscription's poll lock.
     async fn poll_subscription(&self, row: SubscriptionRow) {
-        {
-            let mut polling = self.auto().polling.lock().expect("polling lock poisoned");
-            if !polling.insert(row.id.clone()) {
-                return;
-            }
-        }
         let id = row.id.clone();
         let result = self.fetch_subscription(&row).await;
-        self.auto()
-            .polling
-            .lock()
-            .expect("polling lock poisoned")
-            .remove(&id);
         let now = now_ms();
         let record = match result {
             Ok(Polled::Unchanged) => {

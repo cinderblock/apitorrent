@@ -24,7 +24,7 @@ mod plan;
 mod rules;
 pub mod version;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -67,8 +67,8 @@ pub(crate) struct Automation {
     pass: tokio::sync::Mutex<()>,
     /// One channel revision change at a time.
     feeds: tokio::sync::Mutex<()>,
-    /// Subscriptions being polled, so one isn't polled twice at once.
-    polling: Mutex<HashSet<String>>,
+    /// One poll per subscription at a time.
+    polling: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl std::fmt::Debug for Automation {
@@ -104,7 +104,7 @@ impl Automation {
             poll_wake: Notify::new(),
             pass: tokio::sync::Mutex::new(()),
             feeds: tokio::sync::Mutex::new(()),
-            polling: Mutex::new(HashSet::new()),
+            polling: Mutex::new(HashMap::new()),
         })
     }
 }
