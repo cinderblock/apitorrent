@@ -71,6 +71,24 @@ describe("settings forms", () => {
   });
 });
 
+test("a route the plugin authenticates says so", () => {
+  expect(
+    describeCapabilities({
+      network: [],
+      networkFromSettings: [],
+      api: ["tokens:verify"],
+      routes: [{ path: "/api/v2/*", methods: ["POST"], auth: "plugin" }],
+      kv: false,
+      schedule: false,
+      roles: ["api-compat"],
+    }),
+  ).toEqual([
+    "check the apitorrent API tokens its clients sign in with, and learn whose they are",
+    "serve POST /api/v2/* under its API path to clients that haven't signed in to apitorrent (it checks their credentials itself, and may set cookies there)",
+    "act as another client's API (compatibility layer)",
+  ]);
+});
+
 test("capabilities in words", () => {
   expect(
     describeCapabilities({

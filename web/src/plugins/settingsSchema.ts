@@ -114,6 +114,7 @@ const SCOPES: Record<string, string> = {
   "torrents:control": "pause, resume and label torrents",
   "torrents:remove": "remove torrents, and delete their data",
   "events:read": "be told when torrents are added, change state or finish",
+  "tokens:verify": "check the apitorrent API tokens its clients sign in with, and learn whose they are",
 };
 
 const ROLES: Record<string, string> = {
@@ -134,7 +135,15 @@ export function describeCapabilities(c: PluginCapabilities): string[] {
   for (const g of c.network ?? []) out.push(`connect to ${grantText(g)}`);
   for (const p of c.networkFromSettings ?? []) out.push(`connect to the hosts you enter in its \`${p}\` setting`);
   for (const s of c.api ?? []) out.push(SCOPES[s] ?? s);
-  for (const r of c.routes ?? []) for (const m of r.methods) out.push(`serve ${m} ${r.path} under its API path`);
+  for (const r of c.routes ?? []) {
+    for (const m of r.methods) {
+      out.push(
+        r.auth === "plugin"
+          ? `serve ${m} ${r.path} under its API path to clients that haven't signed in to apitorrent (it checks their credentials itself, and may set cookies there)`
+          : `serve ${m} ${r.path} under its API path`,
+      );
+    }
+  }
   if (c.kv) out.push("store its own data");
   if (c.schedule) out.push("run jobs on a schedule");
   for (const r of c.roles ?? []) out.push(ROLES[r] ?? r);
