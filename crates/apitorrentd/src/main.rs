@@ -387,7 +387,8 @@ async fn main() -> ExitCode {
         Some(dir) => WebUi::Dir(dir),
         None => WebUi::embedded().unwrap_or_else(|| {
             tracing::info!(
-                "this build has no embedded web UI (the `embedded-ui` feature); serving the API                  only. Pass --web-root to serve a built one"
+                "this build has no embedded web UI (the `embedded-ui` feature); serving the API \
+                 only. Pass --web-root to serve a built one"
             );
             WebUi::None
         }),
