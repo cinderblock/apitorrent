@@ -1,1 +1,1 @@
-doc-valid-idents = ["BitTorrent", "WebAuthn", "WebSocket", "TypeScript", "IPv6", "IPv4", "..", "SQLite", "SemVer"]
+doc-valid-idents = ["BitTorrent", "WebAuthn", "WebSocket", "TypeScript", "IPv6", "IPv4", "..", "SQLite", "SemVer", "WebView2", "DevTools"]

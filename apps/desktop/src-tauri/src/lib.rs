@@ -47,6 +47,38 @@ fn is_app_url(url: &url::Url) -> bool {
     }
 }
 
+/// For automated GUI tests of a development build on Windows:
+/// `APITORRENT_WEBVIEW_DEBUG_PORT=<port>` opens WebView2's DevTools protocol on
+/// 127.0.0.1:<port> (Playwright attaches with `connect_over_cdp`) and mutes the webview.
+/// Tauri passes its own browser arguments, so WebView2's environment variable for this is
+/// ignored. Release builds never read it.
+#[cfg(all(debug_assertions, windows))]
+fn automation_args<R: Runtime, M: tauri::Manager<R>>(
+    builder: WebviewWindowBuilder<'_, R, M>,
+) -> WebviewWindowBuilder<'_, R, M> {
+    let Some(port) = std::env::var("APITORRENT_WEBVIEW_DEBUG_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+    else {
+        return builder;
+    };
+    tracing::warn!(
+        port,
+        "WebView2 DevTools protocol open on 127.0.0.1 (development build)"
+    );
+    // Wry's defaults first: setting the arguments replaces them.
+    builder.additional_browser_args(&format!(
+        "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection          --remote-debugging-address=127.0.0.1 --remote-debugging-port={port} --mute-audio"
+    ))
+}
+
+#[cfg(not(all(debug_assertions, windows)))]
+fn automation_args<R: Runtime, M: tauri::Manager<R>>(
+    builder: WebviewWindowBuilder<'_, R, M>,
+) -> WebviewWindowBuilder<'_, R, M> {
+    builder
+}
+
 fn dirs() -> Dirs {
     let project = directories::ProjectDirs::from("", "", "apitorrent")
         .expect("the OS reports a home directory");
@@ -136,23 +168,25 @@ pub fn run() {
             // Open in the saved theme, never a white flash: the window starts hidden, takes
             // the theme (resolving System against the OS) and its background, then shows.
             let theme = theme::load(&app.state::<AppState>().dirs.config);
-            let window =
-                WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()))
-                    .title("apitorrent")
-                    .inner_size(1280.0, 800.0)
-                    .min_inner_size(720.0, 480.0)
-                    .theme(theme.window_theme())
-                    .visible(false)
-                    .on_navigation(move |url| {
-                        if is_app_url(url) {
-                            return true;
-                        }
-                        if matches!(url.scheme(), "http" | "https" | "mailto") {
-                            let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
-                        }
-                        false
-                    })
-                    .build()?;
+            let builder =
+                WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()));
+            let builder = automation_args(builder);
+            let window = builder
+                .title("apitorrent")
+                .inner_size(1280.0, 800.0)
+                .min_inner_size(720.0, 480.0)
+                .theme(theme.window_theme())
+                .visible(false)
+                .on_navigation(move |url| {
+                    if is_app_url(url) {
+                        return true;
+                    }
+                    if matches!(url.scheme(), "http" | "https" | "mailto") {
+                        let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+                    }
+                    false
+                })
+                .build()?;
             if let Err(e) = theme::apply(&window, theme) {
                 tracing::warn!(error = %e, "couldn't apply the window theme");
             }
