@@ -109,6 +109,12 @@ engine core stays in the main thread, because its pieces interlock.
   - ~~Built-in TLS: bring-your-own certificates, ACME HTTP-01 and TLS-ALPN-01, DNS-01 hook,
     self-signed with a pairing code~~ done, merged. Plan: `plans/tls.md`
   - ~~M7 Tauri desktop app~~ done, merged. Plan: `plans/m7-desktop.md`
+- **Delegated streams, started 2026-11-09 about 12:55 AM PST (08:55Z):**
+  - Plugin ecosystem: `qbittorrent-api` plugin, first-party plugins shipped with the
+    daemon, `dns-provider` role for ACME DNS-01 (Cloudflare plugin, mock-tested only),
+    `tracker-adapter` role in retirement. Plan: `plans/plugin-ecosystem.md`
+  - M9 automation: release candidates and rules, stable "latest" aliases, signed
+    distribution channels. Plan: `plans/m9-automation.md`
 - **Main thread meanwhile:** ~~M3.2 rest (embed `web/dist`, column chooser, slow-torrent
   queue option)~~ done; now content library step 8.
 - **Later (after the streams above land):** M3.2 UI depth, M7 Tauri desktop, M8 plugin
