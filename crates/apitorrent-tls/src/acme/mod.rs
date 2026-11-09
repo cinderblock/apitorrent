@@ -12,7 +12,8 @@
 //! - **HTTP-01**: answered on port 80 by the daemon's HTTP listener
 //!   (`--http-redirect-port`) from [`CertStore::http01_response`].
 //! - **DNS-01**: through a [`DnsProvider`] (a `dns-provider` plugin). Required for wildcard
-//!   names.
+//!   names. Once the provider has published a record, the manager waits until the zone's
+//!   authoritative servers serve it ([`DnsPropagation`]) before the CA is told to look.
 //!
 //! # Storage
 //!
@@ -31,7 +32,9 @@
 
 mod dns;
 mod http;
+mod propagation;
 mod schedule;
+mod wire;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -48,6 +51,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 pub use dns::{BoxFuture, DnsError, DnsProvider, TxtRecord};
+pub use propagation::DnsPropagation;
 
 use crate::cert::{LoadedCert, load_pem};
 use crate::files::humantime_utc;
@@ -105,6 +109,8 @@ pub struct AcmeConfig {
     pub state_dir: PathBuf,
     /// How long to wait for the CA to validate and to issue, per step.
     pub poll_timeout: Duration,
+    /// How DNS-01 records are checked before the CA looks for them.
+    pub dns_propagation: DnsPropagation,
 }
 
 impl AcmeConfig {
@@ -117,6 +123,7 @@ impl AcmeConfig {
             challenge,
             state_dir,
             poll_timeout: Duration::from_secs(180),
+            dns_propagation: DnsPropagation::default(),
         }
     }
 
@@ -543,7 +550,8 @@ async fn order(
             ChallengeKind::Dns01(provider) => {
                 let record = TxtRecord::for_domain(&host, key_auth.dns_value());
                 provider.publish_txt(&record).await?;
-                provisioned.push(Provisioned::Dns(provider.clone(), record));
+                provisioned.push(Provisioned::Dns(provider.clone(), record.clone()));
+                propagation::wait_for(&record, &config.dns_propagation).await?;
             }
         }
         challenge.set_ready().await?;

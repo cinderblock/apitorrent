@@ -34,9 +34,9 @@ pub struct DnsError(pub String);
 /// its base domain share `_acme-challenge.<domain>`), and must only remove the record with
 /// the given value.
 pub trait DnsProvider: Send + Sync + fmt::Debug {
-    /// Create the record, resolving once it is published *and* visible on the zone's
-    /// authoritative name servers. The ACME server is told to validate as soon as this
-    /// returns, and a validator that can't see the record fails the order.
+    /// Create the record, resolving once the DNS provider has accepted it. The ACME
+    /// manager then waits until the zone's authoritative servers serve it (see
+    /// [`super::DnsPropagation`]) before the CA is told to validate.
     fn publish_txt<'a>(&'a self, record: &'a TxtRecord) -> BoxFuture<'a, Result<(), DnsError>>;
 
     /// Delete the record. Called after validation, whether it succeeded or failed.
