@@ -413,6 +413,16 @@ engine core stays in the main thread, because its pieces interlock.
   new torrent's first check, the old torrent is simply not marked. Harmless, since it
   keeps seeding.
 
+### Magnet metadata gap (2026-11-09)
+
+- Found by the real-world v2 magnet test: `GET /torrents/{id}` answered 404 about half a
+  second after adding the magnet. When the metadata arrived, the core removed the pending
+  entry, then awaited a DB write and library linking before the torrent existed, so for
+  that moment it was in neither map. Now the pending entry stays until the torrent is
+  spawned, and a pause, relabel or removal made in between is carried over. The magnet
+  end-to-end test polls the details throughout; it failed 3 of 3 on the old code with
+  `NotFound`, and passes 5 of 5 now.
+
 ### Disk full (2026-11-09)
 
 - At about 12:05 AM PST (08:05Z) C: ran out of space (392 MB free), and a write of
@@ -565,6 +575,11 @@ engine core stays in the main thread, because its pieces interlock.
   installers through the Tauri CLI, provenance attestations, a **draft** release for a
   person to publish), `dependabot.yml`. Actions pinned by commit. `actionlint` passes.
   They run only once the repo is on GitHub, which waits on you
+- [x] Real-world BEP 52 test (2026-11-09, about 12:40 AM PST (08:40Z)): libtorrent's
+  `bittorrent-v2-test` (v2 only) and `bittorrent-v2-hybrid-test`, with no trackers, so
+  peers came from the DHT; first byte in about 7 s. About 43 MiB of each from qBittorrent
+  5.2 and 5.3, BiglyBT 4.1, Transmission 4.0.5, BitSiphon and spill, with 0 verification
+  failures. Data deleted, and the temporary firewall rule removed (none left)
 - [x] PEX flags (BEP 11): peers we pass on carry what we know first-hand (encrypted, seed,
   uTP, reachable); a peer PEX lists without the uTP flag is dialed over TCP first, so it
   doesn't cost a 5 s uTP timeout. Unit test `pex_hints_order_the_transports`

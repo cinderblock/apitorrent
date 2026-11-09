@@ -129,6 +129,16 @@ struct Entry {
     file_paths: Option<Vec<Vec<String>>>,
 }
 
+/// The parts of a pending magnet that the torrent replacing it takes over.
+struct PendingSnapshot {
+    held_path: PathBuf,
+    paused: bool,
+    unwanted: UnwantedPolicy,
+    label: Option<String>,
+    added_at: i64,
+    queue_position: u32,
+}
+
 /// A magnet link waiting for its metadata.
 struct Pending {
     magnet: Magnet,
@@ -1402,24 +1412,29 @@ impl Core {
         id: &str,
         fetched: apitorrent_engine::metadata::Fetched,
     ) -> Result<(), CoreError> {
-        let Some(p) = self
+        // The pending entry stays visible (to the list, details, pause and remove) until
+        // the torrent replaces it below; removing it first left a gap in which the torrent
+        // was nowhere, and the API answered 404.
+        let Some(magnet) = self
             .inner
             .pending
-            .write()
+            .read()
             .expect("pending lock poisoned")
-            .remove(id)
+            .get(id)
+            .map(|p| (p.magnet.clone(), p.save_path.clone(), p.naming))
         else {
             return Ok(()); // removed meanwhile
         };
+        let (magnet, save_path, naming) = magnet;
         let bytes = apitorrent_engine::metadata::torrent_file(
             &fetched.info,
-            &p.magnet.trackers,
-            &p.magnet.web_seeds,
+            &magnet.trackers,
+            &magnet.web_seeds,
         );
         let torrent = Arc::new(
             Torrent::from_bytes(&bytes).map_err(|e| CoreError::InvalidTorrent(e.to_string()))?,
         );
-        let prios = select_only_priorities(&torrent, p.magnet.select_only.as_deref());
+        let prios = select_only_priorities(&torrent, magnet.select_only.as_deref());
         let hashes = torrent.info.info_hashes();
         let (key, name, stored) = (id.to_owned(), torrent.info.name.clone(), prios.clone());
         let (v1, v2) = (
@@ -1432,29 +1447,72 @@ impl Core {
         .await?;
         tracing::info!(%id, name = %torrent.info.name, "metadata fetched");
         let linked = self
-            .link_from_library(id, &torrent, &p.save_path, p.naming, &prios)
+            .link_from_library(id, &torrent, &save_path, naming, &prios)
             .await;
+
+        // The latest pending state (the user may have paused or relabelled it meanwhile),
+        // then the torrent takes its place.
+        let Some(snapshot) = self
+            .inner
+            .pending
+            .read()
+            .expect("pending lock poisoned")
+            .get(id)
+            .map(|p| PendingSnapshot {
+                held_path: p.held_path.clone(),
+                paused: p.paused,
+                unwanted: p.unwanted,
+                label: p.label.clone(),
+                added_at: p.added_at,
+                queue_position: p.queue_position,
+            })
+        else {
+            return Ok(()); // removed meanwhile
+        };
         self.spawn_entry(Spawn {
             id: id.to_owned(),
             peers: fetched.peers,
             torrent,
-            save_path: p.save_path,
-            held_path: p.held_path,
+            save_path,
+            held_path: snapshot.held_path,
             have: None,
             placements: None,
-            paused: p.paused,
+            paused: snapshot.paused,
             file_priorities: prios,
-            unwanted: p.unwanted,
-            label: p.label,
-            added_at: p.added_at,
+            unwanted: snapshot.unwanted,
+            label: snapshot.label.clone(),
+            added_at: snapshot.added_at,
             totals: (0, 0),
-            queue_position: p.queue_position,
+            queue_position: snapshot.queue_position,
             limits: TorrentLimits::default(),
-            queued: !p.paused && self.queue_limited(),
-            naming: p.naming,
+            queued: !snapshot.paused && self.queue_limited(),
+            naming,
             linked,
             file_paths: None,
         })?;
+        let last = self
+            .inner
+            .pending
+            .write()
+            .expect("pending lock poisoned")
+            .remove(id);
+        match last {
+            // Removed in the moment between the snapshot and now: undo the torrent too.
+            None => {
+                tracing::info!(%id, "removed while its metadata arrived");
+                self.remove(id, false).await?;
+                return Ok(());
+            }
+            // Changed in that moment: carry the change over.
+            Some(p) => {
+                if p.paused != snapshot.paused {
+                    self.set_paused(id, p.paused).await?;
+                }
+                if p.label != snapshot.label {
+                    self.set_label(id, p.label).await?;
+                }
+            }
+        }
         self.apply_queue().await;
         self.refresh();
         Ok(())

@@ -401,7 +401,24 @@ async fn magnet_link_end_to_end() {
         ),
         "{s:?}"
     );
-    wait_for(&core, &id, TorrentState::Seeding).await;
+    // Its details stay readable throughout: the torrent replaces the pending magnet with no
+    // moment in between where it is neither (that was a 404 in the API).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let d = core
+            .detail(&id)
+            .await
+            .expect("details while the metadata arrives");
+        if d.summary.state == TorrentState::Seeding {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never finished: {:?}",
+            d.summary
+        );
+        tokio::task::yield_now().await;
+    }
     let s = core.store().get(&id).unwrap();
     assert_eq!(s.name, "linux.iso", "the real name replaces the magnet's");
     assert_eq!(s.label.as_deref(), Some("iso"));
