@@ -66,6 +66,7 @@ pub(crate) async fn info() -> Json<ServerInfo> {
             "file-priorities".to_owned(),
             "auth".to_owned(),
             "storage-roots".to_owned(),
+            "automation".to_owned(),
         ],
     })
 }

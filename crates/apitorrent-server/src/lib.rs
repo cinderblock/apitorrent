@@ -20,6 +20,7 @@
 
 mod auth_routes;
 mod authn;
+mod automation_routes;
 mod embed;
 mod guard;
 mod plugin_routes;
@@ -271,6 +272,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/auth/sessions", get(auth_routes::sessions))
         .route("/auth/sessions/{id}", delete(auth_routes::session_delete))
         .merge(plugin_routes::router())
+        .merge(automation_routes::router())
         .fallback(routes::not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
