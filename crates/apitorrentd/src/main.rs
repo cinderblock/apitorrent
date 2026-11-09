@@ -1,5 +1,7 @@
 //! `apitorrentd`: the headless apitorrent daemon.
 
+mod tls;
+
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -13,7 +15,7 @@ use url::Url;
 use apitorrent_auth::{Auth, AuthConfig, Clock, PasswordMode, SetupToken, SystemClock};
 use apitorrent_core::{Core, CoreConfig};
 use apitorrent_engine::SessionConfig;
-use apitorrent_server::{AuthMode, ServerConfig, TrustedProxies, WebUi};
+use apitorrent_server::{AuthMode, ServerConfig, TlsServer, TrustedProxies, WebUi};
 
 /// The default API port. Chosen to avoid the ports of Deluge (8112), Transmission (9091),
 /// qBittorrent (8080) and the *arr apps.
@@ -77,8 +79,9 @@ struct Args {
     #[arg(long, env = "APITORRENT_DOWNLOAD_DIR")]
     download_dir: Option<PathBuf>,
 
-    /// Address for the HTTP API and web UI. A non-loopback address needs --trusted-proxy
-    /// (the expected setup: a TLS reverse proxy in front) or --allow-insecure-lan.
+    /// Address for the HTTP API and web UI. A non-loopback address needs built-in TLS (see
+    /// --tls-cert, --tls-self-signed, --acme-domain), --trusted-proxy (a TLS reverse proxy
+    /// in front) or --allow-insecure-lan.
     #[arg(long, env = "APITORRENT_API", default_value = DEFAULT_API)]
     api: SocketAddr,
 
@@ -186,6 +189,9 @@ struct Args {
     /// control.
     #[arg(long)]
     insecure_no_auth_loopback: bool,
+
+    #[command(flatten)]
+    tls: tls::TlsArgs,
 }
 
 fn default_dirs() -> Option<(PathBuf, PathBuf)> {
@@ -271,20 +277,33 @@ async fn main() -> ExitCode {
             .iter()
             .filter_map(|u| u.host_str().map(str::to_owned)),
     );
+    let mut public_urls = args.public_urls;
+    // Built-in TLS: its names become hosts we answer to and passkey relying parties.
+    let tls = match tls::setup(&args.tls, args.api, &data_dir, &public_hosts, &public_urls) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Some(t) = &tls {
+        public_hosts.extend(t.public_hosts.iter().cloned());
+        public_urls.extend(t.public_urls.iter().cloned());
+    }
 
     let auth = if args.insecure_no_auth_loopback {
         AuthMode::DisabledOnLoopback
     } else {
-        let mut urls: Vec<String> = args
-            .public_urls
+        let mut urls: Vec<String> = public_urls
             .iter()
             .map(|u| u.as_str().trim_end_matches('/').to_owned())
             .collect();
-        urls.push(format!("http://localhost:{}", args.api.port()));
+        let scheme = if tls.is_some() { "https" } else { "http" };
+        urls.push(format!("{scheme}://localhost:{}", args.api.port()));
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let hook_clock = clock.clone();
         let mut config = AuthConfig::new(data_dir.join("auth.db"));
-        config.public_urls = args.public_urls;
+        config.public_urls = public_urls;
         config.password_mode = args.passwords.into();
         config.session_idle = Duration::from_secs(args.session_idle_hours.max(1) * 3600);
         config.session_lifetime =
@@ -381,7 +400,17 @@ async fn main() -> ExitCode {
         trusted_proxies,
         allow_insecure_lan: args.allow_insecure_lan,
     };
-    let result = apitorrent_server::serve(core.clone(), server, shutdown_signal()).await;
+    let result = match tls {
+        None => apitorrent_server::serve(core.clone(), server, shutdown_signal()).await,
+        Some(tls) => match TlsServer::bind(core.clone(), server, tls.serve).await {
+            Ok(listening) => {
+                // Only now can the challenge listeners answer the CA.
+                let _acme = tls.acme.map(apitorrent_tls::acme::AcmeManager::start);
+                listening.run(shutdown_signal()).await
+            }
+            Err(e) => Err(e),
+        },
+    };
     if let Err(e) = core.shutdown().await {
         tracing::error!(error = %e, "shutdown failed");
     }

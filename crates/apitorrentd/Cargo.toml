@@ -16,6 +16,7 @@ apitorrent-mse.workspace = true
 apitorrent-engine.workspace = true
 apitorrent-server.workspace = true
 apitorrent-webui.workspace = true
+apitorrent-tls.workspace = true
 clap.workspace = true
 directories.workspace = true
 tokio = { workspace = true, features = ["signal"] }
