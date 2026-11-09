@@ -552,6 +552,49 @@ pub struct ServerInfo {
     pub capabilities: Vec<String>,
 }
 
+/// A directory the daemon manages downloads in. Clients map it to a local path (a network
+/// share, say) to open its files, and check the mapping through its marker file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct StorageRoot {
+    /// Random, and stable for this path; also written into the root's marker file.
+    pub id: String,
+    /// The path on the daemon's machine.
+    pub path: String,
+}
+
+/// The contents of `.apitorrent-root`, the marker file at the top of every storage root.
+/// A client trusts a path mapping only once it reads the right id through the local path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RootMarker {
+    /// Always [`RootMarker::KIND`], so a stray file of the same name isn't taken for one.
+    pub kind: String,
+    pub id: String,
+}
+
+impl RootMarker {
+    /// The marker's file name.
+    pub const FILE_NAME: &'static str = ".apitorrent-root";
+    pub const KIND: &'static str = "apitorrent-storage-root";
+
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            kind: Self::KIND.to_owned(),
+            id: id.into(),
+        }
+    }
+
+    /// Parse a marker file; `None` if it isn't one.
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        serde_json::from_slice::<Self>(bytes)
+            .ok()
+            .filter(|m| m.kind == Self::KIND && !m.id.is_empty())
+    }
+}
+
 /// Import a Deluge installation's torrents.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

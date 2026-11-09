@@ -65,8 +65,14 @@ pub(crate) async fn info() -> Json<ServerInfo> {
             "sync".to_owned(),
             "file-priorities".to_owned(),
             "auth".to_owned(),
+            "storage-roots".to_owned(),
         ],
     })
+}
+
+/// The storage roots, so a desktop client can map them to local paths.
+pub(crate) async fn roots(State(s): State<AppState>) -> Json<Vec<apitorrent_types::StorageRoot>> {
+    Json(s.core.storage_roots())
 }
 
 pub(crate) async fn list(State(s): State<AppState>) -> Json<Vec<TorrentSummary>> {

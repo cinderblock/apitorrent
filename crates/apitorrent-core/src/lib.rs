@@ -9,6 +9,7 @@ pub mod fingerprint;
 pub mod import;
 pub mod library;
 pub mod seeding;
+mod roots;
 pub mod settings;
 pub mod store;
 
@@ -202,6 +203,7 @@ struct Inner {
     seeding: Mutex<HashMap<TorrentId, seeding::SeedState>>,
     /// When seeding time was last counted.
     seed_clock: Mutex<std::time::Instant>,
+    roots: Vec<apitorrent_types::StorageRoot>,
 }
 
 const SETTINGS_KEY: &str = "settings";
@@ -231,6 +233,8 @@ impl Core {
         let db = tokio::task::spawn_blocking(move || Database::open(&db_path))
             .await
             .expect("database open panicked")?;
+        let root = roots::root_for(&db, &config.download_dir)?;
+        roots::write_marker(&root);
         let stored = db.meta(SETTINGS_KEY)?;
         let settings = match stored.as_deref().map(serde_json::from_str::<Settings>) {
             Some(Ok(s)) => s,
@@ -266,6 +270,7 @@ impl Core {
                 stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 seeding: Mutex::new(HashMap::new()),
                 seed_clock: Mutex::new(std::time::Instant::now()),
+                roots: vec![root],
             }),
         };
         core.apply_session_settings();
@@ -1164,6 +1169,11 @@ impl Core {
 
     pub fn store(&self) -> &Store {
         &self.inner.store
+    }
+
+    /// The directories this instance downloads into, each with a `.apitorrent-root` marker.
+    pub fn storage_roots(&self) -> Vec<apitorrent_types::StorageRoot> {
+        self.inner.roots.clone()
     }
 
     pub fn peer_port(&self) -> u16 {
