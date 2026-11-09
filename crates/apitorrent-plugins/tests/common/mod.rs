@@ -11,9 +11,10 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::broadcast;
 
 use apitorrent_plugin_api::{
-    AddOutcome, AppApi, AppError, AppEvent, BoxFuture, PLUGIN_API_VERSION, PLUGIN_BUNDLE_FORMAT,
-    PluginBundle, PluginCaller, PluginCapabilities, PluginHttpRequest, PluginHttpResponse,
-    PluginManifest, PluginService, PluginStatus, TorrentControl,
+    AddOutcome, AppApi, AppError, AppEvent, AppInfo, BoxFuture, PLUGIN_API_VERSION,
+    PLUGIN_BUNDLE_FORMAT, PluginBundle, PluginCaller, PluginCapabilities, PluginHttpRequest,
+    PluginHttpResponse, PluginManifest, PluginRouteAuth, PluginService, PluginStatus,
+    TorrentControl,
 };
 use apitorrent_plugins::{HostConfig, PluginHost};
 use apitorrent_types::auth::Role;
@@ -82,6 +83,16 @@ pub fn summary(id: &str, state: TorrentState) -> TorrentSummary {
 }
 
 impl AppApi for FakeApp {
+    fn info(&self) -> AppInfo {
+        AppInfo {
+            version: "0.1.0".to_owned(),
+            download_dir: "/downloads".to_owned(),
+            seed_limits: apitorrent_types::SeedLimits::default(),
+            queue: apitorrent_types::QueueSettings::default(),
+            peer_port: 6881,
+        }
+    }
+
     fn torrents(&self) -> Vec<TorrentSummary> {
         vec![summary("aa", TorrentState::Seeding)]
     }
@@ -170,6 +181,7 @@ pub fn probe_route() -> apitorrent_plugin_api::PluginRoute {
     apitorrent_plugin_api::PluginRoute {
         path: "/probe".to_owned(),
         methods: vec!["GET".to_owned(), "POST".to_owned()],
+        auth: PluginRouteAuth::Api,
     }
 }
 
@@ -211,6 +223,7 @@ pub fn caller() -> PluginCaller {
         user_id: "u1".to_owned(),
         user_name: "admin".to_owned(),
         role: Role::Admin,
+        may_write: true,
     }
 }
 
@@ -230,7 +243,7 @@ pub async fn call(
             url: format!("http://localhost:8742/api/v1/plugins/{id}{path}"),
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
             body: body.to_vec(),
-            caller: caller(),
+            caller: Some(caller()),
         },
     )
     .await

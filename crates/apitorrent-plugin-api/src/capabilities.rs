@@ -1,6 +1,6 @@
 //! What a plugin version asks for beyond what was granted, in words an admin can approve.
 
-use apitorrent_types::plugins::{PluginApiScope, PluginCapabilities, PluginRole};
+use apitorrent_types::plugins::{PluginApiScope, PluginCapabilities, PluginRole, PluginRouteAuth};
 
 use crate::network::NetworkGrant;
 
@@ -12,6 +12,9 @@ pub fn describe_scope(s: PluginApiScope) -> &'static str {
         PluginApiScope::TorrentsControl => "pause, resume and label torrents",
         PluginApiScope::TorrentsRemove => "remove torrents, and delete their data",
         PluginApiScope::EventsRead => "be told when torrents are added, change state or finish",
+        PluginApiScope::TokensVerify => {
+            "check the apitorrent API tokens its clients sign in with, and learn whose they are"
+        }
     }
 }
 
@@ -21,6 +24,17 @@ pub fn describe_role(r: PluginRole) -> &'static str {
         PluginRole::ApiCompat => "act as another client's API (compatibility layer)",
         PluginRole::DnsProvider => "publish DNS records for certificates (DNS provider)",
         PluginRole::TrackerAdapter => "adapt behaviour to specific trackers",
+    }
+}
+
+/// A plain-language line for serving one method of a route.
+pub fn describe_route(method: &str, path: &str, auth: PluginRouteAuth) -> String {
+    match auth {
+        PluginRouteAuth::Api => format!("serve {method} {path} under its API path"),
+        PluginRouteAuth::Plugin => format!(
+            "serve {method} {path} under its API path to clients that haven't signed in to \
+             apitorrent (it checks their credentials itself, and may set cookies there)"
+        ),
     }
 }
 
@@ -61,9 +75,9 @@ pub fn expansion(wanted: &PluginCapabilities, granted: &PluginCapabilities) -> V
             let covered = granted
                 .routes
                 .iter()
-                .any(|g| g.path == r.path && g.methods.contains(m));
+                .any(|g| g.path == r.path && g.auth == r.auth && g.methods.contains(m));
             if !covered {
-                out.push(format!("serve {m} {} under its API path", r.path));
+                out.push(describe_route(m, &r.path, r.auth));
             }
         }
     }
@@ -97,6 +111,7 @@ mod tests {
             routes: vec![PluginRoute {
                 path: "/status".into(),
                 methods: vec!["GET".into(), "POST".into()],
+                auth: PluginRouteAuth::Api,
             }],
             kv: true,
             schedule: true,
@@ -109,6 +124,7 @@ mod tests {
             routes: vec![PluginRoute {
                 path: "/status".into(),
                 methods: vec!["GET".into()],
+                auth: PluginRouteAuth::Api,
             }],
             kv: true,
             schedule: false,
@@ -120,6 +136,24 @@ mod tests {
     }
 
     #[test]
+    fn a_plugin_authenticated_route_is_not_covered_by_an_ordinary_one() {
+        let route = |auth| PluginRoute {
+            path: "/api/v2/*".into(),
+            methods: vec!["POST".into()],
+            auth,
+        };
+        let granted = PluginCapabilities {
+            routes: vec![route(PluginRouteAuth::Api)],
+            ..PluginCapabilities::default()
+        };
+        let wanted = PluginCapabilities {
+            routes: vec![route(PluginRouteAuth::Plugin)],
+            ..PluginCapabilities::default()
+        };
+        assert_eq!(expansion(&wanted, &granted).len(), 1);
+    }
+
+    #[test]
     fn every_kind_of_expansion_is_listed() {
         let granted = PluginCapabilities {
             network: vec!["example.com".into()],
@@ -127,11 +161,19 @@ mod tests {
         };
         let wanted = PluginCapabilities {
             network: vec!["example.com".into(), "http://example.com".into()],
-            api: vec![PluginApiScope::TorrentsRemove],
-            routes: vec![PluginRoute {
-                path: "/x".into(),
-                methods: vec!["GET".into()],
-            }],
+            api: vec![PluginApiScope::TorrentsRemove, PluginApiScope::TokensVerify],
+            routes: vec![
+                PluginRoute {
+                    path: "/x".into(),
+                    methods: vec!["GET".into()],
+                    auth: PluginRouteAuth::Api,
+                },
+                PluginRoute {
+                    path: "/api/v2/*".into(),
+                    methods: vec!["POST".into()],
+                    auth: PluginRouteAuth::Plugin,
+                },
+            ],
             kv: true,
             schedule: true,
             roles: vec![PluginRole::DnsProvider],
@@ -144,7 +186,10 @@ mod tests {
                 "connect to http://example.com",
                 "connect to the hosts you enter in its `feeds[].url` setting",
                 "remove torrents, and delete their data",
+                "check the apitorrent API tokens its clients sign in with, and learn whose they are",
                 "serve GET /x under its API path",
+                "serve POST /api/v2/* under its API path to clients that haven't signed in to \
+                 apitorrent (it checks their credentials itself, and may set cookies there)",
                 "store its own data",
                 "run jobs on a schedule",
                 "publish DNS records for certificates (DNS provider)",

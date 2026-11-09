@@ -4,4 +4,10 @@ import type { Role } from "./Role";
 /**
  * Who called a plugin's HTTP route, as the plugin sees it.
  */
-export type PluginCaller = { userId: string, userName: string, role: Role, };
+export type PluginCaller = { userId: string, userName: string, role: Role, 
+/**
+ * The credential may change things: not a viewer, not a read-only token. A plugin
+ * acting for a caller on a route that does its own login must check this before
+ * writes (on ordinary routes apitorrent already refuses read-only writes).
+ */
+mayWrite: boolean, };

@@ -11,8 +11,12 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 
-use apitorrent_plugin_api::{AddOutcome, AppApi, AppError, AppEvent, BoxFuture, TorrentControl};
-use apitorrent_types::{AddTorrentRequest, TorrentDetail, TorrentId, TorrentState, TorrentSummary};
+use apitorrent_plugin_api::{
+    AddOutcome, AppApi, AppError, AppEvent, AppInfo, BoxFuture, TorrentControl,
+};
+use apitorrent_types::{
+    AddTorrentRequest, TorrentDetail, TorrentId, TorrentLimits, TorrentState, TorrentSummary,
+};
 
 use crate::{Core, CoreError, Patch};
 
@@ -67,6 +71,23 @@ fn plugin_save_path(download_dir: &Path, requested: &str) -> Result<String, AppE
 }
 
 impl AppApi for CorePluginApi {
+    fn info(&self) -> AppInfo {
+        let settings = self.core.settings();
+        AppInfo {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            download_dir: self
+                .core
+                .inner
+                .config
+                .download_dir
+                .to_string_lossy()
+                .into_owned(),
+            seed_limits: settings.seed_limits,
+            queue: settings.queue,
+            peer_port: self.core.peer_port(),
+        }
+    }
+
     fn torrents(&self) -> Vec<TorrentSummary> {
         self.core.list()
     }
@@ -103,6 +124,20 @@ impl AppApi for CorePluginApi {
                 TorrentControl::Pause => core.pause(&id).await?,
                 TorrentControl::Resume => core.resume(&id).await?,
                 TorrentControl::SetLabel(label) => core.set_label(&id, label).await?,
+                TorrentControl::SetSeedLimits(limits) => core.set_seed_limits(&id, limits).await?,
+                TorrentControl::SetRateLimits { download, upload } => {
+                    let current = core.detail(&id).await?.limits;
+                    core.set_torrent_limits(
+                        &id,
+                        TorrentLimits {
+                            download_rate: download,
+                            upload_rate: upload,
+                            ..current
+                        },
+                    )
+                    .await?;
+                }
+                TorrentControl::Queue(to) => core.queue_move(&id, to).await?,
             }
             Ok(())
         })

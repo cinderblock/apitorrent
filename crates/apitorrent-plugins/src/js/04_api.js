@@ -6,6 +6,10 @@
 
 import {
   op_at_candidates_submit,
+  op_at_app_info,
+  op_at_auth_login,
+  op_at_auth_logout,
+  op_at_auth_session,
   op_at_events,
   op_at_info,
   op_at_kv_delete,
@@ -91,6 +95,39 @@ async function control(id, action) {
   unwrap(await op_at_torrent_control(String(id), JSON.stringify(action)));
 }
 
+const QUEUE_MOVES = new Set(["top", "up", "down", "bottom"]);
+
+function rate(v, what) {
+  const n = Number(v ?? 0);
+  if (!Number.isFinite(n) || n < 0) throw new RangeError(`${what} is bytes per second, 0 or more`);
+  return Math.round(n);
+}
+
+/** A provided role object as the host keeps it: its plain data and its methods' names. */
+function describeRole(impl) {
+  const data = {};
+  const methods = new Set();
+  for (const [k, v] of Object.entries(impl)) {
+    if (typeof v === "function") methods.add(k);
+    else data[k] = v;
+  }
+  // Methods of a class instance live on its prototypes.
+  for (let p = Object.getPrototypeOf(impl); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
+    for (const k of Object.getOwnPropertyNames(p)) {
+      if (k !== "constructor" && typeof impl[k] === "function") methods.add(k);
+    }
+  }
+  return { data, methods: [...methods] };
+}
+
+/** Role results that carry bytes travel as base64. */
+function roleResult(role, method, result) {
+  if (role === "tracker-adapter" && method === "findPack" && result && result.torrent !== undefined) {
+    return { torrent: bytesToBase64(viewBytes(result.torrent, "torrent")) };
+  }
+  return result;
+}
+
 /**
  * Run a scheduled job. A tick that arrives while the last run is still going is skipped;
  * `runNow` (`wait`) waits for that run instead of starting a second one.
@@ -120,6 +157,29 @@ async function runJob(name, wait = false) {
 export const api = Object.freeze({
   plugin: Object.freeze({ id: info.id, version: info.version }),
 
+  app: Object.freeze({
+    info: async () => JSON.parse(op_at_app_info()),
+  }),
+
+  auth: Object.freeze({
+    /**
+     * Check an API token a client signed in with. Resolves to `{ session, caller }`, or
+     * null when it isn't a live token.
+     */
+    async login(token) {
+      if (typeof token !== "string") throw new TypeError("login() needs the token as a string");
+      return unwrap(await op_at_auth_login(token));
+    },
+    /** The caller behind a session id, or null once it has ended. */
+    async session(id) {
+      if (typeof id !== "string" || id === "") return null;
+      return JSON.parse(await op_at_auth_session(id));
+    },
+    async logout(id) {
+      return typeof id === "string" && op_at_auth_logout(id);
+    },
+  }),
+
   torrents: Object.freeze({
     list: async () => JSON.parse(op_at_torrents_list()),
     get: async (id) => unwrap(await op_at_torrent_get(String(id))),
@@ -147,6 +207,29 @@ export const api = Object.freeze({
     pause: (id) => control(id, { action: "pause" }),
     resume: (id) => control(id, { action: "resume" }),
     setLabel: (id, label) => control(id, { action: "setLabel", label: label ?? null }),
+    setSeedLimits(id, limits) {
+      if (limits == null) return control(id, { action: "setSeedLimits", limits: null });
+      const ratio = Number(limits.ratio ?? 0);
+      const seedMinutes = Math.round(Number(limits.seedMinutes ?? 0));
+      if (!Number.isFinite(ratio) || ratio < 0) throw new RangeError("ratio is 0 or more");
+      if (!Number.isFinite(seedMinutes) || seedMinutes < 0 || seedMinutes > 0xffffffff) {
+        throw new RangeError("seedMinutes is a whole number of minutes, 0 or more");
+      }
+      return control(id, {
+        action: "setSeedLimits",
+        limits: { ratio, seedMinutes, action: limits.action ?? "pause" },
+      });
+    },
+    setRateLimits: (id, { download = 0, upload = 0 } = {}) =>
+      control(id, {
+        action: "setRateLimits",
+        download: rate(download, "download"),
+        upload: rate(upload, "upload"),
+      }),
+    queue(id, to) {
+      if (!QUEUE_MOVES.has(to)) throw new TypeError("queue() moves to top, up, down or bottom");
+      return control(id, { action: "queue", to });
+    },
     async remove(id, { deleteFiles = false } = {}) {
       unwrap(await op_at_torrent_remove(String(id), Boolean(deleteFiles)));
     },
@@ -232,7 +315,7 @@ export const api = Object.freeze({
   roles: Object.freeze({
     provide(role, impl) {
       if (!impl || typeof impl !== "object") throw new TypeError("provide() needs an object");
-      op_at_role(String(role));
+      op_at_role(String(role), JSON.stringify(describeRole(impl)));
       roles.set(String(role), impl);
     },
   }),
@@ -257,7 +340,7 @@ async function handleHttp(msg, body) {
       headers: msg.headers,
       body: hasBody ? body : undefined,
     });
-    let res = await route.handler(request, { caller: msg.caller, path: msg.path });
+    let res = await route.handler(request, { caller: msg.caller ?? null, path: msg.path });
     if (!(res instanceof Response)) {
       res = res === undefined ? new Response(null, { status: 204 }) : Response.json(res);
     }
@@ -282,7 +365,7 @@ async function handleRole(msg) {
   }
   try {
     const args = Array.isArray(msg.args) ? msg.args : msg.args == null ? [] : [msg.args];
-    const result = await fn.apply(impl, args);
+    const result = roleResult(msg.role, msg.method, await fn.apply(impl, args));
     op_at_reply_role(msg.id, JSON.stringify(result ?? null));
   } catch (e) {
     reportError(e, `${msg.role}.${msg.method}()`);

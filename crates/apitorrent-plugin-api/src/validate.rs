@@ -1,7 +1,8 @@
 //! Manifest rules, checked at install.
 
 use apitorrent_types::plugins::{
-    PLUGIN_API_VERSION, PLUGIN_BUNDLE_FORMAT, PluginBundle, PluginManifest, PluginRoute,
+    PLUGIN_API_VERSION, PLUGIN_BUNDLE_FORMAT, PluginApiScope, PluginBundle, PluginManifest,
+    PluginRole, PluginRoute, PluginRouteAuth,
 };
 
 use crate::network::NetworkGrant;
@@ -103,6 +104,20 @@ fn manifest_into(m: &PluginManifest, problems: &mut Vec<String>) {
     for r in &caps.routes {
         if let Err(e) = route(r) {
             problems.push(e);
+        }
+    }
+    // Signing clients in its own way is what a compatibility layer does, and nothing else.
+    if !caps.roles.contains(&PluginRole::ApiCompat) {
+        if caps
+            .routes
+            .iter()
+            .any(|r| r.auth == PluginRouteAuth::Plugin)
+        {
+            problems
+                .push("routes with `\"auth\": \"plugin\"` need the `api-compat` role".to_owned());
+        }
+        if caps.api.contains(&PluginApiScope::TokensVerify) {
+            problems.push("`tokens:verify` needs the `api-compat` role".to_owned());
         }
     }
     if let Some(s) = &m.settings
@@ -229,6 +244,7 @@ mod tests {
             routes: vec![PluginRoute {
                 path: path.into(),
                 methods: methods.iter().map(|m| (*m).to_owned()).collect(),
+                auth: PluginRouteAuth::Api,
             }],
             ..PluginCapabilities::default()
         };
@@ -252,6 +268,23 @@ mod tests {
         assert!(route_matches("/feeds/*", "/feeds/a/b"));
         assert!(!route_matches("/feeds/*", "/feeds"));
         assert!(!route_matches("/feeds/*", "/feedsx"));
+    }
+
+    #[test]
+    fn own_login_needs_the_api_compat_role() {
+        let caps = |roles: Vec<PluginRole>| PluginCapabilities {
+            api: vec![PluginApiScope::TokensVerify],
+            routes: vec![PluginRoute {
+                path: "/api/v2/*".into(),
+                methods: vec!["POST".into()],
+                auth: PluginRouteAuth::Plugin,
+            }],
+            roles,
+            ..PluginCapabilities::default()
+        };
+        let err = manifest(&manifest_with(caps(vec![PluginRole::Source]))).unwrap_err();
+        assert_eq!(err.0.len(), 2, "{err}");
+        assert!(manifest(&manifest_with(caps(vec![PluginRole::ApiCompat]))).is_ok());
     }
 
     #[test]

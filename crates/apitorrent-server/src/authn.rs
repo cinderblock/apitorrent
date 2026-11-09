@@ -14,6 +14,12 @@
 //! Everything except [`PUBLIC`] needs a caller. Writes (anything but `GET`/`HEAD`) need one
 //! that may write: not a `read` token and not a viewer. Under `/auth/`, the auth crate makes
 //! its own, finer decisions.
+//!
+//! The exception is a plugin route declared with `"auth": "plugin"` (a compatibility layer
+//! whose clients sign in their own way): requests pass without a caller, and the plugin
+//! checks credentials itself, with apitorrent API tokens. When the request did
+//! authenticate, the plugin is still told who called. A malformed `Authorization` header
+//! is ignored there rather than refused, since such clients may send their own.
 
 use std::net::{IpAddr, SocketAddr};
 
@@ -23,6 +29,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use apitorrent_auth::{ClientMeta, Principal};
+use apitorrent_plugin_api::PluginRouteAuth;
 
 use crate::routes::error;
 use crate::{AppState, AuthMode, TrustedProxies};
@@ -60,6 +67,8 @@ pub(crate) struct RequestCtx {
     /// Reached us over HTTPS: built-in TLS, or a trusted proxy that says so.
     pub secure: bool,
     pub principal: Option<Principal>,
+    /// The request is for a plugin route the plugin authenticates itself.
+    pub plugin_auth: bool,
 }
 
 impl RequestCtx {
@@ -204,7 +213,27 @@ pub(crate) fn is_websocket(method: &Method, headers: &HeaderMap) -> bool {
             .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
+/// A path (relative to `/api/v1`) that belongs to a plugin's own routes, as the plugin id
+/// and the path relative to the plugin's prefix (`/plugins/rss/status` is `("rss",
+/// "/status")`). Management paths (`/plugins/<id>/-/…`) aren't plugin routes.
+pub(crate) fn plugin_route_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("/plugins/")?;
+    let slash = rest.find('/')?;
+    let (id, route) = rest.split_at(slash);
+    if id.is_empty() || route == "/-" || route.starts_with("/-/") {
+        return None;
+    }
+    Some((id, route))
+}
+
 pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
+    let full = req.uri().path();
+    let path = full.strip_prefix("/api/v1").unwrap_or(full);
+    let plugin_auth = s.plugins.as_deref().is_some_and(|plugins| {
+        plugin_route_path(path).is_some_and(|(id, route)| {
+            plugins.route_auth(id, req.method().as_str(), route) == Some(PluginRouteAuth::Plugin)
+        })
+    });
     let headers = req.headers();
     let peer = peer(&req);
     let host = headers
@@ -229,12 +258,17 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
         secure: s.tls.is_some() || forwarded_https(peer, headers, &s.proxies),
         host,
         principal: None,
+        plugin_auth,
     };
     let mut stale_cookie = false;
     let mut via_cookie = false;
 
     let in_process = req.extensions().get::<crate::embed::InProcess>().is_some();
-    match (&s.auth, bearer(headers)) {
+    let bearer = match bearer(headers) {
+        Some(Err(())) if plugin_auth => None,
+        b => b,
+    };
+    match (&s.auth, bearer) {
         _ if in_process => ctx.principal = Some(owner()),
         (_, Some(Err(()))) => {
             return unauthorized("invalid_token", "use `Authorization: Bearer <token>`");
@@ -271,7 +305,17 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
     let full = req.uri().path();
     let path = full.strip_prefix("/api/v1").unwrap_or(full);
     let public = PUBLIC.contains(&path);
+    if plugin_auth
+        && ctx
+            .principal
+            .as_ref()
+            .is_some_and(Principal::pending_second_factor)
+    {
+        // Half signed in is not signed in; the plugin decides.
+        ctx.principal = None;
+    }
     let decision = match &ctx.principal {
+        _ if plugin_auth => Ok(()),
         None if public => Ok(()),
         None => Err(unauthorized("unauthenticated", "sign in first")),
         Some(p) if p.pending_second_factor() && !PENDING_OK.contains(&path) && !public => {
@@ -367,6 +411,29 @@ mod tests {
             HeaderValue::from_static("Basic Zm9v"),
         );
         assert_eq!(bearer(&h), Some(Err(())));
+    }
+
+    #[test]
+    fn plugin_route_paths() {
+        assert_eq!(
+            plugin_route_path("/plugins/rss/status"),
+            Some(("rss", "/status"))
+        );
+        assert_eq!(
+            plugin_route_path("/plugins/qb/api/v2/auth/login"),
+            Some(("qb", "/api/v2/auth/login"))
+        );
+        assert_eq!(plugin_route_path("/plugins/rss/"), Some(("rss", "/")));
+        for not in [
+            "/plugins/rss",
+            "/plugins",
+            "/plugins/rss/-/logs",
+            "/plugins/rss/-",
+            "/plugins//x",
+            "/torrents/x",
+        ] {
+            assert_eq!(plugin_route_path(not), None, "{not}");
+        }
     }
 
     #[test]

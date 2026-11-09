@@ -3,4 +3,4 @@
 /**
  * A call into apitorrent a plugin may make.
  */
-export type PluginApiScope = "torrents:read" | "torrents:add" | "torrents:control" | "torrents:remove" | "events:read";
+export type PluginApiScope = "torrents:read" | "torrents:add" | "torrents:control" | "torrents:remove" | "events:read" | "tokens:verify";

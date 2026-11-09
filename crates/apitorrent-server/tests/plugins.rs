@@ -12,10 +12,10 @@ use serde_json::{Value, json};
 use apitorrent_auth::{ClientMeta, CreateTokenRequest, PasswordMode, TokenScope};
 use apitorrent_plugin_api::{
     BoxFuture, InstallPluginResponse, PluginBundle, PluginCapabilities, PluginError,
-    PluginHttpRequest, PluginHttpResponse, PluginInfo, PluginLogEntry, PluginService,
-    PluginSettings, PluginStatus,
+    PluginHttpRequest, PluginHttpResponse, PluginInfo, PluginLogEntry, PluginRouteAuth,
+    PluginService, PluginSettings, PluginStatus,
 };
-use apitorrent_server::{AuthMode, ServerConfig, router};
+use apitorrent_server::{AuthMode, PluginListener, ServerConfig, plugin_credentials, router};
 
 use common::{AuthFixture, PASSWORD, Req, core, send, server_config};
 
@@ -96,6 +96,14 @@ impl PluginService for Fake {
             })
         })
     }
+    fn route_auth(&self, id: &str, _method: &str, path: &str) -> Option<PluginRouteAuth> {
+        match (id, path) {
+            ("rss", "/missing") => None,
+            ("rss", p) if p.starts_with("/api/v2/") => Some(PluginRouteAuth::Plugin),
+            ("rss", _) => Some(PluginRouteAuth::Api),
+            _ => None,
+        }
+    }
     fn http(
         &self,
         id: String,
@@ -108,6 +116,28 @@ impl PluginService for Fake {
             }
             if req.path == "/missing" {
                 return Err(PluginError::NoRoute);
+            }
+            if req.path.starts_with("/api/v2/") {
+                return Ok(PluginHttpResponse {
+                    status: 200,
+                    headers: vec![
+                        (
+                            "set-cookie".into(),
+                            "SID=abc; HttpOnly; SameSite=Strict; path=/".into(),
+                        ),
+                        (
+                            "set-cookie".into(),
+                            "apitorrent-session=evil; Path=/".into(),
+                        ),
+                        (
+                            "set-cookie".into(),
+                            "__Host-apitorrent-session=evil; Path=/; Secure".into(),
+                        ),
+                        ("set-cookie".into(), "wide=1; Domain=example.com".into()),
+                        ("content-type".into(), "text/plain".into()),
+                    ],
+                    body: b"Ok.".to_vec(),
+                });
             }
             Ok(PluginHttpResponse {
                 status: 200,
@@ -291,7 +321,9 @@ async fn plugin_routes_are_forwarded_without_credentials_and_sandboxed() {
         seen.url,
         "http://localhost:8742/api/v1/plugins/rss/feeds/a?x=1"
     );
-    assert_eq!(seen.caller.user_name, "admin");
+    let caller = seen.caller.expect("an ordinary route always has a caller");
+    assert_eq!(caller.user_name, "admin");
+    assert!(caller.may_write);
     let names: Vec<&str> = seen.headers.iter().map(|(k, _)| k.as_str()).collect();
     assert!(names.contains(&"x-custom"));
     assert!(
@@ -302,6 +334,273 @@ async fn plugin_routes_are_forwarded_without_credentials_and_sandboxed() {
     let r = send(&app, Req::get("/api/v1/plugins/rss/missing").bearer(&token)).await;
     assert_eq!(r.status, StatusCode::NOT_FOUND);
     assert_eq!(r.code(), "no_route");
+}
+
+/// A read-only token for the fixture's admin.
+fn read_token(f: &AuthFixture) -> String {
+    let meta = ClientMeta::default();
+    let s = f
+        .auth
+        .password_login("admin", PASSWORD, &meta, None)
+        .unwrap();
+    let p = f.auth.authenticate_session(&s.secret).unwrap().unwrap();
+    f.auth
+        .create_token(
+            &p,
+            &CreateTokenRequest {
+                name: "reader".into(),
+                scope: TokenScope::Read,
+                expires_in_days: None,
+            },
+            &meta,
+        )
+        .unwrap()
+        .token
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugin_authenticated_routes_take_requests_without_sign_in() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let fake = Arc::new(Fake::default());
+    let app = router(
+        core.clone(),
+        &config(AuthMode::Enabled(f.auth.clone()), &fake),
+    );
+    let (cookie, token) = admin(&f);
+
+    // No sign-in: the plugin gets the request, with no caller. It sees its own cookie,
+    // never apitorrent's session.
+    let r = send(
+        &app,
+        Req::post("/api/v1/plugins/rss/api/v2/auth/login")
+            .header(
+                "cookie",
+                "SID=old; apitorrent-session=secret; __Host-apitorrent-session=x",
+            )
+            .header("authorization", "Basic dXNlcjpwYXNz")
+            .header("content-type", "application/x-www-form-urlencoded"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.body, b"Ok.");
+    let seen = fake.seen.lock().unwrap().pop().unwrap();
+    assert_eq!(seen.caller, None);
+    assert_eq!(seen.path, "/api/v2/auth/login");
+    let cookies: Vec<&str> = seen
+        .headers
+        .iter()
+        .filter(|(k, _)| k == "cookie")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(cookies, ["SID=old"]);
+    assert!(!seen.headers.iter().any(|(k, _)| k == "authorization"));
+    // It may set its own cookie, but not apitorrent's, and not for other hosts.
+    let set: Vec<&str> = r
+        .headers
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap())
+        .collect();
+    assert_eq!(set, ["SID=abc; HttpOnly; SameSite=Strict; path=/"]);
+    let csp = r.headers["content-security-policy"].to_str().unwrap();
+    assert!(csp.starts_with("sandbox"), "still sandboxed: {csp}");
+
+    // A request that did sign in tells the plugin who called, and whether it may write.
+    let r = send(
+        &app,
+        Req::get("/api/v1/plugins/rss/api/v2/app/version").bearer(&token),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let caller = fake.seen.lock().unwrap().pop().unwrap().caller.unwrap();
+    assert!(caller.may_write);
+    let reader = read_token(&f);
+    // A read-only token writing to a plugin-authenticated route reaches the plugin, which
+    // must refuse it itself: it is told the caller may not write.
+    let r = send(
+        &app,
+        Req::post("/api/v1/plugins/rss/api/v2/torrents/pause").bearer(&reader),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let caller = fake.seen.lock().unwrap().pop().unwrap().caller.unwrap();
+    assert!(!caller.may_write);
+    // A browser session counts as signing in too.
+    let r = send(
+        &app,
+        Req::get("/api/v1/plugins/rss/api/v2/app/version")
+            .browser()
+            .cookie(&cookie),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(fake.seen.lock().unwrap().pop().unwrap().caller.is_some());
+    // A bad bearer token is still refused, even here.
+    let r = send(
+        &app,
+        Req::get("/api/v1/plugins/rss/api/v2/app/version").bearer("apt_bogus"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+    // Ordinary routes are unchanged: sign-in needed, a stray Basic header refused, and the
+    // plugin's cookies dropped.
+    let r = send(&app, Req::get("/api/v1/plugins/rss/status")).await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let r = send(
+        &app,
+        Req::get("/api/v1/plugins/rss/status").header("authorization", "Basic dXNlcjpwYXNz"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(r.code(), "invalid_token");
+    // Cross-site writes are refused before any plugin sees them.
+    let r = send(
+        &app,
+        Req::post("/api/v1/plugins/rss/api/v2/auth/login").header("origin", "https://evil.example"),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plugins_check_api_tokens_through_the_auth_database() {
+    let root = tempfile::tempdir().unwrap();
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    assert!(plugin_credentials(&AuthMode::DisabledOnLoopback).is_none());
+    let creds = plugin_credentials(&AuthMode::Enabled(f.auth.clone())).unwrap();
+    let (cookie, token) = admin(&f);
+    let session = cookie.split_once('=').unwrap().1;
+
+    let v = creds.verify_token(&token).unwrap().expect("a live token");
+    assert_eq!(v.caller.user_name, "admin");
+    assert!(v.caller.may_write);
+    assert!(v.still_valid());
+    let reader = creds.verify_token(&read_token(&f)).unwrap().unwrap();
+    assert!(!reader.caller.may_write);
+    // Session secrets, passwords and junk are not tokens.
+    for not in [session, PASSWORD, "apt_nope", ""] {
+        assert!(creds.verify_token(not).unwrap().is_none(), "{not}");
+    }
+    // Revoking the token: every later check says so.
+    let p = f.auth.authenticate_session(session).unwrap().unwrap();
+    f.auth
+        .revoke_token(&p, &v.token_id, &ClientMeta::default())
+        .unwrap();
+    assert!(!v.still_valid());
+    assert!(creds.verify_token(&token).unwrap().is_none());
+}
+
+/// One HTTP/1.1 request on a fresh connection; the status line, headers and body.
+async fn raw_http(addr: std::net::SocketAddr, request: &str) -> String {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+    s.write_all(request.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).await.unwrap();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_listener_serves_one_plugin_at_its_root() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let fake = Arc::new(Fake::default());
+    let (_, token) = admin(&f);
+    let cfg = config(AuthMode::Enabled(f.auth.clone()), &fake);
+
+    // Not a plugin id; and a LAN address over plain HTTP follows the API's rules.
+    assert!(
+        PluginListener::bind(
+            core.clone(),
+            cfg.clone(),
+            "Not An Id".into(),
+            "127.0.0.1:0".parse().unwrap(),
+            None
+        )
+        .await
+        .is_err()
+    );
+    let lan = PluginListener::bind(
+        core.clone(),
+        ServerConfig {
+            trusted_proxies: apitorrent_server::TrustedProxies::default(),
+            ..cfg.clone()
+        },
+        "rss".into(),
+        "0.0.0.0:0".parse().unwrap(),
+        None,
+    )
+    .await;
+    assert!(
+        lan.is_err(),
+        "plain HTTP on a LAN address needs a proxy or --allow-insecure-lan"
+    );
+
+    let listener = PluginListener::bind(
+        core.clone(),
+        cfg,
+        "rss".into(),
+        "127.0.0.1:0".parse().unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let running = tokio::spawn(listener.run(std::future::pending()));
+
+    let r = raw_http(
+        addr,
+        "POST /api/v2/auth/login?x=1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    assert!(r.ends_with("Ok."), "{r}");
+    assert!(
+        r.to_ascii_lowercase().contains("set-cookie: sid=abc"),
+        "{r}"
+    );
+    let seen = fake.seen.lock().unwrap().pop().unwrap();
+    assert_eq!(seen.path, "/api/v2/auth/login");
+    assert_eq!(seen.query.as_deref(), Some("x=1"));
+    assert_eq!(seen.url, "http://localhost/api/v2/auth/login?x=1");
+
+    // Ordinary plugin routes still need sign-in, and work with it.
+    let r = raw_http(
+        addr,
+        "GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(r.starts_with("HTTP/1.1 401"), "{r}");
+    let r = raw_http(
+        addr,
+        &format!("GET /status HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"),
+    )
+    .await;
+    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    // Nothing but the plugin's routes: no management, no API, no host it doesn't answer to.
+    for path in ["/-/approve", "/../../torrents", "/%2e%2e/torrents"] {
+        let r = raw_http(
+            addr,
+            &format!("POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+        )
+        .await;
+        assert!(r.starts_with("HTTP/1.1 404"), "{path}: {r}");
+    }
+    let r = raw_http(
+        addr,
+        "GET /api/v2/app/version HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(r.starts_with("HTTP/1.1 421"), "{r}");
+    assert!(
+        fake.calls.lock().unwrap().is_empty(),
+        "no management call got through"
+    );
+    running.abort();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

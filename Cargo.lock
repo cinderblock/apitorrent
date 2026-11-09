@@ -365,6 +365,7 @@ name = "apitorrent-plugins"
 version = "0.1.0"
 dependencies = [
  "apitorrent-plugin-api",
+ "apitorrent-tls",
  "apitorrent-tracker",
  "apitorrent-types",
  "deno_core",

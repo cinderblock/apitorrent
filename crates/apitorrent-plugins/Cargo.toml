@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 apitorrent-plugin-api.workspace = true
+apitorrent-tls.workspace = true
 apitorrent-tracker.workspace = true
 apitorrent-types.workspace = true
 # deno_core pins deno_error; this resolves to the same version.

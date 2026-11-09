@@ -176,23 +176,12 @@ impl TlsServer {
             None => None,
         };
 
-        let (tx, rx) = mpsc::channel(64);
-        let accept = tokio::spawn(accept_loop(listener, TlsAcceptor::from(server_config), tx));
         let ctx = TlsCtx {
             store: tls.store.clone(),
             acme: tls.acme.clone(),
         };
         let app = crate::build_router(core, &config, Some(ctx));
-        // `ConnectInfo<SocketAddr>` is implemented for `TapIo<L, _>` but can't be for our
-        // own listener type (orphan rules), so wrap it in a no-op tap.
-        let incoming = TlsListener { rx, local }.tap_io(|_| {});
-        let result = axum::serve(
-            incoming,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(stopped(stop_rx))
-        .await;
-        accept.abort();
+        let result = serve_https(listener, server_config, app, stopped(stop_rx)).await;
         if let Some(t) = redirect_task {
             match t.await {
                 Ok(Err(e)) => tracing::warn!(error = %e, "HTTP redirect listener failed"),
@@ -202,6 +191,41 @@ impl TlsServer {
         }
         result?;
         Ok(())
+    }
+}
+
+/// Serve `app` over HTTPS on `listener` until `stop` resolves: handshakes off the accept
+/// loop, bounded and timed (see [`accept_loop`]), then axum with the peer's address.
+pub(crate) async fn serve_https(
+    listener: TcpListener,
+    server_config: Arc<tokio_rustls::rustls::ServerConfig>,
+    app: Router,
+    stop: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    let local = listener.local_addr()?;
+    let (tx, rx) = mpsc::channel(64);
+    let accept = tokio::spawn(accept_loop(listener, TlsAcceptor::from(server_config), tx));
+    // `ConnectInfo<SocketAddr>` is implemented for `TapIo<L, _>` but can't be for our own
+    // listener type (orphan rules), so wrap it in a no-op tap.
+    let incoming = TlsListener { rx, local }.tap_io(|_| {});
+    let result = axum::serve(
+        incoming,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(stop)
+    .await;
+    accept.abort();
+    result
+}
+
+impl TlsServe {
+    /// The TLS context request handlers see, for another listener sharing these
+    /// certificates.
+    pub(crate) fn ctx(&self) -> TlsCtx {
+        TlsCtx {
+            store: self.store.clone(),
+            acme: self.acme.clone(),
+        }
     }
 }
 

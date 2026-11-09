@@ -2,6 +2,8 @@
 //!
 //! - `plugins.db` (SQLite, WAL): installed plugins, their versions and grants, settings,
 //!   each plugin's key-value data and its schedule.
+//! - It also remembers which first-party plugins that ship with the daemon it has offered
+//!   (installed for approval), so one an admin uninstalled isn't offered again.
 //! - `bundles/<sha256>.js`: the code of each installed version, named by its hash. Content
 //!   addressing keeps plugin ids and version strings out of file names (Windows reserves
 //!   names like `con` and `nul`), and the hash is checked on every load.
@@ -28,7 +30,8 @@ pub(crate) enum StoreError {
 
 pub(crate) type Result<T> = std::result::Result<T, StoreError>;
 
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE plugins (
         id TEXT PRIMARY KEY,
         enabled INTEGER NOT NULL DEFAULT 0,
@@ -60,7 +63,15 @@ const MIGRATIONS: &[&str] = &["
         last_run INTEGER NOT NULL,
         PRIMARY KEY (plugin_id, job)
     ) WITHOUT ROWID;
-"];
+",
+    "
+    CREATE TABLE offers (
+        plugin_id TEXT PRIMARY KEY,
+        version TEXT NOT NULL,
+        offered_at INTEGER NOT NULL
+    );
+",
+];
 
 /// One installed plugin's row.
 #[derive(Debug, Clone)]
@@ -422,6 +433,27 @@ impl Store {
         self.db().execute(
             "INSERT OR REPLACE INTO schedule (plugin_id, job, last_run) VALUES (?1, ?2, ?3)",
             params![plugin, job, at],
+        )?;
+        Ok(())
+    }
+
+    /// The last version of a bundled plugin that was offered, if any was. Kept when the
+    /// plugin is uninstalled.
+    pub fn offered(&self, plugin: &str) -> Result<Option<String>> {
+        Ok(self
+            .db()
+            .query_row(
+                "SELECT version FROM offers WHERE plugin_id = ?1",
+                params![plugin],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn set_offered(&self, plugin: &str, version: &str) -> Result<()> {
+        self.db().execute(
+            "INSERT OR REPLACE INTO offers (plugin_id, version, offered_at) VALUES (?1, ?2, ?3)",
+            params![plugin, version, now_ms()],
         )?;
         Ok(())
     }

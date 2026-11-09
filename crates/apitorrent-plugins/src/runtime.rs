@@ -59,6 +59,9 @@ pub(crate) struct RunShared {
     /// The plugin finished its `stop` hook, or the host gave up waiting.
     pub stop_done: AtomicBool,
     pub stop_notify: Notify,
+    /// Each role the plugin provides, with the plain data of its object (a tracker
+    /// adapter's `trackers`, say), as JSON.
+    pub roles: Mutex<std::collections::HashMap<String, serde_json::Value>>,
 }
 
 impl RunShared {
@@ -70,6 +73,7 @@ impl RunShared {
             started: AtomicBool::new(false),
             stop_done: AtomicBool::new(false),
             stop_notify: Notify::new(),
+            roles: Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -86,6 +90,15 @@ impl RunShared {
             .lock()
             .expect("kill reason lock poisoned")
             .clone()
+    }
+
+    /// The data of a role the plugin provides, if it provides it.
+    pub fn role(&self, role: &str) -> Option<serde_json::Value> {
+        self.roles
+            .lock()
+            .expect("roles lock poisoned")
+            .get(role)
+            .cloned()
     }
 
     pub fn finish_stop(&self) {

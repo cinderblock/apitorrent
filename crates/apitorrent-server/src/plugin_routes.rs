@@ -17,6 +17,10 @@
 //!   plugin learns who called. It never sees the caller's cookies or `Authorization`
 //!   header, and its responses can't set cookies or loosen the page's security policy:
 //!   they are served sandboxed, so a plugin can't run script as this origin.
+//! - **Routes a plugin authenticates itself** (`"auth": "plugin"`, `api-compat` plugins
+//!   only) take requests without sign-in. The plugin sees the request's cookies other than
+//!   apitorrent's session cookies, and may set cookies of its own, host-only and never
+//!   named like apitorrent's. Everything else about them is as above.
 
 use axum::Json;
 use axum::body::{Body, Bytes};
@@ -34,7 +38,7 @@ use apitorrent_plugin_api::{
 };
 use apitorrent_types::auth::Role;
 
-use crate::authn::RequestCtx;
+use crate::authn::{PLAIN_COOKIE, RequestCtx, SECURE_COOKIE};
 use crate::routes::error;
 use crate::{AppState, AuthMode};
 
@@ -70,6 +74,7 @@ impl From<PluginError> for Failure {
             PluginError::Conflict(_) => StatusCode::CONFLICT,
             PluginError::NotRunning(_) => StatusCode::SERVICE_UNAVAILABLE,
             PluginError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            PluginError::Unauthenticated => StatusCode::UNAUTHORIZED,
             PluginError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let message = if status == StatusCode::INTERNAL_SERVER_ERROR {
@@ -299,6 +304,44 @@ const HIDDEN_REQUEST_HEADERS: &[&str] = &[
     "forwarded",
 ];
 
+/// The `Cookie` header a plugin-authenticated route sees: the request's cookies without
+/// apitorrent's own session cookies. `None` when nothing is left.
+fn plugin_cookies(headers: &axum::http::HeaderMap) -> Option<String> {
+    let kept: Vec<&str> = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .map(str::trim)
+        .filter(|pair| {
+            let name = pair.split_once('=').map_or(*pair, |(k, _)| k).trim();
+            !pair.is_empty() && name != SECURE_COOKIE && name != PLAIN_COOKIE
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("; "))
+}
+
+/// Whether a plugin-authenticated route may send this `Set-Cookie`: never one named like
+/// apitorrent's session cookies, and never with a `Domain` (cookies stay with this host).
+fn plugin_cookie_allowed(value: &str) -> bool {
+    let mut parts = value.split(';');
+    let name = parts
+        .next()
+        .and_then(|p| p.split_once('='))
+        .map(|(k, _)| k.trim());
+    let Some(name) = name.filter(|n| !n.is_empty()) else {
+        return false;
+    };
+    let ours = name.eq_ignore_ascii_case(SECURE_COOKIE) || name.eq_ignore_ascii_case(PLAIN_COOKIE);
+    let domain = parts.any(|a| {
+        a.split_once('=')
+            .map_or(a, |(k, _)| k)
+            .trim()
+            .eq_ignore_ascii_case("domain")
+    });
+    !ours && !domain
+}
+
 /// Response headers a plugin can't set: cookies, hop-by-hop headers, and the security
 /// headers the server sets itself.
 fn allowed_response_header(name: &str) -> bool {
@@ -327,12 +370,17 @@ async fn plugin_route(
     OriginalUri(original): OriginalUri,
     req: Request,
 ) -> PluginResult<Response> {
-    let who = principal(&ctx)?;
-    let caller = PluginCaller {
+    let who = if ctx.plugin_auth {
+        ctx.principal.as_ref()
+    } else {
+        Some(principal(&ctx)?)
+    };
+    let caller = who.map(|who| PluginCaller {
         user_id: who.user.id.clone(),
         user_name: who.user.name.clone(),
         role: who.user.role,
-    };
+        may_write: who.may_write(),
+    });
     let method = req.method().as_str().to_owned();
     let query = req.uri().query().map(str::to_owned);
     let url = format!(
@@ -343,12 +391,17 @@ async fn plugin_route(
             .path_and_query()
             .map_or("/", axum::http::uri::PathAndQuery::as_str)
     );
-    let headers = req
+    let mut headers: Vec<(String, String)> = req
         .headers()
         .iter()
         .filter(|(k, _)| !HIDDEN_REQUEST_HEADERS.contains(&k.as_str()))
         .filter_map(|(k, v)| Some((k.as_str().to_owned(), v.to_str().ok()?.to_owned())))
         .collect();
+    if ctx.plugin_auth
+        && let Some(cookies) = plugin_cookies(req.headers())
+    {
+        headers.push(("cookie".to_owned(), cookies));
+    }
     let body: Bytes = axum::body::to_bytes(req.into_body(), MAX_PLUGIN_BODY)
         .await
         .map_err(|_| {
@@ -380,7 +433,8 @@ async fn plugin_route(
     let out = resp.headers_mut();
     for (k, v) in r.headers {
         let k = k.to_ascii_lowercase();
-        if !allowed_response_header(&k) {
+        let cookie = ctx.plugin_auth && k == "set-cookie" && plugin_cookie_allowed(&v);
+        if !allowed_response_header(&k) && !cookie {
             continue;
         }
         if let (Ok(name), Ok(value)) = (HeaderName::try_from(k), HeaderValue::try_from(v)) {

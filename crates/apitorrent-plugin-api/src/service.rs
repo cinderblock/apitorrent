@@ -1,7 +1,8 @@
 //! What the HTTP server asks of the plugin host.
 
 use apitorrent_types::plugins::{
-    InstallPluginResponse, PluginBundle, PluginCaller, PluginInfo, PluginLogEntry, PluginSettings,
+    InstallPluginResponse, PluginBundle, PluginCaller, PluginInfo, PluginLogEntry, PluginRouteAuth,
+    PluginSettings,
 };
 
 use crate::BoxFuture;
@@ -23,6 +24,9 @@ pub enum PluginError {
     /// The plugin took too long to answer.
     #[error("the plugin did not answer in time")]
     Timeout,
+    /// The route needs apitorrent's sign-in and the request had none.
+    #[error("sign in first")]
+    Unauthenticated,
     #[error("{0}")]
     Internal(String),
 }
@@ -37,6 +41,7 @@ impl PluginError {
             Self::NotRunning(_) => "plugin_not_running",
             Self::NoRoute => "no_route",
             Self::Timeout => "plugin_timeout",
+            Self::Unauthenticated => "unauthenticated",
             Self::Internal(_) => "internal",
         }
     }
@@ -55,7 +60,10 @@ pub struct PluginHttpRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
-    pub caller: PluginCaller,
+    /// Who called, if the request signed in to apitorrent. Always set on routes apitorrent
+    /// authenticates; on routes the plugin authenticates (see [`PluginRouteAuth`]) it is
+    /// `None` for clients that only hold the plugin's own credentials.
+    pub caller: Option<PluginCaller>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +97,10 @@ pub trait PluginService: Send + Sync + 'static {
         id: String,
         values: serde_json::Value,
     ) -> BoxFuture<Result<PluginSettings, PluginError>>;
+    /// How the route that serves `method` and `path` (relative to the plugin's prefix)
+    /// authenticates, or `None` when the running plugin declares no such route. The server
+    /// asks before authenticating a request to a plugin route.
+    fn route_auth(&self, id: &str, method: &str, path: &str) -> Option<PluginRouteAuth>;
     /// Hand a request to the plugin's route handler.
     fn http(
         &self,

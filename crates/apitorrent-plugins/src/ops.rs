@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use deno_core::{OpState, ToJsBuffer, op2, v8};
 use deno_error::JsErrorBox;
@@ -24,9 +24,9 @@ use tokio::task::AbortHandle;
 use apitorrent_plugin_api::network::NetworkGrants;
 use apitorrent_plugin_api::{
     AppApi, AppError, PluginApiScope, PluginCaller, PluginCapabilities, PluginError,
-    PluginHttpResponse, PluginLogLevel, PluginRole, TorrentControl,
+    PluginHttpResponse, PluginLogLevel, PluginRole, TorrentControl, VerifiedToken,
 };
-use apitorrent_types::AddTorrentRequest;
+use apitorrent_types::{AddTorrentRequest, QueueMove, SeedLimits};
 
 use crate::HostConfig;
 use crate::fetch::{FetchArgs, FetchError, Fetcher};
@@ -38,6 +38,8 @@ use crate::store::{Store, now_ms};
 const MAX_KEY: usize = 512;
 /// Largest KV value, serialised.
 const MAX_VALUE: usize = 1024 * 1024;
+/// Most login sessions a plugin holds at once; the least recently used goes first.
+const MAX_SESSIONS: usize = 1024;
 
 /// Everything a plugin's ops need, fixed for the life of one run.
 pub(crate) struct PluginCtx {
@@ -87,6 +89,16 @@ struct Replies {
     pending: HashMap<u32, Reply>,
 }
 
+/// Login sessions a plugin made from verified API tokens (`api.auth`). In memory only:
+/// they end with the run, and clients sign in again.
+#[derive(Default)]
+struct Sessions(HashMap<String, Session>);
+
+struct Session {
+    token: VerifiedToken,
+    last_used: Instant,
+}
+
 #[derive(Default)]
 struct Tasks {
     events: Option<AbortHandle>,
@@ -130,6 +142,10 @@ deno_core::extension!(
         op_at_events,
         op_at_route,
         op_at_role,
+        op_at_app_info,
+        op_at_auth_login,
+        op_at_auth_session,
+        op_at_auth_logout,
         op_at_torrents_list,
         op_at_torrent_get,
         op_at_torrent_add,
@@ -166,6 +182,7 @@ deno_core::extension!(
         state.put(Inbox(Rc::new(tokio::sync::Mutex::new(inbox))));
         state.put(Replies::default());
         state.put(Tasks::default());
+        state.put(Sessions::default());
         state.put(Rc::new(ctx));
     },
 );
@@ -315,7 +332,7 @@ enum ToJs {
         path: String,
         url: String,
         headers: Vec<(String, String)>,
-        caller: PluginCaller,
+        caller: Option<PluginCaller>,
     },
     Role {
         id: u32,
@@ -644,18 +661,195 @@ fn op_at_route(
     }
 }
 
+/// A provided role object as the host keeps it: `{ data, methods }`, the object's plain
+/// (non-function) properties and the names of its methods. Checked for what the host
+/// reads from it.
+fn role_data(role: PluginRole, provided: &str) -> Result<serde_json::Value, JsErrorBox> {
+    let provided: serde_json::Value = from_json(provided, "role object")?;
+    let data = provided.get("data").cloned().unwrap_or_default();
+    if role == PluginRole::TrackerAdapter {
+        let trackers = data
+            .get("trackers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| {
+                type_error("a tracker adapter names the trackers it covers: `trackers: [\"host\"]`")
+            })?;
+        for t in trackers {
+            let ok = t
+                .as_str()
+                .is_some_and(crate::tracker::valid_tracker_pattern);
+            if !ok {
+                return Err(type_error(format!(
+                    "tracker `{t}` must be a host name, or `*.` and a domain"
+                )));
+            }
+        }
+    }
+    Ok(provided)
+}
+
 #[op2(fast)]
-fn op_at_role(state: &OpState, #[string] role: &str) -> Result<(), JsErrorBox> {
+fn op_at_role(
+    state: &OpState,
+    #[string] role: &str,
+    #[string] data: &str,
+) -> Result<(), JsErrorBox> {
     let c = ctx(state);
     let parsed: PluginRole = serde_json::from_value(serde_json::Value::String(role.to_owned()))
         .map_err(|_| type_error(format!("unknown role `{role}`")))?;
-    if c.caps.roles.contains(&parsed) {
-        Ok(())
-    } else {
-        Err(not_capable(format!(
+    if !c.caps.roles.contains(&parsed) {
+        return Err(not_capable(format!(
             "the `{role}` role isn't declared in the plugin's manifest"
-        )))
+        )));
     }
+    let data = role_data(parsed, data)?;
+    if let Some(trackers) = data
+        .pointer("/data/trackers")
+        .and_then(serde_json::Value::as_array)
+    {
+        let names: Vec<&str> = trackers
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        c.logs.host(
+            PluginLogLevel::Info,
+            &format!("adapts behaviour for trackers {}", names.join(", ")),
+        );
+    }
+    c.run
+        .roles
+        .lock()
+        .expect("roles lock poisoned")
+        .insert(role.to_owned(), data);
+    Ok(())
+}
+
+// --- App info and sign-in ---------------------------------------------------------------
+
+#[op2]
+#[string]
+fn op_at_app_info(state: &OpState) -> Result<String, JsErrorBox> {
+    let c = ctx(state);
+    require(&c, PluginApiScope::TorrentsRead)?;
+    to_json(&c.app.info())
+}
+
+/// An unguessable session id: 32 random bytes, in hex.
+fn session_id() -> String {
+    use rand::RngCore as _;
+    let mut bytes = [0u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginResult {
+    session: String,
+    caller: PluginCaller,
+}
+
+/// Check an API token a client signed in with. On success the host keeps a session for it
+/// and the plugin gets only the session's id.
+#[op2]
+#[string]
+async fn op_at_auth_login(
+    state: Rc<RefCell<OpState>>,
+    #[string] token: String,
+) -> Result<String, JsErrorBox> {
+    let c = ctx(&state.borrow());
+    require(&c, PluginApiScope::TokensVerify)?;
+    let Some(creds) = c.config.credentials.clone() else {
+        return to_json(&AppResult::<()>::from(Err(AppError::new(
+            "unavailable",
+            "authentication is turned off on this server, so there are no API tokens to check",
+        ))));
+    };
+    let verified = c
+        .main
+        .spawn_blocking(move || creds.verify_token(&token))
+        .await
+        .map_err(internal)?;
+    let result = match verified {
+        Ok(Some(token)) => {
+            let id = session_id();
+            let caller = token.caller.clone();
+            let mut st = state.borrow_mut();
+            let sessions = &mut st.borrow_mut::<Sessions>().0;
+            if sessions.len() >= MAX_SESSIONS
+                && let Some(oldest) = sessions
+                    .iter()
+                    .min_by_key(|(_, s)| s.last_used)
+                    .map(|(k, _)| k.clone())
+            {
+                sessions.remove(&oldest);
+            }
+            sessions.insert(
+                id.clone(),
+                Session {
+                    token,
+                    last_used: Instant::now(),
+                },
+            );
+            Ok(Some(LoginResult {
+                session: id,
+                caller,
+            }))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(e),
+    };
+    to_json(&AppResult::from(result))
+}
+
+/// The caller behind a session, or `null` when it ended: unknown, idle too long, or its
+/// token was revoked or expired. Using a session keeps it alive.
+#[op2]
+#[string]
+async fn op_at_auth_session(
+    state: Rc<RefCell<OpState>>,
+    #[string] id: String,
+) -> Result<String, JsErrorBox> {
+    let c = ctx(&state.borrow());
+    require(&c, PluginApiScope::TokensVerify)?;
+    let idle = c.config.session_idle;
+    let token = {
+        let mut st = state.borrow_mut();
+        let sessions = &mut st.borrow_mut::<Sessions>().0;
+        match sessions.get(&id) {
+            Some(s) if s.last_used.elapsed() <= idle => Some(s.token.clone()),
+            Some(_) => {
+                sessions.remove(&id);
+                None
+            }
+            None => None,
+        }
+    };
+    let Some(token) = token else {
+        return Ok("null".to_owned());
+    };
+    let check = token.clone();
+    let valid = c
+        .main
+        .spawn_blocking(move || check.still_valid())
+        .await
+        .map_err(internal)?;
+    let mut st = state.borrow_mut();
+    let sessions = &mut st.borrow_mut::<Sessions>().0;
+    if !valid {
+        sessions.remove(&id);
+        return Ok("null".to_owned());
+    }
+    if let Some(s) = sessions.get_mut(&id) {
+        s.last_used = Instant::now();
+    }
+    to_json(&token.caller)
+}
+
+#[op2(fast)]
+fn op_at_auth_logout(state: &mut OpState, #[string] id: &str) -> Result<bool, JsErrorBox> {
+    require(&ctx(state), PluginApiScope::TokensVerify)?;
+    Ok(state.borrow_mut::<Sessions>().0.remove(id).is_some())
 }
 
 // --- Torrents ---------------------------------------------------------------------------
@@ -715,7 +909,20 @@ async fn op_at_torrent_add(
 enum ControlArg {
     Pause,
     Resume,
-    SetLabel { label: Option<String> },
+    SetLabel {
+        label: Option<String>,
+    },
+    SetSeedLimits {
+        limits: Option<SeedLimits>,
+    },
+    #[serde(rename_all = "camelCase")]
+    SetRateLimits {
+        download: u64,
+        upload: u64,
+    },
+    Queue {
+        to: QueueMove,
+    },
 }
 
 #[op2]
@@ -731,6 +938,18 @@ async fn op_at_torrent_control(
         ControlArg::Pause => TorrentControl::Pause,
         ControlArg::Resume => TorrentControl::Resume,
         ControlArg::SetLabel { label } => TorrentControl::SetLabel(label),
+        ControlArg::SetSeedLimits { limits } => {
+            if let Some(l) = &limits
+                && !(l.ratio.is_finite() && l.ratio >= 0.0)
+            {
+                return Err(range_error("a seed ratio is a number, 0 or more"));
+            }
+            TorrentControl::SetSeedLimits(limits)
+        }
+        ControlArg::SetRateLimits { download, upload } => {
+            TorrentControl::SetRateLimits { download, upload }
+        }
+        ControlArg::Queue { to } => TorrentControl::Queue(to),
     };
     on_main(&c.main, c.app.control(id, action)).await
 }

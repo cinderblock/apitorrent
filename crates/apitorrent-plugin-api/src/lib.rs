@@ -10,6 +10,10 @@
 //!   implements it.
 //! - [`SourceFetcher`]: fetching a `source` plugin's links with that plugin's grants.
 //!   `apitorrent-plugins` implements it; the core's rules use it.
+//! - [`Credentials`]: how the host checks API tokens for plugins that sign clients in
+//!   themselves. The server implements it over the auth database.
+//! - [`TrackerAdapters`]: what the core asks of `tracker-adapter` plugins. The host
+//!   implements it.
 //!
 //! Keeping these here, apart from the V8 host, means only the host and the daemon link V8;
 //! the core and the server don't.
@@ -20,13 +24,17 @@ pub mod schema;
 pub mod validate;
 
 mod app;
+mod credentials;
 mod service;
 mod sources;
+mod tracker;
 
 pub use apitorrent_types::plugins::*;
-pub use app::{AddOutcome, AppApi, AppError, AppEvent, TorrentControl};
+pub use app::{AddOutcome, AppApi, AppError, AppEvent, AppInfo, TorrentControl};
+pub use credentials::{Credentials, VerifiedToken};
 pub use service::{PluginError, PluginHttpRequest, PluginHttpResponse, PluginService};
 pub use sources::SourceFetcher;
+pub use tracker::{PackFile, PackQuery, TrackerAdapters, UnregisteredQuery};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -50,6 +58,10 @@ mod export {
         for result in [
             crate::AppEvent::export_all(&cfg),
             crate::AddOutcome::export_all(&cfg),
+            crate::AppInfo::export_all(&cfg),
+            crate::PackQuery::export_all(&cfg),
+            crate::UnregisteredQuery::export_all(&cfg),
+            crate::PluginRouteAuth::export_all(&cfg),
             apitorrent_types::TorrentDetail::export_all(&cfg),
             apitorrent_types::AddTorrentRequest::export_all(&cfg),
             crate::PluginCaller::export_all(&cfg),

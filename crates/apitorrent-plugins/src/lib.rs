@@ -15,14 +15,19 @@
 //! - **The `apitorrent` API** reaches the app through [`AppApi`], implemented by the core.
 //!
 //! [`PluginHost`] implements [`PluginService`], which the HTTP server uses for the
-//! management endpoints and for plugin routes.
+//! management endpoints and for plugin routes. Roles connect plugins to the rest of the
+//! daemon: [`dns::PluginDnsProvider`] makes a `dns-provider` plugin ACME's DNS-01
+//! provider, and [`tracker::PluginTrackerAdapters`] gives the core its `tracker-adapter`
+//! plugins.
 
 mod alloc;
+pub mod dns;
 mod fetch;
 mod logs;
 mod ops;
 mod runtime;
 mod store;
+pub mod tracker;
 mod watchdog;
 
 use std::collections::HashMap;
@@ -36,9 +41,10 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use apitorrent_plugin_api::network::NetworkGrants;
 use apitorrent_plugin_api::{
-    AppApi, BoxFuture, InstallPluginResponse, PendingPlugin, PluginBundle, PluginCapabilities,
-    PluginError, PluginHttpRequest, PluginHttpResponse, PluginInfo, PluginLogEntry, PluginLogLevel,
-    PluginManifest, PluginService, PluginSettings, PluginStatus, capabilities, schema, validate,
+    AppApi, BoxFuture, Credentials, InstallPluginResponse, PendingPlugin, PluginBundle,
+    PluginCapabilities, PluginError, PluginHttpRequest, PluginHttpResponse, PluginInfo,
+    PluginLogEntry, PluginLogLevel, PluginManifest, PluginRole, PluginRouteAuth, PluginService,
+    PluginSettings, PluginStatus, capabilities, schema, validate,
 };
 
 pub use fetch::FetchConfig;
@@ -50,7 +56,7 @@ use crate::store::{PluginRow, Store, StoreError};
 use crate::watchdog::Watchdog;
 
 /// How the host runs plugins.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HostConfig {
     /// Where plugins live: `<data dir>/plugins`.
     pub dir: PathBuf,
@@ -69,6 +75,29 @@ pub struct HostConfig {
     /// How long a plugin route may take to answer.
     pub http_timeout: Duration,
     pub fetch: FetchConfig,
+    /// Checks the API tokens that clients of `tokens:verify` plugins sign in with. `None`
+    /// when authentication is off: such plugins then can't sign anyone in themselves.
+    pub credentials: Option<Arc<dyn Credentials>>,
+    /// How long a plugin's login session lasts unused.
+    pub session_idle: Duration,
+}
+
+impl std::fmt::Debug for HostConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostConfig")
+            .field("dir", &self.dir)
+            .field("heap_limit", &self.heap_limit)
+            .field("buffer_limit", &self.buffer_limit)
+            .field("max_turn", &self.max_turn)
+            .field("min_schedule_interval", &self.min_schedule_interval)
+            .field("kv_quota", &self.kv_quota)
+            .field("log_capacity", &self.log_capacity)
+            .field("http_timeout", &self.http_timeout)
+            .field("fetch", &self.fetch)
+            .field("credentials", &self.credentials.is_some())
+            .field("session_idle", &self.session_idle)
+            .finish()
+    }
 }
 
 impl HostConfig {
@@ -83,6 +112,9 @@ impl HostConfig {
             log_capacity: 1000,
             http_timeout: Duration::from_secs(30),
             fetch: FetchConfig::default(),
+            credentials: None,
+            // qBittorrent's own default.
+            session_idle: Duration::from_secs(3600),
         }
     }
 }
@@ -220,6 +252,110 @@ impl PluginHost {
             Ok(Err(_)) => Err(not_running()),
             Ok(Ok(r)) => r.map_err(PluginError::Internal),
         }
+    }
+
+    /// Running plugins that provide `role`, each with the plain data of the object it
+    /// provided (see `api.roles.provide`). Plugins that declare the role but haven't
+    /// provided it yet are left out.
+    pub fn providers(&self, role: PluginRole) -> Vec<(String, serde_json::Value)> {
+        let name = role_name(role);
+        let slots = self.inner.slots.lock().expect("slots lock poisoned");
+        let mut out: Vec<(String, serde_json::Value)> = slots
+            .iter()
+            .filter_map(|(id, slot)| {
+                let run = slot.run.as_ref()?;
+                if !run.shared.started.load(Ordering::Acquire) {
+                    return None;
+                }
+                Some((id.clone(), run.shared.role(&name)?))
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Wait up to `timeout` for the plugin to be running, for callers that may come before
+    /// it has started (the daemon's ACME manager, at startup).
+    pub async fn wait_running(&self, id: &str, timeout: Duration) -> Result<(), PluginError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match self.running(id) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    let info = self.info_by_id(id)?;
+                    let hopeless = !info.enabled || info.status == PluginStatus::Failed;
+                    if hopeless || tokio::time::Instant::now() >= deadline {
+                        return Err(match info.status {
+                            PluginStatus::AwaitingApproval => PluginError::NotRunning(
+                                "the plugin is waiting for approval".to_owned(),
+                            ),
+                            PluginStatus::Disabled => {
+                                PluginError::NotRunning("the plugin is disabled".to_owned())
+                            }
+                            PluginStatus::Failed => PluginError::NotRunning(format!(
+                                "the plugin stopped on an error: {}",
+                                info.error.unwrap_or_default()
+                            )),
+                            _ => e,
+                        });
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Offer the first-party plugins that ship with the daemon: each is installed as if an
+    /// admin had uploaded it, so a new one waits for approval and an upgrade that asks for
+    /// more waits too. A version is offered once; a plugin an admin uninstalled isn't
+    /// offered again, and neither is an older version than the one installed.
+    pub async fn offer_bundled(&self, bundles: Vec<PluginBundle>) {
+        for bundle in bundles {
+            let (id, version) = (bundle.manifest.id.clone(), bundle.manifest.version.clone());
+            match self.offer_one(bundle).await {
+                Ok(Some(r)) => tracing::info!(
+                    plugin = %id,
+                    %version,
+                    needs_approval = r.needs_approval,
+                    "offered a first-party plugin"
+                ),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(plugin = %id, %version, error = %e, "could not offer a first-party plugin");
+                }
+            }
+        }
+    }
+
+    async fn offer_one(
+        &self,
+        bundle: PluginBundle,
+    ) -> Result<Option<InstallPluginResponse>, PluginError> {
+        let m = &bundle.manifest;
+        let offered = self.inner.store.offered(&m.id)?;
+        if offered.as_deref() == Some(m.version.as_str()) {
+            return Ok(None);
+        }
+        let row = self.inner.store.plugin(&m.id)?;
+        if row.is_none() && offered.is_some() {
+            // An admin uninstalled it; respect that.
+            self.inner.store.set_offered(&m.id, &m.version)?;
+            return Ok(None);
+        }
+        if let Some(row) = &row {
+            let newest = [&row.active_version, &row.pending_version]
+                .into_iter()
+                .flatten()
+                .any(|v| !version_newer(&m.version, v));
+            if newest {
+                self.inner.store.set_offered(&m.id, &m.version)?;
+                return Ok(None);
+            }
+        }
+        let (id, version) = (m.id.clone(), m.version.clone());
+        let r = self.install_inner(bundle).await?;
+        self.inner.store.set_offered(&id, &version)?;
+        Ok(Some(r))
     }
 
     fn slot_logs(&self, id: &str) -> Arc<LogRing> {
@@ -724,11 +860,16 @@ impl PluginHost {
             return Err(PluginError::NoRoute);
         };
         let manifest = self.manifest(id, version)?;
-        let declared = manifest.capabilities.routes.iter().any(|r| {
+        let declared = manifest.capabilities.routes.iter().find(|r| {
             validate::route_matches(&r.path, &req.path) && r.methods.contains(&req.method)
         });
-        if !declared {
+        let Some(route) = declared else {
             return Err(PluginError::NoRoute);
+        };
+        // The server already refuses these; this keeps a plugin's ordinary routes signed-in
+        // only whoever calls the host.
+        if route.auth == PluginRouteAuth::Api && req.caller.is_none() {
+            return Err(PluginError::Unauthenticated);
         }
         let run = self.running(id)?;
         let (reply, rx) = oneshot::channel();
@@ -766,6 +907,27 @@ fn grants_for(caps: &PluginCapabilities, settings: &serde_json::Value) -> Networ
         .flat_map(|path| schema::strings_at(settings, path))
         .collect();
     NetworkGrants::combine(&caps.network, &from_settings)
+}
+
+/// A role's name as plugins write it (`dns-provider`).
+pub(crate) fn role_name(role: PluginRole) -> String {
+    serde_json::to_value(role)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Whether version `a` is newer than `b`, comparing dot-separated numbers (`1.10.0` >
+/// `1.9.2`) and falling back to text for anything else. Equal versions aren't newer.
+fn version_newer(a: &str, b: &str) -> bool {
+    fn parts(v: &str) -> Option<Vec<u64>> {
+        let core = v.split(['-', '+']).next().unwrap_or(v);
+        core.split('.').map(|p| p.parse().ok()).collect()
+    }
+    match (parts(a), parts(b)) {
+        (Some(x), Some(y)) => x > y,
+        _ => a > b,
+    }
 }
 
 fn not_running() -> PluginError {
@@ -868,6 +1030,18 @@ impl PluginService for PluginHost {
 
     fn get(&self, id: &str) -> Result<PluginInfo, PluginError> {
         self.info_by_id(id)
+    }
+
+    fn route_auth(&self, id: &str, method: &str, path: &str) -> Option<PluginRouteAuth> {
+        let run = self.current_run(id)?;
+        run.manifest
+            .capabilities
+            .routes
+            .iter()
+            .find(|r| {
+                validate::route_matches(&r.path, path) && r.methods.iter().any(|m| m == method)
+            })
+            .map(|r| r.auth)
     }
 
     fn install(

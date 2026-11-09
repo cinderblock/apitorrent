@@ -23,12 +23,16 @@ mod authn;
 mod automation_routes;
 mod embed;
 mod guard;
+mod plugin_credentials;
+mod plugin_listener;
 mod plugin_routes;
 mod routes;
 mod sync;
 mod tls;
 mod webui;
 
+pub use plugin_credentials::plugin_credentials;
+pub use plugin_listener::PluginListener;
 pub use tls::{HANDSHAKE_TIMEOUT, MAX_HANDSHAKES, TlsServe, TlsServer, serve_tls};
 
 use std::net::{IpAddr, SocketAddr};

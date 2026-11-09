@@ -5,7 +5,10 @@ use tokio::sync::broadcast;
 use ts_rs::TS;
 
 use apitorrent_types::automation::{ReleaseCandidate, SubmitCandidatesOutcome};
-use apitorrent_types::{AddTorrentRequest, TorrentDetail, TorrentId, TorrentState, TorrentSummary};
+use apitorrent_types::{
+    AddTorrentRequest, QueueMove, QueueSettings, SeedLimits, TorrentDetail, TorrentId,
+    TorrentState, TorrentSummary,
+};
 
 use crate::BoxFuture;
 
@@ -37,11 +40,39 @@ pub struct AddOutcome {
     pub duplicate: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TorrentControl {
     Pause,
     Resume,
     SetLabel(Option<String>),
+    /// The torrent's own seed limits; `None` follows its group's or the instance's.
+    SetSeedLimits(Option<SeedLimits>),
+    /// The torrent's own rate limits in bytes per second (0: none of its own). Its
+    /// connection limit is kept.
+    SetRateLimits {
+        download: u64,
+        upload: u64,
+    },
+    /// Move it in the queue.
+    Queue(QueueMove),
+}
+
+/// About this apitorrent instance, for plugins that describe it to other software (a
+/// compatibility layer's "preferences", say). Needs `torrents:read`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfo {
+    /// apitorrent's version.
+    pub version: String,
+    /// Where torrents are saved unless they say otherwise (absolute). Plugins name save
+    /// paths relative to it.
+    pub download_dir: String,
+    /// The instance's seed limits, which torrents without their own (or their group's)
+    /// follow.
+    pub seed_limits: SeedLimits,
+    pub queue: QueueSettings,
+    /// The port peers connect to.
+    pub peer_port: u16,
 }
 
 /// Something that happened to a torrent. Rate and progress ticks are not events; poll
@@ -69,6 +100,7 @@ pub enum AppEvent {
 /// Futures are `'static` and `Send` because the host runs them on the daemon's runtime, not
 /// on a plugin's thread: work they spawn must outlive any one plugin.
 pub trait AppApi: Send + Sync + 'static {
+    fn info(&self) -> AppInfo;
     fn torrents(&self) -> Vec<TorrentSummary>;
     fn torrent(&self, id: TorrentId) -> BoxFuture<Result<TorrentDetail, AppError>>;
     fn add_torrent(&self, req: AddTorrentRequest) -> BoxFuture<Result<AddOutcome, AppError>>;

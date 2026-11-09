@@ -98,6 +98,10 @@ pub enum PluginApiScope {
     /// Receive torrent events (added, removed, state changes, finished).
     #[serde(rename = "events:read")]
     EventsRead,
+    /// Check apitorrent API tokens that clients present (as a password, say), and learn
+    /// whose they are. For compatibility layers whose clients sign in their own way.
+    #[serde(rename = "tokens:verify")]
+    TokensVerify,
 }
 
 /// An HTTP route a plugin serves.
@@ -111,6 +115,28 @@ pub struct PluginRoute {
     pub path: String,
     /// Upper-case HTTP methods, such as `GET` and `POST`.
     pub methods: Vec<String>,
+    /// Who authenticates requests to this route. Defaults to `api`.
+    #[serde(default)]
+    pub auth: PluginRouteAuth,
+}
+
+/// Who authenticates the requests to a plugin route.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS,
+)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum PluginRouteAuth {
+    /// apitorrent does, as for the rest of the API: a session or an API token, and only
+    /// viewers' `GET`s are read-only. The plugin is told who called.
+    #[default]
+    Api,
+    /// The plugin does. apitorrent lets requests through without signing in (still telling
+    /// the plugin who called, when the request did authenticate), and the plugin checks the
+    /// client's credentials itself, with `tokens:verify`. Such a route may set cookies, and
+    /// it sees the request's cookies other than apitorrent's own. Only `api-compat` plugins
+    /// may declare one: it exists for other clients' APIs (qBittorrent's login, say).
+    Plugin,
 }
 
 /// A role a plugin fills: it provides an object of handlers the host calls.
@@ -262,6 +288,10 @@ pub struct PluginCaller {
     pub user_id: String,
     pub user_name: String,
     pub role: Role,
+    /// The credential may change things: not a viewer, not a read-only token. A plugin
+    /// acting for a caller on a route that does its own login must check this before
+    /// writes (on ordinary routes apitorrent already refuses read-only writes).
+    pub may_write: bool,
 }
 
 #[cfg(test)]
