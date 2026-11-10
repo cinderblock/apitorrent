@@ -220,23 +220,27 @@ export function App({ status: auth }: { status: AuthStatus }) {
           value={view.search}
           onChange={(e) => setView({ ...view, search: e.target.value })}
         />
-        <div className="rates" aria-label="Total transfer rates">
-          <span aria-label="Download rate">↓ {formatRate(totals.down) || "0 B/s"}</span>
-          <span aria-label="Upload rate">↑ {formatRate(totals.up) || "0 B/s"}</span>
+        {/* Rates, status and account stay together: when the row is too narrow even with
+            the search box at its smallest, they move to a second row as one group. */}
+        <div className="toolbar-end">
+          <div className="rates" aria-label="Total transfer rates">
+            <span aria-label="Download rate">↓ {formatRate(totals.down) || "0 B/s"}</span>
+            <span aria-label="Upload rate">↑ {formatRate(totals.up) || "0 B/s"}</span>
+          </div>
+          <span className={`conn conn-${status}`} role="status">
+            {status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
+          </span>
+          {auth.authDisabled && (
+            <span className="badge badge-warn">No sign-in (development mode)</span>
+          )}
+          {isDesktop() ? (
+            <DesktopMenu />
+          ) : (
+            <button type="button" className="account-button" onClick={() => navigate("/account")}>
+              {auth.user?.displayName ?? "Account"}
+            </button>
+          )}
         </div>
-        <span className={`conn conn-${status}`} role="status">
-          {status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
-        </span>
-        {auth.authDisabled && (
-          <span className="badge badge-warn">No sign-in (development mode)</span>
-        )}
-        {isDesktop() ? (
-          <DesktopMenu />
-        ) : (
-          <button type="button" className="account-button" onClick={() => navigate("/account")}>
-            {auth.user?.displayName ?? "Account"}
-          </button>
-        )}
       </header>
       <Sidebar
         open={filtersOpen}

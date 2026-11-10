@@ -144,21 +144,26 @@ export function PluginsPage({ status, onStatus }: { status: AuthStatus; onStatus
           </p>
         )}
       </section>
-      {unavailable && <p className="banner-warn">{unavailable}</p>}
-      {error && (
-        <p className="error-text" role="alert">
-          {error}
-        </p>
+      {(unavailable || error || notice || plugins?.length === 0) && (
+        // In the page's column, like everything else on it.
+        <section className="account-section">
+          {unavailable && <p className="banner-warn">{unavailable}</p>}
+          {error && (
+            <p className="error-text" role="alert">
+              {error}
+            </p>
+          )}
+          {notice && (
+            <p className="plugin-notice" role="status">
+              {notice}{" "}
+              <button type="button" className="link" onClick={() => setNotice(null)}>
+                Dismiss
+              </button>
+            </p>
+          )}
+          {plugins?.length === 0 && <p className="muted">No plugins installed.</p>}
+        </section>
       )}
-      {notice && (
-        <p className="plugin-notice" role="status">
-          {notice}{" "}
-          <button type="button" className="link" onClick={() => setNotice(null)}>
-            Dismiss
-          </button>
-        </p>
-      )}
-      {plugins?.length === 0 && <p className="muted">No plugins installed.</p>}
       {plugins?.map((p) => (
         <PluginCard
           key={p.id}
@@ -253,7 +258,7 @@ function PluginCard({
           {manifest ? <ManifestSummary m={manifest} /> : <strong>{p.id}</strong>}
         </div>
         <span className="plugin-badges">
-          <span className="badge" title={perSpace ? "Runs separately in each space" : "One instance for the whole server"}>
+          <span className="badge">
             {perSpace ? "per space" : "shared"}
           </span>
           <span className={`badge plugin-status plugin-status-${p.status}`}>{STATUS_TEXT[p.status]}</span>

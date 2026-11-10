@@ -25,6 +25,19 @@ textarea {
   color: inherit;
 }
 
+a {
+  color: var(--accent);
+}
+
+/* Selects match the text inputs instead of the platform's grey box. */
+select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background-color: var(--bg);
+  max-width: 100%;
+}
+
 button {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -79,7 +92,8 @@ button.link {
 code {
   font-family: var(--mono);
   font-size: 12px;
-  word-break: break-all;
+  /* Long paths and hashes break where they must, words stay whole otherwise. */
+  overflow-wrap: anywhere;
 }
 
 .muted {
@@ -132,6 +146,7 @@ code {
 .toolbar {
   grid-column: 1 / -1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -145,9 +160,30 @@ code {
   letter-spacing: 0.02em;
 }
 
+/* Toolbar labels stay on one line. When the row runs short the search box gives up its
+   width first (its basis is its smallest size, and it grows to 16rem when there's room);
+   only then does .toolbar-end move to a second row. */
+.toolbar > *,
+.toolbar-end > * {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.toolbar > .search {
+  flex: 1 1 8rem;
+  min-width: 8rem;
+  max-width: 16rem;
+}
+
+.toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .search {
   margin-left: auto;
-  width: 16rem;
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -168,6 +204,18 @@ code {
   color: var(--muted);
   min-width: 13rem;
   justify-content: flex-end;
+}
+
+/* Short of a wide screen, the two rates stack, which saves the toolbar about 120 px. */
+@media (max-width: 1500px) and (min-width: 721px) {
+  .rates {
+    flex-direction: column;
+    gap: 0;
+    min-width: 5.5rem;
+    font-size: 11px;
+    line-height: 1.25;
+    text-align: right;
+  }
 }
 
 .conn {
@@ -670,6 +718,7 @@ code {
   display: grid;
   gap: 4px;
   margin-bottom: 10px;
+  min-width: 0;
 }
 
 .field > span {
@@ -678,7 +727,9 @@ code {
 }
 
 .field input,
-.field textarea {
+.field textarea,
+.field select {
+  min-width: 0;
   padding: 5px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -688,6 +739,18 @@ code {
 .field-row {
   display: flex;
   gap: 10px;
+}
+
+/* Fields in a row may shrink below their inputs' natural width; on phones they stack. */
+.field-row > .field {
+  min-width: 0;
+}
+
+@media (max-width: 480px) {
+  .field-row {
+    flex-direction: column;
+    gap: 0;
+  }
 }
 
 .field.grow {
@@ -709,8 +772,14 @@ code {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* On a narrow dialog the buttons wrap as wholes rather than breaking their labels. */
+.actions > button {
+  white-space: nowrap;
 }
 
 .actions-start {
@@ -722,6 +791,8 @@ code {
 }
 
 .settings-section {
+  /* A fieldset is at least as wide as its widest content by default. */
+  min-width: 0;
   border: none;
   margin: 0 0 14px;
   padding: 0;
@@ -787,18 +858,6 @@ code {
 
 .auth-card .brand {
   margin: 0;
-}
-
-.auth-card .field-row > .field {
-  min-width: 0;
-}
-
-/* Phones: setup and enrollment fields one above the other, never wider than the card. */
-@media (max-width: 480px) {
-  .auth-card .field-row {
-    flex-direction: column;
-    gap: 0;
-  }
 }
 
 .auth-alt {
@@ -877,6 +936,9 @@ button.wide {
 
 .account-button {
   margin-left: 4px;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .account {
@@ -949,6 +1011,12 @@ button.wide {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
+}
+
+/* Wide enough for placeholders such as "Name (phone, security key…)". */
+.inline-form input:not([type="checkbox"], [type="radio"]) {
+  width: 15rem;
+  max-width: 100%;
 }
 
 button.link.danger-text {
@@ -1119,9 +1187,15 @@ button.link.danger-text {
     margin-right: auto;
   }
 
-  .search {
+  /* Search on a row of its own, then rates and status; the account button stays up top. */
+  .toolbar-end {
+    display: contents;
+  }
+
+  .toolbar > .search {
     order: 10;
     flex: 1 1 100%;
+    max-width: none;
     width: auto;
     margin-left: 0;
   }

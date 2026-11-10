@@ -19,12 +19,6 @@ so a stuck request sits for five minutes before any error. To start: run the GUI
 `RUST_LOG=reqwest=debug,hyper_util=debug`, and probe `api_request` in a loop; consider a
 shorter timeout for UI calls either way.
 
-## Web UI: toolbar labels wrap at 1280 px
-
-In the desktop window (1280×800) the toolbar's "Pause / Resume" button and the profile
-button ("Loopback daemon") wrap onto two lines while the search box has room to give.
-Cosmetic; the toolbar should shrink the search field first.
-
 ## uTP test `transfer_through_a_lossy_reordering_proxy` reset once on Linux CI
 
 Seen once on 2026-11-10 at about 4:30 PM PST (00:30Z), in GitHub Actions run
