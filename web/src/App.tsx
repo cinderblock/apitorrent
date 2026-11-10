@@ -94,6 +94,13 @@ export function App({ status: auth }: { status: AuthStatus }) {
     }
   }, [state.torrents, selected]);
 
+  const rates = (
+    <>
+      <span aria-label="Download rate">↓ {formatRate(totals.down) || "0 B/s"}</span>
+      <span aria-label="Upload rate">↑ {formatRate(totals.up) || "0 B/s"}</span>
+    </>
+  );
+
   const focused = focus ? state.torrents.get(focus) : undefined;
   const selection = [...selected];
 
@@ -224,8 +231,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
             the search box at its smallest, they move to a second row as one group. */}
         <div className="toolbar-end">
           <div className="rates" aria-label="Total transfer rates">
-            <span aria-label="Download rate">↓ {formatRate(totals.down) || "0 B/s"}</span>
-            <span aria-label="Upload rate">↑ {formatRate(totals.up) || "0 B/s"}</span>
+            {rates}
           </div>
           <span className={`conn conn-${status}`} role="status">
             {status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
@@ -306,7 +312,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
           </button>
         </div>
       )}
-      <StatusBar />
+      <StatusBar rates={rates} />
       {adding && (
         <AddTorrent
           key={addingMagnet + adding.map((f) => f.name).join()}

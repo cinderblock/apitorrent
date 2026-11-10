@@ -156,12 +156,13 @@ code {
 
 .brand {
   font-size: 15px;
-  margin: 0 12px 0 0;
+  margin: 0 4px 0 0;
   letter-spacing: 0.02em;
 }
 
 /* Toolbar labels stay on one line. When the row runs short the search box gives up its
    width first (its basis is its smallest size, and it grows to 16rem when there's room);
+   it fits one row at 1280 px for a space admin with several spaces;
    only then does .toolbar-end move to a second row. */
 .toolbar > *,
 .toolbar-end > * {
@@ -170,8 +171,8 @@ code {
 }
 
 .toolbar > .search {
-  flex: 1 1 8rem;
-  min-width: 8rem;
+  flex: 1 1 7rem;
+  min-width: 7rem;
   max-width: 16rem;
 }
 
@@ -206,15 +207,21 @@ code {
   justify-content: flex-end;
 }
 
-/* Short of a wide screen, the two rates stack, which saves the toolbar about 120 px. */
+/* Short of a wide screen the rates move to the status bar, which leaves the toolbar room
+   for every button on one row at 1280 px. Phones keep them under the search box. */
+.statusbar-rates {
+  display: none;
+  gap: 12px;
+  color: var(--text);
+}
+
 @media (max-width: 1500px) and (min-width: 721px) {
-  .rates {
-    flex-direction: column;
-    gap: 0;
-    min-width: 5.5rem;
-    font-size: 11px;
-    line-height: 1.25;
-    text-align: right;
+  .toolbar .rates {
+    display: none;
+  }
+
+  .statusbar-rates {
+    display: flex;
   }
 }
 
@@ -664,6 +671,7 @@ code {
   border-radius: 0;
   margin-left: -1px;
   min-width: 2rem;
+  padding-inline: 8px;
 }
 
 .button-group button:first-child {

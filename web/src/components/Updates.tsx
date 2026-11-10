@@ -130,8 +130,9 @@ export function UpdateButton({ isAdmin }: { isAdmin: boolean }) {
   if (!status?.available || !status.latest) return null;
   return (
     <>
-      <button type="button" className="update-button" onClick={() => setOpen(true)}>
-        Update to {status.latest.version}
+      {/* Short, so the toolbar keeps one row at 1280 px; the dialog names the version. */}
+      <button type="button" className="update-button" aria-label={`Update to ${status.latest.version}`} onClick={() => setOpen(true)}>
+        Update
       </button>
       {open && (
         <dialog ref={dialog} className="dialog" onClose={() => setOpen(false)} aria-labelledby="update-title">
