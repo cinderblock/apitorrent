@@ -41,7 +41,8 @@ pub struct SpaceSettings {
     /// space's setting after the upgrade, so nothing changes for it).
     pub storage_roots: Vec<String>,
     /// Where new torrents go when the request names no folder. `None`: the instance's
-    /// download directory for `default`, otherwise the first storage root.
+    /// download directory for `default`; otherwise the first storage root, or a folder
+    /// named after the space in the instance's download directory.
     pub download_dir: Option<String>,
     /// Folders by label: a torrent added with the label and no folder goes there.
     pub folder_rules: Vec<FolderRule>,

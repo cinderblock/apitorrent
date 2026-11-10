@@ -13,7 +13,8 @@ export type SpaceSettings = {
 storageRoots: Array<string>, 
 /**
  * Where new torrents go when the request names no folder. `None`: the instance's
- * download directory for `default`, otherwise the first storage root.
+ * download directory for `default`; otherwise the first storage root, or a folder
+ * named after the space in the instance's download directory.
  */
 downloadDir: string | null, 
 /**

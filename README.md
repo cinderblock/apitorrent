@@ -51,8 +51,13 @@ Most of this is built.
   they find. Rules decide what to fetch (the latest N, with a label, a folder and only the
   files you want) and what to retire, keep a stable "latest" path, and signed channels push
   it to your other servers.
+- **Spaces.** One daemon can be several separate setups, each with its own storage,
+  limits, labels, rules, plugin settings and members, behind one peer port. The same
+  torrent in two spaces is downloaded once and seeded as one swarm; each space keeps its
+  own files and its own tracker statistics.
 - **Moving from Deluge.** Import a Deluge config directory: torrents keep their files,
   progress, labels, queue order, limits and totals, with no rehash and no re-download.
+  Two Deluge instances can become two spaces.
 - **qBittorrent Web API compatibility** (a plugin), so Sonarr, Radarr, Prowlarr, autobrr
   and cross-seed work unchanged, signing in with apitorrent API tokens.
 
@@ -151,8 +156,9 @@ Plugins live in `<data dir>/plugins`; `--no-plugins` turns them off. See "Plugin
 Approve and enable `qbittorrent-api` on the Plugins page, then add apitorrent to the client
 as a qBittorrent download client:
 
-- **Host and port**: apitorrent's, and **URL base** `/api/v1/plugins/qbittorrent-api`.
-  A client that can't take a URL base gets a port of its own:
+- **Host and port**: apitorrent's, and **URL base** `/api/v1/plugins/qbittorrent-api`
+  (for another space, `/s/<slug>/api/v1/plugins/qbittorrent-api`, and a token made in
+  that space). A client that can't take a URL base gets a port of its own:
   `--plugin-listen qbittorrent-api=127.0.0.1:8080` serves the API at that port's root
   (the same rules as `--api` apply to where it may listen).
 - **Username**: anything. **Password**: an apitorrent API token (Account page, API
@@ -193,9 +199,49 @@ revisioned list with the `.torrent` files. Another apitorrent subscribes with an
 (a read-only one is enough) over the same strict TLS as the desktop app: by the publisher's
 pairing code, a private CA or the OS. It checks each list against the publisher's channel
 key (Ed25519, kept in `<data dir>/automation/`), refuses one whose revision goes back, and
-runs its own rules over the entries. Channels and subscriptions are admin-only. Rules and
-everything they took live in `<data dir>/automation.db`. See "Automation" in
+runs its own rules over the entries. Rules, channels and subscriptions belong to a space;
+channels and subscriptions are for the space's admins. Rules and everything they took live
+in `<data dir>/automation.db`. See "Automation" in
 [`docs/architecture.md`](docs/architecture.md).
+
+## Spaces
+
+A space is a separate setup inside one daemon: its own torrents, storage roots and default
+folder, folders by label, rate, connection and queue limits, labels, rules, plugin
+settings and members. Every install starts with one, `default`, and looks and works as it
+always did until a server admin adds another (Settings, Spaces…).
+
+- **Pages and API** of a space are under `/s/<slug>/`: `/s/tv/` in a browser, and
+  `/s/tv/api/v1/…` for scripts. A header switcher appears once you have more than one.
+- **Members** hold a role per space: viewer, user or admin. Server admins (the
+  instance's admins) use every space. Someone who isn't a member gets 404, as if the
+  space didn't exist.
+- **API tokens** work in the space they were made in (switch to it on the Account page
+  first), so a Sonarr or Radarr signed in with one lands in its space.
+- **The same torrent in two spaces** is one swarm: downloaded once, with each space's
+  copy of the files placed by hard link (a clone or a copy across disks). Removing it
+  from one space, with its files or not, leaves the other's files and seeding alone.
+  Each space announces to its own trackers and reports only its own transfers: data one
+  space brought in is never reported to another space's trackers.
+- **One network identity**: a single peer port, DHT node and peer id for every space.
+- `--space-host torrents-tv.example.com=tv` puts requests for a host name in a space.
+
+### Importing Deluge into a space
+
+With the daemon stopped:
+
+```sh
+apitorrentd import deluge --config ~/.config/deluge --space tv --dry-run
+apitorrentd import deluge --config ~/.config/deluge --space tv
+```
+
+`--dry-run` changes nothing and prints a plain-text report (counts, every save path and
+the storage root it falls in, labels, limits, and what can't be carried over). The import
+creates the space if it's missing; the torrents start when the daemon does. `--map
+FROM=TO` rewrites save paths, `--settings` takes Deluge's limits, `--paused` adds
+everything paused. Running it again skips what the space already has. The Settings
+dialog's "Import from Deluge…" does the same into the current space with the daemon
+running.
 
 ## Signing in
 

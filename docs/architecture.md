@@ -167,10 +167,11 @@ Resume state is a versioned, serialisable struct that the core stores.
 
 ## Persistence
 
-- **SQLite in WAL mode**, three databases per instance: `apitorrent.db` for torrents, files,
-  labels and library entries, `automation.db` for release candidates, rules, aliases,
-  channels and subscriptions (see "Automation"), and `auth.db` for users, credentials,
-  sessions, tokens and the security audit log (see "Authentication"). Each has its own
+- **SQLite in WAL mode**, three databases per instance: `apitorrent.db` for spaces,
+  torrents (keyed by space and id), files, labels and library entries, `automation.db` for
+  release candidates, rules, aliases, channels and subscriptions (see "Automation"), and
+  `auth.db` for users, credentials, space memberships, sessions, tokens and the security
+  audit log (see "Authentication"). Each has its own
   migrations, so work on one never collides with another's schema versions.
 - Resume state (piece bitfields, file mtimes and sizes for quick validation, stats) is
   saved incrementally. A bitfield is flushed after each verified piece batch, at most every
@@ -367,7 +368,8 @@ from the torrent database.
   token is a 401, never a fall-back to the cookie.
 - **API tokens**: `apt_` plus 256 random bits, shown once, stored as SHA-256. Named, with
   scope `read` (`GET` and the sync socket) or `full`, an optional expiry, last-used time,
-  and revocation. Tokens can never manage credentials: account endpoints need a browser
+  and revocation. Each is bound to the space it was made in (see "Spaces"), and works
+  there only. Tokens can never manage credentials: account endpoints need a browser
   session. Finer scopes (`torrents:write`, `admin`, …) and IP-range binding can extend
   this later.
 - **Rate limits and lockout**: sign-in and setup calls are limited per client address
@@ -387,9 +389,11 @@ from the torrent database.
 - **Device pairing** (planned): the desktop thin client gets a device credential. It is a
   bearer token bound to the pinned key, and can be revoked per device. Until then the
   desktop app uses an ordinary API token, pasted once and kept in the OS keychain.
-- **Roles**: `admin`, `user` (owns its torrents) and `viewer` are stored, and viewers may
-  only read. The first user is the admin. Creating further users (invitations) is still to
-  come.
+- **Roles**: the instance's role (`admin`, `user` or `viewer`) is stored per user, and the
+  first user is the admin. An `admin` is a **server admin**: every space, its members,
+  creating spaces, instance settings, bans and plugins. Everything else is decided by a
+  role held **per space** (`admin`, `user`, `viewer`; see "Spaces"); viewers may only
+  read. Creating further users (invitations) is still to come.
 - **Audit log**: setup, sign-ins and failures, lockouts, re-authentication, and passkey,
   password, token and session changes go to `auth_events` with time, user and client
   address, kept for a year.
@@ -714,9 +718,11 @@ singles. apitorrent automates the switch:
 
 ## Resource limits
 
-Limits form a hierarchy: session, then **group**, then torrent, then peer. A group is a
-named set of torrents, selected by label, tracker or rule. The tightest level that applies
-wins.
+Limits form a hierarchy: session, then **space**, then **group**, then torrent, then peer.
+A space's limits cover all of its torrents (see "Spaces"); a group is a named set of
+torrents, selected by label, tracker or rule, in any space. The tightest level that applies
+wins. Queue slots work the same way: each space's are planned first, then the instance's
+across every space.
 
 - **Bandwidth:** download and upload rates through hierarchical token buckets, with
   protocol overhead counted separately and optionally exempt.
@@ -949,6 +955,117 @@ An importer reads a Deluge state directory: `torrents.state`, which is a Python 
 bencoded resume data, of which we read the bitfield and file info), labels and per-torrent
 options. Imported torrents get a fast validation (sizes and mtimes) instead of a full
 recheck. That is the onboarding path for existing Deluge users.
+
+- **Into a space.** An import goes into one space: the request's for the web UI's
+  "Import from Deluge…" (`POST /api/v1/import/deluge`, the space's admins), or
+  `--space <slug>` for `apitorrentd import deluge --config <dir>`, which creates the
+  space if it's missing (with Deluge's download folder as its default). Two Deluge
+  instances become two spaces. Save paths outside the space's storage roots are skipped
+  and listed.
+- **With the daemon stopped.** The command writes the rows into `apitorrent.db`; they
+  start on the daemon's next start. One planner (`apitorrent_core::deluge_import`) serves
+  both ways in.
+- **`--dry-run`** opens the database read-only (or not at all) and prints a plain-text
+  report made to be pasted into a chat: counts, every save path and the storage root it
+  falls in, labels, Deluge's global and per-torrent limits and where they would go, and
+  what can't be carried over and why (skipped torrents, and Deluge options with no
+  equivalent here: move-completed, upload slots, sequential download, super-seeding,
+  first/last piece priority, per-label limits). Logs go to stderr, so the report copies
+  cleanly.
+- **Settings** (`--settings`): into `default`, Deluge's limits become the instance's; into
+  another space, its rates, connections and slots become the space's, and Deluge's global
+  stop-at-ratio becomes each imported torrent's own seed limits (seed limits have no space
+  level).
+- **Twice is safe.** Torrents the space already has are listed and left alone.
+
+## Spaces
+
+A space is a named partition of one daemon, with its own storage, limits, labels,
+automation and members (`plans/spaces.md` has the decisions behind it). On upgrade a
+`default` space (id 1) takes everything that exists; an install with one space looks and
+works as before, and the UI hides the switcher.
+
+### The space
+
+- `apitorrent.db`'s `spaces` table: id, slug (used in URLs), name, description, and
+  settings as JSON (`SpaceSettings`): **storage roots** (directories its torrents may save
+  into; none means anywhere), a **default folder** (else the instance's download directory
+  for `default`, its first root, or `<download dir>/<slug>`), **folders by label**, and
+  **limits**: download and upload rate and connections (an engine level between the session
+  and groups, `Session::set_space`) and queue slots.
+- A torrent is keyed by `(space, id)` (`apitorrent_core::Key`); its id is still its
+  info-hash, so URLs and qBittorrent hashes don't change. Labels are a torrent's, so each
+  space has its own.
+- **Deleting a space** is refused while it has torrents, rules, channels or subscriptions;
+  `default` stays.
+- **Network identity is shared** (decided 2026-11-09): one peer port, one DHT node, one
+  peer id.
+
+### Members and which space a request is in
+
+- `auth.db`'s `space_members`: a role per (user, space). Server admins and the local owner
+  act as admins everywhere. API tokens carry the space they were made in
+  (`api_tokens.space_id`); each user's last space is remembered.
+- A request's space comes from, in order: the **token's space** (a URL naming another is
+  403); the **path prefix** `/s/<slug>/`, which the server strips before routing (web UI,
+  API, sync socket and plugin routes alike; `OriginalUri` keeps it for links); a **host
+  name** mapped with `--space-host <host>=<slug>`; then the caller's **default**, their
+  last space or their first, or `default` for a server admin. A caller who isn't a member
+  gets **404**, as for a space that doesn't exist, so slugs don't leak.
+- Writes need the `user` role in the space; channels, subscriptions and imports need its
+  `admin`. Instance settings, bans, plugin management and spaces themselves are server
+  admins'.
+- `GET /space` (the request's space, the caller's role and the spaces they may switch to),
+  `GET/POST /spaces`, `GET/PUT/DELETE /spaces/{slug}`, `/spaces/{slug}/members[/{user}]`
+  and `GET /users` (server admins). `GET /torrents?space=all` and `/sync?space=all` show
+  every space to a server admin; summaries carry their `space`.
+
+### One torrent in two spaces
+
+The engine keeps **one torrent per info-hash**; each space holding it is an **entry**
+(`apitorrent_engine::EntryParams`) with its own trackers, limits (rates and connections,
+drawing from its space's and group's buckets), pause state and transfer counts.
+
+- **Peer attribution.** Every connection belongs to one entry, whose limits it draws from
+  and whose counts and tracker reports it adds to. A peer a tracker returned belongs to
+  the entry that announced there; DHT, PEX, LSD, web seed and incoming peers belong to the
+  oldest running entry.
+- **Trackers.** Each entry announces to its own list, with its own `uploaded` and
+  `downloaded`; `left` is the swarm's, so an entry added once the data is complete
+  announces `left=0` from the start. A URL two running entries list is announced by the
+  older only; pausing or removing it hands that tracker to the next. Private torrents
+  keep DHT and PEX off, as before.
+- **Internal transfers are never reported.** Data one entry's peers brought in reaches
+  the others through the files (below), not the wire, so no other entry's tracker ever
+  hears of it as downloaded or uploaded.
+- **Files.** The engine torrent's storage is the *primary* entry's save path (the oldest;
+  only the primary saves pieces, so a restart comes back on the same files). Every other
+  entry gets each wanted file in its own save path once the file is complete, by the
+  content library's hard link, then reflink, then copy (`Core::place_secondaries`). File
+  selections are per entry; the swarm downloads the union, so a file only another space
+  wants still lands in the primary's folder.
+- **Removing an entry** removes only its own files (never a path another entry uses).
+  Removing the primary moves the swarm to the next entry's files (`Core::move_swarm`):
+  the engine torrent restarts there and checks them. The swarm runs while any entry does.
+- Private trackers usually put a `source` in the info dict, so the same release from two
+  trackers has two info-hashes: two torrents sharing files through the content library,
+  as before.
+
+### Automation and plugins per space
+
+- Rules, channels and subscriptions belong to a space (`automation.db` migration 2) and
+  act on its torrents and folders. A candidate belongs to the space whose source offered
+  it, or to every space when the source is global; a channel id stays unique across the
+  instance, since it names a feed.
+- A plugin whose manifest says `"spaceAware": true` runs **one instance per space**, each
+  with its own settings (`plugins.db`'s `space_settings`; `default`'s stay in `plugins`),
+  key-value data and schedule (kept under `<id>@<space>`), its torrents API working on its
+  space, and its candidates its space's. Its `tokens:verify` takes only tokens of that
+  space, and `mayWrite` follows the owner's role there. Plugin routes go to the instance
+  of the request's space; that space's admins may change its settings. Other plugins are
+  global: one instance on `default`, managed by server admins. `rss` and `qbittorrent-api`
+  are space-aware, so a Sonarr with a token from space `tv` and the URL base
+  `/s/tv/api/v1/plugins/qbittorrent-api` works in `tv`.
 
 ## Performance targets
 
