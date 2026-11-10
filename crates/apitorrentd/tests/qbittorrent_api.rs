@@ -261,6 +261,7 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
         trusted_proxies: TrustedProxies::default(),
         allow_insecure_lan: false,
         plugins: Some(Arc::new(host.clone()) as Arc<dyn PluginService>),
+        updates: None,
     };
     let api = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_addr = api.local_addr().unwrap();

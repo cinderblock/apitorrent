@@ -194,6 +194,7 @@ impl LocalNode {
             allow_insecure_lan: settings.allow_insecure_lan,
             // The desktop app runs no plugins yet.
             plugins: None,
+            updates: None,
         };
         let (stop, stopped) = oneshot::channel::<()>();
         let core = self.core.clone();

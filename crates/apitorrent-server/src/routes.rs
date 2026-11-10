@@ -57,17 +57,24 @@ impl IntoResponse for Failure {
 
 type ApiResult<T> = Result<T, Failure>;
 
-pub(crate) async fn info() -> Json<ServerInfo> {
+pub(crate) async fn info(State(s): State<AppState>) -> Json<ServerInfo> {
+    let mut capabilities: Vec<String> = [
+        "sync",
+        "file-priorities",
+        "auth",
+        "storage-roots",
+        "automation",
+    ]
+    .map(str::to_owned)
+    .into();
+    if s.updates.is_some() {
+        // `/system/update` (admins).
+        capabilities.push("updates".to_owned());
+    }
     Json(ServerInfo {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         api_version: API_VERSION,
-        capabilities: vec![
-            "sync".to_owned(),
-            "file-priorities".to_owned(),
-            "auth".to_owned(),
-            "storage-roots".to_owned(),
-            "automation".to_owned(),
-        ],
+        capabilities,
     })
 }
 

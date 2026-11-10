@@ -33,6 +33,7 @@ apitorrent-tls = { path = "crates/apitorrent-tls" }
 apitorrent-client = { path = "crates/apitorrent-client" }
 apitorrent-plugin-api = { path = "crates/apitorrent-plugin-api" }
 apitorrent-plugins = { path = "crates/apitorrent-plugins" }
+apitorrent-update = { path = "crates/apitorrent-update" }
 
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }

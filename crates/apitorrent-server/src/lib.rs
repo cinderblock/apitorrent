@@ -29,11 +29,13 @@ mod plugin_routes;
 mod routes;
 mod sync;
 mod tls;
+mod update_routes;
 mod webui;
 
 pub use plugin_credentials::plugin_credentials;
 pub use plugin_listener::PluginListener;
 pub use tls::{HANDSHAKE_TIMEOUT, MAX_HANDSHAKES, TlsServe, TlsServer, serve_tls};
+pub use update_routes::{UpdateFailure, UpdateFailureKind, UpdateFuture, UpdateService};
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -132,6 +134,9 @@ pub struct ServerConfig {
     /// The plugin host, for `/api/v1/plugins`. `None` (`--no-plugins`) answers those
     /// endpoints with `plugins_disabled`.
     pub plugins: Option<Arc<dyn apitorrent_plugin_api::PluginService>>,
+    /// The daemon's own updater, for `/api/v1/system/update`. `None` answers those
+    /// endpoints with `updates_unavailable`.
+    pub updates: Option<Arc<dyn UpdateService>>,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -144,6 +149,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("trusted_proxies", &self.trusted_proxies)
             .field("allow_insecure_lan", &self.allow_insecure_lan)
             .field("plugins", &self.plugins.is_some())
+            .field("updates", &self.updates.is_some())
             .finish()
     }
 }
@@ -189,6 +195,7 @@ pub(crate) struct AppState {
     /// Built-in TLS, when this server is the HTTPS endpoint.
     pub(crate) tls: Option<tls::TlsCtx>,
     pub(crate) plugins: Option<Arc<dyn apitorrent_plugin_api::PluginService>>,
+    pub(crate) updates: Option<Arc<dyn UpdateService>>,
 }
 
 /// Build the router. Exposed separately from [`serve`] for tests and embedding.
@@ -205,6 +212,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         proxies: config.trusted_proxies.clone(),
         tls,
         plugins: config.plugins.clone(),
+        updates: config.updates.clone(),
     };
     let api = Router::new()
         .route("/info", get(routes::info))
@@ -277,6 +285,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/auth/sessions/{id}", delete(auth_routes::session_delete))
         .merge(plugin_routes::router())
         .merge(automation_routes::router())
+        .merge(update_routes::router())
         .fallback(routes::not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

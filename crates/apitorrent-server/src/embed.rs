@@ -107,6 +107,7 @@ impl Embedded {
             trusted_proxies: TrustedProxies::default(),
             allow_insecure_lan: false,
             plugins: None,
+            updates: None,
         };
         let app = router(core, &config).layer(axum::middleware::map_request(mark));
         let (connections, rx) = mpsc::unbounded_channel();

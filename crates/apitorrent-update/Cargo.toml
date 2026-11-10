@@ -1,0 +1,37 @@
+[package]
+name = "apitorrent-update"
+description = "Signed self-updates for the apitorrent daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+apitorrent-types.workspace = true
+base64.workspace = true
+hex.workspace = true
+minisign-verify = "0.3"
+rand.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+semver = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+# Signs with a throwaway key made in the test; the real private key never leaves GitHub.
+minisign = "0.10"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

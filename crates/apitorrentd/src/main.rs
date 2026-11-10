@@ -3,6 +3,7 @@
 mod bundled;
 mod plugins;
 mod tls;
+mod update;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -69,10 +70,20 @@ impl From<PasswordArg> for PasswordMode {
     }
 }
 
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Install the latest published release, if it is newer and signed with apitorrent's
+    /// update key. The running daemon keeps the old version until it restarts.
+    Update(update::UpdateArgs),
+}
+
 #[derive(Debug, Parser)]
 #[command(version, about = "The apitorrent daemon")]
 #[allow(clippy::struct_excessive_bools)]
 struct Args {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Where the database and state live. Defaults to the platform's app data directory.
     #[arg(long, env = "APITORRENT_DATA_DIR")]
     data_dir: Option<PathBuf>,
@@ -213,7 +224,8 @@ fn default_dirs() -> Option<(PathBuf, PathBuf)> {
     Some((project.data_dir().to_path_buf(), downloads))
 }
 
-async fn shutdown_signal() {
+/// Ctrl-C, SIGTERM, or a newly installed version to restart into.
+async fn shutdown_signal(updater: Option<apitorrent_update::Updater>) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -229,6 +241,7 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {},
         () = terminate => {},
+        () = update::installed(updater) => {},
     }
     tracing::info!("shutting down");
 }
@@ -272,7 +285,15 @@ async fn main() -> ExitCode {
         eprintln!("could not determine default directories; pass --data-dir and --download-dir");
         return ExitCode::FAILURE;
     };
+    if let Some(Command::Update(u)) = &args.command {
+        return update::run_cli(u, data_dir).await;
+    }
     tracing::info!(data_dir = %data_dir.display(), download_dir = %download_dir.display(), "starting");
+    let updater = update::updater(data_dir.clone());
+    let _daily_update_check = updater
+        .as_ref()
+        .map(apitorrent_update::Updater::spawn_daily);
+    let shutdown_signal = || shutdown_signal(updater.clone());
 
     let trusted_proxies = match TrustedProxies::parse(&args.trusted_proxies) {
         Ok(t) => t,
@@ -432,6 +453,7 @@ async fn main() -> ExitCode {
         trusted_proxies,
         allow_insecure_lan: args.allow_insecure_lan,
         plugins: plugins.clone(),
+        updates: updater.as_ref().map(update::service),
     };
     match plugins::bind_listeners(&args.plugin, &core, &server, tls.as_ref().map(|t| &t.serve))
         .await
@@ -462,6 +484,11 @@ async fn main() -> ExitCode {
     }
     if let Err(e) = core.shutdown().await {
         tracing::error!(error = %e, "shutdown failed");
+    }
+    if result.is_ok()
+        && let Some(code) = update::restart_if_installed(updater.as_ref())
+    {
+        return code;
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,

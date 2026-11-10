@@ -159,6 +159,7 @@ impl PluginService for Fake {
 fn config(auth: AuthMode, fake: &Arc<Fake>) -> ServerConfig {
     ServerConfig {
         plugins: Some(fake.clone() as Arc<dyn PluginService>),
+        updates: None,
         ..server_config(auth)
     }
 }
