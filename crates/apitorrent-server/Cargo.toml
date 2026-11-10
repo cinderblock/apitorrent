@@ -32,7 +32,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 data-encoding.workspace = true
-getrandom = "0.3"
+getrandom = "0.4"
 # The software authenticator in the tests; the same version webauthn-rs uses.
 p256 = "0.14"
 sha2.workspace = true

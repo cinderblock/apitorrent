@@ -12,7 +12,7 @@ repository.workspace = true
 apitorrent-types.workspace = true
 argon2 = { version = "0.5", features = ["std"] }
 data-encoding.workspace = true
-getrandom = "0.3"
+getrandom = "0.4"
 hex.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
