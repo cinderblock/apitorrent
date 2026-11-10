@@ -637,6 +637,7 @@ async fn lying_seeder(
 /// With an honest seeder and a lying one, the download still completes with the right
 /// data, and only the liar is banned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(target_os = "macos", ignore = "macOS has only 127.0.0.1 on loopback")]
 async fn a_peer_sending_bad_data_is_banned() {
     let fx = fixture(Version::V1);
     let good_dir = tempfile::tempdir().unwrap();
@@ -681,6 +682,7 @@ async fn a_peer_sending_bad_data_is_banned() {
 
 /// A blocklisted address is never connected to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(target_os = "macos", ignore = "macOS has only 127.0.0.1 on loopback")]
 async fn blocklisted_peers_are_refused() {
     let fx = fixture(Version::V1);
     let blocked_dir = tempfile::tempdir().unwrap();

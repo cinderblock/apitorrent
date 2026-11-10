@@ -401,6 +401,13 @@ mod tests {
     use super::*;
     use apitorrent_client::SpkiHash;
 
+    /// An absolute local folder on this OS, for path mappings.
+    const LOCAL: &str = if cfg!(windows) {
+        "Z:\\torrents"
+    } else {
+        "/mnt/seedbox/torrents"
+    };
+
     fn remote(id: &str) -> Profile {
         Profile {
             id: id.into(),
@@ -412,7 +419,7 @@ mod tests {
                 },
                 mappings: vec![PathMapping {
                     remote: "/srv/torrents".into(),
-                    local: PathBuf::from("Z:\\torrents"),
+                    local: PathBuf::from(LOCAL),
                 }],
             }),
         }
@@ -472,7 +479,7 @@ mod tests {
                 "mode": "remote",
                 "baseUrl": "https://seedbox.example",
                 "trust": {"kind": "pinned", "spkiSha256": "01".repeat(32)},
-                "mappings": [{"remote": "/srv/torrents", "local": "Z:\\torrents"}],
+                "mappings": [{"remote": "/srv/torrents", "local": LOCAL}],
             })
         );
         // Optional fields may be left out of hand-written files.

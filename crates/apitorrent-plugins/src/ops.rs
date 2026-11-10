@@ -892,7 +892,8 @@ fn check_save_path(p: &str) -> Result<(), JsErrorBox> {
     let relative = path
         .components()
         .all(|c| matches!(c, std::path::Component::Normal(_)));
-    if p.is_empty() || !relative || p.contains(':') {
+    // `\` and `:` are refused on every OS, so a plugin's paths mean the same everywhere.
+    if p.is_empty() || !relative || p.contains([':', '\\']) {
         return Err(not_capable(format!(
             "savePath `{p}` must be a relative path inside the download directory, with no \
              `..`"
