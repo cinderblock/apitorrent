@@ -490,3 +490,99 @@ fn privileged_actions_outside_the_crate() {
         .unwrap();
     assert_eq!(kinds.last().map(String::as_str), Some("plugin_approved"));
 }
+
+#[test]
+fn space_roles_and_bound_tokens() {
+    use apitorrent_types::spaces::SpaceRole;
+    let f = fixture(PasswordMode::Fallback);
+    let admin = f.admin();
+    // The first admin is a member of `default` from setup only through the server-admin
+    // role; a second, ordinary user (there is no invitation API yet) starts in no space.
+    let bob = store::UserRow {
+        id: "bob-id".into(),
+        name: "bob".into(),
+        display_name: "Bob".into(),
+        role: Role::User,
+        password_hash: None,
+    };
+    store::insert_user(&f.auth.db(), &bob, 1).unwrap();
+    let bob_p = Principal {
+        user: bob.info(),
+        credential: Credential::Local,
+    };
+    assert!(f.auth.memberships("bob-id").unwrap().is_empty());
+    // Server admins are admins of every space, members or not.
+    assert_eq!(
+        f.auth.space_role(&admin, 7).unwrap(),
+        Some(SpaceRole::Admin)
+    );
+
+    // Only a server admin manages members.
+    let bob_session = Principal {
+        credential: Credential::Token {
+            id: "x".into(),
+            scope: TokenScope::Full,
+            space: 2,
+        },
+        ..bob_p.clone()
+    };
+    assert!(matches!(
+        f.auth
+            .set_member(&bob_session, 2, "bob-id", SpaceRole::Admin, &meta()),
+        Err(AuthError::Forbidden(_))
+    ));
+    f.auth
+        .set_member(&admin, 2, "bob-id", SpaceRole::User, &meta())
+        .unwrap();
+    assert_eq!(
+        f.auth.memberships("bob-id").unwrap(),
+        [(2, SpaceRole::User)]
+    );
+    assert_eq!(f.auth.members(2).unwrap()[0].name, "bob");
+
+    // A token works in its own space only, and a read token is a viewer there.
+    assert_eq!(
+        f.auth.space_role(&bob_session, 2).unwrap(),
+        Some(SpaceRole::User)
+    );
+    assert_eq!(f.auth.space_role(&bob_session, 1).unwrap(), None);
+    let reader = Principal {
+        credential: Credential::Token {
+            id: "y".into(),
+            scope: TokenScope::Read,
+            space: 2,
+        },
+        ..bob_p
+    };
+    assert_eq!(
+        f.auth.space_role(&reader, 2).unwrap(),
+        Some(SpaceRole::Viewer)
+    );
+
+    // Tokens are made in a space and say so.
+    let made = f
+        .auth
+        .create_token_in(
+            &admin,
+            2,
+            &CreateTokenRequest {
+                name: "sonarr".into(),
+                scope: TokenScope::Full,
+                expires_in_days: None,
+            },
+            &meta(),
+        )
+        .unwrap();
+    assert_eq!(made.info.space, 2);
+    let p = f.auth.authenticate_token(&made.token).unwrap().unwrap();
+    assert_eq!(p.token_space(), Some(2));
+
+    // Leaving a space ends the user's tokens there; forgetting a space ends everyone's.
+    f.auth.remove_member(&admin, 2, "bob-id", &meta()).unwrap();
+    assert!(f.auth.memberships("bob-id").unwrap().is_empty());
+    f.auth.set_last_space(&admin.user.id, 2).unwrap();
+    assert_eq!(f.auth.last_space(&admin.user.id).unwrap(), Some(2));
+    f.auth.forget_space(2).unwrap();
+    assert!(f.auth.authenticate_token(&made.token).unwrap().is_none());
+    assert_eq!(f.auth.last_space(&admin.user.id).unwrap(), None);
+}

@@ -2938,8 +2938,11 @@ impl Core {
             .collect();
         let mut rows = Vec::with_capacity(entries.len());
         for (key, handle, down, up) in entries {
-            let mine = entry_stats(&handle.stats(), &key);
-            if !primaries.contains(&key) {
+            let stats = handle.stats();
+            let mine = entry_stats(&stats, &key);
+            // A torrent still checking has no pieces yet: saving none makes the next start
+            // check again, where an empty bitfield would trust that nothing is there.
+            if !primaries.contains(&key) || stats.state == EngineState::Checking {
                 rows.push(ResumeRow {
                     key,
                     have: Vec::new(),

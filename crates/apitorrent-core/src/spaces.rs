@@ -272,6 +272,32 @@ impl Core {
         Ok(path)
     }
 
+    /// The spaces whose entries share a torrent's swarm, its primary (whose files the
+    /// engine uses) first; empty when no space runs it.
+    pub fn swarm_spaces(&self, id: &str) -> Vec<SpaceId> {
+        let Some(primary) = self
+            .inner
+            .swarms
+            .lock()
+            .expect("swarms lock poisoned")
+            .get(id)
+            .map(|s| s.primary)
+        else {
+            return Vec::new();
+        };
+        let mut others: Vec<SpaceId> = self
+            .inner
+            .torrents
+            .read()
+            .expect("torrents lock poisoned")
+            .keys()
+            .filter(|k| k.id == id && k.space != primary)
+            .map(|k| k.space)
+            .collect();
+        others.sort_unstable();
+        std::iter::once(primary).chain(others).collect()
+    }
+
     /// Refuse a save path outside the space's storage roots.
     pub fn check_save_path(&self, space: SpaceId, path: &Path) -> Result<(), CoreError> {
         let s = self.space(space)?;
