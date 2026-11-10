@@ -342,3 +342,12 @@ fn sleep_for_the_swap_test() {
         std::thread::sleep(std::time::Duration::from_secs(30));
     }
 }
+
+/// A key and signature made by the Tauri CLI itself, which is what signs releases.
+#[test]
+fn reads_what_the_tauri_cli_writes() {
+    let key = UpdateKey::parse(include_str!("fixtures/tauri-cli.pub")).unwrap();
+    let sig = include_str!("fixtures/hello.txt.sig");
+    key.verify(b"hello\n", sig).unwrap();
+    assert!(key.verify(b"hello", sig).is_err());
+}

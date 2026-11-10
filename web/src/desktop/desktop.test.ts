@@ -5,7 +5,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 
 import { api } from "../api/client";
 import { setTransport } from "../api/transport";
-import type { SyncEvent } from "./bridge";
+import { desktop, type AppUpdateView, type SyncEvent } from "./bridge";
 import { toBatch } from "./links";
 import { currentNotices } from "./notices";
 import { apiPath, DesktopSocket, desktopTransport } from "./transport";
@@ -136,5 +136,28 @@ describe("the desktop transport", () => {
     await Bun.sleep(0);
     await Bun.sleep(0);
     expect(calls).toContainEqual({ cmd: "sync_close", args: { id: 11 } });
+  });
+});
+
+describe("app updates", () => {
+  test("check and install call the app's commands", async () => {
+    const view: AppUpdateView = {
+      currentVersion: "0.1.0",
+      latestVersion: "0.2.0",
+      available: true,
+      notes: null,
+      installsEnabled: true,
+      installsDisabledReason: null,
+      error: null,
+    };
+    const calls = recordIpc((c) => (c.cmd === "app_update_check" ? view : null));
+    expect(await desktop.appUpdateCheck()).toEqual(view);
+    await desktop.appUpdateCheck(true);
+    await desktop.appUpdateInstall();
+    expect(calls.map((c) => [c.cmd, c.args.force])).toEqual([
+      ["app_update_check", false],
+      ["app_update_check", true],
+      ["app_update_install", undefined],
+    ]);
   });
 });

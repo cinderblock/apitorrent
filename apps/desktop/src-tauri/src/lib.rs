@@ -5,6 +5,7 @@
 //! strictly verified TLS with a token from the OS keychain, or to the core running in this
 //! process. The webview itself never talks to the network.
 
+mod app_update;
 mod backend;
 mod commands;
 mod finish;
@@ -144,7 +145,9 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(app_update::plugin())
         .manage(AppState::new(dirs(), Arc::new(profiles::Keychain)))
+        .manage(app_update::AppUpdates::default())
         .invoke_handler(tauri::generate_handler![
             commands::desktop_state,
             commands::profile_save,
@@ -162,6 +165,8 @@ pub fn run() {
             commands::path_action,
             commands::path_available,
             theme::theme_set,
+            app_update::app_update_check,
+            app_update::app_update_install,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -211,6 +216,8 @@ pub fn run() {
             // Links on this launch's command line.
             let cwd = std::env::current_dir().unwrap_or_default();
             state::deliver_links(&handle, links::from_args(std::env::args().skip(1), &cwd));
+
+            app_update::spawn_daily(handle.clone());
 
             // Reconnect with the last profile.
             let state = app.state::<AppState>();

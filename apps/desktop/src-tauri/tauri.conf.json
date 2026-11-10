@@ -51,6 +51,11 @@
     ]
   },
   "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": ["https://github.com/cinderblock/apitorrent/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    },
     "deep-link": {
       "desktop": {
         "schemes": ["magnet"]

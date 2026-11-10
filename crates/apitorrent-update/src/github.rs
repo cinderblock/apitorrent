@@ -179,6 +179,13 @@ pub(crate) async fn fetch_small(
     read_limited(resp, MAX_METADATA).await
 }
 
+/// [`latest`] with a client of its own, for programs that only report new versions (the
+/// desktop app, when built without the signing key).
+pub async fn latest_published(source: &Source) -> Result<Option<Release>, UpdateError> {
+    let client = source.client()?;
+    latest(source, &client).await
+}
+
 /// The latest published release, or `None` when there is none yet.
 pub async fn latest(
     source: &Source,

@@ -107,6 +107,14 @@
   box-shadow: 0 4px 16px var(--shadow);
 }
 
+.app-update-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 /* A pairing code is 24 characters (ABCD-EFGH-IJKL-MNOP-QRST): show all of it. */
 .inline-edit input.pairing-code {
   width: 17rem;

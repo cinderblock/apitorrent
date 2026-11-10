@@ -123,6 +123,17 @@ export type SyncEvent =
   | { event: "message"; data: string }
   | { event: "close"; code: number; reason: string };
 
+/** The app's own updates (apps/desktop/src-tauri/src/app_update.rs). */
+export interface AppUpdateView {
+  currentVersion: string;
+  latestVersion: string | null;
+  available: boolean;
+  notes: string | null;
+  installsEnabled: boolean;
+  installsDisabledReason: string | null;
+  error: string | null;
+}
+
 /** Command errors arrive as plain strings; make them Errors. */
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   try {
@@ -155,6 +166,13 @@ export const desktop = {
   pathAvailable: (savePath: string) => call<string | null>("path_available", { savePath }),
   /** The window's own theme (title bar, background), kept in step with the page's. */
   setTheme: (theme: ThemePreference) => call<void>("theme_set", { theme }),
+  /** The last update check (at most a day old), or a fresh one with `force`. */
+  appUpdateCheck: (force = false) => call<AppUpdateView>("app_update_check", { force }),
+  /** Download, verify and install the new version; the app restarts into it. */
+  appUpdateInstall: () => call<void>("app_update_install"),
+  /** Called when the daily check finds a new version. */
+  onAppUpdate: (handler: (v: AppUpdateView) => void) =>
+    listen<AppUpdateView>("apitorrent://app-update", (e) => handler(e.payload)),
   /** Called when the OS hands the app magnet links or .torrent files. */
   onLinks: (handler: () => void) => listen("apitorrent://links", handler),
 };

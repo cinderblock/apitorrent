@@ -32,6 +32,7 @@ apitorrent-mse.workspace = true
 apitorrent-server.workspace = true
 apitorrent-tls.workspace = true
 apitorrent-types.workspace = true
+apitorrent-update.workspace = true
 # The UI the network listener serves (Local mode).
 apitorrent-webui = { workspace = true, features = ["embed"] }
 base64.workspace = true
@@ -45,6 +46,7 @@ tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-plugin-deep-link = "2.6"
 tauri-plugin-notification = "2.8"
 tauri-plugin-opener = "2.7"
+tauri-plugin-updater = "2.14"
 tauri-plugin-single-instance = { version = "2.5", features = ["deep-link"] }
 thiserror.workspace = true
 tokio.workspace = true

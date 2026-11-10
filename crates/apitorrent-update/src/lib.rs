@@ -29,6 +29,7 @@ use tokio::sync::watch;
 pub use github::{Release, Source};
 pub use key::{KeyError, UpdateKey};
 pub use manifest::{Manifest, ManifestAsset, ManifestError};
+pub use semver;
 
 /// The target triple this binary was built for, as the manifest names it.
 pub const TARGET: &str = env!("APITORRENT_UPDATE_TARGET");
