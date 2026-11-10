@@ -19,9 +19,9 @@ use std::time::{Duration, Instant};
 
 use apitorrent_engine::TorrentHandle;
 use apitorrent_plugin_api::{PackFile, PackQuery, TrackerAdapters, UnregisteredQuery};
-use apitorrent_types::{AddTorrentRequest, TorrentId, UnwantedPolicy};
+use apitorrent_types::{AddTorrentRequest, UnwantedPolicy};
 
-use crate::{Core, CoreError, library};
+use crate::{Core, CoreError, Key, library};
 
 /// How long before a torrent whose pack wasn't found is asked about again.
 pub const PACK_RETRY: Duration = Duration::from_secs(6 * 3600);
@@ -30,7 +30,7 @@ pub const PACK_RETRY: Duration = Duration::from_secs(6 * 3600);
 #[derive(Default)]
 pub(crate) struct AdapterState {
     adapters: RwLock<Option<Arc<dyn TrackerAdapters>>>,
-    asked: Mutex<HashMap<TorrentId, Instant>>,
+    asked: Mutex<HashMap<Key, Instant>>,
 }
 
 impl std::fmt::Debug for AdapterState {
@@ -50,7 +50,7 @@ impl std::fmt::Debug for AdapterState {
 
 /// What one pass needs to know about a torrent.
 struct Candidate {
-    id: TorrentId,
+    id: Key,
     name: String,
     handle: TorrentHandle,
     superseded: bool,
@@ -101,7 +101,7 @@ pub(crate) async fn retire_superseded(core: &Core) {
     for c in candidates {
         // `Some(covering tracker)` once a tracker says the torrent is gone.
         let mut gone: Option<Option<String>> = None;
-        for t in c.handle.trackers().await {
+        for t in c.handle.trackers_of(Some(c.id.engine())).await {
             let Some(message) = t.error.as_deref() else {
                 continue;
             };
@@ -109,7 +109,7 @@ pub(crate) async fn retire_superseded(core: &Core) {
             let verdict = match covering {
                 Some(a) => a
                     .unregistered(UnregisteredQuery {
-                        torrent: c.id.clone(),
+                        torrent: c.id.id.clone(),
                         name: c.name.clone(),
                         tracker: t.url.clone(),
                         message: message.to_owned(),
@@ -169,7 +169,7 @@ async fn fetch_pack(core: &Core, adapters: &dyn TrackerAdapters, c: &Candidate, 
         }
     };
     let query = PackQuery {
-        torrent: c.id.clone(),
+        torrent: c.id.id.clone(),
         name: detail.summary.name.clone(),
         info_hash_v1: detail.summary.info_hash_v1.clone(),
         info_hash_v2: detail.summary.info_hash_v2.clone(),
@@ -195,7 +195,7 @@ async fn fetch_pack(core: &Core, adapters: &dyn TrackerAdapters, c: &Candidate, 
         file_priorities: None,
         unwanted_policy: UnwantedPolicy::default(),
     };
-    match core.add(req).await {
+    match core.add(c.id.space, req).await {
         Ok(pack) => tracing::info!(
             id = %c.id,
             %pack,

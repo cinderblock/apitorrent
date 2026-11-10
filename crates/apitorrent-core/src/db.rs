@@ -4,6 +4,10 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use apitorrent_types::spaces::{Space, SpaceId, SpaceSettings};
+
+use crate::Key;
+
 /// Each entry upgrades the schema by one version. Never edit a released migration; add a
 /// new one.
 const MIGRATIONS: &[&str] = &[
@@ -89,11 +93,91 @@ const MIGRATIONS: &[&str] = &[
         reached   INTEGER NOT NULL DEFAULT 0
     );
     ",
+    // 10: spaces. Everything so far goes into the `default` space (id 1), and a torrent is
+    // keyed by its space and id, so the same torrent can be in several spaces. `settings`
+    // is JSON (`apitorrent_types::SpaceSettings`). The child tables are copied before their
+    // parent is dropped: dropping `torrents` first would cascade into `seeding`.
+    "
+    CREATE TABLE spaces (
+        id          INTEGER PRIMARY KEY,
+        slug        TEXT NOT NULL UNIQUE,
+        name        TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        settings    TEXT NOT NULL DEFAULT '{}',
+        created_at  INTEGER NOT NULL
+    );
+    INSERT INTO spaces (id, slug, name, description, settings, created_at)
+        VALUES (1, 'default', 'Default', '', '{}', 0);
+    CREATE TABLE torrents_v10 (
+        space_id         INTEGER NOT NULL DEFAULT 1 REFERENCES spaces(id),
+        id               TEXT NOT NULL,
+        info_hash_v1     TEXT,
+        info_hash_v2     TEXT,
+        name             TEXT NOT NULL,
+        torrent          BLOB NOT NULL,
+        save_path        TEXT NOT NULL,
+        label            TEXT,
+        added_at         INTEGER NOT NULL,
+        paused           INTEGER NOT NULL DEFAULT 0,
+        have             BLOB,
+        file_priorities  BLOB,
+        downloaded_total INTEGER NOT NULL DEFAULT 0,
+        uploaded_total   INTEGER NOT NULL DEFAULT 0,
+        placements       BLOB,
+        held_path        TEXT,
+        unwanted_policy  INTEGER NOT NULL DEFAULT 0,
+        queue_position   INTEGER NOT NULL DEFAULT 0,
+        download_rate    INTEGER NOT NULL DEFAULT 0,
+        upload_rate      INTEGER NOT NULL DEFAULT 0,
+        max_connections  INTEGER,
+        magnet           TEXT,
+        naming           INTEGER NOT NULL DEFAULT 0,
+        linked           BLOB,
+        file_paths       TEXT,
+        PRIMARY KEY (space_id, id)
+    );
+    INSERT INTO torrents_v10 (space_id, id, info_hash_v1, info_hash_v2, name, torrent,
+        save_path, label, added_at, paused, have, file_priorities, downloaded_total,
+        uploaded_total, placements, held_path, unwanted_policy, queue_position, download_rate,
+        upload_rate, max_connections, magnet, naming, linked, file_paths)
+    SELECT 1, id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
+        paused, have, file_priorities, downloaded_total, uploaded_total, placements,
+        held_path, unwanted_policy, queue_position, download_rate, upload_rate,
+        max_connections, magnet, naming, linked, file_paths
+    FROM torrents;
+    CREATE TABLE seeding_v10 (
+        space_id  INTEGER NOT NULL DEFAULT 1,
+        torrent   TEXT NOT NULL,
+        seed_secs INTEGER NOT NULL DEFAULT 0,
+        limits    TEXT,
+        reached   INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (space_id, torrent),
+        FOREIGN KEY (space_id, torrent) REFERENCES torrents_v10(space_id, id) ON DELETE CASCADE
+    );
+    INSERT INTO seeding_v10 (space_id, torrent, seed_secs, limits, reached)
+        SELECT 1, torrent, seed_secs, limits, reached FROM seeding;
+    CREATE TABLE superseded_v10 (
+        space_id   INTEGER NOT NULL DEFAULT 1,
+        torrent    TEXT NOT NULL,
+        by_torrent TEXT NOT NULL,
+        PRIMARY KEY (space_id, torrent)
+    );
+    INSERT INTO superseded_v10 (space_id, torrent, by_torrent)
+        SELECT 1, torrent, by_torrent FROM superseded;
+    DROP TABLE seeding;
+    DROP TABLE superseded;
+    DROP TABLE torrents;
+    ALTER TABLE torrents_v10 RENAME TO torrents;
+    ALTER TABLE seeding_v10 RENAME TO seeding;
+    ALTER TABLE superseded_v10 RENAME TO superseded;
+    CREATE INDEX torrents_by_id ON torrents(id);
+    ",
 ];
 
 /// A torrent as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorrentRow {
+    pub space: SpaceId,
     pub id: String,
     pub info_hash_v1: Option<String>,
     pub info_hash_v2: Option<String>,
@@ -130,7 +214,7 @@ pub struct TorrentRow {
 /// Resume state saved periodically for one torrent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResumeRow {
-    pub id: String,
+    pub key: Key,
     pub have: Vec<u8>,
     pub placements: Vec<u8>,
     pub linked: Vec<u8>,
@@ -194,9 +278,9 @@ impl Database {
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
                  placements, held_path, unwanted_policy, queue_position, download_rate,
-                 upload_rate, max_connections, magnet, naming, linked, file_paths)
+                 upload_rate, max_connections, magnet, naming, linked, file_paths, space_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -222,40 +306,49 @@ impl Database {
                 row.naming,
                 row.linked,
                 row.file_paths,
+                row.space,
             ],
         )?;
         Ok(())
     }
 
-    pub fn contains(&self, id: &str) -> rusqlite::Result<bool> {
+    pub fn contains(&self, key: &Key) -> rusqlite::Result<bool> {
         self.conn
-            .query_row("SELECT 1 FROM torrents WHERE id = ?1", [id], |_| Ok(()))
+            .query_row(
+                "SELECT 1 FROM torrents WHERE space_id = ?1 AND id = ?2",
+                params![key.space, key.id],
+                |_| Ok(()),
+            )
             .optional()
             .map(|r| r.is_some())
     }
 
-    /// A torrent's `.torrent` file; `None` for an unknown id or a magnet link still
-    /// waiting for its metadata (stored empty).
+    /// A torrent's `.torrent` file, from any space that has it; `None` for an unknown id or
+    /// a magnet link still waiting for its metadata (stored empty).
     pub fn torrent_file(&self, id: &str) -> rusqlite::Result<Option<Vec<u8>>> {
         Ok(self
             .conn
-            .query_row("SELECT torrent FROM torrents WHERE id = ?1", [id], |r| {
-                r.get::<_, Vec<u8>>(0)
-            })
+            .query_row(
+                "SELECT torrent FROM torrents WHERE id = ?1 AND length(torrent) > 0 LIMIT 1",
+                [id],
+                |r| r.get::<_, Vec<u8>>(0),
+            )
             .optional()?
             .filter(|t| !t.is_empty()))
     }
 
+    /// Every torrent of every space, oldest first within each queue position.
     pub fn torrents(&self) -> rusqlite::Result<Vec<TorrentRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
                     paused, have, file_priorities, downloaded_total, uploaded_total,
                     placements, held_path, unwanted_policy, queue_position, download_rate,
-                    upload_rate, max_connections, magnet, naming, linked, file_paths
-             FROM torrents ORDER BY queue_position, added_at",
+                    upload_rate, max_connections, magnet, naming, linked, file_paths, space_id
+             FROM torrents ORDER BY queue_position, added_at, space_id",
         )?;
         stmt.query_map([], |r| {
             Ok(TorrentRow {
+                space: r.get(24)?,
                 id: r.get(0)?,
                 info_hash_v1: r.get(1)?,
                 info_hash_v2: r.get(2)?,
@@ -290,30 +383,33 @@ impl Database {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "UPDATE torrents SET have = ?2, placements = ?3, downloaded_total = ?4,
-                     uploaded_total = ?5, linked = ?6
-                 WHERE id = ?1",
+                "UPDATE torrents SET have = NULLIF(?2, x''), placements = NULLIF(?3, x''),
+                     downloaded_total = ?4, uploaded_total = ?5, linked = NULLIF(?6, x'')
+                 WHERE id = ?1 AND space_id = ?7",
             )?;
             for r in rows {
                 stmt.execute(params![
-                    r.id,
+                    r.key.id,
                     r.have,
                     r.placements,
                     to_i64(r.downloaded_total),
                     to_i64(r.uploaded_total),
-                    r.linked
+                    r.linked,
+                    r.key.space
                 ])?;
             }
         }
         tx.commit()
     }
 
-    pub fn set_queue_positions(&mut self, positions: &[(String, u32)]) -> rusqlite::Result<()> {
+    pub fn set_queue_positions(&mut self, positions: &[(Key, u32)]) -> rusqlite::Result<()> {
         let tx = self.conn.transaction()?;
         {
-            let mut stmt = tx.prepare("UPDATE torrents SET queue_position = ?2 WHERE id = ?1")?;
-            for (id, pos) in positions {
-                stmt.execute(params![id, pos])?;
+            let mut stmt = tx.prepare(
+                "UPDATE torrents SET queue_position = ?3 WHERE space_id = ?1 AND id = ?2",
+            )?;
+            for (key, pos) in positions {
+                stmt.execute(params![key.space, key.id, pos])?;
             }
         }
         tx.commit()
@@ -321,44 +417,53 @@ impl Database {
 
     pub fn set_limits(
         &self,
-        id: &str,
+        key: &Key,
         download_rate: u64,
         upload_rate: u64,
         max_connections: Option<u32>,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE torrents SET download_rate = ?2, upload_rate = ?3, max_connections = ?4
-             WHERE id = ?1",
+             WHERE id = ?1 AND space_id = ?5",
             params![
-                id,
+                key.id,
                 to_i64(download_rate),
                 to_i64(upload_rate),
-                max_connections
+                max_connections,
+                key.space
             ],
         )?;
         Ok(())
     }
 
-    pub fn set_unwanted_policy(&self, id: &str, policy: u8) -> rusqlite::Result<()> {
+    pub fn set_unwanted_policy(&self, key: &Key, policy: u8) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE torrents SET unwanted_policy = ?2 WHERE id = ?1",
-            params![id, policy],
+            "UPDATE torrents SET unwanted_policy = ?3 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, policy],
         )?;
         Ok(())
     }
 
-    pub fn set_paused(&self, id: &str, paused: bool) -> rusqlite::Result<()> {
+    pub fn set_paused(&self, key: &Key, paused: bool) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE torrents SET paused = ?2 WHERE id = ?1",
-            params![id, paused],
+            "UPDATE torrents SET paused = ?3 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, paused],
         )?;
         Ok(())
     }
 
-    pub fn set_file_priorities(&self, id: &str, prios: &[u8]) -> rusqlite::Result<()> {
+    pub fn set_file_priorities(&self, key: &Key, prios: &[u8]) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE torrents SET file_priorities = ?2 WHERE id = ?1",
-            params![id, prios],
+            "UPDATE torrents SET file_priorities = ?3 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, prios],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_save_path(&self, key: &Key, save_path: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE torrents SET save_path = ?3 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, save_path],
         )?;
         Ok(())
     }
@@ -366,7 +471,7 @@ impl Database {
     /// Store the metadata fetched for a magnet link.
     pub fn set_metadata(
         &self,
-        id: &str,
+        key: &Key,
         torrent: &[u8],
         name: &str,
         info_hash_v1: Option<&str>,
@@ -376,53 +481,126 @@ impl Database {
         self.conn.execute(
             "UPDATE torrents SET torrent = ?2, name = ?3, info_hash_v1 = ?4, info_hash_v2 = ?5,
                  file_priorities = ?6
-             WHERE id = ?1",
+             WHERE id = ?1 AND space_id = ?7",
             params![
-                id,
+                key.id,
                 torrent,
                 name,
                 info_hash_v1,
                 info_hash_v2,
-                file_priorities
+                file_priorities,
+                key.space
             ],
         )?;
         Ok(())
     }
 
-    pub fn set_label(&self, id: &str, label: Option<&str>) -> rusqlite::Result<()> {
+    pub fn set_label(&self, key: &Key, label: Option<&str>) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE torrents SET label = ?2 WHERE id = ?1",
-            params![id, label],
+            "UPDATE torrents SET label = ?3 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, label],
         )?;
         Ok(())
     }
 
-    pub fn remove_torrent(&self, id: &str) -> rusqlite::Result<()> {
-        self.conn
-            .execute("DELETE FROM torrents WHERE id = ?1", [id])?;
+    pub fn remove_torrent(&self, key: &Key) -> rusqlite::Result<()> {
         self.conn.execute(
-            "DELETE FROM superseded WHERE torrent = ?1 OR by_torrent = ?1",
-            [id],
+            "DELETE FROM torrents WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM superseded WHERE space_id = ?1 AND (torrent = ?2 OR by_torrent = ?2)",
+            params![key.space, key.id],
         )?;
         Ok(())
     }
 
-    /// Record that `by` holds every file of `torrent`.
-    pub fn set_superseded(&self, torrent: &str, by: &str) -> rusqlite::Result<()> {
+    /// Record that `by` (in the same space) holds every file of `torrent`.
+    pub fn set_superseded(&self, torrent: &Key, by: &str) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO superseded (torrent, by_torrent) VALUES (?1, ?2)
-             ON CONFLICT(torrent) DO UPDATE SET by_torrent = excluded.by_torrent",
-            params![torrent, by],
+            "INSERT INTO superseded (space_id, torrent, by_torrent) VALUES (?1, ?2, ?3)
+             ON CONFLICT(space_id, torrent) DO UPDATE SET by_torrent = excluded.by_torrent",
+            params![torrent.space, torrent.id, by],
         )?;
         Ok(())
     }
 
-    pub fn superseded(&self) -> rusqlite::Result<Vec<(String, String)>> {
+    pub fn superseded(&self) -> rusqlite::Result<Vec<(Key, String)>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT torrent, by_torrent FROM superseded")?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect()
+            .prepare("SELECT space_id, torrent, by_torrent FROM superseded")?;
+        stmt.query_map([], |r| {
+            Ok((Key::new(r.get(0)?, r.get::<_, String>(1)?), r.get(2)?))
+        })?
+        .collect()
+    }
+
+    // ----- spaces ---------------------------------------------------------------------
+
+    /// Every space, by id. Settings that don't parse read as the defaults.
+    pub fn spaces(&self) -> rusqlite::Result<Vec<Space>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, slug, name, description, settings FROM spaces ORDER BY id")?;
+        stmt.query_map([], |r| {
+            let settings: String = r.get(4)?;
+            Ok(Space {
+                id: r.get(0)?,
+                slug: r.get(1)?,
+                name: r.get(2)?,
+                description: r.get(3)?,
+                settings: serde_json::from_str(&settings).unwrap_or_default(),
+            })
+        })?
+        .collect()
+    }
+
+    /// Create a space; returns its id.
+    pub fn insert_space(
+        &self,
+        slug: &str,
+        name: &str,
+        description: &str,
+        settings: &SpaceSettings,
+        now: i64,
+    ) -> rusqlite::Result<SpaceId> {
+        let json = serde_json::to_string(settings).expect("space settings serialize");
+        self.conn.execute(
+            "INSERT INTO spaces (slug, name, description, settings, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![slug, name, description, json, now],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_space(
+        &self,
+        id: SpaceId,
+        name: &str,
+        description: &str,
+        settings: &SpaceSettings,
+    ) -> rusqlite::Result<bool> {
+        let json = serde_json::to_string(settings).expect("space settings serialize");
+        Ok(self.conn.execute(
+            "UPDATE spaces SET name = ?2, description = ?3, settings = ?4 WHERE id = ?1",
+            params![id, name, description, json],
+        )? == 1)
+    }
+
+    /// Delete an empty space. Refused (`Ok(false)`) while it holds torrents.
+    pub fn delete_space(&self, id: SpaceId) -> rusqlite::Result<bool> {
+        let used: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM torrents WHERE space_id = ?1",
+            [id],
+            |r| r.get(0),
+        )?;
+        if used > 0 {
+            return Ok(false);
+        }
+        Ok(self
+            .conn
+            .execute("DELETE FROM spaces WHERE id = ?1", [id])?
+            == 1)
     }
 
     pub fn set_fingerprint(
@@ -494,14 +672,14 @@ impl Database {
     }
 
     /// Every torrent's seeding state. Rows whose limits don't parse keep no limits.
-    pub fn seed_states(&self) -> rusqlite::Result<Vec<(String, crate::seeding::SeedState)>> {
+    pub fn seed_states(&self) -> rusqlite::Result<Vec<(Key, crate::seeding::SeedState)>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT torrent, seed_secs, limits, reached FROM seeding")?;
+            .prepare("SELECT torrent, seed_secs, limits, reached, space_id FROM seeding")?;
         stmt.query_map([], |r| {
             let limits: Option<String> = r.get(2)?;
             Ok((
-                r.get::<_, String>(0)?,
+                Key::new(r.get(4)?, r.get::<_, String>(0)?),
                 crate::seeding::SeedState {
                     seed_ms: u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0) * 1000,
                     limits: limits.and_then(|l| serde_json::from_str(&l).ok()),
@@ -515,25 +693,27 @@ impl Database {
     /// Store seeding states, in one transaction. Torrents no longer here are skipped.
     pub fn save_seed_states(
         &mut self,
-        rows: &[(String, crate::seeding::SeedState)],
+        rows: &[(Key, crate::seeding::SeedState)],
     ) -> rusqlite::Result<()> {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO seeding (torrent, seed_secs, limits, reached)
-                 SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM torrents WHERE id = ?1)
-                 ON CONFLICT(torrent) DO UPDATE SET seed_secs = excluded.seed_secs,
+                "INSERT INTO seeding (torrent, seed_secs, limits, reached, space_id)
+                 SELECT ?1, ?2, ?3, ?4, ?5
+                 WHERE EXISTS (SELECT 1 FROM torrents WHERE id = ?1 AND space_id = ?5)
+                 ON CONFLICT(space_id, torrent) DO UPDATE SET seed_secs = excluded.seed_secs,
                      limits = excluded.limits, reached = excluded.reached",
             )?;
-            for (id, s) in rows {
+            for (key, s) in rows {
                 let limits = s
                     .limits
                     .map(|l| serde_json::to_string(&l).expect("limits serialize"));
                 stmt.execute(params![
-                    id,
+                    key.id,
                     to_i64(s.seed_ms / 1000),
                     limits,
-                    i64::from(s.reached)
+                    i64::from(s.reached),
+                    key.space
                 ])?;
             }
         }
@@ -571,6 +751,7 @@ mod tests {
 
     fn row(id: &str) -> TorrentRow {
         TorrentRow {
+            space: 1,
             id: id.into(),
             info_hash_v1: Some(id.into()),
             info_hash_v2: None,
@@ -605,10 +786,11 @@ mod tests {
         db.insert_torrent(&row("a")).unwrap();
         db.insert_torrent(&row("b")).unwrap();
         assert!(db.insert_torrent(&row("a")).is_err(), "ids are unique");
-        assert!(db.contains("a").unwrap());
+        let (a, b) = (Key::new(1, "a"), Key::new(1, "b"));
+        assert!(db.contains(&a).unwrap());
 
         db.save_resume(&[ResumeRow {
-            id: "a".into(),
+            key: a.clone(),
             have: vec![0xff],
             placements: vec![0, 2],
             linked: Vec::new(),
@@ -616,12 +798,12 @@ mod tests {
             uploaded_total: 20,
         }])
         .unwrap();
-        db.set_unwanted_policy("b", 1).unwrap();
-        db.set_queue_positions(&[("a".into(), 5), ("b".into(), 2)])
+        db.set_unwanted_policy(&b, 1).unwrap();
+        db.set_queue_positions(&[(a.clone(), 5), (b.clone(), 2)])
             .unwrap();
-        db.set_limits("a", 1000, 2000, Some(30)).unwrap();
-        db.set_paused("b", true).unwrap();
-        db.set_label("b", Some("linux")).unwrap();
+        db.set_limits(&a, 1000, 2000, Some(30)).unwrap();
+        db.set_paused(&b, true).unwrap();
+        db.set_label(&b, Some("linux")).unwrap();
         let rows = db.torrents().unwrap();
         assert_eq!(rows[1].have.as_deref(), Some(&[0xff][..]));
         assert_eq!((rows[1].downloaded_total, rows[1].uploaded_total), (10, 20));
@@ -641,12 +823,93 @@ mod tests {
         assert!(rows[0].paused);
         assert_eq!(rows[0].label.as_deref(), Some("linux"));
 
-        db.remove_torrent("a").unwrap();
+        db.remove_torrent(&a).unwrap();
         assert_eq!(db.torrents().unwrap().len(), 1);
 
         db.set_meta("k", "v1").unwrap();
         db.set_meta("k", "v2").unwrap();
         assert_eq!(db.meta("k").unwrap().as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn one_torrent_in_two_spaces() {
+        let mut db = Database::open_in_memory().unwrap();
+        let spaces = db.spaces().unwrap();
+        assert_eq!(spaces.len(), 1);
+        assert_eq!((spaces[0].id, spaces[0].slug.as_str()), (1, "default"));
+        let tv = db
+            .insert_space("tv", "TV", "", &SpaceSettings::default(), 5)
+            .unwrap();
+        assert!(
+            db.insert_space("tv", "Again", "", &SpaceSettings::default(), 5)
+                .is_err(),
+            "slugs are unique"
+        );
+        db.insert_torrent(&row("a")).unwrap();
+        db.insert_torrent(&TorrentRow {
+            space: tv,
+            save_path: "/tv".into(),
+            ..row("a")
+        })
+        .unwrap();
+        db.save_seed_states(&[(Key::new(tv, "a"), crate::seeding::SeedState::default())])
+            .unwrap();
+        assert!(!db.delete_space(tv).unwrap(), "a space with torrents stays");
+        db.set_label(&Key::new(tv, "a"), Some("shows")).unwrap();
+        let rows = db.torrents().unwrap();
+        assert_eq!(rows.len(), 2);
+        let theirs = rows.iter().find(|r| r.space == tv).unwrap();
+        assert_eq!(theirs.label.as_deref(), Some("shows"));
+        assert!(rows.iter().find(|r| r.space == 1).unwrap().label.is_none());
+        db.remove_torrent(&Key::new(tv, "a")).unwrap();
+        assert!(db.seed_states().unwrap().is_empty(), "seeding rows cascade");
+        assert!(db.contains(&Key::new(1, "a")).unwrap());
+        assert!(db.delete_space(tv).unwrap());
+    }
+
+    /// A database from before spaces: everything lands in `default`, seeding rows and all.
+    #[test]
+    fn upgrading_puts_everything_in_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+            for sql in &MIGRATIONS[..9] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 9).unwrap();
+            conn.execute(
+                "INSERT INTO torrents (id, name, torrent, save_path, added_at, label)
+                 VALUES ('a', 'A', x'01', '/d', 1, 'linux')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO seeding (torrent, seed_secs, reached) VALUES ('a', 60, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO superseded (torrent, by_torrent) VALUES ('a', 'b')",
+                [],
+            )
+            .unwrap();
+        }
+        let db = Database::open(&path).unwrap();
+        let rows = db.torrents().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].space, rows[0].id.as_str()), (1, "a"));
+        assert_eq!(rows[0].label.as_deref(), Some("linux"));
+        let seeding = db.seed_states().unwrap();
+        assert_eq!(seeding.len(), 1);
+        assert_eq!(seeding[0].0, Key::new(1, "a"));
+        assert_eq!(seeding[0].1.seed_ms, 60_000);
+        assert_eq!(
+            db.superseded().unwrap(),
+            [(Key::new(1, "a"), "b".to_owned())]
+        );
+        assert_eq!(db.spaces().unwrap()[0].slug, "default");
     }
 
     #[test]

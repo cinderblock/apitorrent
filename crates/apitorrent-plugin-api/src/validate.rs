@@ -216,6 +216,7 @@ mod tests {
             api_version: PLUGIN_API_VERSION,
             capabilities: caps,
             settings: None,
+            space_aware: false,
         }
     }
 

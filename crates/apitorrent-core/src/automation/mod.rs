@@ -33,8 +33,9 @@ use tokio::sync::Notify;
 
 use apitorrent_plugin_api::SourceFetcher;
 use apitorrent_types::automation::{ReleaseCandidate, StoredCandidate, SubmitCandidatesOutcome};
+use apitorrent_types::spaces::SpaceId;
 
-use crate::{Core, CoreError};
+use crate::{Core, CoreError, Key};
 
 pub use channel::{ChannelKey, VerifyError};
 use db::{AutoDb, DbError};
@@ -106,6 +107,15 @@ impl Automation {
             feeds: tokio::sync::Mutex::new(()),
             polling: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Whether a space still has rules, channels or subscriptions.
+    pub(crate) fn space_in_use(&self, space: SpaceId) -> Result<bool, CoreError> {
+        Ok(self
+            .db
+            .lock()
+            .expect("automation db poisoned")
+            .space_in_use(space)?)
     }
 }
 
@@ -198,20 +208,27 @@ impl Core {
         self.auto().key.public_base64()
     }
 
-    /// Store candidates from a source (`plugin:<id>`, or `channel:<id>` internally). Each
-    /// is checked on its own; bad ones are listed, the rest stored. Rules run soon after.
+    /// Store candidates from a source (`plugin:<id>`, or `channel:<id>` internally), for one
+    /// space's rules or (`None`, a source that isn't space-aware) every space's. Each is
+    /// checked on its own; bad ones are listed, the rest stored. Rules run soon after.
     pub async fn submit_candidates(
         &self,
+        space: Option<SpaceId>,
         source: &str,
         candidates: Vec<ReleaseCandidate>,
     ) -> Result<SubmitCandidatesOutcome, CoreError> {
-        self.store_candidates(source, candidates.into_iter().map(|c| (c, None)).collect())
-            .await
+        self.store_candidates(
+            space.unwrap_or(db::ALL_SPACES),
+            source,
+            candidates.into_iter().map(|c| (c, None)).collect(),
+        )
+        .await
     }
 
     /// [`Self::submit_candidates`], with `.torrent` files.
     async fn store_candidates(
         &self,
+        space: SpaceId,
         source: &str,
         candidates: Vec<(ReleaseCandidate, Option<Vec<u8>>)>,
     ) -> Result<SubmitCandidatesOutcome, CoreError> {
@@ -237,8 +254,8 @@ impl Core {
             let source = source.to_owned();
             let now = now_ms();
             self.auto_db(move |db| {
-                db.upsert_candidates(&source, &good, now)?;
-                db.cap_candidates(&source, MAX_CANDIDATES_PER_SOURCE)?;
+                db.upsert_candidates(space, &source, &good, now)?;
+                db.cap_candidates(space, &source, MAX_CANDIDATES_PER_SOURCE)?;
                 Ok(())
             })
             .await?;
@@ -247,18 +264,25 @@ impl Core {
         Ok(outcome)
     }
 
-    /// Stored candidates, most recently seen first; from `source` only, if given.
+    /// The candidates a space's rules see, most recently seen first; from `source` only, if
+    /// given.
     pub async fn candidates(
         &self,
+        space: SpaceId,
         source: Option<String>,
     ) -> Result<Vec<StoredCandidate>, CoreError> {
-        self.auto_db(move |db| db.candidates(source.as_deref()))
+        self.auto_db(move |db| db.candidates(Some(space), source.as_deref()))
             .await
     }
 
-    /// Forget a source's candidates. Torrents rules took from them stay.
-    pub async fn forget_candidates(&self, source: String) -> Result<usize, CoreError> {
-        self.auto_db(move |db| db.delete_candidates(&source)).await
+    /// Forget a source's candidates in a space. Torrents rules took from them stay.
+    pub async fn forget_candidates(
+        &self,
+        space: SpaceId,
+        source: String,
+    ) -> Result<usize, CoreError> {
+        self.auto_db(move |db| db.delete_candidates(Some(space), &source))
+            .await
     }
 
     /// Run the rules, the aliases and the subscriptions in the background until shutdown.
@@ -310,18 +334,16 @@ impl Core {
         }
     }
 
-    /// The download directory, where rule save paths and aliases are relative to.
-    fn download_dir(&self) -> &Path {
-        &self.inner.config.download_dir
-    }
-
-    /// A rule's save path: absolute as given, or under the download directory.
-    fn rule_save_path(&self, p: Option<&str>) -> Result<Option<PathBuf>, String> {
+    /// A rule's save path: absolute as given, or under its space's download folder (where
+    /// aliases are relative to, too).
+    fn rule_save_path(&self, space: SpaceId, p: Option<&str>) -> Result<Option<PathBuf>, String> {
         let Some(p) = p.map(str::trim).filter(|p| !p.is_empty()) else {
             return Ok(None);
         };
         let path = Path::new(p);
         if path.is_absolute() {
+            self.check_save_path(space, path)
+                .map_err(|e| e.to_string())?;
             return Ok(Some(path.to_path_buf()));
         }
         let plain = path
@@ -334,13 +356,13 @@ impl Core {
                  with no `..`"
             ));
         }
-        Ok(Some(self.download_dir().join(path)))
+        Ok(Some(self.download_dir(space).join(path)))
     }
 
-    /// Where file `index` of torrent `id` is on disk.
-    fn file_disk_path(&self, id: &str, index: usize) -> Option<PathBuf> {
+    /// Where file `index` of a torrent is on disk.
+    fn file_disk_path(&self, key: &Key, index: usize) -> Option<PathBuf> {
         let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
-        let e = torrents.get(id)?;
+        let e = torrents.get(key)?;
         match &e.file_paths {
             Some(paths) => paths
                 .get(index)

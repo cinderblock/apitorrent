@@ -2,11 +2,12 @@
 //! file selection, a dry run, superseding the older one with seed limits, a stable alias
 //! that follows the newest completed release, and removed torrents staying removed.
 
+use apitorrent_types::spaces::DEFAULT_SPACE;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use apitorrent_core::{Core, CoreConfig};
+use apitorrent_core::{Core, CoreConfig, Key};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
 use apitorrent_plugin_api::{AppError, BoxFuture, SourceFetcher};
@@ -29,6 +30,7 @@ impl SourceFetcher for FakeFetcher {
     fn fetch_as(
         &self,
         plugin_id: &str,
+        _space: apitorrent_types::spaces::SpaceId,
         url: &str,
         _max: usize,
     ) -> BoxFuture<Result<Vec<u8>, AppError>> {
@@ -136,7 +138,7 @@ async fn settle(core: &Core, id: &str, what: &str, done: impl Fn(&RuleInfo) -> b
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
         core.run_rules().await;
-        let info = core.rule(id).await.unwrap();
+        let info = core.rule(DEFAULT_SPACE, id).await.unwrap();
         if done(&info) {
             return info;
         }
@@ -182,13 +184,14 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
         mode: MatchMode::Regex,
         pattern: "(".into(),
     });
-    assert!(core.create_rule(bad).await.is_err());
+    assert!(core.create_rule(DEFAULT_SPACE, bad).await.is_err());
     let mut bad = rule();
     bad.alias.as_mut().unwrap().path = "../outside.iso".into();
-    assert!(core.create_rule(bad).await.is_err());
+    assert!(core.create_rule(DEFAULT_SPACE, bad).await.is_err());
 
     let out = core
         .submit_candidates(
+            None,
             "plugin:ubuntu-releases",
             vec![
                 candidate("24.04", "desktop"),
@@ -202,7 +205,7 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
         .await
         .unwrap();
     assert_eq!(out.accepted, 3);
-    let info = core.create_rule(rule()).await.unwrap();
+    let info = core.create_rule(DEFAULT_SPACE, rule()).await.unwrap();
     let id = info.id.clone();
 
     // 24.04 desktop is taken (the server image doesn't match, 24.10 has no link).
@@ -216,7 +219,7 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
         ),
         "the link is fetched as the source plugin"
     );
-    let detail = core.detail(&t24_id).await.unwrap();
+    let detail = core.detail(&k(&t24_id)).await.unwrap();
     assert_eq!(detail.summary.label.as_deref(), Some("ubuntu"));
     assert!(detail.summary.save_path.ends_with("ubuntu"));
     let prios: Vec<(String, u8)> = detail
@@ -244,16 +247,20 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
 
     // A dry run of the rule as if new: 26.04 would be taken, 24.04 is older.
     core.submit_candidates(
+        None,
         "plugin:ubuntu-releases",
         vec![candidate("26.04", "desktop")],
     )
     .await
     .unwrap();
     let dry = core
-        .dry_run(DryRunRequest {
-            rule: rule(),
-            rule_id: None,
-        })
+        .dry_run(
+            DEFAULT_SPACE,
+            DryRunRequest {
+                rule: rule(),
+                rule_id: None,
+            },
+        )
         .await
         .unwrap();
     let verdicts: Vec<(Option<String>, DryRunVerdict)> = dry
@@ -279,7 +286,7 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
         .find(|i| i.version.as_deref() == Some("24.04"))
         .unwrap();
     assert_eq!(old.state, RuleItemState::Superseded);
-    let old_detail = core.detail(&t24_id).await.unwrap();
+    let old_detail = core.detail(&k(&t24_id)).await.unwrap();
     assert_eq!(
         old_detail.seed_limits,
         Some(SeedLimits {
@@ -302,12 +309,12 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
     .await;
     assert_eq!(std::fs::read(&alias).unwrap(), iso26);
     assert_eq!(
-        core.store().get(&t24_id).map(|s| s.state),
+        core.store().get(&k(&t24_id)).map(|s| s.state),
         Some(TorrentState::Seeding)
     );
 
     // Removing the taken torrent by hand: the rule notes it and never takes it again.
-    core.remove(&t26_id, false).await.unwrap();
+    core.remove(&k(&t26_id), false).await.unwrap();
     let info = settle(&core, &id, "26.04 gone", |i| active(i).is_empty()).await;
     assert!(
         info.items
@@ -315,7 +322,7 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
             .any(|i| i.version.as_deref() == Some("26.04") && i.state == RuleItemState::Gone)
     );
     core.run_rules().await;
-    assert!(core.store().get(&t26_id).is_none());
+    assert!(core.store().get(&k(&t26_id)).is_none());
     // The alias outlives the torrent it named.
     assert_eq!(std::fs::read(&alias).unwrap(), iso26);
 
@@ -323,10 +330,16 @@ async fn rules_take_the_latest_supersede_and_keep_an_alias() {
     core.shutdown().await.unwrap();
     drop(core);
     let core = Core::start(cfg).await.unwrap();
-    let info = core.rule(&id).await.unwrap();
+    let info = core.rule(DEFAULT_SPACE, &id).await.unwrap();
     assert_eq!(info.items.len(), 2);
-    assert_eq!(core.rules().await.unwrap().len(), 1);
-    core.delete_rule(&id).await.unwrap();
-    assert!(core.rule(&id).await.is_err());
+    assert_eq!(core.rules(DEFAULT_SPACE).await.unwrap().len(), 1);
+    core.delete_rule(DEFAULT_SPACE, &id).await.unwrap();
+    assert!(core.rule(DEFAULT_SPACE, &id).await.is_err());
     core.shutdown().await.unwrap();
+}
+
+/// A torrent in the default space.
+#[allow(dead_code)]
+fn k(id: &str) -> Key {
+    Key::new(DEFAULT_SPACE, id)
 }

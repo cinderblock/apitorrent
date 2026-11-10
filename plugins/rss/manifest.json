@@ -1,10 +1,11 @@
 {
   "id": "rss",
   "name": "RSS feeds",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Polls RSS, Atom and JSON feeds, offers the items whose titles pass each feed's filters to the server's rules, and adds their torrents and magnet links (each item once) unless a feed is set to leave that to the rules.",
   "author": "apitorrent",
   "apiVersion": 1,
+  "spaceAware": true,
   "capabilities": {
     "networkFromSettings": ["feeds[].url", "downloadHosts[]"],
     "api": ["torrents:add"],

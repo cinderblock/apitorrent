@@ -1,8 +1,9 @@
 //! A torrent's life through the core: add, check, persist, restart, restore, remove.
 
+use apitorrent_types::spaces::DEFAULT_SPACE;
 use std::time::Duration;
 
-use apitorrent_core::{Core, CoreConfig, CoreError};
+use apitorrent_core::{Core, CoreConfig, CoreError, Key};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
 use apitorrent_types::{
@@ -25,13 +26,13 @@ fn config(root: &std::path::Path) -> CoreConfig {
 async fn wait_for(core: &Core, id: &str, state: TorrentState) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
-        if core.store().get(id).is_some_and(|s| s.state == state) {
+        if core.store().get(&k(id)).is_some_and(|s| s.state == state) {
             return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
             "timed out waiting for {state:?}: {:?}",
-            core.store().get(id)
+            core.store().get(&k(id))
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -67,11 +68,14 @@ async fn add_restart_remove() {
         file_priorities: None,
         unwanted_policy: UnwantedPolicy::Hold,
     };
-    let id = core.add(req.clone()).await.unwrap();
-    assert!(matches!(core.add(req).await, Err(CoreError::Duplicate)));
+    let id = core.add(DEFAULT_SPACE, req.clone()).await.unwrap();
+    assert!(matches!(
+        core.add(DEFAULT_SPACE, req).await,
+        Err(CoreError::Duplicate)
+    ));
     wait_for(&core, &id, TorrentState::Seeding).await;
 
-    let detail = core.detail(&id).await.unwrap();
+    let detail = core.detail(&k(&id)).await.unwrap();
     assert_eq!(detail.files.len(), 2);
     assert!(
         detail
@@ -95,7 +99,7 @@ async fn add_restart_remove() {
         .unwrap()
         .index;
     core.set_file_priorities(
-        &id,
+        &k(&id),
         &[FilePriority {
             index: b,
             priority: 0,
@@ -121,32 +125,35 @@ async fn add_restart_remove() {
         "and gone from the save directory"
     );
 
-    core.pause(&id).await.unwrap();
+    core.pause(&k(&id)).await.unwrap();
     wait_for(&core, &id, TorrentState::Paused).await;
     core.shutdown().await.unwrap();
     drop(core);
 
     // Restart: the torrent comes back paused, from resume data rather than a recheck.
     let core = Core::start(cfg.clone()).await.unwrap();
-    let s = core.store().get(&id).expect("restored");
+    let s = core.store().get(&k(&id)).expect("restored");
     assert_eq!(s.state, TorrentState::Paused);
     assert_eq!(s.label.as_deref(), Some("test"));
     assert_eq!(s.pieces_have, s.pieces_total);
-    let detail = core.detail(&id).await.unwrap();
+    let detail = core.detail(&k(&id)).await.unwrap();
     let held_file = detail.files.iter().find(|f| f.index == b).unwrap();
     assert_eq!(
         held_file.placement,
         FilePlacement::Held,
         "placements survive a restart"
     );
-    core.resume(&id).await.unwrap();
+    core.resume(&k(&id)).await.unwrap();
     wait_for(&core, &id, TorrentState::Seeding).await;
 
-    core.remove(&id, true).await.unwrap();
-    assert!(core.store().get(&id).is_none());
+    core.remove(&k(&id), true).await.unwrap();
+    assert!(core.store().get(&k(&id)).is_none());
     assert!(!dir.exists(), "files and the emptied directory are deleted");
     assert!(!held.exists(), "held copies are deleted with the torrent");
-    assert!(matches!(core.pause(&id).await, Err(CoreError::NotFound)));
+    assert!(matches!(
+        core.pause(&k(&id)).await,
+        Err(CoreError::NotFound)
+    ));
     core.shutdown().await.unwrap();
 }
 
@@ -163,14 +170,20 @@ async fn bad_input_is_rejected() {
         unwanted_policy: UnwantedPolicy::Hold,
     };
     let e = core
-        .add(bad(AddSource::TorrentFile { data: "!!!".into() }))
+        .add(
+            DEFAULT_SPACE,
+            bad(AddSource::TorrentFile { data: "!!!".into() }),
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), "invalid_request");
     let e = core
-        .add(bad(AddSource::TorrentFile {
-            data: base64::engine::general_purpose::STANDARD.encode(b"d4:infoi1ee"),
-        }))
+        .add(
+            DEFAULT_SPACE,
+            bad(AddSource::TorrentFile {
+                data: base64::engine::general_purpose::STANDARD.encode(b"d4:infoi1ee"),
+            }),
+        )
         .await
         .unwrap_err();
     assert_eq!(e.code(), "invalid_torrent");
@@ -221,36 +234,36 @@ async fn queue_settings_and_groups() {
 
     // Neither has peers, so both stay downloading; only the first may run.
     let a = core
-        .add(add_req(&small_torrent("a", 1), Some("iso")))
+        .add(DEFAULT_SPACE, add_req(&small_torrent("a", 1), Some("iso")))
         .await
         .unwrap();
     let b = core
-        .add(add_req(&small_torrent("b", 2), None))
+        .add(DEFAULT_SPACE, add_req(&small_torrent("b", 2), None))
         .await
         .unwrap();
     wait_for(&core, &b, TorrentState::Queued).await;
     wait_for(&core, &a, TorrentState::Downloading).await;
     assert_eq!(
-        core.store().get(&a).unwrap().group.as_deref(),
+        core.store().get(&k(&a)).unwrap().group.as_deref(),
         Some("linux")
     );
-    assert_eq!(core.store().get(&b).unwrap().group, None);
+    assert_eq!(core.store().get(&k(&b)).unwrap().group, None);
 
     // Moving b to the top swaps them.
-    core.queue_move(&b, QueueMove::Top).await.unwrap();
+    core.queue_move(&k(&b), QueueMove::Top).await.unwrap();
     wait_for(&core, &a, TorrentState::Queued).await;
     wait_for(&core, &b, TorrentState::Downloading).await;
-    assert_eq!(core.store().get(&b).unwrap().queue_position, 0);
+    assert_eq!(core.store().get(&k(&b)).unwrap().queue_position, 0);
 
     // Relabelling moves a torrent between groups.
-    core.set_label(&b, Some("iso".into())).await.unwrap();
+    core.set_label(&k(&b), Some("iso".into())).await.unwrap();
     assert_eq!(
-        core.store().get(&b).unwrap().group.as_deref(),
+        core.store().get(&k(&b)).unwrap().group.as_deref(),
         Some("linux")
     );
 
     // A user pause takes a torrent out of the queue, freeing its slot.
-    core.pause(&b).await.unwrap();
+    core.pause(&k(&b)).await.unwrap();
     wait_for(&core, &a, TorrentState::Downloading).await;
     wait_for(&core, &b, TorrentState::Paused).await;
 
@@ -260,16 +273,19 @@ async fn queue_settings_and_groups() {
         upload_rate: 2000,
         max_connections: Some(5),
     };
-    core.set_torrent_limits(&a, limits).await.unwrap();
+    core.set_torrent_limits(&k(&a), limits).await.unwrap();
     core.shutdown().await.unwrap();
     drop(core);
 
     // Everything survives a restart.
     let core = Core::start(cfg).await.unwrap();
     assert_eq!(core.settings(), settings);
-    assert_eq!(core.detail(&a).await.unwrap().limits, limits);
-    assert_eq!(core.store().get(&b).unwrap().queue_position, 0);
-    assert_eq!(core.store().get(&b).unwrap().state, TorrentState::Paused);
+    assert_eq!(core.detail(&k(&a)).await.unwrap().limits, limits);
+    assert_eq!(core.store().get(&k(&b)).unwrap().queue_position, 0);
+    assert_eq!(
+        core.store().get(&k(&b)).unwrap().state,
+        TorrentState::Paused
+    );
     wait_for(&core, &a, TorrentState::Downloading).await;
 
     // Invalid settings are refused.
@@ -293,25 +309,28 @@ async fn slow_torrents_free_their_queue_slots() {
     core.set_settings(settings.clone()).await.unwrap();
 
     let a = core
-        .add(add_req(&small_torrent("a", 1), None))
+        .add(DEFAULT_SPACE, add_req(&small_torrent("a", 1), None))
         .await
         .unwrap();
     let b = core
-        .add(add_req(&small_torrent("b", 2), None))
+        .add(DEFAULT_SPACE, add_req(&small_torrent("b", 2), None))
         .await
         .unwrap();
     // At first a holds the only slot: it hasn't had time to prove itself slow.
     wait_for(&core, &a, TorrentState::Downloading).await;
-    assert_eq!(core.store().get(&b).unwrap().state, TorrentState::Queued);
+    assert_eq!(
+        core.store().get(&k(&b)).unwrap().state,
+        TorrentState::Queued
+    );
     // Neither has peers, so a turns slow and b starts. Then b turns slow too, and both run.
     wait_for(&core, &b, TorrentState::Downloading).await;
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     assert_eq!(
-        core.store().get(&a).unwrap().state,
+        core.store().get(&k(&a)).unwrap().state,
         TorrentState::Downloading
     );
     assert_eq!(
-        core.store().get(&b).unwrap().state,
+        core.store().get(&k(&b)).unwrap().state,
         TorrentState::Downloading
     );
 
@@ -320,7 +339,7 @@ async fn slow_torrents_free_their_queue_slots() {
     core.set_settings(settings.clone()).await.unwrap();
     wait_for(&core, &b, TorrentState::Queued).await;
     assert_eq!(
-        core.store().get(&a).unwrap().state,
+        core.store().get(&k(&a)).unwrap().state,
         TorrentState::Downloading
     );
 
@@ -330,10 +349,13 @@ async fn slow_torrents_free_their_queue_slots() {
     core.set_settings(settings).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     assert_eq!(
-        core.store().get(&a).unwrap().state,
+        core.store().get(&k(&a)).unwrap().state,
         TorrentState::Downloading
     );
-    assert_eq!(core.store().get(&b).unwrap().state, TorrentState::Queued);
+    assert_eq!(
+        core.store().get(&k(&b)).unwrap().state,
+        TorrentState::Queued
+    );
     core.shutdown().await.unwrap();
 }
 
@@ -379,18 +401,21 @@ async fn magnet_link_end_to_end() {
         seeder.listen_addr()
     );
     let id = core
-        .add(AddTorrentRequest {
-            source: AddSource::Magnet { uri },
-            save_path: None,
-            paused: false,
-            label: Some("iso".into()),
-            file_priorities: None,
-            unwanted_policy: UnwantedPolicy::Hold,
-        })
+        .add(
+            DEFAULT_SPACE,
+            AddTorrentRequest {
+                source: AddSource::Magnet { uri },
+                save_path: None,
+                paused: false,
+                label: Some("iso".into()),
+                file_priorities: None,
+                unwanted_policy: UnwantedPolicy::Hold,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(id, v1);
-    let s = core.store().get(&id).unwrap();
+    let s = core.store().get(&k(&id)).unwrap();
     assert!(
         matches!(
             s.state,
@@ -406,7 +431,7 @@ async fn magnet_link_end_to_end() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         let d = core
-            .detail(&id)
+            .detail(&k(&id))
             .await
             .expect("details while the metadata arrives");
         if d.summary.state == TorrentState::Seeding {
@@ -419,7 +444,7 @@ async fn magnet_link_end_to_end() {
         );
         tokio::task::yield_now().await;
     }
-    let s = core.store().get(&id).unwrap();
+    let s = core.store().get(&k(&id)).unwrap();
     assert_eq!(s.name, "linux.iso", "the real name replaces the magnet's");
     assert_eq!(s.label.as_deref(), Some("iso"));
     assert_eq!(
@@ -430,7 +455,7 @@ async fn magnet_link_end_to_end() {
     drop(core);
 
     let core = Core::start(cfg).await.unwrap();
-    let s = core.store().get(&id).unwrap();
+    let s = core.store().get(&k(&id)).unwrap();
     assert_eq!(s.name, "linux.iso");
     wait_for(&core, &id, TorrentState::Seeding).await;
     core.shutdown().await.unwrap();
@@ -444,33 +469,48 @@ async fn pending_magnet_can_be_paused_and_removed() {
     let core = Core::start(cfg.clone()).await.unwrap();
     let uri = "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Nowhere";
     let id = core
-        .add(AddTorrentRequest {
-            source: AddSource::Magnet { uri: uri.into() },
-            save_path: None,
-            paused: false,
-            label: None,
-            file_priorities: None,
-            unwanted_policy: UnwantedPolicy::Hold,
-        })
+        .add(
+            DEFAULT_SPACE,
+            AddTorrentRequest {
+                source: AddSource::Magnet { uri: uri.into() },
+                save_path: None,
+                paused: false,
+                label: None,
+                file_priorities: None,
+                unwanted_policy: UnwantedPolicy::Hold,
+            },
+        )
         .await
         .unwrap();
-    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Metadata);
-    assert_eq!(core.store().get(&id).unwrap().name, "Nowhere");
-    let detail = core.detail(&id).await.unwrap();
+    assert_eq!(
+        core.store().get(&k(&id)).unwrap().state,
+        TorrentState::Metadata
+    );
+    assert_eq!(core.store().get(&k(&id)).unwrap().name, "Nowhere");
+    let detail = core.detail(&k(&id)).await.unwrap();
     assert_eq!(detail.magnet, uri);
     assert!(detail.files.is_empty());
-    core.pause(&id).await.unwrap();
-    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Paused);
+    core.pause(&k(&id)).await.unwrap();
+    assert_eq!(
+        core.store().get(&k(&id)).unwrap().state,
+        TorrentState::Paused
+    );
     core.shutdown().await.unwrap();
     drop(core);
 
     // It comes back paused, still waiting for metadata.
     let core = Core::start(cfg).await.unwrap();
-    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Paused);
-    core.resume(&id).await.unwrap();
-    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Metadata);
-    core.remove(&id, true).await.unwrap();
-    assert!(core.store().get(&id).is_none());
+    assert_eq!(
+        core.store().get(&k(&id)).unwrap().state,
+        TorrentState::Paused
+    );
+    core.resume(&k(&id)).await.unwrap();
+    assert_eq!(
+        core.store().get(&k(&id)).unwrap().state,
+        TorrentState::Metadata
+    );
+    core.remove(&k(&id), true).await.unwrap();
+    assert!(core.store().get(&k(&id)).is_none());
     core.shutdown().await.unwrap();
 }
 
@@ -499,20 +539,23 @@ async fn native_naming_follows_the_filesystem() {
     };
     std::fs::write(cfg.download_dir.join(expected), &data).unwrap();
     let id = core
-        .add(AddTorrentRequest {
-            source: AddSource::TorrentFile {
-                data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        .add(
+            DEFAULT_SPACE,
+            AddTorrentRequest {
+                source: AddSource::TorrentFile {
+                    data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+                },
+                save_path: None,
+                paused: false,
+                label: None,
+                file_priorities: None,
+                unwanted_policy: UnwantedPolicy::Hold,
             },
-            save_path: None,
-            paused: false,
-            label: None,
-            file_priorities: None,
-            unwanted_policy: UnwantedPolicy::Hold,
-        })
+        )
         .await
         .unwrap();
     wait_for(&core, &id, TorrentState::Seeding).await;
-    let naming = core.detail(&id).await.unwrap().naming;
+    let naming = core.detail(&k(&id)).await.unwrap().naming;
     if cfg!(windows) {
         assert_eq!(naming, apitorrent_types::NamingPolicy::Portable);
     } else {
@@ -622,11 +665,17 @@ async fn a_pack_reuses_and_supersedes_single_episodes() {
     std::fs::write(cfg.download_dir.join("Show.S01E01.mkv"), &e1).unwrap();
     std::fs::write(cfg.download_dir.join("Show.S01E02.mkv"), &e2).unwrap();
     let s1 = core
-        .add(add_bytes(&single("Show.S01E01.mkv", &e1, Some(&tracker))))
+        .add(
+            DEFAULT_SPACE,
+            add_bytes(&single("Show.S01E01.mkv", &e1, Some(&tracker))),
+        )
         .await
         .unwrap();
     let s2 = core
-        .add(add_bytes(&single("Show.S01E02.mkv", &e2, None)))
+        .add(
+            DEFAULT_SPACE,
+            add_bytes(&single("Show.S01E02.mkv", &e2, None)),
+        )
         .await
         .unwrap();
     wait_for(&core, &s1, TorrentState::Seeding).await;
@@ -639,36 +688,39 @@ async fn a_pack_reuses_and_supersedes_single_episodes() {
         .file(FileSource::from_bytes(&["Show.S01E02.mkv"], e2.clone()))
         .build()
         .unwrap();
-    let pack = core.add(add_bytes(&pack_bytes)).await.unwrap();
+    let pack = core
+        .add(DEFAULT_SPACE, add_bytes(&pack_bytes))
+        .await
+        .unwrap();
     // No peers at all: it can only finish from the library.
     wait_for(&core, &pack, TorrentState::Seeding).await;
     let season = cfg.download_dir.join("Show Season 1");
     assert_eq!(std::fs::read(season.join("Show.S01E01.mkv")).unwrap(), e1);
     assert_eq!(std::fs::read(season.join("Show.S01E02.mkv")).unwrap(), e2);
     assert_eq!(
-        core.store().get(&pack).unwrap().downloaded,
+        core.store().get(&k(&pack)).unwrap().downloaded,
         0,
         "nothing downloaded"
     );
     // Supersession waits for the pack's check to prove the files, then lands within a
     // refresh.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while core.store().get(&s2).unwrap().superseded_by.is_none() {
+    while core.store().get(&k(&s2)).unwrap().superseded_by.is_none() {
         assert!(tokio::time::Instant::now() < deadline, "never superseded");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(
-        core.store().get(&s1).unwrap().superseded_by.as_deref(),
+        core.store().get(&k(&s1)).unwrap().superseded_by.as_deref(),
         Some(pack.as_str())
     );
     assert_eq!(
-        core.store().get(&s2).unwrap().superseded_by.as_deref(),
+        core.store().get(&k(&s2)).unwrap().superseded_by.as_deref(),
         Some(pack.as_str())
     );
 
     // Episode 1's tracker calls it unregistered: it is retired, its file stays.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while core.store().get(&s1).is_some() {
+    while core.store().get(&k(&s1)).is_some() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "episode 1 was never retired"
@@ -681,11 +733,11 @@ async fn a_pack_reuses_and_supersedes_single_episodes() {
         "retiring keeps the file"
     );
     assert!(
-        core.store().get(&s2).is_some(),
+        core.store().get(&k(&s2)).is_some(),
         "episode 2's tracker is fine"
     );
     assert_eq!(
-        core.store().get(&pack).unwrap().state,
+        core.store().get(&k(&pack)).unwrap().state,
         TorrentState::Seeding
     );
     core.shutdown().await.unwrap();
@@ -713,7 +765,7 @@ async fn a_repack_downloads_only_what_changed() {
         .build()
         .unwrap();
     std::fs::write(cfg.download_dir.join("show.mkv"), &old).unwrap();
-    let s = core.add(add_bytes(&single)).await.unwrap();
+    let s = core.add(DEFAULT_SPACE, add_bytes(&single)).await.unwrap();
     wait_for(&core, &s, TorrentState::Seeding).await;
 
     let seeder = Session::start(SessionConfig {
@@ -746,12 +798,12 @@ async fn a_repack_downloads_only_what_changed() {
             .unwrap();
         seed.wait_finished().await;
 
-        let id = core.add(add_bytes(&bytes)).await.unwrap();
+        let id = core.add(DEFAULT_SPACE, add_bytes(&bytes)).await.unwrap();
         wait_for(&core, &id, TorrentState::Seeding).await;
 
         let path = cfg.download_dir.join(dir).join("show.mkv");
         assert_eq!(std::fs::read(&path).unwrap(), new, "{dir}");
-        let downloaded = core.store().get(&id).unwrap().downloaded;
+        let downloaded = core.store().get(&k(&id)).unwrap().downloaded;
         assert!(
             downloaded >= PIECE as u64 && downloaded < 3 * PIECE as u64,
             "{dir}: downloaded {downloaded} bytes, expected about one piece"
@@ -763,7 +815,11 @@ async fn a_repack_downloads_only_what_changed() {
         );
         // Settling happens within a refresh after the check; give it a few.
         tokio::time::sleep(Duration::from_secs(3)).await;
-        assert_eq!(core.store().get(&s).unwrap().superseded_by, None, "{dir}");
+        assert_eq!(
+            core.store().get(&k(&s)).unwrap().superseded_by,
+            None,
+            "{dir}"
+        );
     }
     core.shutdown().await.unwrap();
 }
@@ -784,7 +840,7 @@ async fn fingerprints_let_v2_torrents_reuse_v1_files() {
         .build()
         .unwrap();
     std::fs::write(cfg.download_dir.join("old.iso"), &data).unwrap();
-    let old = core.add(add_bytes(&v1)).await.unwrap();
+    let old = core.add(DEFAULT_SPACE, add_bytes(&v1)).await.unwrap();
     wait_for(&core, &old, TorrentState::Seeding).await;
     assert_eq!(core.fingerprint_now().await, 1);
     assert_eq!(core.fingerprint_now().await, 0, "nothing left to do");
@@ -799,14 +855,14 @@ async fn fingerprints_let_v2_torrents_reuse_v1_files() {
         .file(FileSource::from_bytes(&[], data.clone()))
         .build()
         .unwrap();
-    let new = core.add(add_bytes(&v2)).await.unwrap();
+    let new = core.add(DEFAULT_SPACE, add_bytes(&v2)).await.unwrap();
     // No peers: it can only finish from the library.
     wait_for(&core, &new, TorrentState::Seeding).await;
     assert_eq!(
         std::fs::read(cfg.download_dir.join("new.iso")).unwrap(),
         data
     );
-    assert_eq!(core.store().get(&new).unwrap().downloaded, 0);
+    assert_eq!(core.store().get(&k(&new)).unwrap().downloaded, 0);
     core.shutdown().await.unwrap();
 }
 
@@ -830,14 +886,14 @@ async fn seed_limits_pause_then_remove() {
         .build()
         .unwrap();
     std::fs::write(cfg.download_dir.join("share.bin"), &data).unwrap();
-    let id = core.add(add_bytes(&bytes)).await.unwrap();
+    let id = core.add(DEFAULT_SPACE, add_bytes(&bytes)).await.unwrap();
     wait_for(&core, &id, TorrentState::Seeding).await;
     let ratio_1 = |action| SeedLimits {
         ratio: 1.0,
         seed_minutes: 0,
         action,
     };
-    core.set_seed_limits(&id, Some(ratio_1(SeedLimitAction::Pause)))
+    core.set_seed_limits(&k(&id), Some(ratio_1(SeedLimitAction::Pause)))
         .await
         .unwrap();
 
@@ -862,7 +918,7 @@ async fn seed_limits_pause_then_remove() {
         .expect("the leecher finished");
 
     wait_for(&core, &id, TorrentState::Paused).await;
-    let d = core.detail(&id).await.unwrap();
+    let d = core.detail(&k(&id)).await.unwrap();
     assert!(d.seed_limit_reached);
     assert!(
         d.seeding_secs >= 1,
@@ -871,17 +927,20 @@ async fn seed_limits_pause_then_remove() {
     );
 
     // Resumed by hand, it seeds on.
-    core.resume(&id).await.unwrap();
+    core.resume(&k(&id)).await.unwrap();
     wait_for(&core, &id, TorrentState::Seeding).await;
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(core.store().get(&id).unwrap().state, TorrentState::Seeding);
+    assert_eq!(
+        core.store().get(&k(&id)).unwrap().state,
+        TorrentState::Seeding
+    );
 
     // New limits of its own act again: this time, removal. The file stays.
-    core.set_seed_limits(&id, Some(ratio_1(SeedLimitAction::Remove)))
+    core.set_seed_limits(&k(&id), Some(ratio_1(SeedLimitAction::Remove)))
         .await
         .unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while core.store().get(&id).is_some() {
+    while core.store().get(&k(&id)).is_some() {
         assert!(tokio::time::Instant::now() < deadline, "never removed");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -955,22 +1014,25 @@ async fn deluge_import() {
 
     let core = Core::start(cfg.clone()).await.unwrap();
     let report = core
-        .import_deluge(apitorrent_types::ImportDelugeRequest {
-            config_dir: deluge.to_string_lossy().into_owned(),
-            path_map: vec![apitorrent_types::PathMapping {
-                from: deluge_save.into(),
-                to: real_save.to_string_lossy().into_owned(),
-            }],
-            import_settings: false,
-            paused: false,
-        })
+        .import_deluge(
+            DEFAULT_SPACE,
+            apitorrent_types::ImportDelugeRequest {
+                config_dir: deluge.to_string_lossy().into_owned(),
+                path_map: vec![apitorrent_types::PathMapping {
+                    from: deluge_save.into(),
+                    to: real_save.to_string_lossy().into_owned(),
+                }],
+                import_settings: false,
+                paused: false,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(report.imported, ["album"], "{report:?}");
     assert!(report.skipped.is_empty(), "{report:?}");
 
     wait_for(&core, &id, TorrentState::Seeding).await;
-    let s = core.store().get(&id).unwrap();
+    let s = core.store().get(&k(&id)).unwrap();
     assert_eq!(s.label.as_deref(), Some("music"));
     assert_eq!(s.downloaded, 90_000);
     assert_eq!(s.uploaded, 12_345);
@@ -982,12 +1044,15 @@ async fn deluge_import() {
 
     // Importing again skips it.
     let again = core
-        .import_deluge(apitorrent_types::ImportDelugeRequest {
-            config_dir: deluge.to_string_lossy().into_owned(),
-            path_map: Vec::new(),
-            import_settings: false,
-            paused: false,
-        })
+        .import_deluge(
+            DEFAULT_SPACE,
+            apitorrent_types::ImportDelugeRequest {
+                config_dir: deluge.to_string_lossy().into_owned(),
+                path_map: Vec::new(),
+                import_settings: false,
+                paused: false,
+            },
+        )
         .await
         .unwrap();
     assert!(again.imported.is_empty());
@@ -999,4 +1064,10 @@ async fn deluge_import() {
     let core = Core::start(cfg).await.unwrap();
     wait_for(&core, &id, TorrentState::Seeding).await;
     core.shutdown().await.unwrap();
+}
+
+/// A torrent in the default space.
+#[allow(dead_code)]
+fn k(id: &str) -> Key {
+    Key::new(DEFAULT_SPACE, id)
 }

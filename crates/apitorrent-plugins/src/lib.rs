@@ -49,6 +49,8 @@ use apitorrent_plugin_api::{
 
 pub use fetch::FetchConfig;
 
+use apitorrent_types::spaces::{DEFAULT_SPACE, SpaceId};
+
 use crate::logs::LogRing;
 use crate::ops::PluginCtx;
 use crate::runtime::{HostMsg, Limits, RunShared, STOP_GRACE};
@@ -256,12 +258,14 @@ impl PluginHost {
 
     /// Running plugins that provide `role`, each with the plain data of the object it
     /// provided (see `api.roles.provide`). Plugins that declare the role but haven't
-    /// provided it yet are left out.
+    /// provided it yet are left out. A space-aware plugin counts once, by its `default`
+    /// instance.
     pub fn providers(&self, role: PluginRole) -> Vec<(String, serde_json::Value)> {
         let name = role_name(role);
         let slots = self.inner.slots.lock().expect("slots lock poisoned");
         let mut out: Vec<(String, serde_json::Value)> = slots
             .iter()
+            .filter(|(key, _)| !key.contains('@'))
             .filter_map(|(id, slot)| {
                 let run = slot.run.as_ref()?;
                 if !run.shared.started.load(Ordering::Acquire) {
@@ -411,13 +415,6 @@ impl PluginHost {
         })
     }
 
-    fn effective_settings(&self, row: &PluginRow) -> Result<serde_json::Value, PluginError> {
-        Ok(match self.settings_schema(row)? {
-            Some(s) => schema::with_defaults(&s, &row.settings),
-            None => row.settings.clone(),
-        })
-    }
-
     fn info(&self, row: &PluginRow) -> Result<PluginInfo, PluginError> {
         let active = match &row.active_version {
             Some(v) => Some(self.manifest(&row.id, v)?),
@@ -468,12 +465,74 @@ impl PluginHost {
         self.info(&self.row(id)?)
     }
 
-    /// Start the active version on its own thread.
+    /// The spaces a plugin runs instances in: one per space for a space-aware plugin (when
+    /// the app has spaces), else `None`, its single global instance.
+    fn instance_spaces(&self, row: &PluginRow) -> Result<Vec<Option<SpaceId>>, PluginError> {
+        let Some(version) = &row.active_version else {
+            return Ok(vec![None]);
+        };
+        if self.manifest(&row.id, version)?.space_aware {
+            Ok(self.inner.app.spaces().into_iter().map(Some).collect())
+        } else {
+            Ok(vec![None])
+        }
+    }
+
+    /// The instance that serves `space` for plugin `id`: its own there if it is
+    /// space-aware, else its only one.
+    fn key_for(&self, id: &str, space: SpaceId) -> String {
+        if self.space_aware_id(id) {
+            instance_key(id, Some(space))
+        } else {
+            id.to_owned()
+        }
+    }
+
+    fn space_aware_id(&self, id: &str) -> bool {
+        self.row(id).is_ok_and(|row| {
+            row.active_version
+                .as_ref()
+                .and_then(|v| self.manifest(id, v).ok())
+                .is_some_and(|m| m.space_aware)
+        })
+    }
+
+    /// The stored settings of one instance (without defaults).
+    fn instance_settings(
+        &self,
+        row: &PluginRow,
+        space: Option<SpaceId>,
+    ) -> Result<serde_json::Value, PluginError> {
+        Ok(match space {
+            Some(s) if s != DEFAULT_SPACE => self
+                .inner
+                .store
+                .space_settings(&row.id, s)?
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+            _ => row.settings.clone(),
+        })
+    }
+
+    /// Start every instance of the active version, each on its own thread.
     fn start_run(&self, id: &str) -> Result<(), PluginError> {
-        if self.current_run(id).is_some() {
+        let row = self.row(id)?;
+        let mut first_error = None;
+        for space in self.instance_spaces(&row)? {
+            if let Err(e) = self.start_instance(&row, space) {
+                first_error.get_or_insert(e);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+
+    /// Start one instance: the global one (`None`) or a space-aware plugin's in a space.
+    fn start_instance(&self, row: &PluginRow, space: Option<SpaceId>) -> Result<(), PluginError> {
+        let id = row.id.as_str();
+        let key = instance_key(id, space);
+        if self.current_run(&key).is_some() {
             return Ok(());
         }
-        let row = self.row(id)?;
+        let row = row.clone();
         let version = row
             .active_version
             .clone()
@@ -485,11 +544,23 @@ impl PluginHost {
             .ok_or_else(|| PluginError::Internal(format!("version {version} is missing")))?;
         let code = self.inner.store.read_code(&stored.sha256)?;
         let manifest = Arc::new(stored.manifest);
-        let settings = self.effective_settings(&row)?;
+        let raw = self.instance_settings(&row, space)?;
+        let settings = match &manifest.settings {
+            Some(s) => schema::with_defaults(s, &raw),
+            None => raw,
+        };
+        let app = match space {
+            Some(s) => self
+                .inner
+                .app
+                .for_space(s)
+                .unwrap_or_else(|| self.inner.app.clone()),
+            None => self.inner.app.clone(),
+        };
         if let Some(s) = &manifest.settings
             && let Err(errors) = schema::validate(s, &settings)
         {
-            self.slot_logs(id).host(
+            self.slot_logs(&key).host(
                 PluginLogLevel::Warn,
                 &format!(
                     "its settings don't match its schema; fix them in the settings: {}",
@@ -503,14 +574,15 @@ impl PluginHost {
         let generation = self.inner.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let shared = Arc::new(RunShared::new(generation));
         let (tx, inbox) = mpsc::unbounded_channel();
-        let logs = self.slot_logs(id);
+        let logs = self.slot_logs(&key);
         let ctx = PluginCtx {
             id: id.to_owned(),
+            store_key: key.clone(),
             version: version.clone(),
             caps,
             net: net.clone(),
             settings,
-            app: self.inner.app.clone(),
+            app,
             main: self.inner.main.clone(),
             store: self.inner.store.clone(),
             logs: logs.clone(),
@@ -523,7 +595,7 @@ impl PluginHost {
         let (exit_tx, exited) = watch::channel(false);
         let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
-        let (exit_id, exit_stopping) = (id.to_owned(), stopping.clone());
+        let (exit_id, exit_key, exit_stopping) = (id.to_owned(), key.clone(), stopping.clone());
         // Signal the exit before clearing the slot: `start_run` checks the signal under the
         // slots lock before recording the run, so a run that ends at once is never recorded
         // after `finish_run` has looked for it.
@@ -532,6 +604,7 @@ impl PluginHost {
             if let Some(inner) = weak.upgrade() {
                 PluginHost { inner }.finish_run(
                     &exit_id,
+                    &exit_key,
                     generation,
                     exit_stopping.load(Ordering::Acquire),
                     result,
@@ -552,7 +625,7 @@ impl PluginHost {
         })?;
         self.inner.watchdog.watch(&shared, isolate.clone());
         let mut slots = self.inner.slots.lock().expect("slots lock poisoned");
-        if let Some(slot) = slots.get_mut(id) {
+        if let Some(slot) = slots.get_mut(&key) {
             // The run may already have ended (a plugin that fails at once).
             if !*exited.borrow() {
                 slot.run = Some(Run {
@@ -569,12 +642,19 @@ impl PluginHost {
         Ok(())
     }
 
-    /// Called on the plugin's thread when a run ends.
-    fn finish_run(&self, id: &str, generation: u64, stopping: bool, result: runtime::Exit) {
-        let logs = self.slot_logs(id);
+    /// Called on the plugin's thread when a run (of instance `key`) ends.
+    fn finish_run(
+        &self,
+        id: &str,
+        key: &str,
+        generation: u64,
+        stopping: bool,
+        result: runtime::Exit,
+    ) {
+        let logs = self.slot_logs(key);
         {
             let mut slots = self.inner.slots.lock().expect("slots lock poisoned");
-            if let Some(slot) = slots.get_mut(id)
+            if let Some(slot) = slots.get_mut(key)
                 && slot
                     .run
                     .as_ref()
@@ -597,8 +677,59 @@ impl PluginHost {
         }
     }
 
-    /// Stop the plugin's run, if any: ask it to stop, then end it after a grace period.
+    /// The keys of a plugin's instances that have slots.
+    fn instance_keys(&self, id: &str) -> Vec<String> {
+        let prefix = format!("{id}@");
+        self.inner
+            .slots
+            .lock()
+            .expect("slots lock poisoned")
+            .keys()
+            .filter(|k| *k == id || k.starts_with(&prefix))
+            .cloned()
+            .collect()
+    }
+
+    /// Stop every instance of the plugin.
     async fn stop_run(&self, id: &str) {
+        let keys = self.instance_keys(id);
+        futures_join_all(keys.iter().map(|k| self.stop_instance(k))).await;
+    }
+
+    /// Start and stop space-aware plugins' instances to match the spaces there are.
+    async fn reconcile_spaces(&self) {
+        let _lock = self.inner.lifecycle.lock().await;
+        let Ok(rows) = self.inner.store.plugins() else {
+            return;
+        };
+        for row in rows
+            .iter()
+            .filter(|r| r.enabled && r.active_version.is_some())
+        {
+            let Ok(spaces) = self.instance_spaces(row) else {
+                continue;
+            };
+            let wanted: Vec<String> = spaces.iter().map(|s| instance_key(&row.id, *s)).collect();
+            for key in self.instance_keys(&row.id) {
+                if !wanted.contains(&key) && self.current_run(&key).is_some() {
+                    self.stop_instance(&key).await;
+                    self.inner
+                        .slots
+                        .lock()
+                        .expect("slots lock poisoned")
+                        .remove(&key);
+                }
+            }
+            for space in spaces {
+                if let Err(e) = self.start_instance(row, space) {
+                    tracing::warn!(plugin = %row.id, ?space, error = %e, "could not start an instance");
+                }
+            }
+        }
+    }
+
+    /// Stop one instance's run, if any: ask it to stop, then end it after a grace period.
+    async fn stop_instance(&self, id: &str) {
         let Some(run) = self.current_run(id) else {
             return;
         };
@@ -765,11 +896,12 @@ impl PluginHost {
         self.row(id)?;
         self.stop_run(id).await;
         self.inner.store.remove(id)?;
-        self.inner
-            .slots
-            .lock()
-            .expect("slots lock poisoned")
-            .remove(id);
+        let keys = self.instance_keys(id);
+        let mut slots = self.inner.slots.lock().expect("slots lock poisoned");
+        for k in keys {
+            slots.remove(&k);
+        }
+        drop(slots);
         if let Err(e) = self.inner.store.collect_garbage() {
             tracing::warn!(error = %e, "could not clean up old plugin bundles");
         }
@@ -777,10 +909,19 @@ impl PluginHost {
         Ok(())
     }
 
-    fn settings_inner(&self, id: &str) -> Result<PluginSettings, PluginError> {
+    /// The instance (`None`: the global or `default` one) a request in `space` means.
+    fn settings_space(&self, id: &str, space: SpaceId) -> Option<SpaceId> {
+        (self.space_aware_id(id) && space != DEFAULT_SPACE).then_some(space)
+    }
+
+    fn settings_inner(&self, id: &str, space: SpaceId) -> Result<PluginSettings, PluginError> {
         let row = self.row(id)?;
         let schema = self.settings_schema(&row)?;
-        let mut values = self.effective_settings(&row)?;
+        let raw = self.instance_settings(&row, self.settings_space(id, space))?;
+        let mut values = match &schema {
+            Some(s) => schema::with_defaults(s, &raw),
+            None => raw,
+        };
         let mut secrets_set = Vec::new();
         if let (Some(s), Some(obj)) = (&schema, values.as_object_mut()) {
             for k in schema::secrets(s) {
@@ -802,10 +943,13 @@ impl PluginHost {
     async fn set_settings_inner(
         &self,
         id: &str,
+        space: SpaceId,
         values: serde_json::Value,
     ) -> Result<PluginSettings, PluginError> {
         let _lock = self.inner.lifecycle.lock().await;
         let row = self.row(id)?;
+        let instance = self.settings_space(id, space);
+        let stored = self.instance_settings(&row, instance)?;
         let schema = self
             .settings_schema(&row)?
             .ok_or_else(|| PluginError::InvalidRequest("this plugin has no settings".to_owned()))?;
@@ -818,7 +962,7 @@ impl PluginHost {
         for k in schema::secrets(&schema) {
             match incoming.get(&k) {
                 None => {
-                    if let Some(old) = row.settings.get(&k) {
+                    if let Some(old) = stored.get(&k) {
                         incoming.insert(k, old.clone());
                     }
                 }
@@ -839,15 +983,19 @@ impl PluginHost {
         let effective = schema::with_defaults(&schema, &merged);
         schema::validate(&schema, &effective)
             .map_err(|errors| PluginError::InvalidRequest(errors.join("; ")))?;
-        self.inner.store.set_settings(id, &merged)?;
-        if let Some(run) = self.current_run(id) {
+        match instance {
+            Some(s) => self.inner.store.set_space_settings(id, s, &merged)?,
+            None => self.inner.store.set_settings(id, &merged)?,
+        }
+        let key = self.key_for(id, space);
+        if let Some(run) = self.current_run(&key) {
             *run.net.write().expect("grants lock poisoned") =
                 grants_for(&run.manifest.capabilities, &effective);
             let _ = run.tx.send(HostMsg::Settings(effective));
         }
-        self.slot_logs(id)
+        self.slot_logs(&key)
             .host(PluginLogLevel::Info, "settings changed");
-        self.settings_inner(id)
+        self.settings_inner(id, space)
     }
 
     async fn http_inner(
@@ -871,7 +1019,7 @@ impl PluginHost {
         if route.auth == PluginRouteAuth::Api && req.caller.is_none() {
             return Err(PluginError::Unauthenticated);
         }
-        let run = self.running(id)?;
+        let run = self.running(&self.key_for(id, req.space))?;
         let (reply, rx) = oneshot::channel();
         run.tx
             .send(HostMsg::Http(req, reply))
@@ -893,7 +1041,7 @@ impl PluginHost {
             .filter(|(_, s)| s.run.is_some())
             .map(|(id, _)| id.clone())
             .collect();
-        let stops = ids.iter().map(|id| self.stop_run(id));
+        let stops = ids.iter().map(|id| self.stop_instance(id));
         futures_join_all(stops).await;
     }
 }
@@ -930,6 +1078,15 @@ fn version_newer(a: &str, b: &str) -> bool {
     }
 }
 
+/// A plugin instance's slot: the plugin id for its global (or `default`) instance,
+/// `<id>@<space>` for a space-aware plugin's instance in another space.
+fn instance_key(id: &str, space: Option<SpaceId>) -> String {
+    match space {
+        Some(s) if s != DEFAULT_SPACE => format!("{id}@{s}"),
+        _ => id.to_owned(),
+    }
+}
+
 fn not_running() -> PluginError {
     PluginError::NotRunning("the plugin isn't running".to_owned())
 }
@@ -955,13 +1112,16 @@ impl apitorrent_plugin_api::SourceFetcher for PluginHost {
     fn fetch_as(
         &self,
         plugin_id: &str,
+        space: SpaceId,
         url: &str,
         max_bytes: usize,
     ) -> BoxFuture<Result<Vec<u8>, apitorrent_plugin_api::AppError>> {
         use apitorrent_plugin_api::AppError;
-        let run = self.running(plugin_id);
+        // A space-aware source's instance in that space, with its own settings' grants.
+        let key = self.key_for(plugin_id, space);
+        let run = self.running(&key);
         let fetcher = self.inner.fetcher.clone();
-        let logs = self.slot_logs(plugin_id);
+        let logs = self.slot_logs(&key);
         let url = url.to_owned();
         Box::pin(async move {
             let run = run.map_err(|e| AppError::new("not_running", e.to_string()))?;
@@ -1067,22 +1227,37 @@ impl PluginService for PluginHost {
         Box::pin(async move { host.uninstall_inner(&id).await })
     }
 
-    fn logs(&self, id: &str, after: Option<u64>) -> Result<Vec<PluginLogEntry>, PluginError> {
+    fn logs(
+        &self,
+        id: &str,
+        space: SpaceId,
+        after: Option<u64>,
+    ) -> Result<Vec<PluginLogEntry>, PluginError> {
         self.row(id)?;
-        Ok(self.slot_logs(id).since(after))
+        Ok(self.slot_logs(&self.key_for(id, space)).since(after))
     }
 
-    fn settings(&self, id: &str) -> Result<PluginSettings, PluginError> {
-        self.settings_inner(id)
+    fn settings(&self, id: &str, space: SpaceId) -> Result<PluginSettings, PluginError> {
+        self.settings_inner(id, space)
     }
 
     fn set_settings(
         &self,
         id: String,
+        space: SpaceId,
         values: serde_json::Value,
     ) -> BoxFuture<Result<PluginSettings, PluginError>> {
         let host = self.clone();
-        Box::pin(async move { host.set_settings_inner(&id, values).await })
+        Box::pin(async move { host.set_settings_inner(&id, space, values).await })
+    }
+
+    fn space_aware(&self, id: &str) -> bool {
+        self.space_aware_id(id)
+    }
+
+    fn spaces_changed(&self) -> BoxFuture<()> {
+        let host = self.clone();
+        Box::pin(async move { host.reconcile_spaces().await })
     }
 
     fn http(

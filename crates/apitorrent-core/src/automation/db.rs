@@ -13,6 +13,7 @@ use apitorrent_types::automation::{
     AliasMethod, ChannelSpec, ReleaseCandidate, RuleItem, RuleItemState, RuleSpec, StoredCandidate,
     SubscriptionSpec,
 };
+use apitorrent_types::spaces::SpaceId;
 
 const MIGRATIONS: &[&str] = &[
     // 1: everything.
@@ -79,12 +80,41 @@ const MIGRATIONS: &[&str] = &[
         created_at    INTEGER NOT NULL
     );
     ",
+    // 2: spaces. Rules, channels and subscriptions belong to one (1 is `default`, which
+    // holds everything from before). A candidate belongs to the space whose source offered
+    // it, or to every space (0) when its source is global.
+    "
+    ALTER TABLE rules ADD COLUMN space_id INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE channels ADD COLUMN space_id INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE subscriptions ADD COLUMN space_id INTEGER NOT NULL DEFAULT 1;
+    CREATE TABLE candidates_v2 (
+        space_id   INTEGER NOT NULL DEFAULT 0,
+        source     TEXT NOT NULL,
+        id         TEXT NOT NULL,
+        candidate  TEXT NOT NULL,
+        metainfo   BLOB,
+        first_seen INTEGER NOT NULL,
+        last_seen  INTEGER NOT NULL,
+        PRIMARY KEY (space_id, source, id)
+    );
+    INSERT INTO candidates_v2 (space_id, source, id, candidate, metainfo, first_seen, last_seen)
+        SELECT CASE WHEN source LIKE 'channel:%' THEN 1 ELSE 0 END,
+               source, id, candidate, metainfo, first_seen, last_seen
+        FROM candidates;
+    DROP TABLE candidates;
+    ALTER TABLE candidates_v2 RENAME TO candidates;
+    ",
 ];
+
+/// Candidates of every space: what a global source (a plugin that isn't space-aware)
+/// offers.
+pub const ALL_SPACES: SpaceId = 0;
 
 /// A stored rule.
 #[derive(Debug, Clone)]
 pub struct RuleRow {
     pub id: String,
+    pub space: SpaceId,
     pub spec: RuleSpec,
     pub created_at: i64,
     pub updated_at: i64,
@@ -117,6 +147,7 @@ pub struct AliasRow {
 #[derive(Debug, Clone)]
 pub struct ChannelRow {
     pub id: String,
+    pub space: SpaceId,
     pub spec: ChannelSpec,
     pub revision: u64,
     pub entries_hash: Option<Vec<u8>>,
@@ -127,6 +158,7 @@ pub struct ChannelRow {
 #[derive(Debug, Clone)]
 pub struct SubscriptionRow {
     pub id: String,
+    pub space: SpaceId,
     /// Stored without its token.
     pub spec: SubscriptionSpec,
     pub token: Option<String>,
@@ -138,8 +170,8 @@ pub struct SubscriptionRow {
     pub created_at: i64,
 }
 
-/// A `channels` row as read: id, spec, revision, entries hash, entries, updated.
-type ChannelColumns = (String, String, i64, Option<Vec<u8>>, i64, i64);
+/// A `channels` row as read: id, spec, revision, entries hash, entries, updated, space.
+type ChannelColumns = (String, String, i64, Option<Vec<u8>>, i64, i64, SpaceId);
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -270,6 +302,7 @@ impl AutoDb {
     /// the stored `.torrent` when given.
     pub fn upsert_candidates(
         &mut self,
+        space: SpaceId,
         source: &str,
         candidates: &[(ReleaseCandidate, Option<Vec<u8>>)],
         now: i64,
@@ -277,9 +310,10 @@ impl AutoDb {
         let tx = self.conn.transaction()?;
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO candidates (source, id, candidate, metainfo, first_seen, last_seen)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-                 ON CONFLICT (source, id) DO UPDATE SET
+                "INSERT INTO candidates (source, id, candidate, metainfo, first_seen, last_seen,
+                     space_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
+                 ON CONFLICT (space_id, source, id) DO UPDATE SET
                     candidate = excluded.candidate,
                     metainfo = COALESCE(excluded.metainfo, candidates.metainfo),
                     last_seen = excluded.last_seen",
@@ -290,7 +324,8 @@ impl AutoDb {
                     c.id,
                     serde_json::to_string(c)?,
                     meta.as_deref(),
-                    now
+                    now,
+                    space
                 ])?;
             }
         }
@@ -302,14 +337,20 @@ impl AutoDb {
         Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
     }
 
-    /// Candidates, newest first by when they were last seen; from `source` only if given.
-    pub fn candidates(&self, source: Option<&str>) -> DbResult<Vec<StoredCandidate>> {
+    /// Candidates a space sees (its own and every space's; all of them for `None`), newest
+    /// first by when they were last seen; from `source` only if given.
+    pub fn candidates(
+        &self,
+        space: Option<SpaceId>,
+        source: Option<&str>,
+    ) -> DbResult<Vec<StoredCandidate>> {
         let sql = "SELECT source, candidate, metainfo IS NOT NULL, first_seen, last_seen
-                   FROM candidates WHERE ?1 IS NULL OR source = ?1
+                   FROM candidates WHERE (?1 IS NULL OR source = ?1)
+                       AND (?2 IS NULL OR space_id = ?2 OR space_id = 0)
                    ORDER BY last_seen DESC, source, id";
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt
-            .query_map(params![source], Self::candidate_row)?
+            .query_map(params![source, space], Self::candidate_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter()
             .map(|(source, json, has_metainfo, first_seen, last_seen)| {
@@ -324,22 +365,31 @@ impl AutoDb {
             .collect()
     }
 
-    pub fn candidate_metainfo(&self, source: &str, id: &str) -> DbResult<Option<Vec<u8>>> {
+    pub fn candidate_metainfo(
+        &self,
+        space: SpaceId,
+        source: &str,
+        id: &str,
+    ) -> DbResult<Option<Vec<u8>>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT metainfo FROM candidates WHERE source = ?1 AND id = ?2",
-                params![source, id],
+                "SELECT metainfo FROM candidates WHERE source = ?1 AND id = ?2
+                     AND (space_id = ?3 OR space_id = 0)
+                 ORDER BY space_id DESC LIMIT 1",
+                params![source, id, space],
                 |r| r.get::<_, Option<Vec<u8>>>(0),
             )
             .optional()?
             .flatten())
     }
 
-    pub fn delete_candidates(&self, source: &str) -> DbResult<usize> {
-        Ok(self
-            .conn
-            .execute("DELETE FROM candidates WHERE source = ?1", params![source])?)
+    /// Forget a source's candidates in one space (every space's for `None`).
+    pub fn delete_candidates(&self, space: Option<SpaceId>, source: &str) -> DbResult<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM candidates WHERE source = ?1 AND (?2 IS NULL OR space_id = ?2)",
+            params![source, space],
+        )?)
     }
 
     /// Forget candidates not seen since `before`, except ones a rule still keeps.
@@ -353,24 +403,37 @@ impl AutoDb {
         )?)
     }
 
-    /// Keep at most `max` candidates per source, dropping the longest unseen.
-    pub fn cap_candidates(&self, source: &str, max: usize) -> DbResult<usize> {
+    /// Keep at most `max` candidates per source and space, dropping the longest unseen.
+    pub fn cap_candidates(&self, space: SpaceId, source: &str, max: usize) -> DbResult<usize> {
         Ok(self.conn.execute(
-            "DELETE FROM candidates WHERE source = ?1 AND id NOT IN (
-                SELECT id FROM candidates WHERE source = ?1
+            "DELETE FROM candidates WHERE source = ?1 AND space_id = ?3 AND id NOT IN (
+                SELECT id FROM candidates WHERE source = ?1 AND space_id = ?3
                 ORDER BY last_seen DESC, id LIMIT ?2)",
-            params![source, i64::try_from(max).unwrap_or(i64::MAX)],
+            params![source, i64::try_from(max).unwrap_or(i64::MAX), space],
         )?)
     }
 
     // --- Rules --------------------------------------------------------------------------
 
-    pub fn insert_rule(&self, id: &str, spec: &RuleSpec, now: i64) -> DbResult<()> {
+    pub fn insert_rule(&self, space: SpaceId, id: &str, spec: &RuleSpec, now: i64) -> DbResult<()> {
         self.conn.execute(
-            "INSERT INTO rules (id, spec, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
-            params![id, serde_json::to_string(spec)?, now],
+            "INSERT INTO rules (id, spec, created_at, updated_at, space_id)
+             VALUES (?1, ?2, ?3, ?3, ?4)",
+            params![id, serde_json::to_string(spec)?, now, space],
         )?;
         Ok(())
+    }
+
+    /// Whether a space has rules, channels or subscriptions.
+    pub fn space_in_use(&self, space: SpaceId) -> DbResult<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM rules WHERE space_id = ?1)
+                  + (SELECT COUNT(*) FROM channels WHERE space_id = ?1)
+                  + (SELECT COUNT(*) FROM subscriptions WHERE space_id = ?1)",
+            params![space],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
     }
 
     /// Returns whether the rule exists.
@@ -398,7 +461,8 @@ impl AutoDb {
 
     pub fn rules(&self) -> DbResult<Vec<RuleRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, spec, created_at, updated_at, error FROM rules ORDER BY created_at, id",
+            "SELECT id, spec, created_at, updated_at, error, space_id FROM rules
+             ORDER BY created_at, id",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -408,13 +472,15 @@ impl AutoDb {
                     r.get(2)?,
                     r.get(3)?,
                     r.get(4)?,
+                    r.get::<_, SpaceId>(5)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter()
-            .map(|(id, spec, created_at, updated_at, error)| {
+            .map(|(id, spec, created_at, updated_at, error, space)| {
                 Ok(RuleRow {
                     id,
+                    space,
                     spec: serde_json::from_str(&spec)?,
                     created_at,
                     updated_at,
@@ -570,27 +636,32 @@ impl AutoDb {
             r.get(3)?,
             r.get(4)?,
             r.get(5)?,
+            r.get(6)?,
         ))
     }
 
     pub fn channels(&self) -> DbResult<Vec<ChannelRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, spec, revision, entries_hash, entries, updated_at FROM channels ORDER BY id",
+            "SELECT id, spec, revision, entries_hash, entries, updated_at, space_id FROM channels
+             ORDER BY id",
         )?;
         let rows = stmt
             .query_map([], Self::channel_from)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter()
-            .map(|(id, spec, revision, entries_hash, entries, updated_at)| {
-                Ok(ChannelRow {
-                    id,
-                    spec: serde_json::from_str(&spec)?,
-                    revision: u64_of(Some(revision)).unwrap_or(0),
-                    entries_hash,
-                    entries: u32::try_from(entries).unwrap_or(0),
-                    updated_at,
-                })
-            })
+            .map(
+                |(id, spec, revision, entries_hash, entries, updated_at, space)| {
+                    Ok(ChannelRow {
+                        id,
+                        space,
+                        spec: serde_json::from_str(&spec)?,
+                        revision: u64_of(Some(revision)).unwrap_or(0),
+                        entries_hash,
+                        entries: u32::try_from(entries).unwrap_or(0),
+                        updated_at,
+                    })
+                },
+            )
             .collect()
     }
 
@@ -599,10 +670,17 @@ impl AutoDb {
     }
 
     /// Returns false if the id is taken.
-    pub fn insert_channel(&self, id: &str, spec: &ChannelSpec, now: i64) -> DbResult<bool> {
+    pub fn insert_channel(
+        &self,
+        space: SpaceId,
+        id: &str,
+        spec: &ChannelSpec,
+        now: i64,
+    ) -> DbResult<bool> {
         Ok(self.conn.execute(
-            "INSERT OR IGNORE INTO channels (id, spec, updated_at) VALUES (?1, ?2, ?3)",
-            params![id, serde_json::to_string(spec)?, now],
+            "INSERT OR IGNORE INTO channels (id, spec, updated_at, space_id)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![id, serde_json::to_string(spec)?, now, space],
         )? > 0)
     }
 
@@ -643,7 +721,7 @@ impl AutoDb {
     pub fn subscriptions(&self) -> DbResult<Vec<SubscriptionRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, spec, token, publisher_key, revision, entries, last_checked, last_error,
-                    created_at
+                    created_at, space_id
              FROM subscriptions ORDER BY created_at, id",
         )?;
         let rows = stmt
@@ -658,6 +736,7 @@ impl AutoDb {
                     r.get::<_, Option<i64>>(6)?,
                     r.get::<_, Option<String>>(7)?,
                     r.get::<_, i64>(8)?,
+                    r.get::<_, SpaceId>(9)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -673,9 +752,11 @@ impl AutoDb {
                     last_checked,
                     last_error,
                     created_at,
+                    space,
                 )| {
                     Ok(SubscriptionRow {
                         id,
+                        space,
                         spec: serde_json::from_str(&spec)?,
                         token,
                         publisher_key,
@@ -700,8 +781,8 @@ impl AutoDb {
         let mut spec = row.spec.clone();
         spec.token = None;
         self.conn.execute(
-            "INSERT INTO subscriptions (id, spec, token, publisher_key, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO subscriptions (id, spec, token, publisher_key, created_at, space_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT (id) DO UPDATE SET spec = excluded.spec, token = excluded.token,
                 publisher_key = excluded.publisher_key",
             params![
@@ -709,7 +790,8 @@ impl AutoDb {
                 serde_json::to_string(&spec)?,
                 row.token,
                 row.publisher_key,
-                row.created_at
+                row.created_at,
+                row.space
             ],
         )?;
         Ok(())
@@ -775,27 +857,59 @@ mod tests {
     fn candidates_upsert_keep_metainfo_and_prune() {
         let mut db = AutoDb::open_in_memory().unwrap();
         db.upsert_candidates(
+            ALL_SPACES,
             "plugin:x",
             &[(cand("1"), Some(vec![1, 2])), (cand("2"), None)],
             10,
         )
         .unwrap();
         // A later submission without metainfo keeps the stored one.
-        db.upsert_candidates("plugin:x", &[(cand("1"), None)], 20)
+        db.upsert_candidates(ALL_SPACES, "plugin:x", &[(cand("1"), None)], 20)
             .unwrap();
         assert_eq!(
-            db.candidate_metainfo("plugin:x", "1").unwrap(),
+            db.candidate_metainfo(1, "plugin:x", "1").unwrap(),
             Some(vec![1, 2])
         );
-        let all = db.candidates(None).unwrap();
+        let all = db.candidates(None, None).unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].candidate.id, "1", "most recently seen first");
         assert_eq!(all[0].first_seen, 10);
         assert!(all[0].has_metainfo);
         assert_eq!(db.prune_candidates(15).unwrap(), 1);
-        db.upsert_candidates("plugin:x", &[(cand("3"), None), (cand("4"), None)], 30)
+        db.upsert_candidates(
+            ALL_SPACES,
+            "plugin:x",
+            &[(cand("3"), None), (cand("4"), None)],
+            30,
+        )
+        .unwrap();
+        assert_eq!(db.cap_candidates(ALL_SPACES, "plugin:x", 2).unwrap(), 1);
+        assert_eq!(db.candidates(None, Some("plugin:x")).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_space_sees_its_own_candidates_and_global_ones() {
+        let mut db = AutoDb::open_in_memory().unwrap();
+        db.upsert_candidates(ALL_SPACES, "plugin:global", &[(cand("g"), None)], 1)
             .unwrap();
-        assert_eq!(db.cap_candidates("plugin:x", 2).unwrap(), 1);
-        assert_eq!(db.candidates(Some("plugin:x")).unwrap().len(), 2);
+        db.upsert_candidates(2, "plugin:rss", &[(cand("a"), None)], 1)
+            .unwrap();
+        db.upsert_candidates(3, "plugin:rss", &[(cand("a"), None)], 1)
+            .unwrap();
+        let ids = |space| {
+            let mut v: Vec<String> = db
+                .candidates(Some(space), None)
+                .unwrap()
+                .into_iter()
+                .map(|c| format!("{}/{}", c.source, c.candidate.id))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(2), ["plugin:global/g", "plugin:rss/a"]);
+        assert_eq!(ids(1), ["plugin:global/g"]);
+        assert_eq!(db.candidates(None, None).unwrap().len(), 3);
+        assert_eq!(db.delete_candidates(Some(2), "plugin:rss").unwrap(), 1);
+        assert_eq!(ids(3), ["plugin:global/g", "plugin:rss/a"]);
     }
 }

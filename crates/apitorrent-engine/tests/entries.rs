@@ -133,7 +133,8 @@ fn torrent(data: &[u8]) -> Arc<Torrent> {
     Arc::new(Torrent::from_bytes(&bytes).unwrap())
 }
 
-/// A seeder that announces only to `url`.
+/// A seeder that announces only to `url`, uploading at 512 KiB/s so a download takes long
+/// enough to watch its connections.
 async fn seeder(t: &Arc<Torrent>, data: &[u8], url: &str) -> (Session, TorrentHandle) {
     let dir = tempfile::tempdir().unwrap().keep();
     std::fs::write(dir.join("file.bin"), data).unwrap();
@@ -141,6 +142,10 @@ async fn seeder(t: &Arc<Torrent>, data: &[u8], url: &str) -> (Session, TorrentHa
     let handle = session
         .add_torrent(AddTorrent {
             trackers: Some(vec![vec![url.to_owned()]]),
+            limits: apitorrent_engine::limits::TorrentLimits {
+                upload_rate: 512 * 1024,
+                ..Default::default()
+            },
             ..AddTorrent::new(t.clone(), dir)
         })
         .unwrap();
@@ -185,9 +190,19 @@ async fn each_entry_reports_only_its_own_peers() {
             ..AddTorrent::new(t.clone(), dir.path().to_path_buf())
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(60), handle.wait_finished())
-        .await
-        .unwrap_or_else(|_| panic!("download timed out: {:?}", handle.stats()));
+    // Every connection is entry 1's: the seeder came from its tracker. (Once both ends are
+    // seeds the link closes, so look while downloading.)
+    let mut seen = Vec::new();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while !handle.stats().finished {
+            seen.extend(handle.peers().await.into_iter().map(|p| p.entry));
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("download timed out: {:?}", handle.stats()));
+    assert!(!seen.is_empty(), "no connection seen while downloading");
+    assert!(seen.iter().all(|&e| e == 1), "{seen:?}");
     assert_eq!(std::fs::read(dir.path().join("file.bin")).unwrap(), data);
 
     let stats = handle.stats();
@@ -195,10 +210,6 @@ async fn each_entry_reports_only_its_own_peers() {
     let e2 = stats.entries.iter().find(|e| e.key == 2).unwrap();
     assert!(e1.downloaded >= data.len() as u64, "{stats:?}");
     assert_eq!(e2.downloaded, 0, "entry 2 had no peers of its own");
-    // Every connection is entry 1's: the seeder came from its tracker.
-    let peers = handle.peers().await;
-    assert!(!peers.is_empty());
-    assert!(peers.iter().all(|p| p.entry == 1), "{peers:?}");
 
     // Tracker one hears `completed` with entry 1's download; tracker two never hears of a
     // byte downloaded, though the data is complete, and is told `completed` with left=0.

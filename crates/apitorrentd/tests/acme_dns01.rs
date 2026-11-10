@@ -252,6 +252,7 @@ async fn provider(
         .unwrap();
     host.set_settings(
         "cloudflare-dns".into(),
+        1,
         json!({ "apiToken": token, "apiBase": api_base }),
     )
     .await

@@ -13,6 +13,7 @@ use ts_rs::TS;
 pub mod auth;
 pub mod automation;
 pub mod plugins;
+pub mod spaces;
 pub mod tls;
 pub mod update;
 
@@ -45,6 +46,11 @@ pub enum TorrentState {
 #[ts(export)]
 pub struct TorrentSummary {
     pub id: TorrentId,
+    /// The space the torrent is in (see [`spaces`]). The same torrent can be in several,
+    /// each with its own summary. Daemons from before spaces don't send it: `default`.
+    #[ts(type = "number")]
+    #[serde(default = "spaces::default_space")]
+    pub space: spaces::SpaceId,
     pub name: String,
     pub info_hash_v1: Option<String>,
     pub info_hash_v2: Option<String>,
@@ -700,6 +706,11 @@ pub enum SyncMessage {
         revision: u64,
         upserted: Vec<TorrentSummary>,
         removed: Vec<TorrentId>,
+        /// The space of each removed torrent, in the same order. Sent only to a socket that
+        /// watches every space (`?space=all`), where ids alone are ambiguous.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[ts(type = "Array<number>", optional)]
+        removed_spaces: Vec<spaces::SpaceId>,
     },
 }
 
@@ -726,6 +737,7 @@ mod tests {
             revision: 3,
             upserted: vec![],
             removed: vec!["ab".into()],
+            removed_spaces: vec![],
         };
         assert_eq!(
             serde_json::to_string(&msg).unwrap(),

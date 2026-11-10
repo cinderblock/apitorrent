@@ -1,7 +1,7 @@
 //! HTTP handlers.
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -11,10 +11,13 @@ use apitorrent_types::{
     API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, Ban, BanRequest,
     ImportDelugeRequest, ImportReport, QueueMoveRequest, ReleaseHeldRequest, ServerInfo,
     SessionStats, SetFilePrioritiesRequest, SetLabelRequest, SetUnwantedPolicyRequest, Settings,
-    TorrentDetail, TorrentLimits, TorrentSummary,
+    TorrentDetail, TorrentLimits,
 };
 
 use crate::AppState;
+use crate::authn::RequestCtx;
+use crate::space::{Here, server_admin};
+use apitorrent_types::spaces::SpaceRole;
 
 pub(crate) fn error(status: StatusCode, code: &str, message: &str) -> (StatusCode, Json<ApiError>) {
     (
@@ -64,6 +67,7 @@ pub(crate) async fn info(State(s): State<AppState>) -> Json<ServerInfo> {
         "auth",
         "storage-roots",
         "automation",
+        "spaces",
     ]
     .map(str::to_owned)
     .into();
@@ -83,65 +87,93 @@ pub(crate) async fn roots(State(s): State<AppState>) -> Json<Vec<apitorrent_type
     Json(s.core.storage_roots())
 }
 
-pub(crate) async fn list(State(s): State<AppState>) -> Json<Vec<TorrentSummary>> {
-    Json(s.core.list())
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListQuery {
+    /// `all`: every space's torrents (server admins only).
+    space: Option<String>,
+}
+
+pub(crate) async fn list(
+    State(s): State<AppState>,
+    here: Here,
+    Extension(ctx): Extension<RequestCtx>,
+    Query(q): Query<ListQuery>,
+) -> Response {
+    if q.space.as_deref() == Some("all") {
+        if let Err(e) = server_admin(&ctx) {
+            return e.into_response();
+        }
+        return Json(s.core.list(None)).into_response();
+    }
+    Json(s.core.list(Some(here.id()))).into_response()
 }
 
 pub(crate) async fn add(
     State(s): State<AppState>,
+    here: Here,
     Json(req): Json<AddTorrentRequest>,
 ) -> ApiResult<(StatusCode, Json<AddTorrentResponse>)> {
-    let id = s.core.add(req).await?;
+    let id = s.core.add(here.id(), req).await?;
     Ok((StatusCode::CREATED, Json(AddTorrentResponse { id })))
 }
 
 pub(crate) async fn detail(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
 ) -> ApiResult<Json<TorrentDetail>> {
-    Ok(Json(s.core.detail(&id).await?))
+    Ok(Json(s.core.detail(&here.key(id)).await?))
 }
 
 pub(crate) async fn pause(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    s.core.pause(&id).await?;
+    s.core.pause(&here.key(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn resume(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    s.core.resume(&id).await?;
+    s.core.resume(&here.key(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn set_priorities(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Json(req): Json<SetFilePrioritiesRequest>,
 ) -> ApiResult<StatusCode> {
-    s.core.set_file_priorities(&id, &req.priorities).await?;
+    s.core
+        .set_file_priorities(&here.key(id), &req.priorities)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn set_unwanted_policy(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Json(req): Json<SetUnwantedPolicyRequest>,
 ) -> ApiResult<StatusCode> {
-    s.core.set_unwanted_policy(&id, req.policy).await?;
+    s.core
+        .set_unwanted_policy(&here.key(id), req.policy)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn release_held(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Json(req): Json<ReleaseHeldRequest>,
 ) -> ApiResult<StatusCode> {
-    s.core.release_held(&id, req.files).await?;
+    s.core.release_held(&here.key(id), req.files).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -153,75 +185,107 @@ pub(crate) async fn get_settings(State(s): State<AppState>) -> Json<Settings> {
     Json(s.core.settings())
 }
 
+/// The instance's settings apply to every space: server admins only.
 pub(crate) async fn put_settings(
     State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
     Json(req): Json<Settings>,
-) -> ApiResult<StatusCode> {
-    s.core.set_settings(req).await?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Response {
+    if let Err(e) = server_admin(&ctx) {
+        return e.into_response();
+    }
+    match s.core.set_settings(req).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
 }
 
 pub(crate) async fn set_limits(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Json(req): Json<TorrentLimits>,
 ) -> ApiResult<StatusCode> {
-    s.core.set_torrent_limits(&id, req).await?;
+    s.core.set_torrent_limits(&here.key(id), req).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn set_seed_limits(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Json(req): Json<apitorrent_types::SetSeedLimitsRequest>,
 ) -> ApiResult<StatusCode> {
-    s.core.set_seed_limits(&id, req.limits).await?;
+    s.core.set_seed_limits(&here.key(id), req.limits).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn set_label(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Json(req): Json<SetLabelRequest>,
 ) -> ApiResult<StatusCode> {
-    s.core.set_label(&id, req.label).await?;
+    s.core.set_label(&here.key(id), req.label).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn queue_move(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Json(req): Json<QueueMoveRequest>,
 ) -> ApiResult<StatusCode> {
-    s.core.queue_move(&id, req.to).await?;
+    s.core.queue_move(&here.key(id), req.to).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Import into the request's space: its admins only.
 pub(crate) async fn import_deluge(
     State(s): State<AppState>,
+    here: Here,
     Json(req): Json<ImportDelugeRequest>,
-) -> ApiResult<Json<ImportReport>> {
-    Ok(Json(s.core.import_deluge(req).await?))
+) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.import_deluge(here.id(), req).await {
+        Ok(r) => Json::<ImportReport>(r).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
 }
 
 pub(crate) async fn bans(State(s): State<AppState>) -> Json<Vec<Ban>> {
     Json(s.core.bans())
 }
 
+/// Bans apply to every space: server admins only.
 pub(crate) async fn ban(
     State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
     Json(req): Json<BanRequest>,
-) -> ApiResult<StatusCode> {
-    s.core.ban(&req.ip)?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Response {
+    if let Err(e) = server_admin(&ctx) {
+        return e.into_response();
+    }
+    match s.core.ban(&req.ip) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
 }
 
 pub(crate) async fn unban(
     State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
     Path(ip): Path<String>,
-) -> ApiResult<StatusCode> {
-    s.core.unban(&ip)?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Response {
+    if let Err(e) = server_admin(&ctx) {
+        return e.into_response();
+    }
+    match s.core.unban(&ip) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,10 +297,11 @@ pub(crate) struct RemoveQuery {
 
 pub(crate) async fn remove(
     State(s): State<AppState>,
+    here: Here,
     Path(id): Path<String>,
     Query(q): Query<RemoveQuery>,
 ) -> ApiResult<StatusCode> {
-    s.core.remove(&id, q.delete_files).await?;
+    s.core.remove(&here.key(id), q.delete_files).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

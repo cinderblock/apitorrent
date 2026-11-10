@@ -1380,6 +1380,9 @@ impl TorrentActor {
                             || Bitfield::new(self.layout.piece_count()),
                             |p| p.have().clone(),
                         );
+                        // Gone from the session before the reply, so the torrent can be
+                        // added again (on other files) as soon as shutdown returns.
+                        self.shared.unregister(&self.info_hashes);
                         let _ = reply.send(have);
                         break;
                     }

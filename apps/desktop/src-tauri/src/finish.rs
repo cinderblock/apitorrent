@@ -85,6 +85,7 @@ mod tests {
             revision: 0,
             upserted,
             removed: vec![],
+            removed_spaces: vec![],
         }
     }
 
@@ -168,6 +169,7 @@ mod tests {
             revision: 1,
             upserted: vec![],
             removed: vec!["a".into()],
+            removed_spaces: vec![],
         });
         assert!(
             w.feed(&patch(vec![t("a", TorrentState::Seeding, 1.0)]))

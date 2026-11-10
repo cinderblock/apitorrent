@@ -236,7 +236,7 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
             .any(|c| c.contains("haven't signed in to apitorrent")),
         "{wanted:?}"
     );
-    host.approve("qbittorrent-api".into(), "1.0.0".into())
+    host.approve("qbittorrent-api".into(), "1.1.0".into())
         .await
         .unwrap();
     host.set_enabled("qbittorrent-api".into(), true)
@@ -262,6 +262,7 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
         allow_insecure_lan: false,
         plugins: Some(Arc::new(host.clone()) as Arc<dyn PluginService>),
         updates: None,
+        space_hosts: apitorrent_server::SpaceHosts::default(),
     };
     let api = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_addr = api.local_addr().unwrap();
@@ -350,14 +351,14 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
     )
     .await;
     assert_eq!((r.status, r.text().as_str()), (200, "Ok."));
-    let t = core.list().pop().expect("added to apitorrent");
+    let t = core.list(None).pop().expect("added to apitorrent");
     assert_eq!(t.label.as_deref(), Some("tv"));
     assert_eq!(Path::new(&t.save_path), downloads.join("tv"));
     let hash = t.info_hash_v1.clone().unwrap();
     for _ in 0..200 {
         if core
             .store()
-            .get(&t.id)
+            .get(&apitorrent_core::Key::new(1, t.id.clone()))
             .is_some_and(|s| s.state == TorrentState::Seeding)
         {
             break;
@@ -413,7 +414,10 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.text());
-    let d = core.detail(&t.id).await.unwrap();
+    let d = core
+        .detail(&apitorrent_core::Key::new(1, t.id.clone()))
+        .await
+        .unwrap();
     assert_eq!(d.seed_limits.map(|l| l.ratio), Some(2.0));
     let r = http(
         api_addr,
@@ -424,7 +428,13 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
     )
     .await;
     assert_eq!(r.status, 200);
-    assert_eq!(core.store().get(&t.id).unwrap().state, TorrentState::Paused);
+    assert_eq!(
+        core.store()
+            .get(&apitorrent_core::Key::new(1, t.id.clone()))
+            .unwrap()
+            .state,
+        TorrentState::Paused
+    );
 
     // Its own listener, at the root, for clients without a URL base; a read-only token
     // reads but can't change anything.
@@ -452,7 +462,13 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
     )
     .await;
     assert_eq!(r.status, 403);
-    assert_eq!(core.store().get(&t.id).unwrap().state, TorrentState::Paused);
+    assert_eq!(
+        core.store()
+            .get(&apitorrent_core::Key::new(1, t.id.clone()))
+            .unwrap()
+            .state,
+        TorrentState::Paused
+    );
     // A bearer token works there without any login.
     let bearer = format!("Bearer {}", full.token);
     let r = http(
@@ -500,7 +516,7 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
     )
     .await;
     assert_eq!(r.status, 200, "{}", r.text());
-    assert!(core.list().is_empty());
+    assert!(core.list(None).is_empty());
 
     host.shutdown().await;
     core.shutdown().await.unwrap();

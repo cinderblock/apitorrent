@@ -71,6 +71,17 @@ const MIGRATIONS: &[&str] = &[
         offered_at INTEGER NOT NULL
     );
 ",
+    // 3: spaces. A space-aware plugin has settings per space; `plugins.settings` stays the
+    // `default` space's. Its key-value data and schedule are kept under `<id>@<space>` for
+    // spaces other than `default`.
+    "
+    CREATE TABLE space_settings (
+        plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+        space_id INTEGER NOT NULL,
+        settings TEXT NOT NULL DEFAULT '{}',
+        PRIMARY KEY (plugin_id, space_id)
+    );
+",
 ];
 
 /// One installed plugin's row.
@@ -341,12 +352,47 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a plugin with all its versions, settings, data and schedule.
+    /// A space's settings for a space-aware plugin, if any were stored.
+    pub fn space_settings(&self, id: &str, space: i64) -> Result<Option<serde_json::Value>> {
+        let json: Option<String> = self
+            .db()
+            .query_row(
+                "SELECT settings FROM space_settings WHERE plugin_id = ?1 AND space_id = ?2",
+                params![id, space],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    pub fn set_space_settings(
+        &self,
+        id: &str,
+        space: i64,
+        settings: &serde_json::Value,
+    ) -> Result<()> {
+        self.db().execute(
+            "INSERT INTO space_settings (plugin_id, space_id, settings) VALUES (?1, ?2, ?3)
+             ON CONFLICT (plugin_id, space_id) DO UPDATE SET settings = excluded.settings",
+            params![id, space, to_json(settings)],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a plugin with all its versions, settings, data and schedule (every space's).
     pub fn remove(&self, id: &str) -> Result<()> {
         let mut db = self.db();
         let tx = db.transaction()?;
-        tx.execute("DELETE FROM kv WHERE plugin_id = ?1", [id])?;
-        tx.execute("DELETE FROM schedule WHERE plugin_id = ?1", [id])?;
+        let per_space = format!("{id}@%");
+        tx.execute(
+            "DELETE FROM kv WHERE plugin_id = ?1 OR plugin_id LIKE ?2",
+            params![id, per_space],
+        )?;
+        tx.execute(
+            "DELETE FROM schedule WHERE plugin_id = ?1 OR plugin_id LIKE ?2",
+            params![id, per_space],
+        )?;
+        tx.execute("DELETE FROM space_settings WHERE plugin_id = ?1", [id])?;
         tx.execute("DELETE FROM versions WHERE plugin_id = ?1", [id])?;
         tx.execute("DELETE FROM plugins WHERE id = ?1", [id])?;
         tx.commit()?;

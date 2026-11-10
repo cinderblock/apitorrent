@@ -7,6 +7,7 @@
 
 mod common;
 
+use apitorrent_types::spaces::DEFAULT_SPACE;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -150,7 +151,7 @@ fn subscription(
 }
 
 async fn refreshed(core: &Core, id: &str) -> SubscriptionInfo {
-    core.refresh_subscription(id).await.unwrap()
+    core.refresh_subscription(DEFAULT_SPACE, id).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -160,37 +161,52 @@ async fn a_subscriber_mirrors_a_pinned_publisher() {
     let (publisher, addr, code, read_token) = publisher(pub_root.path()).await;
     let url = format!("https://127.0.0.1:{}", addr.port());
 
-    let first = publisher.add(torrent("alpha", "iso")).await.unwrap();
-    publisher.add(torrent("other", "misc")).await.unwrap();
+    let first = publisher
+        .add(DEFAULT_SPACE, torrent("alpha", "iso"))
+        .await
+        .unwrap();
+    publisher
+        .add(DEFAULT_SPACE, torrent("other", "misc"))
+        .await
+        .unwrap();
     let channel = publisher
-        .create_channel(CreateChannelRequest {
-            id: "isos".into(),
-            channel: ChannelSpec {
-                name: "ISOs".into(),
-                description: "Linux images".into(),
-                selector: ChannelSelector::Label {
-                    label: "iso".into(),
+        .create_channel(
+            DEFAULT_SPACE,
+            CreateChannelRequest {
+                id: "isos".into(),
+                channel: ChannelSpec {
+                    name: "ISOs".into(),
+                    description: "Linux images".into(),
+                    selector: ChannelSelector::Label {
+                        label: "iso".into(),
+                    },
+                    include_metainfo: true,
+                    enabled: true,
                 },
-                include_metainfo: true,
-                enabled: true,
             },
-        })
+        )
         .await
         .unwrap();
     assert_eq!(channel.revision, 1);
     assert_eq!(channel.entries, 1);
 
     let subscriber = core(sub_root.path()).await;
-    let rule = subscriber.create_rule(take_everything()).await.unwrap();
+    let rule = subscriber
+        .create_rule(DEFAULT_SPACE, take_everything())
+        .await
+        .unwrap();
     // Paired with the short code the publisher shows; the publisher's channel key pinned.
     let sub = subscriber
-        .create_subscription(subscription(
-            &url,
-            "isos",
-            &read_token,
-            &code,
-            Some(publisher.channel_public_key()),
-        ))
+        .create_subscription(
+            DEFAULT_SPACE,
+            subscription(
+                &url,
+                "isos",
+                &read_token,
+                &code,
+                Some(publisher.channel_public_key()),
+            ),
+        )
         .await
         .unwrap();
     let SubscriptionTrust::Pinned { pin } = &sub.trust else {
@@ -207,7 +223,7 @@ async fn a_subscriber_mirrors_a_pinned_publisher() {
     assert_eq!(info.revision, Some(1));
     assert_eq!(info.entries, 1);
     let candidates = subscriber
-        .candidates(Some(format!("channel:{}", sub.id)))
+        .candidates(DEFAULT_SPACE, Some(format!("channel:{}", sub.id)))
         .await
         .unwrap();
     assert_eq!(candidates.len(), 1);
@@ -218,11 +234,14 @@ async fn a_subscriber_mirrors_a_pinned_publisher() {
 
     // The subscriber's own rule takes the entry: the same torrent, from the feed's metainfo.
     subscriber.run_rules().await;
-    let r = subscriber.rule(&rule.id).await.unwrap();
+    let r = subscriber.rule(DEFAULT_SPACE, &rule.id).await.unwrap();
     assert_eq!(r.items.len(), 1);
     assert_eq!(r.items[0].state, RuleItemState::Active);
     assert_eq!(r.items[0].torrent_id.as_deref(), Some(first.as_str()));
-    let mirrored = subscriber.detail(&first).await.unwrap();
+    let mirrored = subscriber
+        .detail(&apitorrent_core::Key::new(DEFAULT_SPACE, first.clone()))
+        .await
+        .unwrap();
     assert_eq!(mirrored.summary.label.as_deref(), Some("mirrored"));
     assert_eq!(
         mirrored.files.len(),
@@ -232,24 +251,29 @@ async fn a_subscriber_mirrors_a_pinned_publisher() {
 
     // Nothing changed: same revision. A new entry: the revision moves on.
     assert_eq!(refreshed(&subscriber, &sub.id).await.revision, Some(1));
-    let second = publisher.add(torrent("beta", "iso")).await.unwrap();
+    let second = publisher
+        .add(DEFAULT_SPACE, torrent("beta", "iso"))
+        .await
+        .unwrap();
     let info = refreshed(&subscriber, &sub.id).await;
     assert_eq!(
         (info.revision, info.entries, info.last_error),
         (Some(2), 2, None)
     );
     subscriber.run_rules().await;
-    assert!(subscriber.detail(&second).await.is_ok());
+    assert!(
+        subscriber
+            .detail(&apitorrent_core::Key::new(DEFAULT_SPACE, second.clone()))
+            .await
+            .is_ok()
+    );
 
     // A wrong certificate pin never reaches the feed.
     let wrong_pin = subscriber
-        .create_subscription(subscription(
-            &url,
-            "isos",
-            &read_token,
-            &"ab".repeat(32),
-            None,
-        ))
+        .create_subscription(
+            DEFAULT_SPACE,
+            subscription(&url, "isos", &read_token, &"ab".repeat(32), None),
+        )
         .await
         .unwrap();
     let info = refreshed(&subscriber, &wrong_pin.id).await;
@@ -258,26 +282,26 @@ async fn a_subscriber_mirrors_a_pinned_publisher() {
     // A pairing code that doesn't name the publisher's key is refused at once.
     assert!(
         subscriber
-            .create_subscription(subscription(
-                &url,
-                "isos",
-                &read_token,
-                "AAAA-AAAA-AAAA-AAAA-AAAA",
-                None
-            ))
+            .create_subscription(
+                DEFAULT_SPACE,
+                subscription(&url, "isos", &read_token, "AAAA-AAAA-AAAA-AAAA-AAAA", None)
+            )
             .await
             .is_err()
     );
     // A publisher key other than the pinned one is refused.
     let other_key = ChannelKey::load_or_create(&sub_root.path().join("other.p8")).unwrap();
     let wrong_key = subscriber
-        .create_subscription(subscription(
-            &url,
-            "isos",
-            &read_token,
-            &code,
-            Some(other_key.public_base64()),
-        ))
+        .create_subscription(
+            DEFAULT_SPACE,
+            subscription(
+                &url,
+                "isos",
+                &read_token,
+                &code,
+                Some(other_key.public_base64()),
+            ),
+        )
         .await
         .unwrap();
     let info = refreshed(&subscriber, &wrong_key.id).await;
@@ -291,7 +315,10 @@ async fn a_subscriber_mirrors_a_pinned_publisher() {
     // Without a token the publisher refuses.
     let mut anonymous = subscription(&url, "isos", "x", &code, None);
     anonymous.token = None;
-    let anonymous = subscriber.create_subscription(anonymous).await.unwrap();
+    let anonymous = subscriber
+        .create_subscription(DEFAULT_SPACE, anonymous)
+        .await
+        .unwrap();
     let info = refreshed(&subscriber, &anonymous.id).await;
     assert!(
         info.last_error
@@ -302,15 +329,23 @@ async fn a_subscriber_mirrors_a_pinned_publisher() {
     );
 
     // Deleting a subscription forgets its candidates; the torrents stay.
-    subscriber.delete_subscription(&sub.id).await.unwrap();
+    subscriber
+        .delete_subscription(DEFAULT_SPACE, &sub.id)
+        .await
+        .unwrap();
     assert!(
         subscriber
-            .candidates(Some(format!("channel:{}", sub.id)))
+            .candidates(DEFAULT_SPACE, Some(format!("channel:{}", sub.id)))
             .await
             .unwrap()
             .is_empty()
     );
-    assert!(subscriber.detail(&first).await.is_ok());
+    assert!(
+        subscriber
+            .detail(&apitorrent_core::Key::new(DEFAULT_SPACE, first.clone()))
+            .await
+            .is_ok()
+    );
 }
 
 /// A TLS server that answers every request with the current `body` as JSON.
@@ -406,7 +441,10 @@ async fn bad_signatures_and_backward_revisions_are_refused() {
     let url = format!("https://127.0.0.1:{}", addr.port());
     // Nothing pinned: the first feed's key is pinned (it came over the pinned TLS link).
     let sub = subscriber
-        .create_subscription(subscription(&url, "fake", "token", &code, None))
+        .create_subscription(
+            DEFAULT_SPACE,
+            subscription(&url, "fake", "token", &code, None),
+        )
         .await
         .unwrap();
 
@@ -466,7 +504,7 @@ async fn bad_signatures_and_backward_revisions_are_refused() {
 
     // Only what the accepted feed listed became a candidate.
     let ids: Vec<String> = subscriber
-        .candidates(Some(format!("channel:{}", sub.id)))
+        .candidates(DEFAULT_SPACE, Some(format!("channel:{}", sub.id)))
         .await
         .unwrap()
         .into_iter()
@@ -498,6 +536,7 @@ async fn the_rest_api_and_its_scopes() {
 
     assert_eq!(send(&app, Req::get("/api/v1/rules")).await.status, 401);
     core.submit_candidates(
+        None,
         "plugin:test",
         vec![apitorrent_types::automation::ReleaseCandidate {
             id: "r1".into(),

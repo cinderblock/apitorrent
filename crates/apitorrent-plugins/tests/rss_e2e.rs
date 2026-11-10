@@ -123,6 +123,7 @@ async fn rss_plugin_polls_a_local_feed() {
     let feed_url = format!("http://127.0.0.1:{port}/feed.xml");
     h.set_settings(
         "rss".into(),
+        1,
         json!({
             "feeds": [{ "url": feed_url, "include": "1080p", "label": "tv" }],
             "backfill": true,
@@ -173,7 +174,7 @@ async fn rss_plugin_polls_a_local_feed() {
     assert_eq!(added.len(), 3, "{added:#?}");
     assert!(matches!(&added[1].source, AddSource::Magnet { uri } if uri.contains(&"3".repeat(40))));
     assert!(matches!(&added[2].source, AddSource::TorrentFile { .. }));
-    let logs = h.logs("rss", None).unwrap();
+    let logs = h.logs("rss", 1, None).unwrap();
     assert!(
         logs.iter()
             .any(|l| l.message.contains("ep6") || l.message.contains("Show S01E06")),
@@ -183,6 +184,7 @@ async fn rss_plugin_polls_a_local_feed() {
     // Naming the other host in the settings lets the retry through; nothing is added twice.
     h.set_settings(
         "rss".into(),
+        1,
         json!({
             "feeds": [{ "url": feed_url, "include": "1080p", "label": "tv" }],
             "backfill": true,
@@ -256,9 +258,11 @@ async fn first_party_plugins_install() {
         assert_eq!(id, name);
         h.install(bundle).await.unwrap();
         h.approve(id.clone(), version).await.unwrap();
-        let settings = h.settings(&id).unwrap();
+        let settings = h.settings(&id, 1).unwrap();
         assert!(settings.schema.is_some());
         // The defaults are valid settings.
-        h.set_settings(id.clone(), settings.values).await.unwrap();
+        h.set_settings(id.clone(), 1, settings.values)
+            .await
+            .unwrap();
     }
 }

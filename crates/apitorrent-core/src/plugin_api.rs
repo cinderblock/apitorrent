@@ -4,6 +4,11 @@
 //! What this adds is the core's own view of plugin requests: save paths are relative to the
 //! download directory (plugins get no say over the rest of the filesystem), a duplicate add
 //! is a normal outcome rather than an error, and torrent changes become events.
+//!
+//! Each view works on one space: [`CorePluginApi::new`] on `default`, and
+//! [`AppApi::for_space`] on another, for a space-aware plugin's instance there. A plugin that
+//! isn't space-aware is global: it works on `default`, and its candidates are offered to
+//! every space's rules.
 
 use std::collections::HashMap;
 use std::path::{Component, Path};
@@ -14,11 +19,12 @@ use tokio::sync::broadcast;
 use apitorrent_plugin_api::{
     AddOutcome, AppApi, AppError, AppEvent, AppInfo, BoxFuture, TorrentControl,
 };
+use apitorrent_types::spaces::{DEFAULT_SPACE, SpaceId};
 use apitorrent_types::{
     AddTorrentRequest, TorrentDetail, TorrentId, TorrentLimits, TorrentState, TorrentSummary,
 };
 
-use crate::{Core, CoreError, Patch};
+use crate::{Core, CoreError, Key, Patch};
 
 /// How many events a slow plugin may fall behind before it skips some.
 const EVENT_BACKLOG: usize = 1024;
@@ -41,16 +47,33 @@ impl From<CoreError> for AppError {
 #[derive(Debug, Clone)]
 pub struct CorePluginApi {
     core: Core,
+    space: SpaceId,
+    /// A space-aware plugin's instance: its candidates are its space's only.
+    scoped: bool,
     events: broadcast::Sender<AppEvent>,
 }
 
 impl CorePluginApi {
-    /// Start translating the core's state changes into plugin events. Call inside the
-    /// daemon's tokio runtime; the translator runs until the core shuts down.
+    /// The global view (the `default` space). Starts translating the core's state changes
+    /// into plugin events: call inside the daemon's tokio runtime; the translator runs until
+    /// the core shuts down.
     pub fn new(core: Core) -> Arc<Self> {
+        Self::with_space(core, DEFAULT_SPACE, false)
+    }
+
+    fn with_space(core: Core, space: SpaceId, scoped: bool) -> Arc<Self> {
         let (events, _) = broadcast::channel(EVENT_BACKLOG);
-        tokio::spawn(translate(core.clone(), events.clone()));
-        Arc::new(Self { core, events })
+        tokio::spawn(translate(core.clone(), space, events.clone()));
+        Arc::new(Self {
+            core,
+            space,
+            scoped,
+            events,
+        })
+    }
+
+    fn key(&self, id: TorrentId) -> Key {
+        Key::new(self.space, id)
     }
 }
 
@@ -77,9 +100,7 @@ impl AppApi for CorePluginApi {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             download_dir: self
                 .core
-                .inner
-                .config
-                .download_dir
+                .download_dir(self.space)
                 .to_string_lossy()
                 .into_owned(),
             seed_limits: settings.seed_limits,
@@ -89,21 +110,21 @@ impl AppApi for CorePluginApi {
     }
 
     fn torrents(&self) -> Vec<TorrentSummary> {
-        self.core.list()
+        self.core.list(Some(self.space))
     }
 
     fn torrent(&self, id: TorrentId) -> BoxFuture<Result<TorrentDetail, AppError>> {
-        let core = self.core.clone();
-        Box::pin(async move { Ok(core.detail(&id).await?) })
+        let (core, key) = (self.core.clone(), self.key(id));
+        Box::pin(async move { Ok(core.detail(&key).await?) })
     }
 
     fn add_torrent(&self, mut req: AddTorrentRequest) -> BoxFuture<Result<AddOutcome, AppError>> {
-        let core = self.core.clone();
+        let (core, space) = (self.core.clone(), self.space);
         Box::pin(async move {
             if let Some(p) = &req.save_path {
-                req.save_path = Some(plugin_save_path(&core.inner.config.download_dir, p)?);
+                req.save_path = Some(plugin_save_path(&core.download_dir(space), p)?);
             }
-            match core.add(req).await {
+            match core.add(space, req).await {
                 Ok(id) => Ok(AddOutcome {
                     id: Some(id),
                     duplicate: false,
@@ -118,7 +139,7 @@ impl AppApi for CorePluginApi {
     }
 
     fn control(&self, id: TorrentId, action: TorrentControl) -> BoxFuture<Result<(), AppError>> {
-        let core = self.core.clone();
+        let (core, id) = (self.core.clone(), self.key(id));
         Box::pin(async move {
             match action {
                 TorrentControl::Pause => core.pause(&id).await?,
@@ -144,8 +165,20 @@ impl AppApi for CorePluginApi {
     }
 
     fn remove(&self, id: TorrentId, delete_files: bool) -> BoxFuture<Result<(), AppError>> {
-        let core = self.core.clone();
-        Box::pin(async move { Ok(core.remove(&id, delete_files).await?) })
+        let (core, key) = (self.core.clone(), self.key(id));
+        Box::pin(async move { Ok(core.remove(&key, delete_files).await?) })
+    }
+
+    fn space(&self) -> SpaceId {
+        self.space
+    }
+
+    fn spaces(&self) -> Vec<SpaceId> {
+        self.core.spaces().into_iter().map(|s| s.id).collect()
+    }
+
+    fn for_space(&self, space: SpaceId) -> Option<Arc<dyn AppApi>> {
+        Some(Self::with_space(self.core.clone(), space, true))
     }
 
     fn events(&self) -> broadcast::Receiver<AppEvent> {
@@ -159,7 +192,8 @@ impl AppApi for CorePluginApi {
     ) -> BoxFuture<Result<apitorrent_types::automation::SubmitCandidatesOutcome, AppError>> {
         let core = self.core.clone();
         let source = format!("plugin:{source}");
-        Box::pin(async move { Ok(core.submit_candidates(&source, candidates).await?) })
+        let space = self.scoped.then_some(self.space);
+        Box::pin(async move { Ok(core.submit_candidates(space, &source, candidates).await?) })
     }
 }
 
@@ -210,16 +244,17 @@ fn apply(known: &mut HashMap<TorrentId, Seen>, patch: &Patch, tx: &broadcast::Se
         }
         known.insert(s.id.clone(), seen(s));
     }
-    for id in &patch.removed {
-        if known.remove(id).is_some() {
-            let _ = tx.send(AppEvent::TorrentRemoved { id: id.clone() });
+    for key in &patch.removed {
+        if known.remove(&key.id).is_some() {
+            let _ = tx.send(AppEvent::TorrentRemoved { id: key.id.clone() });
         }
     }
 }
 
-async fn translate(core: Core, tx: broadcast::Sender<AppEvent>) {
+/// Turn one space's state changes into plugin events.
+async fn translate(core: Core, space: SpaceId, tx: broadcast::Sender<AppEvent>) {
     loop {
-        let (snapshot, mut rx) = core.subscribe();
+        let (snapshot, mut rx) = core.subscribe(Some(space));
         let mut known: HashMap<TorrentId, Seen> = snapshot
             .torrents
             .iter()
@@ -227,7 +262,11 @@ async fn translate(core: Core, tx: broadcast::Sender<AppEvent>) {
             .collect();
         loop {
             match rx.recv().await {
-                Ok(patch) => apply(&mut known, &patch, &tx),
+                Ok(patch) => {
+                    if let Some(mine) = patch.for_space(Some(space)) {
+                        apply(&mut known, &mine, &tx);
+                    }
+                }
                 // Fell behind the store: start again from a fresh snapshot. Changes in the
                 // gap are lost, as the event stream documents.
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -247,6 +286,7 @@ mod tests {
     fn summary(state: TorrentState, progress: f64) -> TorrentSummary {
         TorrentSummary {
             id: "aa".into(),
+            space: 1,
             name: "x".into(),
             info_hash_v1: None,
             info_hash_v2: None,

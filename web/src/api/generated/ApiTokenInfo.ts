@@ -5,4 +5,8 @@ export type ApiTokenInfo = { id: string, name: string, scope: TokenScope,
 /**
  * The first characters of the token, to tell tokens apart.
  */
-prefix: string, createdAt: number, expiresAt: number | null, lastUsedAt: number | null, };
+prefix: string, createdAt: number, expiresAt: number | null, lastUsedAt: number | null, 
+/**
+ * The space the token works in (see `spaces`). A client using it lands there.
+ */
+space: number, };

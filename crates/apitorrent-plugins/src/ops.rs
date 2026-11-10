@@ -44,6 +44,9 @@ const MAX_SESSIONS: usize = 1024;
 /// Everything a plugin's ops need, fixed for the life of one run.
 pub(crate) struct PluginCtx {
     pub id: String,
+    /// Where this instance's key-value data and schedule are kept: the plugin id, or
+    /// `<id>@<space>` for a space-aware plugin's instance outside `default`.
+    pub store_key: String,
     pub version: String,
     pub caps: PluginCapabilities,
     /// The manifest's grants plus those from settings; replaced when settings change.
@@ -487,7 +490,7 @@ fn kv_ctx(state: &OpState, key: Option<&str>) -> Result<Rc<PluginCtx>, JsErrorBo
 fn op_at_kv_get(state: &OpState, #[string] key: &str) -> Result<String, JsErrorBox> {
     let c = kv_ctx(state, Some(key))?;
     Ok(c.store
-        .kv_get(&c.id, key)
+        .kv_get(&c.store_key, key)
         .map_err(internal)?
         .unwrap_or_default())
 }
@@ -506,7 +509,7 @@ fn op_at_kv_set(
     }
     if !c
         .store
-        .kv_set(&c.id, key, value, c.config.kv_quota)
+        .kv_set(&c.store_key, key, value, c.config.kv_quota)
         .map_err(internal)?
     {
         return Err(range_error(format!(
@@ -520,7 +523,7 @@ fn op_at_kv_set(
 #[op2(fast)]
 fn op_at_kv_delete(state: &OpState, #[string] key: &str) -> Result<bool, JsErrorBox> {
     let c = kv_ctx(state, Some(key))?;
-    c.store.kv_delete(&c.id, key).map_err(internal)
+    c.store.kv_delete(&c.store_key, key).map_err(internal)
 }
 
 #[op2]
@@ -534,7 +537,9 @@ fn op_at_kv_list(
     let limit = usize::try_from(limit)
         .unwrap_or(usize::MAX)
         .clamp(1, 10_000);
-    c.store.kv_list(&c.id, prefix, limit).map_err(internal)
+    c.store
+        .kv_list(&c.store_key, prefix, limit)
+        .map_err(internal)
 }
 
 // --- Schedule, events, routes, roles ----------------------------------------------------
@@ -575,13 +580,18 @@ fn op_at_schedule(
         )));
     }
     // Pick up where the last run (perhaps before a restart) left off.
-    let last = c.store.last_run(&c.id, name).map_err(internal)?;
+    let last = c.store.last_run(&c.store_key, name).map_err(internal)?;
     let interval_i = i64::try_from(interval.as_millis()).unwrap_or(i64::MAX);
     let first = last.map_or(Duration::ZERO, |last| {
         let due = last.saturating_add(interval_i) - now_ms();
         Duration::from_millis(u64::try_from(due.max(0)).unwrap_or(0))
     });
-    let (tx, store, id, job) = (c.tx.clone(), c.store.clone(), c.id.clone(), name.to_owned());
+    let (tx, store, id, job) = (
+        c.tx.clone(),
+        c.store.clone(),
+        c.store_key.clone(),
+        name.to_owned(),
+    );
     let task = tokio::spawn(async move {
         tokio::time::sleep(first).await;
         loop {
@@ -765,9 +775,11 @@ async fn op_at_auth_login(
             "authentication is turned off on this server, so there are no API tokens to check",
         ))));
     };
+    // A token works in its own space only: the instance's (`default` for a global plugin).
+    let space = c.app.space();
     let verified = c
         .main
-        .spawn_blocking(move || creds.verify_token(&token))
+        .spawn_blocking(move || creds.verify_token(&token, space))
         .await
         .map_err(internal)?;
     let result = match verified {

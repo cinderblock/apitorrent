@@ -388,7 +388,13 @@ pub(crate) async fn token_create(
     Extension(ctx): Extension<RequestCtx>,
     Json(req): Json<CreateTokenRequest>,
 ) -> AuthResult<Response> {
-    let created: CreatedToken = enabled(&s)?.create_token(principal(&ctx)?, &req, &ctx.meta)?;
+    // Bound to the space the request is in: a client using it lands there.
+    let space = ctx
+        .space
+        .as_ref()
+        .map_or(apitorrent_types::spaces::DEFAULT_SPACE, |h| h.id);
+    let created: CreatedToken =
+        enabled(&s)?.create_token_in(principal(&ctx)?, space, &req, &ctx.meta)?;
     let mut resp = (StatusCode::CREATED, Json(created)).into_response();
     resp.headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

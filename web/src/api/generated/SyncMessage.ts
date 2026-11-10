@@ -8,4 +8,9 @@ import type { TorrentSummary } from "./TorrentSummary";
  * then `patch`es that each advance the revision by one. If a client falls behind, the
  * server sends a fresh snapshot instead.
  */
-export type SyncMessage = { "type": "snapshot", revision: number, torrents: Array<TorrentSummary>, } | { "type": "patch", revision: number, upserted: Array<TorrentSummary>, removed: Array<string>, };
+export type SyncMessage = { "type": "snapshot", revision: number, torrents: Array<TorrentSummary>, } | { "type": "patch", revision: number, upserted: Array<TorrentSummary>, removed: Array<string>, 
+/**
+ * The space of each removed torrent, in the same order. Sent only to a socket that
+ * watches every space (`?space=all`), where ids alone are ambiguous.
+ */
+removedSpaces?: Array<number>, };

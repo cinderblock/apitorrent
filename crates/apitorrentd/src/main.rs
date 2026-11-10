@@ -197,6 +197,15 @@ struct Args {
     #[arg(long, env = "APITORRENT_WRITE_SETUP_TOKEN")]
     write_setup_token: bool,
 
+    /// Put requests for a host name in a space: `torrents-tv.example.com=tv`. Repeatable.
+    /// The host must also be one the API answers to (--public-host or --public-url).
+    #[arg(
+        long = "space-host",
+        env = "APITORRENT_SPACE_HOSTS",
+        value_delimiter = ','
+    )]
+    space_hosts: Vec<String>,
+
     /// Don't run plugins. Installed plugins stay installed, and the plugin endpoints answer
     /// that plugins are turned off.
     #[arg(long, env = "APITORRENT_NO_PLUGINS")]
@@ -295,6 +304,13 @@ async fn main() -> ExitCode {
         .map(apitorrent_update::Updater::spawn_daily);
     let shutdown_signal = || shutdown_signal(updater.clone());
 
+    let space_hosts = match apitorrent_server::SpaceHosts::parse(&args.space_hosts) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("--space-host: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let trusted_proxies = match TrustedProxies::parse(&args.trusted_proxies) {
         Ok(t) => t,
         Err(e) => {
@@ -454,6 +470,7 @@ async fn main() -> ExitCode {
         allow_insecure_lan: args.allow_insecure_lan,
         plugins: plugins.clone(),
         updates: updater.as_ref().map(update::service),
+        space_hosts,
     };
     match plugins::bind_listeners(&args.plugin, &core, &server, tls.as_ref().map(|t| &t.serve))
         .await

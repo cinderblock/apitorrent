@@ -56,7 +56,13 @@ impl fmt::Debug for VerifiedToken {
 /// Checks API tokens. Calls may block briefly (a database lookup); the host makes them off
 /// any plugin's thread.
 pub trait Credentials: Send + Sync + 'static {
-    /// The token's owner, if `token` is a live API token. `Ok(None)` for anything else
-    /// (unknown, expired, revoked, or not a token at all).
-    fn verify_token(&self, token: &str) -> Result<Option<VerifiedToken>, AppError>;
+    /// The token's owner, if `token` is a live API token that works in `space` (the one it
+    /// is bound to, with its owner still a member). `Ok(None)` for anything else (unknown,
+    /// expired, revoked, another space's, or not a token at all). `may_write` follows the
+    /// owner's role in the space.
+    fn verify_token(
+        &self,
+        token: &str,
+        space: apitorrent_types::spaces::SpaceId,
+    ) -> Result<Option<VerifiedToken>, AppError>;
 }

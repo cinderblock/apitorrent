@@ -16,12 +16,13 @@ use std::io::Write as _;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Query, State};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::broadcast::error::RecvError;
 
 use apitorrent_auth::Principal;
 use apitorrent_types::SyncMessage;
+use apitorrent_types::spaces::SpaceId;
 
 use crate::authn::RequestCtx;
 use crate::{AppState, AuthMode};
@@ -35,6 +36,8 @@ const COMPRESS_FROM: usize = 32 * 1024;
 pub(crate) struct SyncQuery {
     /// `gzip`: send large messages gzip-compressed, as binary.
     compress: Option<String>,
+    /// `all`: every space's torrents (server admins only); otherwise the request's space.
+    space: Option<String>,
 }
 
 /// Close code: the credential the socket was opened with is no longer valid.
@@ -46,9 +49,27 @@ pub(crate) async fn handler(
     Extension(ctx): Extension<RequestCtx>,
     Query(q): Query<SyncQuery>,
 ) -> Response {
+    let space = if q.space.as_deref() == Some("all") {
+        if let Err(e) = crate::space::server_admin(&ctx) {
+            return e.into_response();
+        }
+        None
+    } else {
+        match &ctx.space {
+            Some(here) => Some(here.id),
+            None => {
+                return crate::routes::error(
+                    axum::http::StatusCode::NOT_FOUND,
+                    "no_such_space",
+                    "no such space",
+                )
+                .into_response();
+            }
+        }
+    };
     let principal = ctx.principal;
     let gzip = q.compress.as_deref() == Some("gzip");
-    ws.on_upgrade(move |socket| run(socket, s, principal, gzip))
+    ws.on_upgrade(move |socket| run(socket, s, principal, space, gzip))
 }
 
 fn encode(msg: &SyncMessage, gzip: bool) -> Message {
@@ -78,9 +99,30 @@ fn still_valid(s: &AppState, principal: Option<&Principal>) -> bool {
     }
 }
 
-async fn run(socket: WebSocket, s: AppState, principal: Option<Principal>, gzip: bool) {
+/// The patch as one socket sees it: its space's part, or (`None`) everything.
+fn patch_message(p: &apitorrent_core::Patch, space: Option<SpaceId>) -> Option<SyncMessage> {
+    let p = p.for_space(space)?;
+    Some(SyncMessage::Patch {
+        revision: p.revision,
+        upserted: p.upserted,
+        removed: p.removed.iter().map(|k| k.id.clone()).collect(),
+        removed_spaces: if space.is_none() {
+            p.removed.iter().map(|k| k.space).collect()
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+async fn run(
+    socket: WebSocket,
+    s: AppState,
+    principal: Option<Principal>,
+    space: Option<SpaceId>,
+    gzip: bool,
+) {
     let (mut tx, mut rx) = socket.split();
-    let (snapshot, mut patches) = s.core.subscribe();
+    let (snapshot, mut patches) = s.core.subscribe(space);
     let first = SyncMessage::Snapshot {
         revision: snapshot.revision,
         torrents: snapshot.torrents,
@@ -98,14 +140,13 @@ async fn run(socket: WebSocket, s: AppState, principal: Option<Principal>, gzip:
         let recheck = tokio::select! {
             patch = patches.recv() => {
                 let msg = match patch {
-                    Ok(p) => SyncMessage::Patch {
-                        revision: p.revision,
-                        upserted: p.upserted.clone(),
-                        removed: p.removed.clone(),
+                    Ok(p) => match patch_message(&p, space) {
+                        Some(m) => m,
+                        None => continue,
                     },
                     Err(RecvError::Lagged(_)) => {
                         // Too far behind to catch up with patches; start over from a snapshot.
-                        let (snapshot, fresh) = s.core.subscribe();
+                        let (snapshot, fresh) = s.core.subscribe(space);
                         patches = fresh;
                         SyncMessage::Snapshot {
                             revision: snapshot.revision,
@@ -163,6 +204,7 @@ mod tests {
             revision: 7,
             upserted: Vec::new(),
             removed: (0..ids).map(|i| format!("{i:040x}")).collect(),
+            removed_spaces: Vec::new(),
         }
     }
 

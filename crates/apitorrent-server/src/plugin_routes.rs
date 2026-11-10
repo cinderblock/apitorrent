@@ -36,7 +36,6 @@ use apitorrent_plugin_api::{
     PluginHttpRequest, PluginInfo, PluginLogEntry, PluginService, PluginSettings,
     PutPluginSettingsRequest,
 };
-use apitorrent_types::auth::Role;
 
 use crate::authn::{PLAIN_COOKIE, RequestCtx, SECURE_COOKIE};
 use crate::routes::error;
@@ -130,7 +129,7 @@ fn principal(ctx: &RequestCtx) -> PluginResult<&Principal> {
 
 fn admin(ctx: &RequestCtx) -> PluginResult<&Principal> {
     let p = principal(ctx)?;
-    if p.user.role == Role::Admin {
+    if p.server_admin() {
         Ok(p)
     } else {
         Err(Failure::from_response(
@@ -258,14 +257,32 @@ pub(crate) struct LogsQuery {
     after: Option<u64>,
 }
 
+/// A space-aware plugin's instance in the request's space is its admins'; anything else
+/// about a plugin is the server admins'.
+fn instance_admin<'c>(s: &AppState, ctx: &'c RequestCtx, id: &str) -> PluginResult<&'c Principal> {
+    let aware = s.plugins.as_deref().is_some_and(|p| p.space_aware(id));
+    match &ctx.space {
+        Some(here) if aware && here.role == apitorrent_types::spaces::SpaceRole::Admin => {
+            principal(ctx)
+        }
+        _ => admin(ctx),
+    }
+}
+
+fn space_of(ctx: &RequestCtx) -> apitorrent_types::spaces::SpaceId {
+    ctx.space
+        .as_ref()
+        .map_or(apitorrent_types::spaces::DEFAULT_SPACE, |h| h.id)
+}
+
 async fn logs(
     State(s): State<AppState>,
     Extension(ctx): Extension<RequestCtx>,
     Path(id): Path<String>,
     Query(q): Query<LogsQuery>,
 ) -> PluginResult<Json<Vec<PluginLogEntry>>> {
-    admin(&ctx)?;
-    Ok(Json(service(&s)?.logs(&id, q.after)?))
+    instance_admin(&s, &ctx, &id)?;
+    Ok(Json(service(&s)?.logs(&id, space_of(&ctx), q.after)?))
 }
 
 async fn settings(
@@ -273,8 +290,8 @@ async fn settings(
     Extension(ctx): Extension<RequestCtx>,
     Path(id): Path<String>,
 ) -> PluginResult<Json<PluginSettings>> {
-    admin(&ctx)?;
-    Ok(Json(service(&s)?.settings(&id)?))
+    instance_admin(&s, &ctx, &id)?;
+    Ok(Json(service(&s)?.settings(&id, space_of(&ctx))?))
 }
 
 async fn put_settings(
@@ -283,8 +300,10 @@ async fn put_settings(
     Path(id): Path<String>,
     Json(req): Json<PutPluginSettingsRequest>,
 ) -> PluginResult<Json<PluginSettings>> {
-    let p = admin(&ctx)?;
-    let r = service(&s)?.set_settings(id.clone(), req.values).await?;
+    let p = instance_admin(&s, &ctx, &id)?;
+    let r = service(&s)?
+        .set_settings(id.clone(), space_of(&ctx), req.values)
+        .await?;
     audit(&s, &ctx, p, "plugin_settings_changed", &id);
     Ok(Json(r))
 }
@@ -375,11 +394,15 @@ async fn plugin_route(
     } else {
         Some(principal(&ctx)?)
     };
+    let writer = ctx
+        .space
+        .as_ref()
+        .is_some_and(|h| h.role >= apitorrent_types::spaces::SpaceRole::User);
     let caller = who.map(|who| PluginCaller {
         user_id: who.user.id.clone(),
         user_name: who.user.name.clone(),
         role: who.user.role,
-        may_write: who.may_write(),
+        may_write: who.may_write() && (writer || ctx.space.is_none()),
     });
     let method = req.method().as_str().to_owned();
     let query = req.uri().query().map(str::to_owned);
@@ -425,6 +448,7 @@ async fn plugin_route(
                 headers,
                 body: body.to_vec(),
                 caller,
+                space: space_of(&ctx),
             },
         )
         .await?;

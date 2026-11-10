@@ -43,6 +43,11 @@ pub struct PluginManifest {
     #[serde(default)]
     #[ts(type = "Record<string, unknown> | null")]
     pub settings: Option<serde_json::Value>,
+    /// Run one instance per space, each with its own settings, data and torrents (an RSS
+    /// reader's feeds, a compatibility API's clients). Otherwise the plugin is global: one
+    /// instance, managed by server admins, working on the `default` space.
+    #[serde(default)]
+    pub space_aware: bool,
 }
 
 /// Everything a plugin may do beyond pure computation. Undeclared calls fail.

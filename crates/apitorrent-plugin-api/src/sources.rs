@@ -10,12 +10,13 @@ use crate::{AppError, BoxFuture};
 /// It never fetches a plugin-supplied URL with the daemon's own network access: that would
 /// let a plugin reach hosts an admin never granted it.
 pub trait SourceFetcher: Send + Sync + 'static {
-    /// `GET url` as plugin `plugin_id`, returning at most `max_bytes` of body. Fails when
-    /// the plugin isn't running, the URL isn't within its grants, or the answer isn't a
-    /// success.
+    /// `GET url` as plugin `plugin_id` (its instance in `space`, for a space-aware one),
+    /// returning at most `max_bytes` of body. Fails when the plugin isn't running, the URL
+    /// isn't within its grants, or the answer isn't a success.
     fn fetch_as(
         &self,
         plugin_id: &str,
+        space: apitorrent_types::spaces::SpaceId,
         url: &str,
         max_bytes: usize,
     ) -> BoxFuture<Result<Vec<u8>, AppError>>;

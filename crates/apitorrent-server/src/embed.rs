@@ -108,6 +108,7 @@ impl Embedded {
             allow_insecure_lan: false,
             plugins: None,
             updates: None,
+            space_hosts: crate::SpaceHosts::default(),
         };
         let app = router(core, &config).layer(axum::middleware::map_request(mark));
         let (connections, rx) = mpsc::unbounded_channel();

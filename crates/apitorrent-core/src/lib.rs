@@ -14,9 +14,10 @@ pub mod plugin_api;
 mod roots;
 pub mod seeding;
 pub mod settings;
+pub mod spaces;
 pub mod store;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -30,11 +31,12 @@ use apitorrent_engine::layout::Layout;
 use apitorrent_engine::metadata::FetchStatus;
 use apitorrent_engine::storage::Placement;
 use apitorrent_engine::{
-    AddTorrent, Session, SessionConfig, TorrentHandle, TorrentState as EngineState,
-    UnwantedPolicy as EnginePolicy,
+    AddTorrent, EntryKey, EntryParams, EntryStats, Session, SessionConfig, TorrentHandle,
+    TorrentState as EngineState, UnwantedPolicy as EnginePolicy,
 };
 use apitorrent_metainfo::sanitize::Naming;
 use apitorrent_metainfo::{Magnet, Torrent};
+use apitorrent_types::spaces::{DEFAULT_SPACE, Space, SpaceId};
 use apitorrent_types::{
     AddSource, AddTorrentRequest, FilePlacement, FilePriority, QueueMove, Settings, TorrentDetail,
     TorrentFile, TorrentId, TorrentLimits, TorrentState, TorrentSummary, UnwantedPolicy,
@@ -65,6 +67,39 @@ fn deluge_seed_limits(stop: Option<(f64, bool)>) -> apitorrent_types::SeedLimits
 const FINGERPRINT_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often superseded torrents are checked for retirement.
 const RETIRE_EVERY: Duration = Duration::from_secs(60);
+
+/// A torrent entry: a torrent in one space. The same torrent (info-hash) can be in several
+/// spaces; they share one swarm in the engine (see `Swarm`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Key {
+    pub space: SpaceId,
+    pub id: TorrentId,
+}
+
+impl Key {
+    pub fn new(space: SpaceId, id: impl Into<TorrentId>) -> Self {
+        Self {
+            space,
+            id: id.into(),
+        }
+    }
+
+    /// The entry's key in its engine torrent: the space id (one entry per space).
+    fn engine(&self) -> EntryKey {
+        u64::try_from(self.space).unwrap_or(0)
+    }
+}
+
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.space, self.id)
+    }
+}
+
+/// The name a space's limits have in the engine.
+fn engine_space(space: SpaceId) -> String {
+    space.to_string()
+}
 
 #[derive(Debug, Clone)]
 pub struct CoreConfig {
@@ -109,8 +144,16 @@ impl CoreError {
 
 struct Entry {
     torrent: Arc<Torrent>,
+    /// The swarm's engine torrent, shared with the torrent's entries in other spaces.
     handle: TorrentHandle,
     save_path: PathBuf,
+    /// This entry's announce list (from its own `.torrent`).
+    trackers: Vec<Vec<String>>,
+    /// Files placed in this entry's save path while it isn't the swarm's primary (see
+    /// `place_secondaries`). The primary's files are the engine's own.
+    placed: Vec<bool>,
+    /// Placing a file failed; not tried again before then.
+    place_retry: Option<std::time::Instant>,
     label: Option<String>,
     added_at: i64,
     paused: bool,
@@ -169,12 +212,22 @@ type LibrarySnapshot = (
     TorrentHandle,
 );
 
+/// One engine torrent per info-hash, whatever the number of spaces holding it. Its storage
+/// is the primary's: the oldest entry. The other entries get their files by link or copy as
+/// they complete.
+struct Swarm {
+    handle: TorrentHandle,
+    primary: SpaceId,
+}
+
 /// Everything needed to start a torrent in the engine and track it.
 struct Spawn {
-    id: TorrentId,
+    key: Key,
     /// Peers to try straight away (found while fetching a magnet's metadata).
     peers: Vec<SocketAddr>,
     torrent: Arc<Torrent>,
+    /// The entry's announce list (from its own `.torrent`).
+    trackers: Vec<Vec<String>>,
     save_path: PathBuf,
     held_path: PathBuf,
     have: Option<Bitfield>,
@@ -200,20 +253,23 @@ struct Inner {
     config: CoreConfig,
     db: Arc<Mutex<Database>>,
     session: Session,
-    torrents: RwLock<HashMap<TorrentId, Entry>>,
-    pending: RwLock<HashMap<TorrentId, Pending>>,
+    torrents: RwLock<HashMap<Key, Entry>>,
+    pending: RwLock<HashMap<Key, Pending>>,
+    /// The engine torrents, by torrent id. Locked after `torrents` when both are needed.
+    swarms: Mutex<HashMap<TorrentId, Swarm>>,
+    spaces: RwLock<BTreeMap<SpaceId, Space>>,
     store: Store,
     stop: Notify,
     settings: RwLock<Settings>,
     /// Torrents whose library matches may supersede others, decided once their first
     /// check is done (see `settle_supersedes`).
-    supersede_pending: Mutex<HashMap<TorrentId, Vec<library::SupersedeCandidate>>>,
+    supersede_pending: Mutex<HashMap<Key, Vec<library::SupersedeCandidate>>>,
     /// Fingerprints by absolute path (see `fingerprint`), mirrored in the database.
     fingerprints: RwLock<HashMap<PathBuf, fingerprint::Fingerprint>>,
     /// Set at shutdown, so a fingerprint in progress stops reading.
     stopping: Arc<std::sync::atomic::AtomicBool>,
     /// Seeding time and seed limits per torrent (see `seeding`), saved with resume state.
-    seeding: Mutex<HashMap<TorrentId, seeding::SeedState>>,
+    seeding: Mutex<HashMap<Key, seeding::SeedState>>,
     /// When seeding time was last counted.
     seed_clock: Mutex<std::time::Instant>,
     roots: Vec<apitorrent_types::StorageRoot>,
@@ -270,6 +326,8 @@ impl Core {
         {
             dht.state = apitorrent_dht::PersistedState::from_bytes(&bytes).ok();
         }
+        let spaces: BTreeMap<SpaceId, Space> =
+            db.spaces()?.into_iter().map(|s| (s.id, s)).collect();
         let automation = automation::Automation::open(&config.data_dir)?;
         let session = Session::start(session_config).await?;
         tracing::info!(peer_port = session.listen_addr().port(), "engine started");
@@ -280,6 +338,8 @@ impl Core {
                 session,
                 torrents: RwLock::new(HashMap::new()),
                 pending: RwLock::new(HashMap::new()),
+                swarms: Mutex::new(HashMap::new()),
+                spaces: RwLock::new(spaces),
                 store: Store::new(),
                 stop: Notify::new(),
                 settings: RwLock::new(settings),
@@ -353,26 +413,41 @@ impl Core {
         for g in &s.groups {
             session.set_group(&g.name, settings::group_limits(g));
         }
+        self.apply_space_limits();
+    }
+
+    /// Push every space's rates and connection limit into the engine.
+    fn apply_space_limits(&self) {
+        let session = &self.inner.session;
+        for s in self
+            .inner
+            .spaces
+            .read()
+            .expect("spaces lock poisoned")
+            .values()
+        {
+            session.set_space(&engine_space(s.id), spaces::engine_limits(&s.settings));
+        }
     }
 
     /// Put every torrent in the group its label selects.
     async fn regroup(&self) {
         let s = self.settings();
-        let changes: Vec<(TorrentHandle, Option<String>)> = {
+        let changes: Vec<(TorrentHandle, EntryKey, Option<String>)> = {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
             torrents
-                .values_mut()
-                .filter_map(|e| {
+                .iter_mut()
+                .filter_map(|(key, e)| {
                     let group = settings::group_for(&s, e.label.as_deref()).map(str::to_owned);
                     (group != e.group).then(|| {
                         e.group.clone_from(&group);
-                        (e.handle.clone(), group)
+                        (e.handle.clone(), key.engine(), group)
                     })
                 })
                 .collect()
         };
-        for (handle, group) in changes {
-            handle.set_group(0, group).await;
+        for (handle, entry, group) in changes {
+            handle.set_group(entry, group).await;
         }
     }
 
@@ -380,52 +455,74 @@ impl Core {
     /// the ones that now fit. Torrents paused by the user or in error don't take part.
     async fn apply_queue(&self) {
         let q = self.settings().queue;
+        let space_queues: HashMap<SpaceId, apitorrent_types::QueueSettings> = self
+            .inner
+            .spaces
+            .read()
+            .expect("spaces lock poisoned")
+            .values()
+            .map(|s| (s.id, spaces::queue_settings(&s.settings, &q)))
+            .collect();
         let now = std::time::Instant::now();
         let slow_after = Duration::from_secs(u64::from(q.slow_after_secs));
         let mut actions = Vec::new();
         {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
-            let items: Vec<settings::QueueItem> = torrents
-                .iter_mut()
-                .filter_map(|(id, e)| {
-                    let stats = e.handle.stats();
-                    let running = !e.paused && !e.queued && stats.error.is_none();
-                    let below = if stats.finished {
-                        stats.upload_rate < q.slow_upload_rate
-                    } else {
-                        stats.download_rate < q.slow_download_rate
-                    };
-                    if running && below {
-                        e.slow_since.get_or_insert(now);
-                    } else {
-                        e.slow_since = None;
-                    }
-                    (!e.paused && stats.error.is_none()).then(|| settings::QueueItem {
-                        id: id.clone(),
-                        position: e.queue_position,
-                        finished: stats.finished,
-                        slow: q.ignore_slow && e.slow_since.is_some_and(|t| now - t >= slow_after),
-                    })
-                })
-                .collect();
-            let active = settings::plan(&items, &q);
-            for item in &items {
-                let e = torrents.get_mut(&item.id).expect("listed above");
-                let run = active.contains(&item.id);
+            let mut by_space: BTreeMap<SpaceId, Vec<settings::QueueItem>> = BTreeMap::new();
+            for (key, e) in torrents.iter_mut() {
+                let stats = e.handle.stats();
+                let mine = entry_stats(&stats, key);
+                let running = !e.paused && !e.queued && stats.error.is_none();
+                let below = if stats.finished {
+                    mine.upload_rate < q.slow_upload_rate
+                } else {
+                    mine.download_rate < q.slow_download_rate
+                };
+                if running && below {
+                    e.slow_since.get_or_insert(now);
+                } else {
+                    e.slow_since = None;
+                }
+                if !e.paused && stats.error.is_none() {
+                    by_space
+                        .entry(key.space)
+                        .or_default()
+                        .push(settings::QueueItem {
+                            id: key.to_string(),
+                            position: e.queue_position,
+                            finished: stats.finished,
+                            slow: q.ignore_slow
+                                && e.slow_since.is_some_and(|t| now - t >= slow_after),
+                        });
+                }
+            }
+            // Each space's own slots first, then the instance's across the spaces.
+            let mut chosen: Vec<settings::QueueItem> = Vec::new();
+            for (space, items) in &by_space {
+                let sq = space_queues.get(space).unwrap_or(&q);
+                let active = settings::plan(items, sq);
+                chosen.extend(items.iter().filter(|i| active.contains(&i.id)).cloned());
+            }
+            let active = settings::plan(&chosen, &q);
+            for (key, e) in torrents.iter_mut() {
+                if e.paused || e.handle.stats().error.is_some() {
+                    continue;
+                }
+                let run = active.contains(&key.to_string());
                 if run && e.queued {
                     e.queued = false;
-                    actions.push((e.handle.clone(), true));
+                    actions.push((e.handle.clone(), key.engine(), true));
                 } else if !run && !e.queued {
                     e.queued = true;
-                    actions.push((e.handle.clone(), false));
+                    actions.push((e.handle.clone(), key.engine(), false));
                 }
             }
         }
-        for (handle, run) in actions {
+        for (handle, entry, run) in actions {
             if run {
-                handle.resume().await;
+                handle.resume_entry(entry).await;
             } else {
-                handle.pause().await;
+                handle.pause_entry(entry).await;
             }
         }
     }
@@ -433,14 +530,14 @@ impl Core {
     /// Change a torrent's own rate and connection limits.
     pub async fn set_torrent_limits(
         &self,
-        id: &str,
+        key: &Key,
         limits: TorrentLimits,
     ) -> Result<(), CoreError> {
-        let handle = self.handle(id)?;
-        let key = id.to_owned();
+        let handle = self.handle(key)?;
+        let k = key.clone();
         self.db(move |db| {
             db.set_limits(
-                &key,
+                &k,
                 limits.download_rate,
                 limits.upload_rate,
                 limits.max_connections,
@@ -452,38 +549,38 @@ impl Core {
             .torrents
             .write()
             .expect("torrents lock poisoned")
-            .get_mut(id)
+            .get_mut(key)
         {
             e.limits = limits;
         }
-        handle.set_limits(0, engine_limits(limits)).await;
+        handle.set_limits(key.engine(), engine_limits(limits)).await;
         Ok(())
     }
 
     /// Change a torrent's label, which also picks its group.
-    pub async fn set_label(&self, id: &str, label: Option<String>) -> Result<(), CoreError> {
+    pub async fn set_label(&self, key: &Key, label: Option<String>) -> Result<(), CoreError> {
         let label = label.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
         if let Some(p) = self
             .inner
             .pending
             .write()
             .expect("pending lock poisoned")
-            .get_mut(id)
+            .get_mut(key)
         {
             p.label.clone_from(&label);
         } else {
-            self.handle(id)?;
+            self.handle(key)?;
         }
-        let key = id.to_owned();
+        let k = key.clone();
         let stored = label.clone();
-        self.db(move |db| db.set_label(&key, stored.as_deref()))
+        self.db(move |db| db.set_label(&k, stored.as_deref()))
             .await?;
         if let Some(e) = self
             .inner
             .torrents
             .write()
             .expect("torrents lock poisoned")
-            .get_mut(id)
+            .get_mut(key)
         {
             e.label = label;
         }
@@ -492,22 +589,28 @@ impl Core {
         Ok(())
     }
 
-    /// Move a torrent in the queue. Positions are renumbered from 0.
-    pub async fn queue_move(&self, id: &str, to: QueueMove) -> Result<(), CoreError> {
+    /// Move a torrent in its space's queue. Positions are renumbered from 0.
+    pub async fn queue_move(&self, key: &Key, to: QueueMove) -> Result<(), CoreError> {
         let positions = {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
             let mut pending = self.inner.pending.write().expect("pending lock poisoned");
-            if !torrents.contains_key(id) && !pending.contains_key(id) {
+            if !torrents.contains_key(key) && !pending.contains_key(key) {
                 return Err(CoreError::NotFound);
             }
-            let mut order: Vec<(u32, String)> = torrents
+            let mut order: Vec<(u32, Key)> = torrents
                 .iter()
+                .filter(|(k, _)| k.space == key.space)
                 .map(|(k, e)| (e.queue_position, k.clone()))
-                .chain(pending.iter().map(|(k, p)| (p.queue_position, k.clone())))
+                .chain(
+                    pending
+                        .iter()
+                        .filter(|(k, _)| k.space == key.space)
+                        .map(|(k, p)| (p.queue_position, k.clone())),
+                )
                 .collect();
             order.sort();
-            let mut ids: Vec<String> = order.into_iter().map(|(_, k)| k).collect();
-            let from = ids.iter().position(|k| k == id).expect("present");
+            let mut ids: Vec<Key> = order.into_iter().map(|(_, k)| k).collect();
+            let from = ids.iter().position(|k| k == key).expect("present");
             let item = ids.remove(from);
             let dest = match to {
                 QueueMove::Top => 0,
@@ -516,7 +619,7 @@ impl Core {
                 QueueMove::Bottom => ids.len(),
             };
             ids.insert(dest, item);
-            let positions: Vec<(String, u32)> = ids
+            let positions: Vec<(Key, u32)> = ids
                 .into_iter()
                 .enumerate()
                 .map(|(i, k)| (k, u32::try_from(i).unwrap_or(u32::MAX)))
@@ -556,7 +659,7 @@ impl Core {
     /// `settle_supersedes`).
     async fn link_from_library(
         &self,
-        id: &str,
+        key: &Key,
         torrent: &Arc<Torrent>,
         save_path: &std::path::Path,
         naming: u8,
@@ -581,7 +684,7 @@ impl Core {
             return Vec::new();
         }
         let sources = self
-            .library_sources(Some(id), |t| {
+            .library_sources(Some(&key.id), |t| {
                 t.info.files.iter().any(|f| lengths.contains(&f.length))
             })
             .await;
@@ -625,29 +728,41 @@ impl Core {
                 .supersede_pending
                 .lock()
                 .expect("supersede lock poisoned")
-                .insert(id.to_owned(), superseded);
+                .insert(key.clone(), superseded);
         }
         linked
     }
 
     /// A snapshot of the files of every torrent `keep` accepts, except `except`'s: where
     /// they are, what's complete, and their fingerprints. Each one costs a round trip to the
-    /// torrent's actor, so callers narrow it down first.
+    /// torrent's actor, so callers narrow it down first. A torrent in several spaces is
+    /// listed once, at its primary's files (the engine's own); a source's `id` is the
+    /// torrent id, whichever spaces hold it.
     async fn library_sources(
         &self,
         except: Option<&str>,
         keep: impl Fn(&Torrent) -> bool,
     ) -> Vec<library::Source> {
+        let primaries: std::collections::HashSet<Key> = self
+            .inner
+            .swarms
+            .lock()
+            .expect("swarms lock poisoned")
+            .iter()
+            .map(|(id, s)| Key::new(s.primary, id.clone()))
+            .collect();
         let entries: Vec<LibrarySnapshot> = self
             .inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
             .iter()
-            .filter(|(k, e)| Some(k.as_str()) != except && keep(&e.torrent))
+            .filter(|(k, e)| {
+                Some(k.id.as_str()) != except && primaries.contains(k) && keep(&e.torrent)
+            })
             .map(|(k, e)| {
                 (
-                    k.clone(),
+                    k.id.clone(),
                     e.torrent.clone(),
                     e.save_path.clone(),
                     e.naming,
@@ -861,7 +976,7 @@ impl Core {
     /// only if every file that took it over verified. Decided once, when the check ends;
     /// pieces downloaded later don't count, since they would be a different version.
     async fn settle_supersedes(&self) {
-        let ready: Vec<(TorrentId, TorrentHandle, Arc<Torrent>)> = {
+        let ready: Vec<(Key, TorrentHandle, Arc<Torrent>)> = {
             let pending = self
                 .inner
                 .supersede_pending
@@ -899,20 +1014,28 @@ impl Core {
                     tracing::info!(torrent = %c.source_id, by = %id, "not superseded: the matched files differ");
                     continue;
                 }
-                let (key, by) = (c.source_id.clone(), id.clone());
-                if self
-                    .db(move |db| db.set_superseded(&key, &by))
-                    .await
-                    .is_ok()
+                // A pack supersedes only its own space's copy of a torrent.
+                let source = Key::new(id.space, c.source_id.clone());
+                if !self
+                    .inner
+                    .torrents
+                    .read()
+                    .expect("torrents lock poisoned")
+                    .contains_key(&source)
+                {
+                    continue;
+                }
+                let (k, by) = (source.clone(), id.id.clone());
+                if self.db(move |db| db.set_superseded(&k, &by)).await.is_ok()
                     && let Some(e) = self
                         .inner
                         .torrents
                         .write()
                         .expect("torrents lock poisoned")
-                        .get_mut(&c.source_id)
+                        .get_mut(&source)
                 {
-                    tracing::info!(torrent = %c.source_id, by = %id, "torrent superseded by a pack");
-                    e.superseded_by = Some(id.clone());
+                    tracing::info!(torrent = %source, by = %id, "torrent superseded by a pack");
+                    e.superseded_by = Some(id.id.clone());
                 }
             }
         }
@@ -932,9 +1055,11 @@ impl Core {
     /// labels, queue order, per-torrent limits and all-time totals.
     pub async fn import_deluge(
         &self,
+        space: SpaceId,
         req: apitorrent_types::ImportDelugeRequest,
     ) -> Result<apitorrent_types::ImportReport, CoreError> {
         use apitorrent_types::{ImportReport, ImportSkip};
+        self.space(space)?;
         let dir = PathBuf::from(&req.config_dir);
         let state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
             .await
@@ -949,22 +1074,45 @@ impl Core {
             warnings: state.warnings.clone(),
             ..ImportReport::default()
         };
+        // Deluge's global "stop at ratio" is instance-wide here; another space's torrents
+        // each get it as limits of their own instead.
+        let space_wide_ratio = space != DEFAULT_SPACE && req.import_settings;
         if req.import_settings {
             let d = &state.settings;
-            let mut s = self.settings();
-            s.download_rate = d.max_download_rate.unwrap_or(0);
-            s.upload_rate = d.max_upload_rate.unwrap_or(0);
-            if let Some(n) = d.max_connections {
-                s.max_connections = n;
+            if space == DEFAULT_SPACE {
+                let mut s = self.settings();
+                s.download_rate = d.max_download_rate.unwrap_or(0);
+                s.upload_rate = d.max_upload_rate.unwrap_or(0);
+                if let Some(n) = d.max_connections {
+                    s.max_connections = n;
+                }
+                s.queue.max_active_downloads = d.max_active_downloading.unwrap_or(0);
+                s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
+                s.queue.max_active = d.max_active_limit.unwrap_or(0);
+                s.queue.ignore_slow = d.dont_count_slow;
+                s.seed_limits = deluge_seed_limits(d.stop_at_ratio);
+                self.set_settings(s).await?;
+            } else {
+                let current = self.space(space)?;
+                let mut s = current.settings.clone();
+                s.download_rate = d.max_download_rate.unwrap_or(0);
+                s.upload_rate = d.max_upload_rate.unwrap_or(0);
+                s.max_connections = d.max_connections.unwrap_or(0);
+                s.max_active_downloads = d.max_active_downloading.unwrap_or(0);
+                s.max_active_seeds = d.max_active_seeding.unwrap_or(0);
+                s.max_active = d.max_active_limit.unwrap_or(0);
+                self.update_space(
+                    space,
+                    apitorrent_types::spaces::UpdateSpaceRequest {
+                        name: current.name.clone(),
+                        description: current.description.clone(),
+                        settings: s,
+                    },
+                )
+                .await?;
             }
-            s.queue.max_active_downloads = d.max_active_downloading.unwrap_or(0);
-            s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
-            s.queue.max_active = d.max_active_limit.unwrap_or(0);
-            s.queue.ignore_slow = d.dont_count_slow;
-            s.seed_limits = deluge_seed_limits(d.stop_at_ratio);
-            self.set_settings(s).await?;
         }
-        let ours = self.inner.config.download_dir.clone();
+        let ours = self.download_dir(space);
         for t in state.torrents {
             let label = || t.id.clone();
             let skip = |report: &mut ImportReport, name: String, reason: String| {
@@ -982,14 +1130,20 @@ impl Core {
                     // A magnet that never got its metadata in Deluge: add it as a magnet.
                     if let Some(uri) = &t.magnet {
                         match self
-                            .add(AddTorrentRequest {
-                                source: AddSource::Magnet { uri: uri.clone() },
-                                save_path: t.save_path.as_deref().map(|p| import::remap(p, &map)),
-                                paused: req.paused || t.paused,
-                                label: t.label.clone(),
-                                file_priorities: None,
-                                unwanted_policy: UnwantedPolicy::Hold,
-                            })
+                            .add(
+                                space,
+                                AddTorrentRequest {
+                                    source: AddSource::Magnet { uri: uri.clone() },
+                                    save_path: t
+                                        .save_path
+                                        .as_deref()
+                                        .map(|p| import::remap(p, &map)),
+                                    paused: req.paused || t.paused,
+                                    label: t.label.clone(),
+                                    file_priorities: None,
+                                    unwanted_policy: UnwantedPolicy::Hold,
+                                },
+                            )
                             .await
                         {
                             Ok(_) => report.imported.push(label()),
@@ -1003,14 +1157,15 @@ impl Core {
             };
             let name = torrent.info.name.clone();
             let id = torrent.info.info_hashes().id_string();
+            let key = Key::new(space, id.clone());
             let taken = self
                 .inner
                 .torrents
                 .read()
                 .expect("torrents lock poisoned")
-                .contains_key(&id);
+                .contains_key(&key);
             if taken {
-                skip(&mut report, name, "already in apitorrent".into());
+                skip(&mut report, name, "already in this space".into());
                 continue;
             }
             let save_path = import::save_path(
@@ -1036,6 +1191,10 @@ impl Core {
                     .await
                     .unwrap_or(None)
             };
+            if let Err(e) = self.check_save_path(space, &save_path) {
+                skip(&mut report, name, e.to_string());
+                continue;
+            }
             let held_path = held_path_for(&self.inner.config.data_dir, &save_path, &id);
             let limits = TorrentLimits {
                 download_rate: t.max_download_rate.unwrap_or(0),
@@ -1044,7 +1203,9 @@ impl Core {
             };
             let paused = req.paused || t.paused;
             let hashes = torrent.info.info_hashes();
+            let trackers = torrent.trackers.clone();
             let row = TorrentRow {
+                space,
                 id: id.clone(),
                 info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
                 info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
@@ -1061,7 +1222,7 @@ impl Core {
                 placements: None,
                 held_path: Some(held_path.to_string_lossy().into_owned()),
                 unwanted_policy: 0,
-                queue_position: self.next_queue_position(),
+                queue_position: self.next_queue_position(space),
                 download_rate: limits.download_rate,
                 upload_rate: limits.upload_rate,
                 max_connections: limits.max_connections,
@@ -1077,32 +1238,36 @@ impl Core {
                 skip(&mut report, name, e.to_string());
                 continue;
             }
-            let spawned = self.spawn_entry(Spawn {
-                id: id.clone(),
-                peers: Vec::new(),
-                torrent,
-                save_path,
-                held_path,
-                have,
-                placements: None,
-                paused,
-                file_priorities: prios,
-                unwanted: UnwantedPolicy::Hold,
-                label: t.label.clone(),
-                added_at,
-                totals: (t.total_downloaded, t.total_uploaded),
-                queue_position,
-                limits,
-                queued: !paused && self.queue_limited(),
-                naming: 0,
-                linked: Vec::new(),
-                file_paths,
-            });
+            let spawned = self
+                .spawn_entry(Spawn {
+                    key: key.clone(),
+                    peers: Vec::new(),
+                    torrent,
+                    trackers,
+                    save_path,
+                    held_path,
+                    have,
+                    placements: None,
+                    paused,
+                    file_priorities: prios,
+                    unwanted: UnwantedPolicy::Hold,
+                    label: t.label.clone(),
+                    added_at,
+                    totals: (t.total_downloaded, t.total_uploaded),
+                    queue_position,
+                    limits,
+                    queued: !paused && self.queue_limited(),
+                    naming: 0,
+                    linked: Vec::new(),
+                    file_paths,
+                })
+                .await;
             match spawned {
                 Ok(_) => {
                     // Deluge copies its global "stop at ratio" into every torrent, so only
-                    // a torrent that differs from the global setting gets limits of its own.
-                    let own = (t.stop_at_ratio != state.settings.stop_at_ratio)
+                    // a torrent that differs from the global setting gets limits of its own
+                    // (in another space, every torrent does: see above).
+                    let own = (space_wide_ratio || t.stop_at_ratio != state.settings.stop_at_ratio)
                         .then(|| deluge_seed_limits(t.stop_at_ratio));
                     let seed = seeding::SeedState {
                         seed_ms: t.seeding_secs.saturating_mul(1000),
@@ -1113,14 +1278,14 @@ impl Core {
                         .seeding
                         .lock()
                         .expect("seeding lock poisoned")
-                        .insert(id.clone(), seed);
-                    let key = id.clone();
-                    let _ = self.db(move |db| db.save_seed_states(&[(key, seed)])).await;
+                        .insert(key.clone(), seed);
+                    let k = key.clone();
+                    let _ = self.db(move |db| db.save_seed_states(&[(k, seed)])).await;
                     report.imported.push(name);
                 }
                 Err(e) => {
-                    let key = id.clone();
-                    let _ = self.db(move |db| db.remove_torrent(&key)).await;
+                    let k = key.clone();
+                    let _ = self.db(move |db| db.remove_torrent(&k)).await;
                     skip(&mut report, name, e.to_string());
                 }
             }
@@ -1170,21 +1335,35 @@ impl Core {
         .unwrap_or(0)
     }
 
-    fn next_queue_position(&self) -> u32 {
+    /// The end of a space's queue.
+    fn next_queue_position(&self, space: SpaceId) -> u32 {
         let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
         let pending = self.inner.pending.read().expect("pending lock poisoned");
         torrents
-            .values()
-            .map(|e| e.queue_position + 1)
-            .chain(pending.values().map(|p| p.queue_position + 1))
+            .iter()
+            .filter(|(k, _)| k.space == space)
+            .map(|(_, e)| e.queue_position + 1)
+            .chain(
+                pending
+                    .iter()
+                    .filter(|(k, _)| k.space == space)
+                    .map(|(_, p)| p.queue_position + 1),
+            )
             .max()
             .unwrap_or(0)
     }
 
-    /// Whether any queue limit is set, so new and restored torrents should wait for the
-    /// queue's decision rather than start at once.
+    /// Whether any queue limit is set, the instance's or a space's, so new and restored
+    /// torrents should wait for the queue's decision rather than start at once.
     fn queue_limited(&self) -> bool {
         self.settings().queue.limited()
+            || self
+                .inner
+                .spaces
+                .read()
+                .expect("spaces lock poisoned")
+                .values()
+                .any(|s| spaces::queue_limited(&s.settings))
     }
 
     pub fn store(&self) -> &Store {
@@ -1248,8 +1427,10 @@ impl Core {
         self.inner.session.set_blocklist(list);
     }
 
-    pub fn subscribe(&self) -> (Snapshot, broadcast::Receiver<Arc<Patch>>) {
-        self.inner.store.subscribe()
+    /// A snapshot of one space's torrents (or every space's, for `None`) and the patches
+    /// after it. Patches cover every space: see [`Patch::for_space`].
+    pub fn subscribe(&self, space: Option<SpaceId>) -> (Snapshot, broadcast::Receiver<Arc<Patch>>) {
+        self.inner.store.subscribe(space)
     }
 
     async fn db<T: Send + 'static>(
@@ -1264,9 +1445,13 @@ impl Core {
     }
 
     async fn restore(&self) -> Result<(), CoreError> {
-        let rows = self.db(|db| db.torrents()).await?;
+        let mut rows = self.db(|db| db.torrents()).await?;
         let count = rows.len();
+        // A torrent in several spaces has one swarm, whose files are its primary's: the
+        // entry that saved resume data last time (only primaries do), else the oldest.
+        rows.sort_by_key(|r| (r.have.is_none(), r.added_at, r.space));
         for row in rows {
+            let key = Key::new(row.space, row.id.clone());
             if row.torrent.is_empty() {
                 self.restore_pending(row);
                 continue;
@@ -1274,7 +1459,7 @@ impl Core {
             let torrent = match Torrent::from_bytes(&row.torrent) {
                 Ok(t) => Arc::new(t),
                 Err(e) => {
-                    tracing::error!(id = %row.id, error = %e, "stored torrent no longer parses");
+                    tracing::error!(torrent = %key, error = %e, "stored torrent no longer parses");
                     continue;
                 }
             };
@@ -1299,38 +1484,44 @@ impl Core {
                 || held_path_for(&self.inner.config.data_dir, &save_path, &row.id),
                 PathBuf::from,
             );
-            self.spawn_entry(Spawn {
-                id: row.id.clone(),
-                peers: Vec::new(),
-                torrent,
-                save_path,
-                held_path,
-                have,
-                placements,
-                paused: row.paused,
-                file_priorities: prios,
-                unwanted: policy_from_byte(row.unwanted_policy),
-                label: row.label,
-                added_at: row.added_at,
-                totals: (row.downloaded_total, row.uploaded_total),
-                queue_position: row.queue_position,
-                limits: TorrentLimits {
-                    download_rate: row.download_rate,
-                    upload_rate: row.upload_rate,
-                    max_connections: row.max_connections,
-                },
-                queued: !row.paused && self.queue_limited(),
-                naming: row.naming,
-                linked: row
-                    .linked
-                    .as_deref()
-                    .map(unpack_indices)
-                    .unwrap_or_default(),
-                file_paths: row
-                    .file_paths
-                    .as_deref()
-                    .and_then(|j| serde_json::from_str(j).ok()),
-            })?;
+            let spawned = self
+                .spawn_entry(Spawn {
+                    key: key.clone(),
+                    peers: Vec::new(),
+                    trackers: torrent.trackers.clone(),
+                    torrent,
+                    save_path,
+                    held_path,
+                    have,
+                    placements,
+                    paused: row.paused,
+                    file_priorities: prios,
+                    unwanted: policy_from_byte(row.unwanted_policy),
+                    label: row.label,
+                    added_at: row.added_at,
+                    totals: (row.downloaded_total, row.uploaded_total),
+                    queue_position: row.queue_position,
+                    limits: TorrentLimits {
+                        download_rate: row.download_rate,
+                        upload_rate: row.upload_rate,
+                        max_connections: row.max_connections,
+                    },
+                    queued: !row.paused && self.queue_limited(),
+                    naming: row.naming,
+                    linked: row
+                        .linked
+                        .as_deref()
+                        .map(unpack_indices)
+                        .unwrap_or_default(),
+                    file_paths: row
+                        .file_paths
+                        .as_deref()
+                        .and_then(|j| serde_json::from_str(j).ok()),
+                })
+                .await;
+            if let Err(e) = spawned {
+                tracing::error!(torrent = %key, error = %e, "could not restore the torrent");
+            }
         }
         let superseded = self.db(|db| db.superseded()).await?;
         {
@@ -1348,14 +1539,15 @@ impl Core {
 
     /// Bring back a magnet link that was still waiting for metadata.
     fn restore_pending(&self, row: TorrentRow) {
+        let key = Key::new(row.space, row.id.clone());
         let Some(uri) = row.magnet else {
-            tracing::error!(id = %row.id, "stored torrent has neither metadata nor a magnet link");
+            tracing::error!(torrent = %key, "stored torrent has neither metadata nor a magnet link");
             return;
         };
         let magnet = match Magnet::parse(&uri) {
             Ok(m) => m,
             Err(e) => {
-                tracing::error!(id = %row.id, error = %e, "stored magnet link no longer parses");
+                tracing::error!(torrent = %key, error = %e, "stored magnet link no longer parses");
                 return;
             }
         };
@@ -1364,13 +1556,12 @@ impl Core {
             || held_path_for(&self.inner.config.data_dir, &save_path, &row.id),
             PathBuf::from,
         );
-        let id = row.id.clone();
         self.inner
             .pending
             .write()
             .expect("pending lock poisoned")
             .insert(
-                row.id,
+                key.clone(),
                 Pending {
                     magnet,
                     uri,
@@ -1386,29 +1577,29 @@ impl Core {
                 },
             );
         if !row.paused {
-            self.start_fetch(&id);
+            self.start_fetch(&key);
         }
     }
 
     /// Start (or restart) the metadata fetch for a pending magnet link. When it finishes,
     /// the torrent starts for real.
-    fn start_fetch(&self, id: &str) {
+    fn start_fetch(&self, key: &Key) {
         let mut pending = self.inner.pending.write().expect("pending lock poisoned");
-        let Some(p) = pending.get_mut(id) else {
+        let Some(p) = pending.get_mut(key) else {
             return;
         };
         let mut fetch = self.inner.session.fetch_metadata(&p.magnet);
         let (cancel_tx, cancel_rx) = oneshot::channel();
         p.fetch = Some((fetch.watch(), cancel_tx));
         let core = self.clone();
-        let id = id.to_owned();
+        let key = key.clone();
         tokio::spawn(async move {
             tokio::select! {
                 fetched = fetch.wait() => {
                     if let Some(fetched) = fetched
-                        && let Err(e) = core.metadata_arrived(&id, fetched).await
+                        && let Err(e) = core.metadata_arrived(&key, fetched).await
                     {
-                        tracing::error!(%id, error = %e, "could not start the torrent from its metadata");
+                        tracing::error!(torrent = %key, error = %e, "could not start the torrent from its metadata");
                     }
                 }
                 _ = cancel_rx => {}
@@ -1419,7 +1610,7 @@ impl Core {
     /// A magnet link's metadata is here: store it as a `.torrent` and start the torrent.
     async fn metadata_arrived(
         &self,
-        id: &str,
+        key: &Key,
         fetched: apitorrent_engine::metadata::Fetched,
     ) -> Result<(), CoreError> {
         // The pending entry stays visible (to the list, details, pause and remove) until
@@ -1430,7 +1621,7 @@ impl Core {
             .pending
             .read()
             .expect("pending lock poisoned")
-            .get(id)
+            .get(key)
             .map(|p| (p.magnet.clone(), p.save_path.clone(), p.naming))
         else {
             return Ok(()); // removed meanwhile
@@ -1446,19 +1637,22 @@ impl Core {
         );
         let prios = select_only_priorities(&torrent, magnet.select_only.as_deref());
         let hashes = torrent.info.info_hashes();
-        let (key, name, stored) = (id.to_owned(), torrent.info.name.clone(), prios.clone());
+        let (k, name, stored) = (key.clone(), torrent.info.name.clone(), prios.clone());
         let (v1, v2) = (
             hashes.get_v1().map(|h| h.to_hex()),
             hashes.get_v2().map(|h| h.to_hex()),
         );
         self.db(move |db| {
-            db.set_metadata(&key, &bytes, &name, v1.as_deref(), v2.as_deref(), &stored)
+            db.set_metadata(&k, &bytes, &name, v1.as_deref(), v2.as_deref(), &stored)
         })
         .await?;
-        tracing::info!(%id, name = %torrent.info.name, "metadata fetched");
-        let linked = self
-            .link_from_library(id, &torrent, &save_path, naming, &prios)
-            .await;
+        tracing::info!(torrent = %key, name = %torrent.info.name, "metadata fetched");
+        let linked = if self.swarm_exists(&key.id) {
+            Vec::new()
+        } else {
+            self.link_from_library(key, &torrent, &save_path, naming, &prios)
+                .await
+        };
 
         // The latest pending state (the user may have paused or relabelled it meanwhile),
         // then the torrent takes its place.
@@ -1467,7 +1661,7 @@ impl Core {
             .pending
             .read()
             .expect("pending lock poisoned")
-            .get(id)
+            .get(key)
             .map(|p| PendingSnapshot {
                 held_path: p.held_path.clone(),
                 paused: p.paused,
@@ -1480,8 +1674,9 @@ impl Core {
             return Ok(()); // removed meanwhile
         };
         self.spawn_entry(Spawn {
-            id: id.to_owned(),
+            key: key.clone(),
             peers: fetched.peers,
+            trackers: torrent.trackers.clone(),
             torrent,
             save_path,
             held_path: snapshot.held_path,
@@ -1499,27 +1694,28 @@ impl Core {
             naming,
             linked,
             file_paths: None,
-        })?;
+        })
+        .await?;
         let last = self
             .inner
             .pending
             .write()
             .expect("pending lock poisoned")
-            .remove(id);
+            .remove(key);
         match last {
             // Removed in the moment between the snapshot and now: undo the torrent too.
             None => {
-                tracing::info!(%id, "removed while its metadata arrived");
-                self.remove(id, false).await?;
+                tracing::info!(torrent = %key, "removed while its metadata arrived");
+                self.remove(key, false).await?;
                 return Ok(());
             }
             // Changed in that moment: carry the change over.
             Some(p) => {
                 if p.paused != snapshot.paused {
-                    self.set_paused(id, p.paused).await?;
+                    self.set_paused(key, p.paused).await?;
                 }
                 if p.label != snapshot.label {
-                    self.set_label(id, p.label).await?;
+                    self.set_label(key, p.label).await?;
                 }
             }
         }
@@ -1528,33 +1724,73 @@ impl Core {
         Ok(())
     }
 
-    /// Add a magnet link: store it, and fetch its metadata in the background.
-    async fn add_magnet(&self, uri: &str, req: AddTorrentRequest) -> Result<TorrentId, CoreError> {
-        let magnet = Magnet::parse(uri).map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
-        let id = magnet.info_hashes.id_string();
-        let taken = self
-            .inner
+    /// Whether some space already has this torrent running in the engine.
+    fn swarm_exists(&self, id: &str) -> bool {
+        self.inner
+            .swarms
+            .lock()
+            .expect("swarms lock poisoned")
+            .contains_key(id)
+    }
+
+    /// Whether this space already has the torrent (running or waiting for metadata).
+    fn taken(&self, key: &Key) -> bool {
+        self.inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
-            .contains_key(&id)
+            .contains_key(key)
             || self
                 .inner
                 .pending
                 .read()
                 .expect("pending lock poisoned")
-                .contains_key(&id);
-        if taken {
+                .contains_key(key)
+    }
+
+    /// Add a magnet link: store it, and fetch its metadata in the background. When another
+    /// space already has the torrent, its metadata is used at once instead.
+    async fn add_magnet(
+        &self,
+        space: SpaceId,
+        uri: &str,
+        req: AddTorrentRequest,
+    ) -> Result<TorrentId, CoreError> {
+        let magnet = Magnet::parse(uri).map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
+        let id = magnet.info_hashes.id_string();
+        let key = Key::new(space, id.clone());
+        if self.taken(&key) {
             return Err(CoreError::Duplicate);
         }
-        let save_path = req
-            .save_path
-            .map_or_else(|| self.inner.config.download_dir.clone(), PathBuf::from);
-        if !save_path.is_absolute() {
-            return Err(CoreError::InvalidRequest(
-                "save path must be absolute".into(),
-            ));
+        let known = {
+            let id = id.clone();
+            self.db(move |db| db.torrent_file(&id)).await?
+        };
+        if let Some(bytes) = known {
+            // The swarm is already here: join it, announcing to the magnet's trackers.
+            let bytes = if magnet.trackers.is_empty() {
+                bytes
+            } else {
+                let tiers: Vec<Vec<String>> =
+                    magnet.trackers.iter().map(|t| vec![t.clone()]).collect();
+                import::with_trackers(&bytes, &tiers).unwrap_or(bytes)
+            };
+            let prios = Torrent::from_bytes(&bytes)
+                .ok()
+                .map(|t| select_only_priorities(&t, magnet.select_only.as_deref()));
+            return self
+                .add_bytes(
+                    space,
+                    bytes,
+                    AddTorrentRequest {
+                        file_priorities: req.file_priorities.clone().or(prios),
+                        ..req
+                    },
+                )
+                .await;
         }
+        let save_path =
+            self.resolve_save_path(space, req.save_path.as_deref(), req.label.as_deref())?;
         let held_path = {
             let (data, save, id) = (
                 self.inner.config.data_dir.clone(),
@@ -1568,6 +1804,7 @@ impl Core {
         let name = magnet.display_name.clone().unwrap_or_else(|| id.clone());
         let naming = self.choose_naming(&save_path).await;
         let row = TorrentRow {
+            space,
             id: id.clone(),
             info_hash_v1: magnet.info_hashes.get_v1().map(|h| h.to_hex()),
             info_hash_v2: magnet.info_hashes.get_v2().map(|h| h.to_hex()),
@@ -1584,7 +1821,7 @@ impl Core {
             placements: None,
             held_path: Some(held_path.to_string_lossy().into_owned()),
             unwanted_policy: policy_to_byte(req.unwanted_policy),
-            queue_position: self.next_queue_position(),
+            queue_position: self.next_queue_position(space),
             download_rate: 0,
             upload_rate: 0,
             max_connections: None,
@@ -1600,7 +1837,7 @@ impl Core {
             .write()
             .expect("pending lock poisoned")
             .insert(
-                id.clone(),
+                key.clone(),
                 Pending {
                     magnet,
                     uri: uri.to_owned(),
@@ -1616,18 +1853,22 @@ impl Core {
                 },
             );
         if !req.paused {
-            self.start_fetch(&id);
+            self.start_fetch(&key);
         }
-        tracing::info!(%id, "magnet link added");
+        tracing::info!(torrent = %key, "magnet link added");
         self.refresh();
         Ok(id)
     }
 
-    fn spawn_entry(&self, s: Spawn) -> Result<TorrentId, CoreError> {
+    /// Start tracking an entry. The first entry of a torrent starts its swarm in the engine,
+    /// at its own save path; a later one (another space) joins that swarm, and gets its
+    /// files in its own save path as they complete (see `place_secondaries`).
+    async fn spawn_entry(&self, s: Spawn) -> Result<TorrentId, CoreError> {
         let Spawn {
-            id,
+            key,
             peers,
             torrent,
+            trackers,
             save_path,
             held_path,
             have,
@@ -1651,47 +1892,75 @@ impl Core {
             (None, other) => match torrent.info.paths(other) {
                 Ok(p) => Some(p),
                 Err(e) => {
-                    tracing::warn!(%id, error = %e, "native paths failed; using portable names");
+                    tracing::warn!(torrent = %key, error = %e, "native paths failed; using portable names");
                     None
                 }
             },
         };
         let group = settings::group_for(&self.settings(), label.as_deref()).map(str::to_owned);
-        let parts_path = self
-            .inner
-            .config
-            .data_dir
-            .join("parts")
-            .join(format!("{id}.parts"));
-        let handle = self
-            .inner
-            .session
-            .add_torrent(AddTorrent {
-                held_path: Some(held_path),
-                parts_path: Some(parts_path),
-                have,
-                placements,
-                peers,
-                unwanted: engine_policy(unwanted),
-                paused: paused || queued,
-                file_priorities: Some(file_priorities.clone()),
-                limits: engine_limits(limits),
-                group: group.clone(),
-                file_paths,
-                linked,
-                ..AddTorrent::new(torrent.clone(), save_path.clone())
-            })
-            .map_err(|_| CoreError::Duplicate)?;
+        let entry = EntryParams {
+            key: key.engine(),
+            trackers: Some(trackers.clone()),
+            limits: engine_limits(limits),
+            group: group.clone(),
+            space: Some(engine_space(key.space)),
+            paused: paused || queued,
+        };
+        let (handle, joined) = {
+            let mut swarms = self.inner.swarms.lock().expect("swarms lock poisoned");
+            if let Some(swarm) = swarms.get(&key.id) {
+                (swarm.handle.clone(), true)
+            } else {
+                let handle = self
+                    .inner
+                    .session
+                    .add_torrent(AddTorrent {
+                        held_path: Some(held_path),
+                        parts_path: Some(self.parts_path(&key.id)),
+                        have,
+                        placements,
+                        peers,
+                        unwanted: engine_policy(unwanted),
+                        paused: entry.paused,
+                        file_priorities: Some(file_priorities.clone()),
+                        limits: entry.limits,
+                        group: group.clone(),
+                        entry: entry.key,
+                        trackers: entry.trackers.clone(),
+                        space: entry.space.clone(),
+                        file_paths,
+                        linked,
+                        ..AddTorrent::new(torrent.clone(), save_path.clone())
+                    })
+                    .map_err(|_| CoreError::Duplicate)?;
+                swarms.insert(
+                    key.id.clone(),
+                    Swarm {
+                        handle: handle.clone(),
+                        primary: key.space,
+                    },
+                );
+                (handle, false)
+            }
+        };
+        if joined {
+            handle.add_entry(entry).await;
+            tracing::info!(torrent = %key, "joined the swarm another space runs");
+        }
+        let files = torrent.info.files.len();
         self.inner
             .torrents
             .write()
             .expect("torrents lock poisoned")
             .insert(
-                id.clone(),
+                key.clone(),
                 Entry {
                     torrent,
                     handle,
                     save_path,
+                    trackers,
+                    placed: vec![false; files],
+                    place_retry: None,
                     label,
                     added_at,
                     paused,
@@ -1709,37 +1978,77 @@ impl Core {
                     file_paths: custom_paths,
                 },
             );
-        Ok(id)
+        if joined {
+            self.sync_priorities(&key.id).await;
+        }
+        Ok(key.id)
+    }
+
+    /// The part store of a torrent's swarm.
+    fn parts_path(&self, id: &str) -> PathBuf {
+        self.inner
+            .config
+            .data_dir
+            .join("parts")
+            .join(format!("{id}.parts"))
+    }
+
+    /// Give a swarm the file priorities of all its entries: a file any of them wants is
+    /// downloaded, at the highest priority any of them gives it.
+    async fn sync_priorities(&self, id: &str) {
+        let (handle, merged) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let mut handle = None;
+            let mut merged: Vec<u8> = Vec::new();
+            for (k, e) in torrents.iter().filter(|(k, _)| k.id == id) {
+                let _ = k;
+                handle.get_or_insert_with(|| e.handle.clone());
+                if merged.len() < e.file_priorities.len() {
+                    merged.resize(e.file_priorities.len(), 0);
+                }
+                for (m, &p) in merged.iter_mut().zip(&e.file_priorities) {
+                    *m = (*m).max(p);
+                }
+            }
+            (handle, merged)
+        };
+        if let Some(handle) = handle {
+            handle.set_file_priorities(merged).await;
+        }
     }
 
     /// Add a torrent and start it (unless the request asks for it paused).
-    pub async fn add(&self, req: AddTorrentRequest) -> Result<TorrentId, CoreError> {
+    pub async fn add(
+        &self,
+        space: SpaceId,
+        req: AddTorrentRequest,
+    ) -> Result<TorrentId, CoreError> {
+        self.space(space)?;
         let bytes = match &req.source {
             AddSource::TorrentFile { data } => base64::engine::general_purpose::STANDARD
                 .decode(data.trim())
                 .map_err(|e| CoreError::InvalidRequest(format!("bad base64: {e}")))?,
             AddSource::Magnet { uri } => {
                 let uri = uri.clone();
-                return self.add_magnet(&uri, req).await;
+                return self.add_magnet(space, &uri, req).await;
             }
         };
+        self.add_bytes(space, bytes, req).await
+    }
+
+    /// Add a `.torrent` file's bytes to a space.
+    async fn add_bytes(
+        &self,
+        space: SpaceId,
+        bytes: Vec<u8>,
+        req: AddTorrentRequest,
+    ) -> Result<TorrentId, CoreError> {
         let torrent = Arc::new(
             Torrent::from_bytes(&bytes).map_err(|e| CoreError::InvalidTorrent(e.to_string()))?,
         );
         let id = torrent.info.info_hashes().id_string();
-        let taken = self
-            .inner
-            .torrents
-            .read()
-            .expect("torrents lock poisoned")
-            .contains_key(&id)
-            || self
-                .inner
-                .pending
-                .read()
-                .expect("pending lock poisoned")
-                .contains_key(&id);
-        if taken {
+        let key = Key::new(space, id.clone());
+        if self.taken(&key) {
             return Err(CoreError::Duplicate);
         }
         let files = torrent.info.files.len();
@@ -1753,14 +2062,8 @@ impl Core {
             }
             None => vec![4; files],
         };
-        let save_path = req
-            .save_path
-            .map_or_else(|| self.inner.config.download_dir.clone(), PathBuf::from);
-        if !save_path.is_absolute() {
-            return Err(CoreError::InvalidRequest(
-                "save path must be absolute".into(),
-            ));
-        }
+        let save_path =
+            self.resolve_save_path(space, req.save_path.as_deref(), req.label.as_deref())?;
         let hashes = torrent.info.info_hashes();
         let held_path = {
             let (data, save, id) = (
@@ -1773,6 +2076,7 @@ impl Core {
                 .expect("held path probe panicked")
         };
         let row = TorrentRow {
+            space,
             id: id.clone(),
             info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
             info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
@@ -1789,7 +2093,7 @@ impl Core {
             placements: None,
             held_path: Some(held_path.to_string_lossy().into_owned()),
             unwanted_policy: policy_to_byte(req.unwanted_policy),
-            queue_position: self.next_queue_position(),
+            queue_position: self.next_queue_position(space),
             download_rate: 0,
             upload_rate: 0,
             max_connections: None,
@@ -1802,66 +2106,84 @@ impl Core {
         let naming = row.naming;
         let added_at = row.added_at;
         self.db(move |db| db.insert_torrent(&row)).await?;
-        let linked = self
-            .link_from_library(&id, &torrent, &save_path, naming, &prios)
+        // A torrent another space has joins its swarm, and takes its files from there.
+        let linked = if self.swarm_exists(&id) {
+            Vec::new()
+        } else {
+            self.link_from_library(&key, &torrent, &save_path, naming, &prios)
+                .await
+        };
+        let spawned = self
+            .spawn_entry(Spawn {
+                key: key.clone(),
+                peers: Vec::new(),
+                trackers: torrent.trackers.clone(),
+                torrent,
+                save_path,
+                held_path,
+                have: None,
+                placements: None,
+                paused: req.paused,
+                file_priorities: prios,
+                unwanted: req.unwanted_policy,
+                label: req.label,
+                added_at,
+                totals: (0, 0),
+                queue_position,
+                limits: TorrentLimits::default(),
+                queued: !req.paused && self.queue_limited(),
+                naming,
+                linked,
+                file_paths: None,
+            })
             .await;
-        if let Err(e) = self.spawn_entry(Spawn {
-            id: id.clone(),
-            peers: Vec::new(),
-            torrent,
-            save_path,
-            held_path,
-            have: None,
-            placements: None,
-            paused: req.paused,
-            file_priorities: prios,
-            unwanted: req.unwanted_policy,
-            label: req.label,
-            added_at,
-            totals: (0, 0),
-            queue_position,
-            limits: TorrentLimits::default(),
-            queued: !req.paused && self.queue_limited(),
-            naming,
-            linked,
-            file_paths: None,
-        }) {
-            let id2 = id.clone();
-            self.db(move |db| db.remove_torrent(&id2)).await?;
+        if let Err(e) = spawned {
+            let k = key.clone();
+            self.db(move |db| db.remove_torrent(&k)).await?;
             return Err(e);
         }
-        tracing::info!(%id, "torrent added");
+        tracing::info!(torrent = %key, "torrent added");
         // Only the new torrent changed. A full queue pass and refresh walk every torrent,
         // which made adding the n-th torrent cost O(n); both run every second anyway.
         if self.queue_limited() {
             self.apply_queue().await;
         }
-        self.refresh_one(&id);
+        self.refresh_one(&key);
         Ok(id)
     }
 
-    fn handle(&self, id: &str) -> Result<TorrentHandle, CoreError> {
+    fn handle(&self, key: &Key) -> Result<TorrentHandle, CoreError> {
         self.inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
-            .get(id)
+            .get(key)
             .map(|e| e.handle.clone())
             .ok_or(CoreError::NotFound)
     }
 
-    pub async fn pause(&self, id: &str) -> Result<(), CoreError> {
-        self.set_paused(id, true).await
+    /// Whether an entry's files are its swarm's own (the engine torrent's storage).
+    fn is_primary(&self, key: &Key) -> bool {
+        self.inner
+            .swarms
+            .lock()
+            .expect("swarms lock poisoned")
+            .get(&key.id)
+            .is_some_and(|s| s.primary == key.space)
     }
 
-    pub async fn resume(&self, id: &str) -> Result<(), CoreError> {
-        self.set_paused(id, false).await
+    pub async fn pause(&self, key: &Key) -> Result<(), CoreError> {
+        self.set_paused(key, true).await
     }
 
-    async fn set_paused(&self, id: &str, paused: bool) -> Result<(), CoreError> {
+    pub async fn resume(&self, key: &Key) -> Result<(), CoreError> {
+        self.set_paused(key, false).await
+    }
+
+    async fn set_paused(&self, key: &Key, paused: bool) -> Result<(), CoreError> {
         let is_pending = {
             let mut pending = self.inner.pending.write().expect("pending lock poisoned");
-            match pending.get_mut(id) {
+            match pending.get_mut(key) {
                 Some(p) => {
                     p.paused = paused;
                     if paused {
@@ -1874,31 +2196,31 @@ impl Core {
             }
         };
         if is_pending {
-            let key = id.to_owned();
-            self.db(move |db| db.set_paused(&key, paused)).await?;
+            let k = key.clone();
+            self.db(move |db| db.set_paused(&k, paused)).await?;
             if !paused {
-                self.start_fetch(id);
+                self.start_fetch(key);
             }
             self.refresh();
             return Ok(());
         }
-        let handle = self.handle(id)?;
-        let key = id.to_owned();
-        self.db(move |db| db.set_paused(&key, paused)).await?;
+        let handle = self.handle(key)?;
+        let k = key.clone();
+        self.db(move |db| db.set_paused(&k, paused)).await?;
         if let Some(e) = self
             .inner
             .torrents
             .write()
             .expect("torrents lock poisoned")
-            .get_mut(id)
+            .get_mut(key)
         {
             e.paused = paused;
             e.queued = false;
         }
         if paused {
-            handle.pause().await;
+            handle.pause_entry(key.engine()).await;
         } else {
-            handle.resume().await;
+            handle.resume_entry(key.engine()).await;
         }
         self.apply_queue().await;
         self.refresh();
@@ -1909,13 +2231,12 @@ impl Core {
     /// changed (they are never downloaded).
     pub async fn set_file_priorities(
         &self,
-        id: &str,
+        key: &Key,
         updates: &[FilePriority],
     ) -> Result<(), CoreError> {
-        let handle = self.handle(id)?;
         let prios = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
-            let entry = torrents.get(id).ok_or(CoreError::NotFound)?;
+            let entry = torrents.get(key).ok_or(CoreError::NotFound)?;
             let files = &entry.torrent.info.files;
             let mut prios = entry.file_priorities.clone();
             for u in updates {
@@ -1936,104 +2257,372 @@ impl Core {
             }
             prios
         };
-        let key = id.to_owned();
+        let k = key.clone();
         let stored = prios.clone();
-        self.db(move |db| db.set_file_priorities(&key, &stored))
+        self.db(move |db| db.set_file_priorities(&k, &stored))
             .await?;
         if let Some(e) = self
             .inner
             .torrents
             .write()
             .expect("torrents lock poisoned")
-            .get_mut(id)
+            .get_mut(key)
         {
             e.file_priorities.clone_from(&prios);
         }
-        handle.set_file_priorities(prios).await;
+        self.sync_priorities(&key.id).await;
         Ok(())
     }
 
-    /// Choose what happens to files of this torrent that are deselected from now on.
+    /// Choose what happens to files of this torrent that are deselected from now on. Only
+    /// the swarm's primary has deselected files of its own; another space's setting takes
+    /// effect if its entry becomes the primary.
     pub async fn set_unwanted_policy(
         &self,
-        id: &str,
+        key: &Key,
         policy: UnwantedPolicy,
     ) -> Result<(), CoreError> {
-        let handle = self.handle(id)?;
-        let key = id.to_owned();
-        self.db(move |db| db.set_unwanted_policy(&key, policy_to_byte(policy)))
+        let handle = self.handle(key)?;
+        let k = key.clone();
+        self.db(move |db| db.set_unwanted_policy(&k, policy_to_byte(policy)))
             .await?;
         if let Some(e) = self
             .inner
             .torrents
             .write()
             .expect("torrents lock poisoned")
-            .get_mut(id)
+            .get_mut(key)
         {
             e.unwanted = policy;
         }
-        handle.set_unwanted_policy(engine_policy(policy)).await;
+        if self.is_primary(key) {
+            handle.set_unwanted_policy(engine_policy(policy)).await;
+        }
         Ok(())
     }
 
     /// Delete held copies of deselected files (all of them when `files` is `None`).
-    pub async fn release_held(&self, id: &str, files: Option<Vec<u32>>) -> Result<(), CoreError> {
-        let handle = self.handle(id)?;
-        let files = files.map(|f| f.into_iter().map(|i| i as usize).collect());
-        handle.release_held(files).await;
+    pub async fn release_held(&self, key: &Key, files: Option<Vec<u32>>) -> Result<(), CoreError> {
+        let handle = self.handle(key)?;
+        if self.is_primary(key) {
+            let files = files.map(|f| f.into_iter().map(|i| i as usize).collect());
+            handle.release_held(files).await;
+        }
         Ok(())
     }
 
-    /// Remove a torrent, and optionally its downloaded files. Its held copies and part
-    /// store are always deleted: they only exist for the torrent's sake.
-    pub async fn remove(&self, id: &str, delete_files: bool) -> Result<(), CoreError> {
+    /// Where each of an entry's files is on disk.
+    fn entry_paths(e: &Entry) -> Vec<PathBuf> {
+        e.file_paths.as_ref().map_or_else(
+            || Self::disk_paths(&e.torrent, &e.save_path, e.naming),
+            |c| {
+                c.iter()
+                    .map(|p| p.iter().fold(e.save_path.clone(), |a, x| a.join(x)))
+                    .collect()
+            },
+        )
+    }
+
+    /// Remove a torrent from its space, and optionally its downloaded files. Only this
+    /// space's files are touched: another space's copy of the same torrent keeps its files
+    /// and keeps seeding. Held copies and the part store go with the swarm's last entry.
+    pub async fn remove(&self, key: &Key, delete_files: bool) -> Result<(), CoreError> {
         let pending = self
             .inner
             .pending
             .write()
             .expect("pending lock poisoned")
-            .remove(id);
+            .remove(key);
         if pending.is_some() {
-            let key = id.to_owned();
-            self.db(move |db| db.remove_torrent(&key)).await?;
-            self.inner.store.apply(Vec::new(), vec![id.to_owned()]);
-            tracing::info!(%id, "magnet link removed");
+            let k = key.clone();
+            self.db(move |db| db.remove_torrent(&k)).await?;
+            self.inner.store.apply(Vec::new(), vec![key.clone()]);
+            tracing::info!(torrent = %key, "magnet link removed");
             return Ok(());
         }
-        let entry = self
-            .inner
-            .torrents
-            .write()
-            .expect("torrents lock poisoned")
-            .remove(id)
-            .ok_or(CoreError::NotFound)?;
-        entry.handle.shutdown().await;
-        let key = id.to_owned();
-        self.db(move |db| db.remove_torrent(&key)).await?;
-        if let Err(e) = entry.handle.delete_data(delete_files).await {
-            tracing::warn!(%id, error = %e, "could not delete all of the torrent's data");
+        let (entry, others) = {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            let entry = torrents.remove(key).ok_or(CoreError::NotFound)?;
+            let mut others: Vec<(Key, i64)> = torrents
+                .iter()
+                .filter(|(k, _)| k.id == key.id)
+                .map(|(k, e)| (k.clone(), e.added_at))
+                .collect();
+            others.sort_by_key(|(k, at)| (*at, k.space));
+            (entry, others)
+        };
+        let primary = self.is_primary(key);
+        let mine = Self::entry_paths(&entry);
+        // Paths another entry of the torrent also uses (two spaces saving to one folder)
+        // are never deleted.
+        let shared: std::collections::HashSet<PathBuf> = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            others
+                .iter()
+                .filter_map(|(k, _)| torrents.get(k))
+                .flat_map(Self::entry_paths)
+                .collect()
+        };
+        if others.is_empty() {
+            entry.handle.shutdown().await;
+            self.inner
+                .swarms
+                .lock()
+                .expect("swarms lock poisoned")
+                .remove(&key.id);
+            if let Err(e) = entry.handle.delete_data(delete_files).await {
+                tracing::warn!(torrent = %key, error = %e, "could not delete all of the torrent's data");
+            }
+        } else if primary {
+            // The swarm moves to the next entry's files.
+            entry.handle.shutdown().await;
+            if let Err(e) = entry.handle.delete_data(false).await {
+                tracing::warn!(torrent = %key, error = %e, "could not delete the held copies and part store");
+            }
+            if delete_files {
+                Self::delete_paths(&mine, &shared, &entry.save_path).await;
+            }
+            let next: Vec<Key> = others.iter().map(|(k, _)| k.clone()).collect();
+            if let Err(e) = self.move_swarm(&key.id, &next) {
+                tracing::error!(torrent = %key, error = %e, "could not move the swarm to another space's files");
+            }
+        } else {
+            entry.handle.remove_entry(key.engine()).await;
+            if delete_files {
+                Self::delete_paths(&mine, &shared, &entry.save_path).await;
+            }
+            self.sync_priorities(&key.id).await;
         }
-        self.inner.store.apply(Vec::new(), vec![id.to_owned()]);
+        let k = key.clone();
+        self.db(move |db| db.remove_torrent(&k)).await?;
+        self.inner.store.apply(Vec::new(), vec![key.clone()]);
         self.inner
             .seeding
             .lock()
             .expect("seeding lock poisoned")
-            .remove(id);
-        tracing::info!(%id, delete_files, "torrent removed");
+            .remove(key);
+        tracing::info!(torrent = %key, delete_files, "torrent removed");
         Ok(())
     }
 
-    pub fn list(&self) -> Vec<TorrentSummary> {
-        self.inner.store.list()
+    /// Delete an entry's own files, keeping any another entry uses, and the folders that
+    /// end up empty below the save path.
+    async fn delete_paths(
+        paths: &[PathBuf],
+        keep: &std::collections::HashSet<PathBuf>,
+        root: &std::path::Path,
+    ) {
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .filter(|p| !keep.contains(*p))
+            .cloned()
+            .collect();
+        let root = root.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            for p in &paths {
+                match std::fs::remove_file(p) {
+                    Ok(()) => {
+                        let mut dir = p.parent();
+                        while let Some(d) = dir {
+                            if d == root || !d.starts_with(&root) || std::fs::remove_dir(d).is_err()
+                            {
+                                break;
+                            }
+                            dir = d.parent();
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => tracing::warn!(path = %p.display(), error = %e, "could not delete"),
+                }
+            }
+        })
+        .await;
     }
 
-    pub async fn detail(&self, id: &str) -> Result<TorrentDetail, CoreError> {
+    /// Restart a swarm on the files of the first of `entries` (oldest first), the others
+    /// joining it: its primary was removed. The new primary's files are checked, since
+    /// it may have only some of them.
+    fn move_swarm(&self, id: &str, entries: &[Key]) -> Result<(), CoreError> {
+        let Some((first, rest)) = entries.split_first() else {
+            return Ok(());
+        };
+        let settings = self.settings();
+        let (params, mut extra) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let e = torrents.get(first).ok_or(CoreError::NotFound)?;
+            let mut merged: Vec<u8> = e.file_priorities.clone();
+            let extra: Vec<EntryParams> = rest
+                .iter()
+                .filter_map(|k| torrents.get(k).map(|x| (k, x)))
+                .map(|(k, x)| {
+                    for (m, &p) in merged.iter_mut().zip(&x.file_priorities) {
+                        *m = (*m).max(p);
+                    }
+                    EntryParams {
+                        key: k.engine(),
+                        trackers: Some(x.trackers.clone()),
+                        limits: engine_limits(x.limits),
+                        group: x.group.clone(),
+                        space: Some(engine_space(k.space)),
+                        paused: x.paused || x.queued,
+                    }
+                })
+                .collect();
+            let file_paths = match (&e.file_paths, naming_from_byte(e.naming)) {
+                (Some(p), _) => Some(p.clone()),
+                (None, Naming::Portable) => None,
+                (None, other) => e.torrent.info.paths(other).ok(),
+            };
+            let params = AddTorrent {
+                held_path: Some(held_path_for(&self.inner.config.data_dir, &e.save_path, id)),
+                parts_path: Some(self.parts_path(id)),
+                unwanted: engine_policy(e.unwanted),
+                paused: e.paused || e.queued,
+                file_priorities: Some(merged),
+                limits: engine_limits(e.limits),
+                group: settings::group_for(&settings, e.label.as_deref()).map(str::to_owned),
+                entry: first.engine(),
+                trackers: Some(e.trackers.clone()),
+                space: Some(engine_space(first.space)),
+                file_paths,
+                ..AddTorrent::new(e.torrent.clone(), e.save_path.clone())
+            };
+            (params, extra)
+        };
+        let handle = {
+            let mut swarms = self.inner.swarms.lock().expect("swarms lock poisoned");
+            let handle = self
+                .inner
+                .session
+                .add_torrent(AddTorrent {
+                    more_entries: std::mem::take(&mut extra),
+                    ..params
+                })
+                .map_err(|_| CoreError::Duplicate)?;
+            swarms.insert(
+                id.to_owned(),
+                Swarm {
+                    handle: handle.clone(),
+                    primary: first.space,
+                },
+            );
+            handle
+        };
+        let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+        for k in entries {
+            if let Some(e) = torrents.get_mut(k) {
+                e.handle = handle.clone();
+                e.placed.iter_mut().for_each(|p| *p = false);
+            }
+        }
+        tracing::info!(torrent = %first, "the swarm moved to this space's files");
+        Ok(())
+    }
+
+    /// Give every entry that isn't its swarm's primary the files that are complete and
+    /// that it wants, in its own save path: a hard link where the volume allows, else a
+    /// copy-on-write clone, else a copy (when the library setting allows copies). A file
+    /// already at the path is left alone.
+    async fn place_secondaries(&self) {
+        let allow_copy = self.settings().library.allow_copy;
+        let now = std::time::Instant::now();
+        // (secondary, its primary, the swarm, the files still to place)
+        let work: Vec<(Key, Key, TorrentHandle, Vec<usize>)> = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let swarms = self.inner.swarms.lock().expect("swarms lock poisoned");
+            torrents
+                .iter()
+                .filter_map(|(k, e)| {
+                    let swarm = swarms.get(&k.id)?;
+                    if swarm.primary == k.space || e.place_retry.is_some_and(|t| now < t) {
+                        return None;
+                    }
+                    let todo: Vec<usize> = (0..e.placed.len())
+                        .filter(|&i| {
+                            !e.placed[i]
+                                && e.file_priorities.get(i).is_some_and(|&p| p > 0)
+                                && !e.torrent.info.files[i].is_pad()
+                        })
+                        .collect();
+                    (!todo.is_empty()).then(|| {
+                        (
+                            k.clone(),
+                            Key::new(swarm.primary, k.id.clone()),
+                            swarm.handle.clone(),
+                            todo,
+                        )
+                    })
+                })
+                .collect()
+        };
+        for (key, primary, handle, todo) in work {
+            let Some(have) = handle.have().await else {
+                continue;
+            };
+            let placements = handle.placements();
+            let pairs: Vec<(usize, PathBuf, PathBuf)> = {
+                let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+                let (Some(e), Some(p)) = (torrents.get(&key), torrents.get(&primary)) else {
+                    continue;
+                };
+                let layout = Layout::from_info(&e.torrent.info);
+                let (to, from) = (Self::entry_paths(e), Self::entry_paths(p));
+                todo.into_iter()
+                    .filter(|&i| {
+                        placements.get(i) == Some(&Placement::Save)
+                            && layout.file_pieces(i).all(|piece| have.get(piece))
+                    })
+                    .map(|i| (i, from[i].clone(), to[i].clone()))
+                    .collect()
+            };
+            if pairs.is_empty() {
+                continue;
+            }
+            let k = key.clone();
+            let results: Vec<(usize, bool)> = tokio::task::spawn_blocking(move || {
+                pairs
+                    .into_iter()
+                    .map(|(i, from, to)| {
+                        if from == to || to.exists() {
+                            return (i, true);
+                        }
+                        let how = library::materialize(&from, &to, true, allow_copy);
+                        if let Some(how) = how {
+                            tracing::info!(torrent = %k, file = %to.display(), ?how, "placed a file from another space's copy");
+                        } else {
+                            tracing::warn!(torrent = %k, file = %to.display(), "could not link or copy a file from another space's copy");
+                        }
+                        (i, how.is_some())
+                    })
+                    .collect()
+            })
+            .await
+            .unwrap_or_default();
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            if let Some(e) = torrents.get_mut(&key) {
+                for (i, ok) in results {
+                    if ok {
+                        e.placed[i] = true;
+                    } else {
+                        e.place_retry = Some(now + Duration::from_secs(60));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Torrents of one space, or of every space (`None`).
+    pub fn list(&self, space: Option<SpaceId>) -> Vec<TorrentSummary> {
+        self.inner.store.list(space)
+    }
+
+    pub async fn detail(&self, key: &Key) -> Result<TorrentDetail, CoreError> {
         let pending = self
             .inner
             .pending
             .read()
             .expect("pending lock poisoned")
-            .get(id)
+            .get(key)
             .map(|p| {
                 (
                     p.uri.clone(),
@@ -2043,7 +2632,7 @@ impl Core {
                 )
             });
         if let Some((uri, trackers, unwanted_policy, naming)) = pending {
-            let summary = self.inner.store.get(id).ok_or(CoreError::NotFound)?;
+            let summary = self.inner.store.get(key).ok_or(CoreError::NotFound)?;
             return Ok(TorrentDetail {
                 summary,
                 files: Vec::new(),
@@ -2064,9 +2653,9 @@ impl Core {
                 seed_limit_reached: false,
             });
         }
-        let (torrent, handle, prios, unwanted_policy, limits, naming) = {
+        let (torrent, handle, prios, unwanted_policy, limits, naming, trackers) = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
-            let e = torrents.get(id).ok_or(CoreError::NotFound)?;
+            let e = torrents.get(key).ok_or(CoreError::NotFound)?;
             (
                 e.torrent.clone(),
                 e.handle.clone(),
@@ -2074,15 +2663,17 @@ impl Core {
                 e.unwanted,
                 e.limits,
                 e.naming,
+                e.trackers.clone(),
             )
         };
+        let primary = self.is_primary(key);
         let placements = {
             let h = handle.clone();
             tokio::task::spawn_blocking(move || h.placements())
                 .await
                 .expect("placements task panicked")
         };
-        let summary = self.inner.store.get(id).ok_or(CoreError::NotFound)?;
+        let summary = self.inner.store.get(key).ok_or(CoreError::NotFound)?;
         let have = handle
             .have()
             .await
@@ -2098,13 +2689,17 @@ impl Core {
                 let pieces = layout.file_pieces(i);
                 let total = pieces.len();
                 let done = pieces.filter(|&p| have.get(p)).count();
+                let priority = prios.get(i).copied().unwrap_or(4);
                 TorrentFile {
                     index: u32::try_from(i).expect("fits"),
                     path: f.display_path(),
                     length: f.length,
-                    priority: prios.get(i).copied().unwrap_or(4),
+                    priority,
                     progress: if total == 0 { 1.0 } else { ratio(done, total) },
+                    // Another space's entry has its wanted files in its save path only.
                     placement: match placements.get(i) {
+                        _ if !primary && priority == 0 => FilePlacement::Parts,
+                        _ if !primary => FilePlacement::Save,
                         Some(Placement::Held) => FilePlacement::Held,
                         Some(Placement::Parts) => FilePlacement::Parts,
                         _ => FilePlacement::Save,
@@ -2114,17 +2709,18 @@ impl Core {
             .collect();
         let mut magnet = Magnet::new(torrent.info.info_hashes());
         magnet.display_name = Some(torrent.info.name.clone());
-        magnet.trackers = torrent.trackers.iter().flatten().cloned().collect();
-        let seed = self.seed_state(id);
+        magnet.trackers = trackers.iter().flatten().cloned().collect();
+        let seed = self.seed_state(key);
         let group = self
             .inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
-            .get(id)
+            .get(key)
             .and_then(|e| e.group.clone());
         let effective_seed_limits =
             seeding::effective(&self.settings(), group.as_deref(), seed.limits);
+        let entry = key.engine();
         Ok(TorrentDetail {
             seed_limits: seed.limits,
             effective_seed_limits,
@@ -2132,7 +2728,7 @@ impl Core {
             seed_limit_reached: seed.reached,
             summary,
             files,
-            trackers: torrent.trackers.clone(),
+            trackers,
             comment: torrent.comment.clone(),
             created_by: torrent.created_by.clone(),
             creation_date: torrent.creation_date,
@@ -2141,9 +2737,15 @@ impl Core {
             unwanted_policy,
             limits,
             naming: policy_of(naming),
-            peers: handle.peers().await.into_iter().map(peer_info).collect(),
+            peers: handle
+                .peers()
+                .await
+                .into_iter()
+                .filter(|p| p.entry == entry)
+                .map(peer_info)
+                .collect(),
             tracker_status: handle
-                .trackers()
+                .trackers_of(Some(entry))
                 .await
                 .into_iter()
                 .map(|t| apitorrent_types::TrackerInfo {
@@ -2159,12 +2761,12 @@ impl Core {
         })
     }
 
-    fn seed_state(&self, id: &str) -> seeding::SeedState {
+    fn seed_state(&self, key: &Key) -> seeding::SeedState {
         self.inner
             .seeding
             .lock()
             .expect("seeding lock poisoned")
-            .get(id)
+            .get(key)
             .copied()
             .unwrap_or_default()
     }
@@ -2173,10 +2775,10 @@ impl Core {
     /// change lets the new limits act, even if earlier ones already did.
     pub async fn set_seed_limits(
         &self,
-        id: &str,
+        key: &Key,
         limits: Option<apitorrent_types::SeedLimits>,
     ) -> Result<(), CoreError> {
-        self.handle(id)?;
+        self.handle(key)?;
         if let Some(l) = limits
             && (!l.ratio.is_finite() || l.ratio < 0.0)
         {
@@ -2186,19 +2788,20 @@ impl Core {
         }
         let state = {
             let mut map = self.inner.seeding.lock().expect("seeding lock poisoned");
-            let s = map.entry(id.to_owned()).or_default();
+            let s = map.entry(key.clone()).or_default();
             s.limits = limits;
             s.reached = false;
             *s
         };
-        let key = id.to_owned();
-        self.db(move |db| db.save_seed_states(&[(key, state)]))
+        let k = key.clone();
+        self.db(move |db| db.save_seed_states(&[(k, state)]))
             .await?;
         Ok(())
     }
 
     /// Count seeding time, and act on torrents that reached their seed limits. Called every
-    /// refresh. Only torrents seeding right now count time: not paused, not queued.
+    /// refresh. Only torrents seeding right now count time: not paused, not queued. Each
+    /// space's entry counts its own ratio: its own peers' traffic only.
     async fn apply_seed_limits(&self) {
         let elapsed = {
             let mut clock = self.inner.seed_clock.lock().expect("seed clock poisoned");
@@ -2208,16 +2811,17 @@ impl Core {
             e
         };
         let settings = self.settings();
-        let mut due: Vec<(TorrentId, apitorrent_types::SeedLimitAction)> = Vec::new();
+        let mut due: Vec<(Key, apitorrent_types::SeedLimitAction)> = Vec::new();
         {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let mut seeding = self.inner.seeding.lock().expect("seeding lock poisoned");
-            for (id, e) in torrents.iter() {
+            for (key, e) in torrents.iter() {
                 let stats = e.handle.stats();
                 if e.paused || e.queued || stats.state != EngineState::Seeding {
                     continue;
                 }
-                let s = seeding.entry(id.clone()).or_default();
+                let mine = entry_stats(&stats, key);
+                let s = seeding.entry(key.clone()).or_default();
                 s.seed_ms += u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
                 if s.reached {
                     continue;
@@ -2235,33 +2839,31 @@ impl Core {
                     .map(|f| f.length)
                     .sum();
                 let ratio = seeding::ratio(
-                    e.uploaded_base + stats.uploaded,
-                    e.downloaded_base + stats.downloaded,
+                    e.uploaded_base + mine.uploaded,
+                    e.downloaded_base + mine.downloaded,
                     size,
                 );
                 if seeding::reached(&limits, ratio, s.seed_ms / 1000) {
                     s.reached = true;
-                    due.push((id.clone(), limits.action));
+                    due.push((key.clone(), limits.action));
                 }
             }
         }
-        for (id, action) in due {
+        for (key, action) in due {
             use apitorrent_types::SeedLimitAction as A;
-            tracing::info!(%id, ?action, "seed limits reached");
+            tracing::info!(torrent = %key, ?action, "seed limits reached");
             let result = match action {
-                A::Pause => self.pause(&id).await,
-                A::Remove => self.remove(&id, false).await,
-                A::RemoveWithData => self.remove(&id, true).await,
+                A::Pause => self.pause(&key).await,
+                A::Remove => self.remove(&key, false).await,
+                A::RemoveWithData => self.remove(&key, true).await,
             };
             if let Err(e) = result {
-                tracing::warn!(%id, error = %e, "could not act on the seed limits");
+                tracing::warn!(torrent = %key, error = %e, "could not act on the seed limits");
             }
             if action == A::Pause {
-                let state = self.seed_state(&id);
-                let key = id.clone();
-                let _ = self
-                    .db(move |db| db.save_seed_states(&[(key, state)]))
-                    .await;
+                let state = self.seed_state(&key);
+                let k = key.clone();
+                let _ = self.db(move |db| db.save_seed_states(&[(k, state)])).await;
             }
         }
     }
@@ -2282,42 +2884,52 @@ impl Core {
         }
     }
 
-    /// Rebuild every summary from the engine and publish the changes.
     /// Publish one torrent's summary, when only it changed.
-    fn refresh_one(&self, id: &str) {
+    fn refresh_one(&self, key: &Key) {
         let summary = self
             .inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
-            .get(id)
-            .map(|e| summarize(id, e));
+            .get(key)
+            .map(|e| summarize(key, e));
         if let Some(s) = summary {
             self.inner.store.apply(vec![s], Vec::new());
         }
     }
 
+    /// Rebuild every summary from the engine and publish the changes.
     fn refresh(&self) {
         let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
         let mut summaries: Vec<TorrentSummary> =
-            torrents.iter().map(|(id, e)| summarize(id, e)).collect();
+            torrents.iter().map(|(k, e)| summarize(k, e)).collect();
         drop(torrents);
         let pending = self.inner.pending.read().expect("pending lock poisoned");
-        summaries.extend(pending.iter().map(|(id, p)| summarize_pending(id, p)));
+        summaries.extend(pending.iter().map(|(k, p)| summarize_pending(k, p)));
         drop(pending);
         self.inner.store.apply(summaries, Vec::new());
     }
 
+    /// Save resume state. Only a swarm's primary has pieces and placements of its own; the
+    /// others save their totals.
     async fn save_resume(&self) -> Result<(), CoreError> {
-        let entries: Vec<(TorrentId, TorrentHandle, u64, u64)> = self
+        let primaries: std::collections::HashSet<Key> = self
+            .inner
+            .swarms
+            .lock()
+            .expect("swarms lock poisoned")
+            .iter()
+            .map(|(id, s)| Key::new(s.primary, id.clone()))
+            .collect();
+        let entries: Vec<(Key, TorrentHandle, u64, u64)> = self
             .inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
             .iter()
-            .map(|(id, e)| {
+            .map(|(k, e)| {
                 (
-                    id.clone(),
+                    k.clone(),
                     e.handle.clone(),
                     e.downloaded_base,
                     e.uploaded_base,
@@ -2325,26 +2937,37 @@ impl Core {
             })
             .collect();
         let mut rows = Vec::with_capacity(entries.len());
-        for (id, handle, down, up) in entries {
+        for (key, handle, down, up) in entries {
+            let mine = entry_stats(&handle.stats(), &key);
+            if !primaries.contains(&key) {
+                rows.push(ResumeRow {
+                    key,
+                    have: Vec::new(),
+                    placements: Vec::new(),
+                    linked: Vec::new(),
+                    downloaded_total: down + mine.downloaded,
+                    uploaded_total: up + mine.uploaded,
+                });
+                continue;
+            }
             if let Some(have) = handle.have().await {
-                let stats = handle.stats();
                 let h = handle.clone();
                 let placements = tokio::task::spawn_blocking(move || h.placements())
                     .await
                     .expect("placements task panicked");
                 let linked = pack_indices(&handle.linked());
                 rows.push(ResumeRow {
-                    id,
+                    key,
                     have: have.as_bytes().to_vec(),
                     placements: placements.into_iter().map(placement_to_byte).collect(),
                     linked,
-                    downloaded_total: down + stats.downloaded,
-                    uploaded_total: up + stats.uploaded,
+                    downloaded_total: down + mine.downloaded,
+                    uploaded_total: up + mine.uploaded,
                 });
             }
         }
         self.db(move |db| db.save_resume(&rows)).await?;
-        let seeding: Vec<(TorrentId, seeding::SeedState)> = self
+        let seeding: Vec<(Key, seeding::SeedState)> = self
             .inner
             .seeding
             .lock()
@@ -2374,6 +2997,7 @@ impl Core {
                     self.apply_queue().await;
                     self.settle_supersedes().await;
                     self.apply_seed_limits().await;
+                    self.place_secondaries().await;
                     self.refresh();
                 }
                 _ = save.tick() => {
@@ -2405,11 +3029,11 @@ impl Core {
         self.save_resume().await?;
         let handles: Vec<TorrentHandle> = self
             .inner
-            .torrents
-            .read()
-            .expect("torrents lock poisoned")
+            .swarms
+            .lock()
+            .expect("swarms lock poisoned")
             .values()
-            .map(|e| e.handle.clone())
+            .map(|s| s.handle.clone())
             .collect();
         for h in handles {
             h.shutdown().await;
@@ -2419,8 +3043,29 @@ impl Core {
     }
 }
 
-fn summarize(id: &str, e: &Entry) -> TorrentSummary {
+/// An entry's own share of its swarm's statistics.
+fn entry_stats(stats: &apitorrent_engine::TorrentStats, key: &Key) -> EntryStats {
+    let k = key.engine();
+    stats
+        .entries
+        .iter()
+        .find(|e| e.key == k)
+        .cloned()
+        .unwrap_or(EntryStats {
+            key: k,
+            paused: true,
+            downloaded: 0,
+            uploaded: 0,
+            download_rate: 0,
+            upload_rate: 0,
+            peers: 0,
+            seeds: 0,
+        })
+}
+
+fn summarize(key: &Key, e: &Entry) -> TorrentSummary {
     let stats = e.handle.stats();
+    let mine = entry_stats(&stats, key);
     let info = &e.torrent.info;
     let hashes = info.info_hashes();
     let state = match stats.state {
@@ -2431,7 +3076,8 @@ fn summarize(id: &str, e: &Entry) -> TorrentSummary {
         EngineState::Error => TorrentState::Error,
     };
     TorrentSummary {
-        id: id.to_owned(),
+        id: key.id.clone(),
+        space: key.space,
         name: info.name.clone(),
         info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
         info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
@@ -2450,12 +3096,12 @@ fn summarize(id: &str, e: &Entry) -> TorrentSummary {
         size: info.content_length(),
         pieces_have: stats.pieces_have,
         pieces_total: stats.pieces_total,
-        downloaded: e.downloaded_base + stats.downloaded,
-        uploaded: e.uploaded_base + stats.uploaded,
-        download_rate: stats.download_rate,
-        upload_rate: stats.upload_rate,
-        peers: stats.peers,
-        seeds: stats.seeds,
+        downloaded: e.downloaded_base + mine.downloaded,
+        uploaded: e.uploaded_base + mine.uploaded,
+        download_rate: mine.download_rate,
+        upload_rate: mine.upload_rate,
+        peers: mine.peers,
+        seeds: mine.seeds,
         added_at: e.added_at,
         label: e.label.clone(),
         save_path: e.save_path.to_string_lossy().into_owned(),
@@ -2467,7 +3113,8 @@ fn summarize(id: &str, e: &Entry) -> TorrentSummary {
     }
 }
 
-fn summarize_pending(id: &str, p: &Pending) -> TorrentSummary {
+fn summarize_pending(key: &Key, p: &Pending) -> TorrentSummary {
+    let id = key.id.as_str();
     let status = p
         .fetch
         .as_ref()
@@ -2476,6 +3123,7 @@ fn summarize_pending(id: &str, p: &Pending) -> TorrentSummary {
     let hashes = p.magnet.info_hashes;
     TorrentSummary {
         id: id.to_owned(),
+        space: key.space,
         name: p
             .magnet
             .display_name

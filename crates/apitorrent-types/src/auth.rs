@@ -251,6 +251,9 @@ pub struct ApiTokenInfo {
     pub expires_at: Option<i64>,
     #[ts(type = "number | null")]
     pub last_used_at: Option<i64>,
+    /// The space the token works in (see `spaces`). A client using it lands there.
+    #[ts(type = "number")]
+    pub space: crate::spaces::SpaceId,
 }
 
 /// The response to creating a token. The secret is shown this once and never again.

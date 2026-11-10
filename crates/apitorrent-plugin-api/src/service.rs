@@ -5,6 +5,8 @@ use apitorrent_types::plugins::{
     PluginSettings,
 };
 
+use apitorrent_types::spaces::SpaceId;
+
 use crate::BoxFuture;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -64,6 +66,8 @@ pub struct PluginHttpRequest {
     /// authenticates; on routes the plugin authenticates (see [`PluginRouteAuth`]) it is
     /// `None` for clients that only hold the plugin's own credentials.
     pub caller: Option<PluginCaller>,
+    /// The space the request is in. A space-aware plugin's instance there answers it.
+    pub space: apitorrent_types::spaces::SpaceId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,13 +94,31 @@ pub trait PluginService: Send + Sync + 'static {
     /// Stop the plugin and delete its code, settings and data.
     fn uninstall(&self, id: String) -> BoxFuture<Result<(), PluginError>>;
     /// Log entries after `after` (all retained entries when `None`), oldest first.
-    fn logs(&self, id: &str, after: Option<u64>) -> Result<Vec<PluginLogEntry>, PluginError>;
-    fn settings(&self, id: &str) -> Result<PluginSettings, PluginError>;
+    /// Log entries of the plugin's instance in `space` (its only one, for a plugin that
+    /// isn't space-aware).
+    fn logs(
+        &self,
+        id: &str,
+        space: SpaceId,
+        after: Option<u64>,
+    ) -> Result<Vec<PluginLogEntry>, PluginError>;
+    /// Settings of the plugin's instance in `space` (see [`Self::logs`]).
+    fn settings(&self, id: &str, space: SpaceId) -> Result<PluginSettings, PluginError>;
     fn set_settings(
         &self,
         id: String,
+        space: SpaceId,
         values: serde_json::Value,
     ) -> BoxFuture<Result<PluginSettings, PluginError>>;
+    /// Whether the plugin runs an instance per space (its manifest says `spaceAware`).
+    fn space_aware(&self, id: &str) -> bool {
+        let _ = id;
+        false
+    }
+    /// Spaces were created or deleted: start and stop space-aware plugins' instances.
+    fn spaces_changed(&self) -> BoxFuture<()> {
+        Box::pin(async {})
+    }
     /// How the route that serves `method` and `path` (relative to the plugin's prefix)
     /// authenticates, or `None` when the running plugin declares no such route. The server
     /// asks before authenticating a request to a plugin route.

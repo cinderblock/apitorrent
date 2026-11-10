@@ -23,9 +23,11 @@ use apitorrent_types::automation::{
     SubscriptionInfo, SubscriptionSpec, SubscriptionTrust,
 };
 
+use apitorrent_types::spaces::SpaceId;
+
 use super::db::{ChannelRow, SubscriptionRow};
 use super::{MAX_METAINFO, channel, new_id, now_ms, valid_slug};
-use crate::{Core, CoreError};
+use crate::{Core, CoreError, Key};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -62,10 +64,11 @@ impl Core {
         }
     }
 
-    async fn check_selector(&self, spec: &ChannelSpec) -> Result<(), CoreError> {
+    async fn check_selector(&self, space: SpaceId, spec: &ChannelSpec) -> Result<(), CoreError> {
         if let ChannelSelector::Rule { rule_id } = &spec.selector {
             let id = rule_id.clone();
-            if self.auto_db(move |db| db.rule(&id)).await?.is_none() {
+            let found = self.auto_db(move |db| db.rule(&id)).await?;
+            if found.is_none_or(|r| r.space != space) {
                 return Err(invalid(format!("there is no rule {rule_id}")));
             }
         }
@@ -83,24 +86,34 @@ impl Core {
         }
     }
 
-    pub async fn channels(&self) -> Result<Vec<ChannelInfo>, CoreError> {
+    /// A space's channels.
+    pub async fn channels(&self, space: SpaceId) -> Result<Vec<ChannelInfo>, CoreError> {
         let rows = self.auto_db(|db| db.channels()).await?;
-        Ok(rows.into_iter().map(|r| self.channel_info(r)).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|r| r.space == space)
+            .map(|r| self.channel_info(r))
+            .collect())
     }
 
-    pub async fn channel(&self, id: &str) -> Result<ChannelInfo, CoreError> {
+    async fn channel_row(&self, space: SpaceId, id: &str) -> Result<ChannelRow, CoreError> {
         let id = id.to_owned();
-        let row = self
-            .auto_db(move |db| db.channel(&id))
+        self.auto_db(move |db| db.channel(&id))
             .await?
-            .ok_or(CoreError::NotFound)?;
-        Ok(self.channel_info(row))
+            .filter(|r| r.space == space)
+            .ok_or(CoreError::NotFound)
+    }
+
+    pub async fn channel(&self, space: SpaceId, id: &str) -> Result<ChannelInfo, CoreError> {
+        Ok(self.channel_info(self.channel_row(space, id).await?))
     }
 
     pub async fn create_channel(
         &self,
+        space: SpaceId,
         req: CreateChannelRequest,
     ) -> Result<ChannelInfo, CoreError> {
+        self.space(space)?;
         if !valid_slug(&req.id) {
             return Err(invalid(
                 "a channel id is lowercase letters, digits and `-`, starting with a letter; at \
@@ -108,34 +121,37 @@ impl Core {
             ));
         }
         Self::check_channel(&req.channel)?;
-        self.check_selector(&req.channel).await?;
+        self.check_selector(space, &req.channel).await?;
         let (id, spec) = (req.id.clone(), req.channel);
         let inserted = self
             .auto_db(move |db| {
                 if db.channels()?.len() >= MAX_CHANNELS {
                     return Ok(None);
                 }
-                db.insert_channel(&id, &spec, now_ms()).map(Some)
+                db.insert_channel(space, &id, &spec, now_ms()).map(Some)
             })
             .await?;
         match inserted {
             None => Err(invalid(format!("at most {MAX_CHANNELS} channels"))),
+            // Channel ids are instance-wide (they name feeds); one is taken.
             Some(false) => Err(CoreError::Duplicate),
             Some(true) => {
                 // Settle revision 1 now, so the first subscriber sees a stable revision.
-                self.channel_feed(&req.id).await?;
-                self.channel(&req.id).await
+                self.channel_feed(space, &req.id).await?;
+                self.channel(space, &req.id).await
             }
         }
     }
 
     pub async fn update_channel(
         &self,
+        space: SpaceId,
         id: &str,
         spec: ChannelSpec,
     ) -> Result<ChannelInfo, CoreError> {
+        self.channel_row(space, id).await?;
         Self::check_channel(&spec)?;
-        self.check_selector(&spec).await?;
+        self.check_selector(space, &spec).await?;
         let id2 = id.to_owned();
         if !self
             .auto_db(move |db| db.update_channel(&id2, &spec))
@@ -143,13 +159,14 @@ impl Core {
         {
             return Err(CoreError::NotFound);
         }
-        if self.channel(id).await?.channel.enabled {
-            self.channel_feed(id).await?;
+        if self.channel(space, id).await?.channel.enabled {
+            self.channel_feed(space, id).await?;
         }
-        self.channel(id).await
+        self.channel(space, id).await
     }
 
-    pub async fn delete_channel(&self, id: &str) -> Result<(), CoreError> {
+    pub async fn delete_channel(&self, space: SpaceId, id: &str) -> Result<(), CoreError> {
+        self.channel_row(space, id).await?;
         let id = id.to_owned();
         if self.auto_db(move |db| db.delete_channel(&id)).await? {
             Ok(())
@@ -158,18 +175,14 @@ impl Core {
         }
     }
 
-    /// The channel's signed feed. Its revision moves on first if the entries changed.
-    pub async fn channel_feed(&self, id: &str) -> Result<SignedChannel, CoreError> {
+    /// A space's channel's signed feed. Its revision moves on first if the entries changed.
+    pub async fn channel_feed(&self, space: SpaceId, id: &str) -> Result<SignedChannel, CoreError> {
         let _feeds = self.auto().feeds.lock().await;
-        let id2 = id.to_owned();
-        let row = self
-            .auto_db(move |db| db.channel(&id2))
-            .await?
-            .ok_or(CoreError::NotFound)?;
+        let row = self.channel_row(space, id).await?;
         if !row.spec.enabled {
             return Err(CoreError::NotFound);
         }
-        let entries = self.channel_entries(&row.spec).await?;
+        let entries = self.channel_entries(space, &row.spec).await?;
         let hash = channel::entries_hash(&entries);
         let mut revision = row.revision;
         if row.entries_hash.as_deref() != Some(hash.as_slice()) {
@@ -196,7 +209,11 @@ impl Core {
     }
 
     /// The torrents a channel lists, in a stable order.
-    async fn channel_entries(&self, spec: &ChannelSpec) -> Result<Vec<ChannelEntry>, CoreError> {
+    async fn channel_entries(
+        &self,
+        space: SpaceId,
+        spec: &ChannelSpec,
+    ) -> Result<Vec<ChannelEntry>, CoreError> {
         // (torrent id, title, version, published, metadata)
         type Pick = (
             String,
@@ -209,7 +226,7 @@ impl Core {
             ChannelSelector::Rule { rule_id } => {
                 let id = rule_id.clone();
                 let (items, candidates) = self
-                    .auto_db(move |db| Ok((db.items(&id)?, db.candidates(None)?)))
+                    .auto_db(move |db| Ok((db.items(&id)?, db.candidates(Some(space), None)?)))
                     .await?;
                 items
                     .into_iter()
@@ -231,7 +248,7 @@ impl Core {
             }
             ChannelSelector::Label { label } => {
                 let mut list: Vec<_> = self
-                    .list()
+                    .list(Some(space))
                     .into_iter()
                     .filter(|t| t.label.as_deref() == Some(label.as_str()))
                     .collect();
@@ -251,7 +268,8 @@ impl Core {
         };
         let mut out = Vec::new();
         for (id, title, version, published, metadata) in picks.into_iter().take(MAX_ENTRIES) {
-            let Some((name, magnet, size)) = self.channel_torrent(&id) else {
+            let Some((name, magnet, size)) = self.channel_torrent(&Key::new(space, id.clone()))
+            else {
                 continue;
             };
             let torrent = if spec.include_metainfo {
@@ -277,18 +295,19 @@ impl Core {
     }
 
     /// A torrent's name, magnet link and size, for a channel.
-    fn channel_torrent(&self, id: &str) -> Option<(String, String, u64)> {
+    fn channel_torrent(&self, key: &Key) -> Option<(String, String, u64)> {
+        let id = key.id.as_str();
         if let Some(e) = self
             .inner
             .torrents
             .read()
             .expect("torrents lock poisoned")
-            .get(id)
+            .get(key)
         {
             let info = &e.torrent.info;
             let mut m = Magnet::new(info.info_hashes());
             m.display_name = Some(info.name.clone());
-            m.trackers = e.torrent.trackers.iter().flatten().cloned().collect();
+            m.trackers = e.trackers.iter().flatten().cloned().collect();
             m.web_seeds.clone_from(&e.torrent.web_seeds);
             let size = info
                 .files
@@ -299,7 +318,7 @@ impl Core {
             return Some((info.name.clone(), m.to_uri(), size));
         }
         let pending = self.inner.pending.read().expect("pending lock poisoned");
-        let p = pending.get(id)?;
+        let p = pending.get(key)?;
         Some((
             p.magnet
                 .display_name
@@ -331,18 +350,36 @@ impl Core {
         }
     }
 
-    pub async fn subscriptions(&self) -> Result<Vec<SubscriptionInfo>, CoreError> {
+    /// A space's subscriptions.
+    pub async fn subscriptions(&self, space: SpaceId) -> Result<Vec<SubscriptionInfo>, CoreError> {
         let rows = self.auto_db(|db| db.subscriptions()).await?;
-        Ok(rows.into_iter().map(Self::subscription_info).collect())
+        Ok(rows
+            .into_iter()
+            .filter(|r| r.space == space)
+            .map(Self::subscription_info)
+            .collect())
     }
 
-    pub async fn subscription(&self, id: &str) -> Result<SubscriptionInfo, CoreError> {
+    async fn subscription_row(
+        &self,
+        space: SpaceId,
+        id: &str,
+    ) -> Result<SubscriptionRow, CoreError> {
         let id = id.to_owned();
-        let row = self
-            .auto_db(move |db| db.subscription(&id))
+        self.auto_db(move |db| db.subscription(&id))
             .await?
-            .ok_or(CoreError::NotFound)?;
-        Ok(Self::subscription_info(row))
+            .filter(|r| r.space == space)
+            .ok_or(CoreError::NotFound)
+    }
+
+    pub async fn subscription(
+        &self,
+        space: SpaceId,
+        id: &str,
+    ) -> Result<SubscriptionInfo, CoreError> {
+        Ok(Self::subscription_info(
+            self.subscription_row(space, id).await?,
+        ))
     }
 
     /// Check a subscription and settle its trust: a pairing code becomes the full hash of
@@ -413,11 +450,14 @@ impl Core {
 
     pub async fn create_subscription(
         &self,
+        space: SpaceId,
         mut spec: SubscriptionSpec,
     ) -> Result<SubscriptionInfo, CoreError> {
+        self.space(space)?;
         self.settle_subscription(&mut spec).await?;
         let row = SubscriptionRow {
             id: new_id(),
+            space,
             token: spec.token.take(),
             publisher_key: spec.publisher_key.clone(),
             spec,
@@ -443,22 +483,19 @@ impl Core {
             )));
         }
         self.auto().poll_wake.notify_one();
-        self.subscription(&id).await
+        self.subscription(space, &id).await
     }
 
     /// Change a subscription. A missing token keeps the stored one; the pinned publisher
     /// key changes only if a new one is given.
     pub async fn update_subscription(
         &self,
+        space: SpaceId,
         id: &str,
         mut spec: SubscriptionSpec,
     ) -> Result<SubscriptionInfo, CoreError> {
+        let mut row = self.subscription_row(space, id).await?;
         self.settle_subscription(&mut spec).await?;
-        let id2 = id.to_owned();
-        let mut row = self
-            .auto_db(move |db| db.subscription(&id2))
-            .await?
-            .ok_or(CoreError::NotFound)?;
         if let Some(t) = spec.token.take() {
             row.token = Some(t);
         }
@@ -468,15 +505,16 @@ impl Core {
         row.spec = spec;
         self.auto_db(move |db| db.save_subscription(&row)).await?;
         self.auto().poll_wake.notify_one();
-        self.subscription(id).await
+        self.subscription(space, id).await
     }
 
     /// Delete a subscription and its candidates. Torrents rules took from it stay.
-    pub async fn delete_subscription(&self, id: &str) -> Result<(), CoreError> {
+    pub async fn delete_subscription(&self, space: SpaceId, id: &str) -> Result<(), CoreError> {
+        self.subscription_row(space, id).await?;
         let (id, id2) = (id.to_owned(), id.to_owned());
         let found = self
             .auto_db(move |db| {
-                db.delete_candidates(&subscription_source(&id))?;
+                db.delete_candidates(None, &subscription_source(&id))?;
                 db.delete_subscription(&id)
             })
             .await?;
@@ -494,16 +532,17 @@ impl Core {
 
     /// Fetch a subscription's feed now (after any poll already under way); the result is
     /// in its `lastError` and `revision`.
-    pub async fn refresh_subscription(&self, id: &str) -> Result<SubscriptionInfo, CoreError> {
+    pub async fn refresh_subscription(
+        &self,
+        space: SpaceId,
+        id: &str,
+    ) -> Result<SubscriptionInfo, CoreError> {
+        self.subscription_row(space, id).await?;
         let lock = self.poll_lock(id);
         let _polling = lock.lock().await;
-        let id2 = id.to_owned();
-        let row = self
-            .auto_db(move |db| db.subscription(&id2))
-            .await?
-            .ok_or(CoreError::NotFound)?;
+        let row = self.subscription_row(space, id).await?;
         self.poll_subscription(row).await;
-        self.subscription(id).await
+        self.subscription(space, id).await
     }
 
     fn poll_lock(&self, id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
@@ -633,7 +672,7 @@ impl Core {
             }
         }
         if !candidates.is_empty() {
-            self.store_candidates(&subscription_source(&row.id), candidates)
+            self.store_candidates(row.space, &subscription_source(&row.id), candidates)
                 .await
                 .map_err(|e| e.to_string())?;
         }

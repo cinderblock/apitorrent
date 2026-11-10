@@ -137,6 +137,7 @@ pub fn server_config(auth: AuthMode) -> ServerConfig {
         allow_insecure_lan: false,
         plugins: None,
         updates: None,
+        space_hosts: apitorrent_server::SpaceHosts::default(),
     }
 }
 

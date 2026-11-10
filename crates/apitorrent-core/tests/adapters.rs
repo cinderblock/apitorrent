@@ -6,10 +6,11 @@
 //! The adapter here is a fake in Rust; `apitorrent-plugins` tests the same trait over a
 //! JavaScript plugin (`tests/roles.rs`).
 
+use apitorrent_types::spaces::DEFAULT_SPACE;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use apitorrent_core::{Core, CoreConfig};
+use apitorrent_core::{Core, CoreConfig, Key};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
 use apitorrent_plugin_api::{BoxFuture, PackQuery, TrackerAdapters, UnregisteredQuery};
@@ -29,11 +30,11 @@ fn config(root: &std::path::Path) -> CoreConfig {
 
 async fn wait_for(core: &Core, id: &str, state: TorrentState) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while !core.store().get(id).is_some_and(|s| s.state == state) {
+    while !core.store().get(&k(id)).is_some_and(|s| s.state == state) {
         assert!(
             tokio::time::Instant::now() < deadline,
             "timed out waiting for {state:?}: {:?}",
-            core.store().get(id)
+            core.store().get(&k(id))
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -124,11 +125,11 @@ async fn a_tracker_adapter_finds_the_pack_and_retires_the_singles() {
     std::fs::write(cfg.download_dir.join("Show.S01E01.mkv"), &e1).unwrap();
     std::fs::write(cfg.download_dir.join("Show.S01E02.mkv"), &e2).unwrap();
     let s1 = core
-        .add(add_bytes(&single("Show.S01E01.mkv", &e1)))
+        .add(DEFAULT_SPACE, add_bytes(&single("Show.S01E01.mkv", &e1)))
         .await
         .unwrap();
     let s2 = core
-        .add(add_bytes(&single("Show.S01E02.mkv", &e2)))
+        .add(DEFAULT_SPACE, add_bytes(&single("Show.S01E02.mkv", &e2)))
         .await
         .unwrap();
     wait_for(&core, &s1, TorrentState::Seeding).await;
@@ -136,7 +137,7 @@ async fn a_tracker_adapter_finds_the_pack_and_retires_the_singles() {
     // Both have announced and failed.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     for id in [&s1, &s2] {
-        while core.detail(id).await.unwrap().tracker_status[0]
+        while core.detail(&k(id)).await.unwrap().tracker_status[0]
             .error
             .is_none()
         {
@@ -150,7 +151,7 @@ async fn a_tracker_adapter_finds_the_pack_and_retires_the_singles() {
 
     // Without an adapter the message means nothing: nothing changes.
     core.retire_superseded().await;
-    assert!(core.store().get(&s1).is_some() && core.store().get(&s2).is_some());
+    assert!(core.store().get(&k(&s1)).is_some() && core.store().get(&k(&s2)).is_some());
 
     let pack_bytes = TorrentBuilder::new("Show Season 1", Version::V1)
         .piece_length(32 * 1024)
@@ -173,23 +174,23 @@ async fn a_tracker_adapter_finds_the_pack_and_retires_the_singles() {
     assert_eq!(queries[0].tracker, tracker);
     assert_eq!(queries[0].files.len(), 1);
     let pack = core
-        .list()
+        .list(None)
         .into_iter()
         .find(|t| t.name == "Show Season 1")
         .expect("the pack was added");
     assert_eq!(pack.label.as_deref(), Some("tv"), "the singles' label");
     // No peers: it can only finish from the library.
     wait_for(&core, &pack.id, TorrentState::Seeding).await;
-    assert_eq!(core.store().get(&pack.id).unwrap().downloaded, 0);
+    assert_eq!(core.store().get(&k(&pack.id)).unwrap().downloaded, 0);
 
     // Once the pack supersedes them, the next passes retire both singles; their files stay.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    while core.store().get(&s1).is_some() || core.store().get(&s2).is_some() {
+    while core.store().get(&k(&s1)).is_some() || core.store().get(&k(&s2)).is_some() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the singles were never retired: {:?} {:?}",
-            core.store().get(&s1),
-            core.store().get(&s2)
+            core.store().get(&k(&s1)),
+            core.store().get(&k(&s2))
         );
         core.retire_superseded().await;
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -199,8 +200,14 @@ async fn a_tracker_adapter_finds_the_pack_and_retires_the_singles() {
     // Each torrent was asked about once, however many passes ran.
     assert_eq!(adapter.pack_queries.lock().unwrap().len(), 2);
     assert_eq!(
-        core.store().get(&pack.id).unwrap().state,
+        core.store().get(&k(&pack.id)).unwrap().state,
         TorrentState::Seeding
     );
     core.shutdown().await.unwrap();
+}
+
+/// A torrent in the default space.
+#[allow(dead_code)]
+fn k(id: &str) -> Key {
+    Key::new(DEFAULT_SPACE, id)
 }

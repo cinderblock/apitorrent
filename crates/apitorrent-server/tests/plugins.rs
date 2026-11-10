@@ -77,17 +77,22 @@ impl PluginService for Fake {
         self.calls.lock().unwrap().push(format!("uninstall {id}"));
         Box::pin(async { Ok(()) })
     }
-    fn logs(&self, _: &str, _: Option<u64>) -> Result<Vec<PluginLogEntry>, PluginError> {
+    fn logs(&self, _: &str, _: i64, _: Option<u64>) -> Result<Vec<PluginLogEntry>, PluginError> {
         Ok(Vec::new())
     }
-    fn settings(&self, _: &str) -> Result<PluginSettings, PluginError> {
+    fn settings(&self, _: &str, _: i64) -> Result<PluginSettings, PluginError> {
         Ok(PluginSettings {
             schema: None,
             values: json!({}),
             secrets_set: vec![],
         })
     }
-    fn set_settings(&self, _: String, v: Value) -> BoxFuture<Result<PluginSettings, PluginError>> {
+    fn set_settings(
+        &self,
+        _: String,
+        _: i64,
+        v: Value,
+    ) -> BoxFuture<Result<PluginSettings, PluginError>> {
         Box::pin(async move {
             Ok(PluginSettings {
                 schema: None,
@@ -475,15 +480,18 @@ async fn plugins_check_api_tokens_through_the_auth_database() {
     let (cookie, token) = admin(&f);
     let session = cookie.split_once('=').unwrap().1;
 
-    let v = creds.verify_token(&token).unwrap().expect("a live token");
+    let v = creds
+        .verify_token(&token, 1)
+        .unwrap()
+        .expect("a live token");
     assert_eq!(v.caller.user_name, "admin");
     assert!(v.caller.may_write);
     assert!(v.still_valid());
-    let reader = creds.verify_token(&read_token(&f)).unwrap().unwrap();
+    let reader = creds.verify_token(&read_token(&f), 1).unwrap().unwrap();
     assert!(!reader.caller.may_write);
     // Session secrets, passwords and junk are not tokens.
     for not in [session, PASSWORD, "apt_nope", ""] {
-        assert!(creds.verify_token(not).unwrap().is_none(), "{not}");
+        assert!(creds.verify_token(not, 1).unwrap().is_none(), "{not}");
     }
     // Revoking the token: every later check says so.
     let p = f.auth.authenticate_session(session).unwrap().unwrap();
@@ -491,7 +499,7 @@ async fn plugins_check_api_tokens_through_the_auth_database() {
         .revoke_token(&p, &v.token_id, &ClientMeta::default())
         .unwrap();
     assert!(!v.still_valid());
-    assert!(creds.verify_token(&token).unwrap().is_none());
+    assert!(creds.verify_token(&token, 1).unwrap().is_none());
 }
 
 /// One HTTP/1.1 request on a fresh connection; the status line, headers and body.

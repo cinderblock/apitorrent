@@ -21,6 +21,7 @@ mod error;
 mod limit;
 mod password;
 mod secret;
+mod spaces;
 mod store;
 
 use std::collections::HashMap;
@@ -192,6 +193,8 @@ pub enum Credential {
     Token {
         id: String,
         scope: TokenScope,
+        /// The space the token works in.
+        space: apitorrent_types::spaces::SpaceId,
     },
     /// `--insecure-no-auth-loopback`: a loopback request with authentication disabled.
     Local,
@@ -936,6 +939,7 @@ impl Auth {
             credential: Credential::Token {
                 id: row.info.id,
                 scope: row.info.scope,
+                space: row.info.space,
             },
         }))
     }
@@ -1568,9 +1572,22 @@ impl Auth {
             .collect())
     }
 
+    /// Create a token in the `default` space.
     pub fn create_token(
         &self,
         p: &Principal,
+        req: &CreateTokenRequest,
+        meta: &ClientMeta,
+    ) -> Result<CreatedToken> {
+        self.create_token_in(p, apitorrent_types::spaces::DEFAULT_SPACE, req, meta)
+    }
+
+    /// Create a token bound to `space`: it works there and nowhere else. The caller must
+    /// be able to use the space (the server checks that before asking).
+    pub fn create_token_in(
+        &self,
+        p: &Principal,
+        space: apitorrent_types::spaces::SpaceId,
         req: &CreateTokenRequest,
         meta: &ClientMeta,
     ) -> Result<CreatedToken> {
@@ -1598,6 +1615,7 @@ impl Auth {
                     .expires_in_days
                     .map(|d| now + ms(Duration::from_secs(u64::from(d) * 86_400))),
                 last_used_at: None,
+                space,
             },
         };
         let conn = self.db();

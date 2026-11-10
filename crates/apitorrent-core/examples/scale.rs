@@ -10,10 +10,11 @@
 //! sync snapshot is, and the process's memory. Peers stay off: no DHT, LSD or trackers, and
 //! the peer port is on loopback, so nothing reaches the network.
 
+use apitorrent_types::spaces::DEFAULT_SPACE;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use apitorrent_core::{Core, CoreConfig};
+use apitorrent_core::{Core, CoreConfig, Key};
 use apitorrent_engine::SessionConfig;
 use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
 use apitorrent_types::{AddSource, AddTorrentRequest, TorrentState, UnwantedPolicy};
@@ -48,7 +49,7 @@ fn config(root: &std::path::Path) -> CoreConfig {
 async fn wait_all_seeding(core: &Core, n: usize, limit: Duration) -> Duration {
     let start = Instant::now();
     loop {
-        let list = core.list();
+        let list = core.list(None);
         let seeding = list
             .iter()
             .filter(|t| t.state == TorrentState::Seeding)
@@ -99,16 +100,19 @@ async fn main() {
     let core = Core::start(cfg.clone()).await.expect("start");
     let t = Instant::now();
     for bytes in &torrents {
-        core.add(AddTorrentRequest {
-            source: AddSource::TorrentFile {
-                data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        core.add(
+            DEFAULT_SPACE,
+            AddTorrentRequest {
+                source: AddSource::TorrentFile {
+                    data: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+                save_path: None,
+                paused: false,
+                label: None,
+                file_priorities: None,
+                unwanted_policy: UnwantedPolicy::Hold,
             },
-            save_path: None,
-            paused: false,
-            label: None,
-            file_priorities: None,
-            unwanted_policy: UnwantedPolicy::Hold,
-        })
+        )
         .await
         .expect("add");
     }
@@ -127,7 +131,7 @@ async fn main() {
     let t = Instant::now();
     let core = Core::start(cfg).await.expect("restart");
     let started = t.elapsed();
-    let listed = core.list().len();
+    let listed = core.list(None).len();
     let seeding = wait_all_seeding(&core, n, Duration::from_secs(600)).await;
     println!(
         "restart: Core::start returned in {started:.1?} with {listed} listed; all seeding \
@@ -136,7 +140,7 @@ async fn main() {
     );
 
     let t = Instant::now();
-    let list = core.list();
+    let list = core.list(None);
     let list_time = t.elapsed();
     let snapshot = serde_json::to_vec(&list).expect("serialize");
     println!(
@@ -145,4 +149,10 @@ async fn main() {
         mib(snapshot.len())
     );
     core.shutdown().await.expect("shutdown");
+}
+
+/// A torrent in the default space.
+#[allow(dead_code)]
+fn k(id: &str) -> Key {
+    Key::new(DEFAULT_SPACE, id)
 }

@@ -195,6 +195,7 @@ impl LocalNode {
             // The desktop app runs no plugins yet.
             plugins: None,
             updates: None,
+            space_hosts: apitorrent_server::SpaceHosts::default(),
         };
         let (stop, stopped) = oneshot::channel::<()>();
         let core = self.core.clone();

@@ -387,7 +387,8 @@ pub(crate) struct TokenRow {
     pub info: ApiTokenInfo,
 }
 
-const TOKEN_COLS: &str = "id, user_id, name, scope, prefix, created_at, expires_at, last_used_at";
+const TOKEN_COLS: &str =
+    "id, user_id, name, scope, prefix, created_at, expires_at, last_used_at, space_id";
 
 fn token_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenRow> {
     Ok(TokenRow {
@@ -400,6 +401,7 @@ fn token_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenRow> {
             created_at: r.get(5)?,
             expires_at: r.get(6)?,
             last_used_at: r.get(7)?,
+            space: r.get(8)?,
         },
     })
 }
@@ -407,8 +409,9 @@ fn token_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenRow> {
 pub(crate) fn insert_token(c: &Connection, t: &TokenRow, hash: &Digest32) -> rusqlite::Result<()> {
     let i = &t.info;
     c.execute(
-        "INSERT INTO api_tokens (id, user_id, name, scope, token_hash, prefix, created_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO api_tokens (id, user_id, name, scope, token_hash, prefix, created_at, expires_at,
+             space_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             i.id,
             t.user_id,
@@ -417,7 +420,8 @@ pub(crate) fn insert_token(c: &Connection, t: &TokenRow, hash: &Digest32) -> rus
             hash.as_slice(),
             i.prefix,
             i.created_at,
-            i.expires_at
+            i.expires_at,
+            i.space
         ],
     )?;
     Ok(())

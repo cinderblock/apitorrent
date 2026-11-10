@@ -5,6 +5,7 @@ use tokio::sync::broadcast;
 use ts_rs::TS;
 
 use apitorrent_types::automation::{ReleaseCandidate, SubmitCandidatesOutcome};
+use apitorrent_types::spaces::{DEFAULT_SPACE, SpaceId};
 use apitorrent_types::{
     AddTorrentRequest, QueueMove, QueueSettings, SeedLimits, TorrentDetail, TorrentId,
     TorrentState, TorrentSummary,
@@ -108,6 +109,23 @@ pub trait AppApi: Send + Sync + 'static {
     fn remove(&self, id: TorrentId, delete_files: bool) -> BoxFuture<Result<(), AppError>>;
     /// A stream of events from now on. A receiver that falls behind skips ahead (`Lagged`).
     fn events(&self) -> broadcast::Receiver<AppEvent>;
+
+    /// The space this view works on (see `apitorrent_types::spaces`).
+    fn space(&self) -> SpaceId {
+        DEFAULT_SPACE
+    }
+
+    /// Every space, for starting a space-aware plugin's instances.
+    fn spaces(&self) -> Vec<SpaceId> {
+        vec![DEFAULT_SPACE]
+    }
+
+    /// The same API working on another space, for a space-aware plugin's instance there.
+    /// `None` when the implementation has no spaces: the plugin then runs once, globally.
+    fn for_space(&self, space: SpaceId) -> Option<std::sync::Arc<dyn AppApi>> {
+        let _ = space;
+        None
+    }
 
     /// Store release candidates from `source`, a plugin with the `source` role (the host
     /// checks the role), for the core's rules. Submitting a candidate again updates it.

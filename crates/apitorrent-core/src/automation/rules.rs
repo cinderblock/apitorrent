@@ -11,13 +11,14 @@ use apitorrent_types::automation::{
     AliasStatus, DryRun, DryRunEntry, DryRunRequest, DryRunVerdict, RuleInfo, RuleItem,
     RuleItemState, RuleSpec, StoredCandidate, SupersededAction,
 };
+use apitorrent_types::spaces::SpaceId;
 use apitorrent_types::{AddSource, AddTorrentRequest, FilePriority, TorrentSummary};
 
 use super::alias::{self, PlaceError};
 use super::db::{AliasRow, ItemRow, RuleRow};
 use super::plan::{Compiled, Planned, plan};
 use super::{MAX_METAINFO, new_id, now_ms};
-use crate::{Core, CoreError};
+use crate::{Core, CoreError, Key};
 
 /// A failed take is tried again after this long.
 const RETRY_FAILED_MS: i64 = 10 * 60 * 1000;
@@ -36,7 +37,12 @@ struct Taken {
 
 impl Core {
     /// Check a rule before storing it.
-    async fn check_rule(&self, spec: &RuleSpec, id: Option<&str>) -> Result<(), CoreError> {
+    async fn check_rule(
+        &self,
+        space: SpaceId,
+        spec: &RuleSpec,
+        id: Option<&str>,
+    ) -> Result<(), CoreError> {
         let name = spec.name.trim();
         if name.is_empty() || name.len() > 200 {
             return Err(invalid("a rule's name must be 1 to 200 characters"));
@@ -52,11 +58,11 @@ impl Core {
         {
             return Err(invalid("the ratio must be a number, 0 or more"));
         }
-        self.rule_save_path(spec.save_path.as_deref())
+        self.rule_save_path(space, spec.save_path.as_deref())
             .map_err(invalid)?;
         Compiled::new(spec).map_err(invalid)?;
         if let Some(a) = &spec.alias {
-            let path = alias::resolve(self.download_dir(), &a.path).map_err(invalid)?;
+            let path = alias::resolve(&self.download_dir(space), &a.path).map_err(invalid)?;
             let path = path.to_string_lossy().into_owned();
             let me = id.map(str::to_owned);
             let taken = self
@@ -109,35 +115,42 @@ impl Core {
         })
     }
 
-    pub async fn rules(&self) -> Result<Vec<RuleInfo>, CoreError> {
+    /// A space's rules.
+    pub async fn rules(&self, space: SpaceId) -> Result<Vec<RuleInfo>, CoreError> {
         let rows = self.auto_db(|db| db.rules()).await?;
         let mut out = Vec::with_capacity(rows.len());
-        for r in rows {
+        for r in rows.into_iter().filter(|r| r.space == space) {
             out.push(self.rule_info(r).await?);
         }
         Ok(out)
     }
 
-    pub async fn rule(&self, id: &str) -> Result<RuleInfo, CoreError> {
-        let id = id.to_owned();
-        let row = self
-            .auto_db(move |db| db.rule(&id))
-            .await?
-            .ok_or(CoreError::NotFound)?;
+    /// One of a space's rules; another space's is not found.
+    pub async fn rule(&self, space: SpaceId, id: &str) -> Result<RuleInfo, CoreError> {
+        let row = self.rule_row(space, id).await?;
         self.rule_info(row).await
     }
 
-    /// Store a new rule; it runs straight away.
-    pub async fn create_rule(&self, spec: RuleSpec) -> Result<RuleInfo, CoreError> {
-        self.check_rule(&spec, None).await?;
+    async fn rule_row(&self, space: SpaceId, id: &str) -> Result<RuleRow, CoreError> {
+        let id = id.to_owned();
+        self.auto_db(move |db| db.rule(&id))
+            .await?
+            .filter(|r| r.space == space)
+            .ok_or(CoreError::NotFound)
+    }
+
+    /// Store a new rule in a space; it runs straight away.
+    pub async fn create_rule(&self, space: SpaceId, spec: RuleSpec) -> Result<RuleInfo, CoreError> {
+        self.space(space)?;
+        self.check_rule(space, &spec, None).await?;
         let id = new_id();
         let (id2, spec2) = (id.clone(), spec.clone());
-        let alias_path = self.alias_path(&spec);
+        let alias_path = self.alias_path(space, &spec);
         self.auto_db(move |db| {
             if db.rules()?.len() >= MAX_RULES {
                 return Ok(false);
             }
-            db.insert_rule(&id2, &spec2, now_ms())?;
+            db.insert_rule(space, &id2, &spec2, now_ms())?;
             if let Some(path) = alias_path {
                 db.save_alias(
                     &id2,
@@ -153,21 +166,27 @@ impl Core {
         .then_some(())
         .ok_or_else(|| invalid(format!("at most {MAX_RULES} rules")))?;
         self.auto().wake.notify_one();
-        self.rule(&id).await
+        self.rule(space, &id).await
     }
 
-    fn alias_path(&self, spec: &RuleSpec) -> Option<String> {
+    fn alias_path(&self, space: SpaceId, spec: &RuleSpec) -> Option<String> {
         let a = spec.alias.as_ref()?;
-        alias::resolve(self.download_dir(), &a.path)
+        alias::resolve(&self.download_dir(space), &a.path)
             .ok()
             .map(|p| p.to_string_lossy().into_owned())
     }
 
     /// Replace a rule. Torrents it already took stay; the next pass applies the new rule.
-    pub async fn update_rule(&self, id: &str, spec: RuleSpec) -> Result<RuleInfo, CoreError> {
-        self.check_rule(&spec, Some(id)).await?;
+    pub async fn update_rule(
+        &self,
+        space: SpaceId,
+        id: &str,
+        spec: RuleSpec,
+    ) -> Result<RuleInfo, CoreError> {
+        self.rule_row(space, id).await?;
+        self.check_rule(space, &spec, Some(id)).await?;
         let (id2, spec2) = (id.to_owned(), spec.clone());
-        let alias_path = self.alias_path(&spec);
+        let alias_path = self.alias_path(space, &spec);
         let found = self
             .auto_db(move |db| {
                 if !db.update_rule(&id2, &spec2, now_ms())? {
@@ -194,11 +213,12 @@ impl Core {
             return Err(CoreError::NotFound);
         }
         self.auto().wake.notify_one();
-        self.rule(id).await
+        self.rule(space, id).await
     }
 
     /// Delete a rule. Its torrents and its alias file stay.
-    pub async fn delete_rule(&self, id: &str) -> Result<(), CoreError> {
+    pub async fn delete_rule(&self, space: SpaceId, id: &str) -> Result<(), CoreError> {
+        self.rule_row(space, id).await?;
         let id = id.to_owned();
         if self.auto_db(move |db| db.delete_rule(&id)).await? {
             Ok(())
@@ -212,9 +232,12 @@ impl Core {
         self.rules_pass().await;
     }
 
-    /// What `req.rule` would do with the current candidates. Changes nothing.
-    pub async fn dry_run(&self, req: DryRunRequest) -> Result<DryRun, CoreError> {
+    /// What `req.rule` would do with a space's current candidates. Changes nothing.
+    pub async fn dry_run(&self, space: SpaceId, req: DryRunRequest) -> Result<DryRun, CoreError> {
         let compiled = Compiled::new(&req.rule).map_err(invalid)?;
+        if let Some(id) = &req.rule_id {
+            self.rule_row(space, id).await?;
+        }
         let rule_id = req.rule_id.clone();
         let (candidates, items) = self
             .auto_db(move |db| {
@@ -222,7 +245,7 @@ impl Core {
                     Some(id) => db.items(id)?,
                     None => Vec::new(),
                 };
-                Ok((db.candidates(None)?, items))
+                Ok((db.candidates(Some(space), None)?, items))
             })
             .await?;
         let taken = taken_map(&items);
@@ -243,7 +266,16 @@ impl Core {
         let loaded = self
             .auto_db(|db| {
                 db.prune_candidates(now_ms() - super::CANDIDATE_TTL_MS)?;
-                Ok((db.rules()?, db.candidates(None)?))
+                let rules = db.rules()?;
+                // Each rule sees its own space's candidates and every space's.
+                let mut candidates = HashMap::new();
+                for r in &rules {
+                    if let std::collections::hash_map::Entry::Vacant(e) = candidates.entry(r.space)
+                    {
+                        e.insert(db.candidates(Some(r.space), None)?);
+                    }
+                }
+                Ok((rules, candidates))
             })
             .await;
         let (rules, candidates) = match loaded {
@@ -254,7 +286,8 @@ impl Core {
             }
         };
         for rule in rules.into_iter().filter(|r| r.spec.enabled) {
-            if let Err(e) = self.run_rule(&rule, &candidates).await {
+            let mine = candidates.get(&rule.space).map_or(&[][..], Vec::as_slice);
+            if let Err(e) = self.run_rule(&rule, mine).await {
                 tracing::warn!(rule = %rule.id, error = %e, "rule pass failed");
             }
         }
@@ -274,16 +307,20 @@ impl Core {
             let Ok(mut items) = self.auto_db(move |db| db.items(&id)).await else {
                 continue;
             };
-            let summaries = self.summaries();
-            self.settle_items(&rule.id, &compiled, &mut items, &summaries)
+            let summaries = self.summaries(rule.space);
+            self.settle_items(&rule, &compiled, &mut items, &summaries)
                 .await;
-            self.update_alias(&rule.id, &compiled, &items, &summaries)
+            self.update_alias(&rule, &compiled, &items, &summaries)
                 .await;
         }
     }
 
-    fn summaries(&self) -> HashMap<String, TorrentSummary> {
-        self.list().into_iter().map(|s| (s.id.clone(), s)).collect()
+    /// A space's torrents by id.
+    fn summaries(&self, space: SpaceId) -> HashMap<String, TorrentSummary> {
+        self.list(Some(space))
+            .into_iter()
+            .map(|s| (s.id.clone(), s))
+            .collect()
     }
 
     async fn run_rule(
@@ -302,7 +339,7 @@ impl Core {
         };
         let id = rule.id.clone();
         let mut items = self.auto_db(move |db| db.items(&id)).await?;
-        let summaries = self.summaries();
+        let summaries = self.summaries(rule.space);
         // Torrents removed since the last pass are gone for good.
         let now = now_ms();
         for row in &mut items {
@@ -364,7 +401,7 @@ impl Core {
                         self.save_item(&rule.id, &row).await?;
                         continue;
                     }
-                    match self.take(&compiled, p.stored).await {
+                    match self.take(rule.space, &compiled, p.stored).await {
                         Ok(t) => {
                             tracing::info!(rule = %rule.spec.name, candidate = %c.title,
                                 torrent = %t.torrent_id, "rule took a release");
@@ -386,7 +423,7 @@ impl Core {
                     self.save_item(&rule.id, &row).await?;
                 }
                 DryRunVerdict::Supersede => {
-                    self.supersede(&rule.spec, &mut row).await;
+                    self.supersede(rule.space, &rule.spec, &mut row).await;
                     row.updated_at = now;
                     self.save_item(&rule.id, &row).await?;
                 }
@@ -406,10 +443,9 @@ impl Core {
             .await?;
         let id = rule.id.clone();
         let mut items = self.auto_db(move |db| db.items(&id)).await?;
-        self.settle_items(&rule.id, &compiled, &mut items, &summaries)
+        self.settle_items(rule, &compiled, &mut items, &summaries)
             .await;
-        self.update_alias(&rule.id, &compiled, &items, &summaries)
-            .await;
+        self.update_alias(rule, &compiled, &items, &summaries).await;
         Ok(())
     }
 
@@ -419,12 +455,17 @@ impl Core {
     }
 
     /// Add a candidate's torrent as the rule says.
-    async fn take(&self, rule: &Compiled, s: &StoredCandidate) -> Result<Taken, String> {
+    async fn take(
+        &self,
+        space: SpaceId,
+        rule: &Compiled,
+        s: &StoredCandidate,
+    ) -> Result<Taken, String> {
         let spec = &rule.spec;
         let c = &s.candidate;
         let mut metainfo = if s.has_metainfo {
             let (src, id) = (s.source.clone(), c.id.clone());
-            self.auto_db(move |db| db.candidate_metainfo(&src, &id))
+            self.auto_db(move |db| db.candidate_metainfo(space, &src, &id))
                 .await
                 .map_err(|e| e.to_string())?
         } else {
@@ -435,7 +476,7 @@ impl Core {
         if metainfo.is_none()
             && let Some(url) = &c.links.torrent
         {
-            match self.fetch_torrent(&s.source, url).await {
+            match self.fetch_torrent(space, &s.source, url).await {
                 Ok(bytes) => metainfo = Some(bytes),
                 Err(e) if c.links.magnet.is_some() => {
                     tracing::info!(candidate = %c.title, error = %e,
@@ -445,7 +486,7 @@ impl Core {
             }
         }
         let save_path = self
-            .rule_save_path(spec.save_path.as_deref())?
+            .rule_save_path(space, spec.save_path.as_deref())?
             .map(|p| p.to_string_lossy().into_owned());
         let (source, priorities, files_pending, hashes) = if let Some(bytes) = metainfo {
             {
@@ -511,7 +552,7 @@ impl Core {
             file_priorities: priorities,
             unwanted_policy: apitorrent_types::UnwantedPolicy::default(),
         };
-        match self.add(req).await {
+        match self.add(space, req).await {
             Ok(id) => Ok(Taken {
                 torrent_id: id,
                 files_pending,
@@ -520,7 +561,7 @@ impl Core {
             Err(CoreError::Duplicate) => {
                 let v1 = hashes.get_v1().map(|h| h.to_hex());
                 let v2 = hashes.get_v2().map(|h| h.to_hex());
-                self.list()
+                self.list(Some(space))
                     .into_iter()
                     .find(|t| {
                         (v1.is_some() && t.info_hash_v1 == v1)
@@ -538,7 +579,12 @@ impl Core {
     }
 
     /// Fetch a candidate's `.torrent` link as its source plugin.
-    async fn fetch_torrent(&self, source: &str, url: &str) -> Result<Vec<u8>, String> {
+    async fn fetch_torrent(
+        &self,
+        space: SpaceId,
+        source: &str,
+        url: &str,
+    ) -> Result<Vec<u8>, String> {
         let Some(plugin) = source.strip_prefix("plugin:") else {
             return Err(format!("links from {source} can't be fetched"));
         };
@@ -546,22 +592,23 @@ impl Core {
             .source_fetcher()
             .ok_or("plugins are off, so the .torrent link can't be fetched")?;
         fetcher
-            .fetch_as(plugin, url, MAX_METAINFO)
+            .fetch_as(plugin, space, url, MAX_METAINFO)
             .await
             .map_err(|e| format!("fetching {url}: {e}"))
     }
 
     /// Apply the rule's superseded action to an item that left the latest N.
-    async fn supersede(&self, spec: &RuleSpec, row: &mut ItemRow) {
+    async fn supersede(&self, space: SpaceId, spec: &RuleSpec, row: &mut ItemRow) {
         let Some(id) = row.item.torrent_id.clone() else {
             row.item.state = RuleItemState::Gone;
             return;
         };
+        let key = Key::new(space, id.clone());
         let result = match spec.superseded {
             SupersededAction::KeepSeeding => Ok(()),
-            SupersededAction::Stop => self.pause(&id).await,
+            SupersededAction::Stop => self.pause(&key).await,
             SupersededAction::SeedLimits { limits } => {
-                self.set_seed_limits(&id, Some(limits)).await
+                self.set_seed_limits(&key, Some(limits)).await
             }
         };
         match result {
@@ -582,7 +629,7 @@ impl Core {
     /// Apply file selections to magnet links whose metadata has arrived.
     async fn settle_items(
         &self,
-        rule_id: &str,
+        row_of: &RuleRow,
         rule: &Compiled,
         items: &mut [ItemRow],
         summaries: &HashMap<String, TorrentSummary>,
@@ -594,7 +641,8 @@ impl Core {
             if !summaries.contains_key(&id) {
                 continue;
             }
-            let Ok(detail) = self.detail(&id).await else {
+            let key = Key::new(row_of.space, id.clone());
+            let Ok(detail) = self.detail(&key).await else {
                 continue;
             };
             if detail.files.is_empty() {
@@ -610,12 +658,12 @@ impl Core {
                 .collect();
             if updates.iter().all(|u| u.priority == 0) {
                 row.item.error = Some("the file selection matches none of its files".into());
-            } else if let Err(e) = self.set_file_priorities(&id, &updates).await {
+            } else if let Err(e) = self.set_file_priorities(&key, &updates).await {
                 row.item.error = Some(format!("selecting files: {e}"));
             }
             row.files_pending = false;
             row.updated_at = now_ms();
-            if let Err(e) = self.save_item(rule_id, row).await {
+            if let Err(e) = self.save_item(&row_of.id, row).await {
                 tracing::warn!(error = %e, "could not save a rule item");
             }
         }
@@ -624,15 +672,16 @@ impl Core {
     /// Point the rule's alias at its newest completed release, if that changed.
     async fn update_alias(
         &self,
-        rule_id: &str,
+        row_of: &RuleRow,
         rule: &Compiled,
         items: &[ItemRow],
         summaries: &HashMap<String, TorrentSummary>,
     ) {
+        let (rule_id, space) = (row_of.id.as_str(), row_of.space);
         let Some(spec) = &rule.spec.alias else {
             return;
         };
-        let Ok(path) = alias::resolve(self.download_dir(), &spec.path) else {
+        let Ok(path) = alias::resolve(&self.download_dir(space), &spec.path) else {
             return;
         };
         let path_str = path.to_string_lossy().into_owned();
@@ -673,10 +722,11 @@ impl Core {
             if !summaries.get(tid).is_some_and(|s| s.progress >= 1.0) {
                 continue;
             }
-            let Some((index, file)) = self.alias_file(tid, rule).await else {
+            let key = Key::new(space, tid.clone());
+            let Some((index, file)) = self.alias_file(&key, rule).await else {
                 continue;
             };
-            let Some(target) = self.file_disk_path(tid, index) else {
+            let Some(target) = self.file_disk_path(&key, index) else {
                 continue;
             };
             self.place_alias(rule_id, &mut row, &target, &path, item, tid, file)
@@ -687,8 +737,8 @@ impl Core {
 
     /// The file an alias names in torrent `id`: the largest wanted, complete file that
     /// matches the alias's glob.
-    async fn alias_file(&self, id: &str, rule: &Compiled) -> Option<(usize, String)> {
-        let detail = self.detail(id).await.ok()?;
+    async fn alias_file(&self, key: &Key, rule: &Compiled) -> Option<(usize, String)> {
+        let detail = self.detail(key).await.ok()?;
         detail
             .files
             .into_iter()

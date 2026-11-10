@@ -64,6 +64,18 @@ const MIGRATIONS: &[&str] = &[
          ip TEXT,
          detail TEXT
      );",
+    // 2: spaces. Each user holds a role per space (`space_id` is the instance database's
+    // space id; 1 is `default`), and every API token is bound to one space. Everyone keeps
+    // their role in `default`, where everything was before, and so do their tokens.
+    "CREATE TABLE space_members (
+         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+         space_id INTEGER NOT NULL,
+         role TEXT NOT NULL CHECK (role IN ('admin', 'user', 'viewer')),
+         PRIMARY KEY (user_id, space_id)
+     );
+     INSERT INTO space_members (user_id, space_id, role) SELECT id, 1, role FROM users;
+     ALTER TABLE api_tokens ADD COLUMN space_id INTEGER NOT NULL DEFAULT 1;
+     ALTER TABLE users ADD COLUMN last_space_id INTEGER;",
 ];
 
 pub(crate) fn open(path: &Path) -> rusqlite::Result<Connection> {

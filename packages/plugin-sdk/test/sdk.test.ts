@@ -89,6 +89,7 @@ const manifest: PluginManifest = {
     roles: [],
   },
   settings: null,
+  spaceAware: false,
 };
 
 test("the harness enforces the manifest like the host", async () => {
@@ -179,6 +180,7 @@ test("the harness signs clients in with tokens and keeps ordinary routes signed-
       roles: ["api-compat"],
     },
     settings: null,
+    spaceAware: false,
   };
   const reader = { userId: "u2", userName: "bob", role: "viewer" as const, mayWrite: false };
   const host = createTestHost({ manifest, tokens: { apt_bob: reader } });

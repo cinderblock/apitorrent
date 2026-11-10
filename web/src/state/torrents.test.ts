@@ -6,6 +6,7 @@ import { applySync, countByFilter, initialSyncState, visibleTorrents } from "./t
 function t(id: string, over: Partial<TorrentSummary> = {}): TorrentSummary {
   return {
     id,
+    space: 1,
     name: id,
     infoHashV1: null,
     infoHashV2: null,

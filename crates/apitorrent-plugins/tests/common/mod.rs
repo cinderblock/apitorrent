@@ -57,6 +57,7 @@ impl FakeApp {
 pub fn summary(id: &str, state: TorrentState) -> TorrentSummary {
     TorrentSummary {
         id: id.to_owned(),
+        space: 1,
         name: format!("torrent {id}"),
         info_hash_v1: Some(id.to_owned()),
         info_hash_v2: None,
@@ -165,6 +166,7 @@ pub fn manifest(id: &str, version: &str, caps: PluginCapabilities) -> PluginMani
         api_version: PLUGIN_API_VERSION,
         capabilities: caps,
         settings: None,
+        space_aware: false,
     }
 }
 
@@ -207,14 +209,14 @@ pub async fn wait_status(host: &PluginHost, id: &str, want: PluginStatus) {
             !(want == PluginStatus::Running && info.status == PluginStatus::Failed),
             "{id} failed instead of running: {:?}\nlogs: {:#?}",
             info.error,
-            host.logs(id, None).unwrap()
+            host.logs(id, 1, None).unwrap()
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!(
         "{id} never reached {want:?}: {:?}\nlogs: {:#?}",
         host.get(id).unwrap(),
-        host.logs(id, None).unwrap()
+        host.logs(id, 1, None).unwrap()
     );
 }
 
@@ -244,6 +246,7 @@ pub async fn call(
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
             body: body.to_vec(),
             caller: Some(caller()),
+            space: 1,
         },
     )
     .await
@@ -260,7 +263,7 @@ pub async fn probe(host: &PluginHost, id: &str) -> serde_json::Value {
 info: {:?}
 logs: {:#?}",
                 host.get(id),
-                host.logs(id, None)
+                host.logs(id, 1, None)
             )
         }
     };

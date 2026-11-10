@@ -26,4 +26,10 @@ apiVersion: number, capabilities: PluginCapabilities,
 /**
  * A JSON Schema (subset) for the plugin's settings. The UI renders a form from it.
  */
-settings: Record<string, unknown> | null, };
+settings: Record<string, unknown> | null, 
+/**
+ * Run one instance per space, each with its own settings, data and torrents (an RSS
+ * reader's feeds, a compatibility API's clients). Otherwise the plugin is global: one
+ * instance, managed by server admins, working on the `default` space.
+ */
+spaceAware: boolean, };

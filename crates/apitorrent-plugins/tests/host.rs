@@ -288,7 +288,7 @@ async fn the_watchdog_stops_a_runaway_plugin() {
     let info = h.get("spinner").unwrap();
     let error = info.error.unwrap();
     assert!(error.contains("watchdog"), "{error}");
-    let logs = h.logs("spinner", None).unwrap();
+    let logs = h.logs("spinner", 1, None).unwrap();
     assert!(
         logs.iter()
             .any(|l| l.host && l.message.contains("watchdog")),
@@ -596,7 +596,11 @@ async fn settings_are_validated_and_secrets_hidden() {
     run(&h, b).await;
     assert_eq!(probe(&h, "conf").await["now"], json!({ "interval": 15 }));
     let s = h
-        .set_settings("conf".into(), json!({ "interval": 30, "token": "hunter2" }))
+        .set_settings(
+            "conf".into(),
+            1,
+            json!({ "interval": 30, "token": "hunter2" }),
+        )
         .await
         .unwrap();
     assert_eq!(s.values, json!({ "interval": 30 }));
@@ -608,12 +612,12 @@ async fn settings_are_validated_and_secrets_hidden() {
     assert_eq!(v["seen"], json!([30]));
     // Leaving a secret out keeps it; null clears it.
     let s = h
-        .set_settings("conf".into(), json!({ "interval": 20 }))
+        .set_settings("conf".into(), 1, json!({ "interval": 20 }))
         .await
         .unwrap();
     assert_eq!(s.secrets_set, ["token"]);
     let s = h
-        .set_settings("conf".into(), json!({ "token": null }))
+        .set_settings("conf".into(), 1, json!({ "token": null }))
         .await
         .unwrap();
     assert!(s.secrets_set.is_empty());
@@ -623,7 +627,7 @@ async fn settings_are_validated_and_secrets_hidden() {
         json!([1]),
     ] {
         assert!(matches!(
-            h.set_settings("conf".into(), bad).await,
+            h.set_settings("conf".into(), 1, bad).await,
             Err(PluginError::InvalidRequest(_))
         ));
     }
@@ -693,7 +697,7 @@ async fn errors_are_logged_not_fatal() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(h.get("noisy").unwrap().status, PluginStatus::Running);
     let logs: Vec<String> = h
-        .logs("noisy", None)
+        .logs("noisy", 1, None)
         .unwrap()
         .into_iter()
         .map(|l| l.message)
@@ -758,33 +762,33 @@ async fn sources_submit_candidates_and_links_are_fetched_with_their_grants() {
 
     // The app fetches the link as the plugin: within its grants, and logged.
     let body = h
-        .fetch_as("src", &format!("{base}/r.torrent"), 1024)
+        .fetch_as("src", 1, &format!("{base}/r.torrent"), 1024)
         .await
         .unwrap();
     assert_eq!(body, b"d4:infod4:name1:xee");
-    let logs = h.logs("src", None).unwrap();
+    let logs = h.logs("src", 1, None).unwrap();
     assert!(
         logs.iter().any(|l| l.message.contains("for a rule")),
         "{logs:#?}"
     );
     // Outside its grants, too large, or an error status: refused.
     let refused = h
-        .fetch_as("src", "http://127.0.0.1:1/x", 1024)
+        .fetch_as("src", 1, "http://127.0.0.1:1/x", 1024)
         .await
         .unwrap_err();
     assert_eq!(refused.code, "not_capable");
     assert!(
-        h.fetch_as("src", &format!("{base}/r.torrent"), 4)
+        h.fetch_as("src", 1, &format!("{base}/r.torrent"), 4)
             .await
             .is_err()
     );
     assert!(
-        h.fetch_as("src", &format!("{base}/missing"), 1024)
+        h.fetch_as("src", 1, &format!("{base}/missing"), 1024)
             .await
             .is_err()
     );
     assert!(
-        h.fetch_as("nobody", &format!("{base}/r.torrent"), 1024)
+        h.fetch_as("nobody", 1, &format!("{base}/r.torrent"), 1024)
             .await
             .is_err()
     );
@@ -803,7 +807,7 @@ async fn sources_submit_candidates_and_links_are_fetched_with_their_grants() {
     assert_eq!(v["name"], "NotCapable", "{v:#}");
     // And a plugin that isn't a source can't have links fetched for it either.
     assert!(
-        h.fetch_as("plain", &format!("{base}/r.torrent"), 1024)
+        h.fetch_as("plain", 1, &format!("{base}/r.torrent"), 1024)
             .await
             .is_err()
     );

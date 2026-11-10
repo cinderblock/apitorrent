@@ -30,7 +30,7 @@ struct FakeCredentials {
 }
 
 impl Credentials for FakeCredentials {
-    fn verify_token(&self, token: &str) -> Result<Option<VerifiedToken>, AppError> {
+    fn verify_token(&self, token: &str, _space: i64) -> Result<Option<VerifiedToken>, AppError> {
         let caller = |may_write| PluginCaller {
             user_id: "u1".to_owned(),
             user_name: "alice".to_owned(),
@@ -92,6 +92,7 @@ async fn request(
                 headers: Vec::new(),
                 body: body.as_bytes().to_vec(),
                 caller,
+                space: 1,
             },
         )
         .await?;
@@ -320,7 +321,7 @@ async fn tracker_adapters_answer_for_their_trackers() {
     }
     export default { start(api) { api.roles.provide('tracker-adapter', new Adapter()); } };";
     run(&h, bundle(manifest("adapter", "1.0.0", caps), code)).await;
-    let logs = h.logs("adapter", None).unwrap();
+    let logs = h.logs("adapter", 1, None).unwrap();
     assert!(
         logs.iter().any(
             |l| l.message == "adapts behaviour for trackers tracker.example.org, *.example.net"

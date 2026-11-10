@@ -25,7 +25,11 @@ pub fn plugin_credentials(auth: &AuthMode) -> Option<Arc<dyn Credentials>> {
 struct AuthCredentials(Auth);
 
 impl Credentials for AuthCredentials {
-    fn verify_token(&self, token: &str) -> Result<Option<VerifiedToken>, AppError> {
+    fn verify_token(
+        &self,
+        token: &str,
+        space: apitorrent_types::spaces::SpaceId,
+    ) -> Result<Option<VerifiedToken>, AppError> {
         let principal = match self.0.authenticate_token(token) {
             Ok(Some(p)) => p,
             Ok(None) => return Ok(None),
@@ -37,11 +41,19 @@ impl Credentials for AuthCredentials {
         let Credential::Token { id, .. } = &principal.credential else {
             return Ok(None);
         };
+        let role = match self.0.space_role(&principal, space) {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                tracing::error!(error = %e, "could not check a token's space for a plugin");
+                return Err(AppError::new("internal", "could not check the token"));
+            }
+        };
         let caller = PluginCaller {
             user_id: principal.user.id.clone(),
             user_name: principal.user.name.clone(),
             role: principal.user.role,
-            may_write: principal.may_write(),
+            may_write: principal.may_write() && role >= apitorrent_types::spaces::SpaceRole::User,
         };
         let token_id = id.clone();
         let auth = self.0.clone();

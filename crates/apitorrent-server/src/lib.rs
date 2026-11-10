@@ -27,6 +27,8 @@ mod plugin_credentials;
 mod plugin_listener;
 mod plugin_routes;
 mod routes;
+mod space;
+mod space_routes;
 mod sync;
 mod tls;
 mod update_routes;
@@ -52,6 +54,7 @@ use apitorrent_auth::Auth;
 use apitorrent_core::Core;
 
 pub use embed::{EMBEDDED_HOST, Embedded, EmbeddedError, EmbeddedResponse};
+pub use space::SpaceHosts;
 
 /// Large enough for a base64-encoded `.torrent` with a long piece list.
 const MAX_BODY: usize = 64 * 1024 * 1024;
@@ -137,6 +140,8 @@ pub struct ServerConfig {
     /// The daemon's own updater, for `/api/v1/system/update`. `None` answers those
     /// endpoints with `updates_unavailable`.
     pub updates: Option<Arc<dyn UpdateService>>,
+    /// Host names that put a request in a space (`--space-host`).
+    pub space_hosts: SpaceHosts,
 }
 
 impl std::fmt::Debug for ServerConfig {
@@ -150,6 +155,7 @@ impl std::fmt::Debug for ServerConfig {
             .field("allow_insecure_lan", &self.allow_insecure_lan)
             .field("plugins", &self.plugins.is_some())
             .field("updates", &self.updates.is_some())
+            .field("space_hosts", &self.space_hosts)
             .finish()
     }
 }
@@ -196,6 +202,7 @@ pub(crate) struct AppState {
     pub(crate) tls: Option<tls::TlsCtx>,
     pub(crate) plugins: Option<Arc<dyn apitorrent_plugin_api::PluginService>>,
     pub(crate) updates: Option<Arc<dyn UpdateService>>,
+    pub(crate) space_hosts: SpaceHosts,
 }
 
 /// Build the router. Exposed separately from [`serve`] for tests and embedding.
@@ -213,6 +220,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         tls,
         plugins: config.plugins.clone(),
         updates: config.updates.clone(),
+        space_hosts: config.space_hosts.clone(),
     };
     let api = Router::new()
         .route("/info", get(routes::info))
@@ -286,6 +294,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .merge(plugin_routes::router())
         .merge(automation_routes::router())
         .merge(update_routes::router())
+        .merge(space_routes::router())
         .fallback(routes::not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -309,7 +318,8 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
     if https {
         app = app.layer(axum::middleware::from_fn(tls::hsts));
     }
-    app.layer(DefaultBodyLimit::max(MAX_BODY))
+    let app = app
+        .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(SetResponseHeaderLayer::if_not_present(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(CONTENT_SECURITY_POLICY),
@@ -328,7 +338,13 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         ))
         .layer(axum::middleware::from_fn_with_state(guard, guard::check))
         .layer(tower_http::trace::TraceLayer::new_for_http())
-        .with_state(state)
+        .with_state(state);
+    // `/s/<slug>/…` is rewritten before routing (a layer on the router runs after it).
+    Router::new().fallback_service(
+        tower::ServiceBuilder::new()
+            .map_request(space::strip_prefix)
+            .service(app),
+    )
 }
 
 /// Serve the API until `shutdown` resolves.

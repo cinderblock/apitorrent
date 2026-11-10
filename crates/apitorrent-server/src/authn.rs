@@ -15,6 +15,9 @@
 //! that may write: not a `read` token and not a viewer. Under `/auth/`, the auth crate makes
 //! its own, finer decisions.
 //!
+//! Then the request's space (see `space`): every signed-in request outside `/auth/` and
+//! [`PUBLIC`] gets one, or a 404. Writes need the `user` role there or better.
+//!
 //! The exception is a plugin route declared with `"auth": "plugin"` (a compatibility layer
 //! whose clients sign in their own way): requests pass without a caller, and the plugin
 //! checks credentials itself, with apitorrent API tokens. When the request did
@@ -69,6 +72,8 @@ pub(crate) struct RequestCtx {
     pub principal: Option<Principal>,
     /// The request is for a plugin route the plugin authenticates itself.
     pub plugin_auth: bool,
+    /// The space the request is in, when it has one (see `space`).
+    pub space: Option<crate::space::SpaceCtx>,
 }
 
 impl RequestCtx {
@@ -259,6 +264,7 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
         host,
         principal: None,
         plugin_auth,
+        space: None,
     };
     let mut stale_cookie = false;
     let mut via_cookie = false;
@@ -351,6 +357,64 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
         )
         .into_response();
     }
+    // The space, for everything but signing in and the public endpoints.
+    let prefix = req
+        .extensions()
+        .get::<crate::space::SpacePrefix>()
+        .map(|p| p.0.clone());
+    let under_auth = path.starts_with("/auth/");
+    #[allow(clippy::result_large_err)]
+    let decision = decision.and_then(|()| {
+        if public && !under_auth {
+            return Ok(());
+        }
+        match ctx.principal.clone() {
+            // Under `/auth/` a space is optional (it binds new API tokens).
+            Some(p) if under_auth => {
+                ctx.space = crate::space::resolve(&s, &p, prefix.as_deref(), &ctx.host).ok();
+                Ok(())
+            }
+            Some(p) => {
+                let here = crate::space::resolve(&s, &p, prefix.as_deref(), &ctx.host)?;
+                let reads = matches!(*req.method(), Method::GET | Method::HEAD | Method::CONNECT);
+                // A plugin-authenticated route decides for itself (it is told `mayWrite`).
+                if !reads && !plugin_auth && here.role < apitorrent_types::spaces::SpaceRole::User {
+                    return Err(error(
+                        StatusCode::FORBIDDEN,
+                        "read_only",
+                        "your role in this space may only read",
+                    )
+                    .into_response());
+                }
+                ctx.space = Some(here);
+                Ok(())
+            }
+            // A route the plugin authenticates: the space comes from the URL or the host,
+            // and the plugin checks the credential (and its space) itself.
+            None if plugin_auth && !under_auth => {
+                let slug = prefix
+                    .clone()
+                    .or_else(|| s.space_hosts.slug_for_host(&ctx.host).map(str::to_owned));
+                let space = match slug {
+                    Some(slug) => s.core.space_by_slug(&slug),
+                    None => s.core.space(apitorrent_types::spaces::DEFAULT_SPACE).ok(),
+                };
+                let Some(space) = space else {
+                    return Err(
+                        error(StatusCode::NOT_FOUND, "no_such_space", "no such space")
+                            .into_response(),
+                    );
+                };
+                ctx.space = Some(crate::space::SpaceCtx {
+                    id: space.id,
+                    slug: space.slug,
+                    role: apitorrent_types::spaces::SpaceRole::Viewer,
+                });
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    });
     let clear = stale_cookie.then(|| ctx.clear_cookie());
     let mut resp = match decision {
         Ok(()) => {

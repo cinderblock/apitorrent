@@ -1,10 +1,11 @@
 {
   "id": "qbittorrent-api",
   "name": "qBittorrent API",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Speaks qBittorrent's Web API (v2), so Sonarr, Radarr, Prowlarr, autobrr, cross-seed and other qBittorrent clients work with apitorrent unchanged. Point them at /api/v1/plugins/qbittorrent-api as the URL base (or at a --plugin-listen port), sign in with any username and an apitorrent API token as the password. Categories are labels.",
   "author": "apitorrent",
   "apiVersion": 1,
+  "spaceAware": true,
   "capabilities": {
     "networkFromSettings": ["downloadHosts[]"],
     "api": ["torrents:read", "torrents:add", "torrents:control", "torrents:remove", "tokens:verify"],
