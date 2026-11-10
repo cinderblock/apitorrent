@@ -15,6 +15,11 @@ updates:
     schedule:
       interval: weekly
     groups:
+      # The RustCrypto hashes share the `digest` traits, so a major release of one only builds
+      # alongside the others. One PR for all of them, majors included. Listed first: a
+      # dependency joins the first group that matches it.
+      rustcrypto:
+        patterns: [sha1, sha2, hmac, digest]
       cargo:
         update-types: [minor, patch]
 
