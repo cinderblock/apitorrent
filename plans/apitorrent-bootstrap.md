@@ -120,8 +120,9 @@ engine core stays in the main thread, because its pieces interlock.
     Plan: `plans/spaces.md`
   - The Deluge import of the user's two instances into two spaces: run by hand on the
     seedbox when the user is ready, with text pasted back and forth.
-  - Signed updates for the desktop app and the daemon: being built.
-    Plan: `plans/update-signing.md`
+  - Signed updates for the desktop app and the daemon: built and merged (`c50a793`…
+    `a3199c6`). Still to do: make the key and store it in GitHub secrets once the remote
+    exists, then a real release run end to end. Plan: `plans/update-signing.md`
   - A GitHub remote and push so CI and releases run.
   - Someone else with Sonarr or Radarr to try `qbittorrent-api` against (you don't run
     them).
@@ -638,8 +639,10 @@ them, restarts, and reports. On this machine (release build, NVMe):
 - [ ] Code signing for the desktop installers (Windows Authenticode, Apple Developer ID):
   needs certificates as repository secrets. **Not for now** (user, 2026-11-09): sign
   updates with our own key instead
-- [ ] Self-signed update signing: a key of our own signs update manifests, and the app
-  (and daemon) check it before installing
+- [x] Self-signed update signing: one minisign key signs the release files and both
+  manifests. The app and the daemon check it before installing, and refuse downgrades.
+  Merged `c50a793`…`a3199c6`. The key isn't made yet: run `bun scripts/update-signing-key.ts`
+  once the remote exists. See `plans/update-signing.md`
 - [x] First desktop GUI run (2026-11-09, user OK'd the foreground): Remote profile against
   a loopback daemon with `--tls-self-signed`: OS trust refused, pairing by code, save,
   connect, live sync, add by dialog and by a `magnet:` link to a second launch (forwarded
