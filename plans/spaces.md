@@ -272,15 +272,12 @@ the work started (see Findings).
 
 ## Not done (follow-ups)
 
-1. **Users other than the first admin can't be created yet** (invitations were already
-   "still to come"). Members can be assigned only from existing users, so "different
-   people in different spaces" waits for that feature; space-bound tokens (one per app)
-   work today.
+1. ~~**Users other than the first admin can't be created yet**~~ Done 2026-11-10:
+   invitations, recovery links and the Users page (`plans/invitations.md`).
 2. **A space's tracker list can't be edited**: each entry announces to the trackers of
    the `.torrent` (or magnet) it was added with in that space.
-3. **The Plugins page is for server admins only in the UI.** The API already lets a
-   space's admins read and change a space-aware plugin's settings and logs for their
-   space; the page doesn't offer it to them.
+3. ~~**The Plugins page is for server admins only in the UI.**~~ Done 2026-11-10: space
+   admins get it for their space's per-space plugins (`plans/invitations.md`).
 4. **`--plugin-listen` serves `default`** (or a `--space-host` mapping). A client of
    another space uses the `/s/<slug>/` URL base. `--plugin-listen <id>@<slug>=<addr>`
    would be a small addition.
@@ -335,7 +332,7 @@ Answered 2026-11-10:
   daemon, server admins only). A space admin sees and manages their space's space-aware
   plugins; shared plugins stay with server admins.
 
-## Invitations (next, 2026-11-10)
+## Invitations (built 2026-11-10; see `plans/invitations.md`)
 
 - **Who invites:** a server admin can invite into any space. A space admin can invite
   only into their own space.

@@ -393,10 +393,44 @@ from the torrent database.
   first user is the admin. An `admin` is a **server admin**: every space, its members,
   creating spaces, instance settings, bans and plugins. Everything else is decided by a
   role held **per space** (`admin`, `user`, `viewer`; see "Spaces"); viewers may only
-  read. Creating further users (invitations) is still to come.
-- **Audit log**: setup, sign-ins and failures, lockouts, re-authentication, and passkey,
-  password, token and session changes go to `auth_events` with time, user and client
-  address, kept for a year.
+  read. An instance role of `viewer` caps a user at reading everywhere.
+- **Invitations**: everyone after the first admin joins with a one-time link,
+  `<origin>/enroll#token=<secret>`. The origin is the first `--public-url` when there is
+  one (passkeys work there), else the one the inviter is using. The secret (256 bits) sits
+  in the fragment, as the setup token does, so it never reaches a server or access log;
+  the enrollment page reads it, removes it from the address bar, and sends it in request
+  bodies only. `auth.db` keeps only its SHA-256 (`enrollments`, with the spaces and roles
+  it grants in `enrollment_spaces`).
+  - An invitation carries an instance role and a role in each of its spaces. It expires
+    after 7 days by default (1 to 30), can be revoked, and works once.
+  - **A server admin** invites into any spaces with any instance role. **A space's admin**
+    invites only into spaces they administer, and only with the `user` instance role.
+    Creating one needs a browser session with recent authentication, as creating an API
+    token does; tokens can't invite.
+  - The person opening it picks a username and registers a passkey (discoverable,
+    user-verified, as at setup), or a password when the daemon runs with
+    `--passwords fallback` (a password that can't sign in alone is no way to enroll). The
+    page reuses the setup page's hints: an insecure-transport warning, and where passkeys
+    work when they don't on this host (with the link carried over).
+  - Opening a link is rate-limited and locked out per address like setup and sign-in; a
+    wrong, used, revoked or expired secret counts as a failure and is audited
+    (`enroll_failed`). The link is checked again inside the transaction that creates the
+    user, so two tabs can't both use it.
+- **Managing users** (server admins, recent authentication): list users with their spaces,
+  credentials and last activity; change instance roles; disable, enable or delete a user.
+  Nobody can do this to themselves, and the last enabled server admin can't be demoted,
+  disabled or deleted. **Disabling** deletes the user's sessions at once and suspends their
+  API tokens (they work again once the user is enabled); sign-in is refused meanwhile.
+  **Deleting** removes the user with their passkeys, sessions, tokens and memberships.
+  Either wakes open sync sockets, which re-check their credential and close.
+- **Recovery links** are built like invitations, for one existing user (a new one replaces
+  any still waiting). Whoever opens it registers a new passkey (or password); the user's
+  old passkeys and password are removed and all their sessions end. API tokens stay. A
+  disabled user's link works only once they are enabled again.
+- **Audit log**: setup, sign-ins and failures, lockouts, re-authentication, passkey,
+  password, token and session changes, invitations and recovery links (issued, revoked,
+  used, failed), and user changes go to `auth_events` with time, user and client address,
+  kept for a year.
 
 ## Plugins
 
@@ -1015,9 +1049,18 @@ works as before, and the UI hides the switcher.
 - Writes need the `user` role in the space; channels, subscriptions and imports need its
   `admin`. Instance settings, bans, plugin management and spaces themselves are server
   admins'.
+- A space's **admins** see its members and invitations, invite people into it (see
+  "Authentication"), and change or remove its existing members; adding an existing user
+  to a space stays with server admins, who can see every account. Routes that name what
+  they act on (`/spaces/…`, `/invitations…`, `/users…`) check the caller's rights there,
+  not in the request's own space, so this works from a page in any space.
 - `GET /space` (the request's space, the caller's role and the spaces they may switch to),
-  `GET/POST /spaces`, `GET/PUT/DELETE /spaces/{slug}`, `/spaces/{slug}/members[/{user}]`
-  and `GET /users` (server admins). `GET /torrents?space=all` and `/sync?space=all` show
+  `GET/POST /spaces` and `GET/PUT/DELETE /spaces/{slug}` (server admins),
+  `/spaces/{slug}/members[/{user}]` and `GET /spaces/{slug}/invitations` (server admins and
+  the space's admins), `POST /invitations`, `GET /invitations` (server admins),
+  `DELETE /invitations/{id}`, and `GET /users`, `PATCH|DELETE /users/{id}` and
+  `POST /users/{id}/recovery` (server admins). The public `POST /auth/enroll/info`,
+  `…/start`, `…/finish` and `…/password` open a link. `GET /torrents?space=all` and `/sync?space=all` show
   every space to a server admin; summaries carry their `space`.
 
 ### One torrent in two spaces
@@ -1063,7 +1106,10 @@ drawing from its space's and group's buckets), pause state and transfer counts.
   space, and its candidates its space's. Its `tokens:verify` takes only tokens of that
   space, and `mayWrite` follows the owner's role there. Plugin routes go to the instance
   of the request's space; that space's admins may change its settings. Other plugins are
-  global: one instance on `default`, managed by server admins. `rss` and `qbittorrent-api`
+  global (*shared*): one instance on `default`, managed by server admins. A space's admins
+  get the Plugins page for their space: they see every plugin, labelled *per space* or
+  *shared*, and read and change the settings and logs of the per-space ones' instances in
+  their space; installing, approving, enabling and removing stay with server admins. `rss` and `qbittorrent-api`
   are space-aware, so a Sonarr with a token from space `tv` and the URL base
   `/s/tv/api/v1/plugins/qbittorrent-api` works in `tv`.
 

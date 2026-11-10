@@ -215,7 +215,9 @@ always did until a server admin adds another (Settings, Spaces…).
   `/s/tv/api/v1/…` for scripts. A header switcher appears once you have more than one.
 - **Members** hold a role per space: viewer, user or admin. Server admins (the
   instance's admins) use every space. Someone who isn't a member gets 404, as if the
-  space didn't exist.
+  space didn't exist. A space's admins invite people into it and manage its members
+  (Settings, Spaces…, Members and invitations), and manage its per-space plugins'
+  settings on the Plugins page.
 - **API tokens** work in the space they were made in (switch to it on the Account page
   first), so a Sonarr or Radarr signed in with one lands in its space.
 - **The same torrent in two spaces** is one swarm: downloaded once, with each space's
@@ -270,6 +272,24 @@ once used.
   the passkey.
 - **API tokens** for scripts are made on the Account page, read-only or full, and sent
   as `Authorization: Bearer <token>`.
+
+### Inviting people
+
+Everyone after the first admin joins with an **invitation**: a link that works once and
+expires (after 7 days unless you choose otherwise). It carries the spaces and roles the
+new user gets; they open it, pick a username and create a passkey (or a password, with
+`--passwords fallback`). The secret is in the link's `#` part, so it never reaches a
+server log. Send it privately.
+
+- **Server admins** invite from Settings, Users…, into any spaces and with any server
+  role; a **space's admins** invite into their own space from Settings, Spaces….
+- The **Users** page (server admins) lists everyone; changes server roles; disables a
+  user (signed out everywhere at once, API tokens paused until enabled again) or deletes
+  one; and issues a **recovery link** for someone who lost their passkey. Opening it
+  replaces their passkeys and password with a new one and signs out their devices. You
+  can't disable, demote or delete yourself, and the last server admin stays.
+- Waiting invitations can be revoked; used, revoked and expired ones are listed for a
+  month.
 - `--insecure-no-auth-loopback` turns sign-in off for requests from this machine. It is
   for development only, and refused with a non-loopback `--api`.
 
