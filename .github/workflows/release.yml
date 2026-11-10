@@ -4,6 +4,14 @@
 #
 # The desktop installers are not code-signed yet: Windows SmartScreen and macOS Gatekeeper
 # will warn. Signing needs certificates added as secrets; see plans/apitorrent-bootstrap.md.
+#
+# Update signing (plans/update-signing.md): with the TAURI_SIGNING_PRIVATE_KEY and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets, every file gets a minisign signature
+# (`<file>.sig`), the desktop build makes updater bundles, and the last job writes and signs
+# the update manifests: `latest.json` (the desktop app's) and `apitorrentd-manifest.json`
+# (the daemon's: each target's bare executable with its SHA-256). The apps install only
+# what verifies against release/update-signing.pub, and only from a published release.
+# Without the secrets (a fork), all of that is skipped and the build still succeeds.
 
 name: Release
 
@@ -18,6 +26,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  TAURI_CLI: "@tauri-apps/cli@2.10.1"
 
 jobs:
   web:
@@ -94,6 +103,10 @@ jobs:
           mkdir -p "dist/$name"
           exe=apitorrentd; [ "${{ runner.os }}" = Windows ] && exe=apitorrentd.exe
           cp "target/${{ matrix.target }}/release/$exe" LICENSE README.md "dist/$name/"
+          # The bare executable too: what `apitorrentd update` downloads (see the manifest).
+          bare="$name"; [ "${{ runner.os }}" = Windows ] && bare="$name.exe"
+          cp "target/${{ matrix.target }}/release/$exe" "dist/$bare"
+          echo "bare=dist/$bare" >> "$GITHUB_OUTPUT"
           cd dist
           if [ "${{ matrix.archive }}" = zip ]; then
             7z a "$name.zip" "$name" > /dev/null
@@ -104,11 +117,15 @@ jobs:
           fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: ${{ steps.package.outputs.file }}
+          subject-path: |
+            ${{ steps.package.outputs.file }}
+            ${{ steps.package.outputs.bare }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: daemon-${{ matrix.target }}
-          path: ${{ steps.package.outputs.file }}
+          path: |
+            ${{ steps.package.outputs.file }}
+            ${{ steps.package.outputs.bare }}
 
   desktop:
     name: Desktop app (${{ matrix.os }})
@@ -122,6 +139,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # Secrets can't be tested in `if:`; this can.
+      HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -140,9 +160,30 @@ jobs:
       - run: bun install --frozen-lockfile
         working-directory: web
       # The Tauri CLI builds the web UI itself (beforeBuildCommand) and bundles installers.
+      # With the signing key it also makes the updater bundles and their signatures.
       - name: Bundle
         working-directory: apps/desktop/src-tauri
-        run: bunx @tauri-apps/cli@2.10.1 build --ci
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ "$HAS_SIGNING_KEY" = true ]; then
+            bunx "$TAURI_CLI" build --ci --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            echo "::notice::No TAURI_SIGNING_PRIVATE_KEY secret: building without updater bundles"
+            bunx "$TAURI_CLI" build --ci
+          fi
+      # The macOS updater bundle is plain `apitorrent.app.tar.gz`: name its version and arch.
+      - name: Name the macOS updater bundle
+        if: runner.os == 'macOS' && env.HAS_SIGNING_KEY == 'true'
+        shell: bash
+        run: |
+          cd target/release/bundle/macos
+          version="${GITHUB_REF_NAME#v}"
+          arch="$(uname -m)"; [ "$arch" = arm64 ] && arch=aarch64
+          mv apitorrent.app.tar.gz "apitorrent_${version}_${arch}.app.tar.gz"
+          mv apitorrent.app.tar.gz.sig "apitorrent_${version}_${arch}.app.tar.gz.sig"
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
@@ -152,6 +193,7 @@ jobs:
             target/release/bundle/**/*.msi
             target/release/bundle/**/*.exe
             target/release/bundle/**/*.dmg
+            target/release/bundle/**/*.app.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-${{ matrix.os }}
@@ -162,6 +204,8 @@ jobs:
             target/release/bundle/**/*.msi
             target/release/bundle/**/*.exe
             target/release/bundle/**/*.dmg
+            target/release/bundle/**/*.app.tar.gz
+            target/release/bundle/**/*.sig
 
   draft:
     name: Draft release
@@ -169,15 +213,54 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
     steps:
+      # For the manifest script and the workspace version.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
           pattern: "{daemon,desktop}-*"
           merge-multiple: true
-      # A draft: nothing is public until a person publishes it.
+      - name: Collect the files
+        shell: bash
+        run: |
+          mkdir files
+          find artifacts -type f -exec mv -n -t files {} +
+          if [ -n "$(find artifacts -type f)" ]; then
+            echo "::error::two files share a name:"
+            find artifacts -type f
+            exit 1
+          fi
+          ls -l files
+      # Every file gets a signature (the updater bundles have theirs already). Then the
+      # manifests are written from the files and signed themselves.
+      - name: Sign, and write the update manifests
+        if: env.HAS_SIGNING_KEY == 'true' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          sign() { bunx "$TAURI_CLI" signer sign "$1" > /dev/null; test -s "$1.sig"; }
+          for f in files/*; do
+            case "$f" in *.sig) continue ;; esac
+            [ -e "$f.sig" ] || sign "$f"
+          done
+          bun scripts/release-manifests.ts --dir files --tag "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --server "$GITHUB_SERVER_URL"
+          sign files/apitorrentd-manifest.json
+          sign files/latest.json
+      - name: No signing key
+        if: env.HAS_SIGNING_KEY != 'true'
+        run: echo "::notice::No TAURI_SIGNING_PRIVATE_KEY secret, so the release is unsigned and has no update manifests. Installed copies won't update from it."
+      # A draft: nothing is public until a person publishes it, and the apps only look at
+      # published releases.
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           draft: true
           generate_release_notes: true
-          files: artifacts/**/*
+          files: files/*
