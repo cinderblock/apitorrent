@@ -342,6 +342,8 @@ pub struct TorrentHandle {
     pub(crate) info_hashes: InfoHashes,
     pub(crate) tx: mpsc::Sender<ActorMsg>,
     pub(crate) stats: watch::Receiver<TorrentStats>,
+    /// The pieces the starting check (or the validated resume data) found.
+    pub(crate) checked: watch::Receiver<Option<Bitfield>>,
     pub(crate) storage: Arc<dyn Storage>,
 }
 
@@ -352,6 +354,12 @@ impl TorrentHandle {
 
     pub fn stats(&self) -> TorrentStats {
         self.stats.borrow().clone()
+    }
+
+    /// The pieces the torrent's starting check found (or its validated resume data), once
+    /// the check is done: what was on disk before anything was downloaded.
+    pub fn checked(&self) -> Option<Bitfield> {
+        self.checked.borrow().clone()
     }
 
     /// A receiver that changes whenever the stats are refreshed.
@@ -695,6 +703,7 @@ pub(crate) struct TorrentActor {
     seed_addrs: HashSet<SocketAddr>,
     known: HashSet<SocketAddr>,
     stats: watch::Sender<TorrentStats>,
+    checked: watch::Sender<Option<Bitfield>>,
     /// Oldest first. The torrent runs while any of them does.
     entries: Vec<Entry>,
     /// The wire info-hashes the torrent is announced under.
@@ -785,6 +794,7 @@ impl TorrentActor {
             entries: Vec::new(),
         };
         let (stats_tx, stats_rx) = watch::channel(initial);
+        let (checked_tx, checked_rx) = watch::channel(None);
         let mut keys = Vec::new();
         if let Some(v1) = info_hashes.get_v1() {
             keys.push(v1);
@@ -821,6 +831,7 @@ impl TorrentActor {
             seed_addrs: HashSet::new(),
             known: HashSet::new(),
             stats: stats_tx,
+            checked: checked_tx,
             entries,
             keys: keys.clone(),
             error: None,
@@ -859,6 +870,7 @@ impl TorrentActor {
                 info_hashes,
                 tx,
                 stats: stats_rx,
+                checked: checked_rx,
                 storage,
             },
             keys,
@@ -877,6 +889,7 @@ impl TorrentActor {
     }
 
     fn start(&mut self, have: Bitfield) {
+        self.checked.send_replace(Some(have.clone()));
         let seed = rand::random();
         let mut picker = Picker::new(self.layout.clone(), have, seed);
         self.plan_layer_fetches();

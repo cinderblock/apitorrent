@@ -36,17 +36,3 @@ suite. Most likely the uTP connect timed out under CPU load and the link fell ba
 Why it matters: a flaky test hides real failures in CI. To start: log the link the
 leecher ended up with when the assertion fails, and consider waiting for the uTP attempt
 (or retrying the link check) instead of taking the first connection.
-
-## Core test `a_repack_downloads_only_what_changed` can see a repack supersede wrongly
-
-Seen once on 2026-11-09 at about 7:40 PM PST (03:40Z), in a full `cargo test -p
-apitorrent-core` run under load: `crates/apitorrent-core/tests/lifecycle.rs:818`, the old
-single was marked `superseded_by` the repack (`left: Some("31971f…")`, `right: None`). It
-passed alone twice and in two more full runs.
-
-Likely cause: `Core::settle_supersedes` decides "once the check ends", but it reads the
-bitfield at the next one-second refresh after the state leaves `Checking`. If the changed
-piece downloads before that refresh, `library::files_verified` sees every matched piece
-and the repack supersedes a file it doesn't actually share. Why it matters: a wrong
-supersession can retire a torrent whose data differs. To start: capture the bitfield the
-check produced (the engine's `Checked` result) instead of sampling it later.

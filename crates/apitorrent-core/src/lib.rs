@@ -996,7 +996,9 @@ impl Core {
                 .collect()
         };
         for (id, handle, torrent) in ready {
-            let Some(have) = handle.have().await else {
+            // What the check found, not what is there now: pieces downloaded since would be
+            // a different version's, and must not count as matching.
+            let Some(have) = handle.checked() else {
                 continue;
             };
             let Some(cands) = self
