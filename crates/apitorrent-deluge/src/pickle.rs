@@ -7,12 +7,21 @@
 //!
 //! Protocols 0–5 are read, but only the opcodes Python emits for plain data, classes and
 //! their instances. Anything else is an error, as is any input that would need more than
-//! [`MAX_ITEMS`] values: the input is not trusted.
+//! [`MAX_ITEMS`] values, [`MAX_COPIED_BYTES`] bytes of copied strings, or nesting deeper
+//! than [`MAX_DEPTH`]: the input is not trusted. `DUP` and the memo copy values, so a short
+//! pickle could otherwise double its size with every pair of opcodes.
 
 use std::collections::HashMap;
 
 /// The most values a pickle may build, to bound memory on hostile input.
 pub const MAX_ITEMS: usize = 10_000_000;
+
+/// The most string and byte data that `DUP` and the memo may copy, in bytes.
+pub const MAX_COPIED_BYTES: usize = 256 * 1024 * 1024;
+
+/// The deepest nesting of containers a pickle may build. Deluge's state is a few levels
+/// deep; the limit keeps dropping or printing a value from exhausting the stack.
+pub const MAX_DEPTH: u32 = 512;
 
 /// A value from a pickle.
 #[derive(Debug, Clone, PartialEq)]
@@ -107,6 +116,8 @@ pub enum PickleError {
     Malformed(&'static str),
     #[error("pickle is too large")]
     TooLarge,
+    #[error("pickle nests too deeply")]
+    TooDeep,
 }
 
 struct Reader<'a> {
@@ -162,21 +173,86 @@ impl<'a> Reader<'a> {
 
 enum Slot {
     Mark,
-    Value(Value),
+    /// A value and how deeply it nests (0 for a scalar or an empty container).
+    Value(Value, u32),
+}
+
+impl Slot {
+    fn leaf(v: Value) -> Self {
+        Self::Value(v, 0)
+    }
+}
+
+/// The values and copied bytes built so far, against the limits.
+struct Budget {
+    items: usize,
+    bytes: usize,
+    max_items: usize,
+}
+
+impl Budget {
+    fn charge(&mut self, items: usize, bytes: usize) -> Result<(), PickleError> {
+        self.items = self.items.saturating_add(items);
+        self.bytes = self.bytes.saturating_add(bytes);
+        if self.items > self.max_items || self.bytes > MAX_COPIED_BYTES {
+            return Err(PickleError::TooLarge);
+        }
+        Ok(())
+    }
+
+    /// Charge for a copy of `v`, then make it. Everything in `v` was charged when it was
+    /// built, so the walk costs no more than the budget allows.
+    fn copy(&mut self, v: &Value) -> Result<Value, PickleError> {
+        let (mut items, mut bytes) = (0usize, 0usize);
+        let mut todo = vec![v];
+        while let Some(v) = todo.pop() {
+            items += 1;
+            match v {
+                Value::Str(s) => bytes += s.len(),
+                Value::Bytes(b) | Value::BigInt(b) => bytes += b.len(),
+                Value::Class { module, name } => bytes += module.len() + name.len(),
+                Value::List(l) | Value::Tuple(l) => todo.extend(l),
+                Value::Dict(d) => todo.extend(d.iter().flat_map(|(k, v)| [k, v])),
+                Value::Object { class, args, state } => {
+                    todo.push(class);
+                    todo.extend(args);
+                    todo.extend(state.as_deref());
+                }
+                Value::None | Value::Bool(_) | Value::Int(_) | Value::Float(_) => {}
+            }
+        }
+        self.charge(items, bytes)?;
+        Ok(v.clone())
+    }
+}
+
+/// The depth of a container holding something `depth` deep.
+fn nest(depth: u32) -> Result<u32, PickleError> {
+    let d = depth + 1;
+    if d > MAX_DEPTH {
+        return Err(PickleError::TooDeep);
+    }
+    Ok(d)
 }
 
 /// Read a pickle.
 pub fn load(data: &[u8]) -> Result<Value, PickleError> {
+    load_limited(data, MAX_ITEMS)
+}
+
+/// [`load`] with a smaller value limit, so tests of the limit run quickly.
+fn load_limited(data: &[u8], max_items: usize) -> Result<Value, PickleError> {
     let mut r = Reader { data, pos: 0 };
     let mut stack: Vec<Slot> = Vec::new();
-    let mut memo: HashMap<u64, Value> = HashMap::new();
-    let mut built = 0usize;
+    let mut memo: HashMap<u64, (Value, u32)> = HashMap::new();
+    let mut budget = Budget {
+        items: 0,
+        bytes: 0,
+        max_items,
+    };
 
     loop {
-        built += 1;
-        if built > MAX_ITEMS {
-            return Err(PickleError::TooLarge);
-        }
+        budget.charge(1, 0)?;
         let op = r.u8()?;
         match op {
             0x80 => {
@@ -185,14 +261,14 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
             0x95 => {
                 r.u64()?; // FRAME: a size hint only
             }
-            b'.' => return pop(&mut stack), // STOP
+            b'.' => return pop(&mut stack).map(|(v, _)| v), // STOP
             b'(' => stack.push(Slot::Mark),
-            b'N' => stack.push(Slot::Value(Value::None)),
-            0x88 => stack.push(Slot::Value(Value::Bool(true))),
-            0x89 => stack.push(Slot::Value(Value::Bool(false))),
-            b'J' => stack.push(Slot::Value(Value::Int(i64::from(r.u32()?.cast_signed())))),
-            b'K' => stack.push(Slot::Value(Value::Int(i64::from(r.u8()?)))),
-            b'M' => stack.push(Slot::Value(Value::Int(i64::from(r.u16()?)))),
+            b'N' => stack.push(Slot::leaf(Value::None)),
+            0x88 => stack.push(Slot::leaf(Value::Bool(true))),
+            0x89 => stack.push(Slot::leaf(Value::Bool(false))),
+            b'J' => stack.push(Slot::leaf(Value::Int(i64::from(r.u32()?.cast_signed())))),
+            b'K' => stack.push(Slot::leaf(Value::Int(i64::from(r.u8()?)))),
+            b'M' => stack.push(Slot::leaf(Value::Int(i64::from(r.u16()?)))),
             0x8a | 0x8b => {
                 // LONG1, LONG4: little-endian two's complement
                 let n = if op == 0x8a {
@@ -212,7 +288,7 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                 } else {
                     Value::BigInt(bytes.to_vec())
                 };
-                stack.push(Slot::Value(v));
+                stack.push(Slot::leaf(v));
             }
             b'I' => {
                 // INT (protocol 0): "01"/"00" are booleans
@@ -226,21 +302,21 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                             .map_err(|_| PickleError::Malformed("INT"))?,
                     ),
                 };
-                stack.push(Slot::Value(v));
+                stack.push(Slot::leaf(v));
             }
             b'L' => {
                 let line = r.line()?.trim_end_matches('L');
                 let v = line
                     .parse::<i64>()
                     .map_or_else(|_| Value::BigInt(line.as_bytes().to_vec()), Value::Int);
-                stack.push(Slot::Value(v));
+                stack.push(Slot::leaf(v));
             }
-            b'G' => stack.push(Slot::Value(Value::Float(f64::from_be_bytes(
+            b'G' => stack.push(Slot::leaf(Value::Float(f64::from_be_bytes(
                 r.take(8)?.try_into().expect("8 bytes"),
             )))),
             b'F' => {
                 let line = r.line()?;
-                stack.push(Slot::Value(Value::Float(
+                stack.push(Slot::leaf(Value::Float(
                     line.trim()
                         .parse()
                         .map_err(|_| PickleError::Malformed("FLOAT"))?,
@@ -254,11 +330,11 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                     _ => r.u64()?,
                 };
                 let s = String::from_utf8_lossy(r.sized(n)?).into_owned();
-                stack.push(Slot::Value(Value::Str(s)));
+                stack.push(Slot::leaf(Value::Str(s)));
             }
             b'V' => {
                 let s = r.line()?.to_owned();
-                stack.push(Slot::Value(Value::Str(s)));
+                stack.push(Slot::leaf(Value::Str(s)));
             }
             b'U' | b'T' => {
                 // SHORT_BINSTRING, BINSTRING (Python 2 str): bytes, read as Latin-1 text
@@ -268,12 +344,12 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                     u64::from(r.u32()?)
                 };
                 let s: String = r.sized(n)?.iter().map(|&b| char::from(b)).collect();
-                stack.push(Slot::Value(Value::Str(s)));
+                stack.push(Slot::leaf(Value::Str(s)));
             }
             b'S' => {
                 let line = r.line()?;
                 let s = line.trim().trim_matches(['\'', '"']).to_owned();
-                stack.push(Slot::Value(Value::Str(s)));
+                stack.push(Slot::leaf(Value::Str(s)));
             }
             b'C' | b'B' | 0x8e | 0x96 => {
                 // SHORT_BINBYTES, BINBYTES, BINBYTES8, BYTEARRAY8
@@ -282,22 +358,22 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                     b'B' => u64::from(r.u32()?),
                     _ => r.u64()?,
                 };
-                stack.push(Slot::Value(Value::Bytes(r.sized(n)?.to_vec())));
+                stack.push(Slot::leaf(Value::Bytes(r.sized(n)?.to_vec())));
             }
-            b'}' => stack.push(Slot::Value(Value::Dict(Vec::new()))),
-            b']' => stack.push(Slot::Value(Value::List(Vec::new()))),
-            b')' => stack.push(Slot::Value(Value::Tuple(Vec::new()))),
+            b'}' => stack.push(Slot::leaf(Value::Dict(Vec::new()))),
+            b']' => stack.push(Slot::leaf(Value::List(Vec::new()))),
+            b')' => stack.push(Slot::leaf(Value::Tuple(Vec::new()))),
             b'd' => {
-                let items = pop_mark(&mut stack)?;
-                stack.push(Slot::Value(Value::Dict(pairs(items)?)));
+                let (items, d) = pop_mark(&mut stack)?;
+                stack.push(Slot::Value(Value::Dict(pairs(items)?), nest(d)?));
             }
             b'l' => {
-                let items = pop_mark(&mut stack)?;
-                stack.push(Slot::Value(Value::List(items)));
+                let (items, d) = pop_mark(&mut stack)?;
+                stack.push(Slot::Value(Value::List(items), nest(d)?));
             }
             b't' => {
-                let items = pop_mark(&mut stack)?;
-                stack.push(Slot::Value(Value::Tuple(items)));
+                let (items, d) = pop_mark(&mut stack)?;
+                stack.push(Slot::Value(Value::Tuple(items), nest(d)?));
             }
             0x85..=0x87 => {
                 let n = usize::from(op - 0x84);
@@ -305,54 +381,72 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                     return Err(PickleError::Malformed("stack underflow"));
                 }
                 let mut items = Vec::with_capacity(n);
+                let mut d = 0;
                 for _ in 0..n {
-                    items.push(pop(&mut stack)?);
+                    let (v, vd) = pop(&mut stack)?;
+                    items.push(v);
+                    d = d.max(vd);
                 }
                 items.reverse();
-                stack.push(Slot::Value(Value::Tuple(items)));
+                stack.push(Slot::Value(Value::Tuple(items), nest(d)?));
             }
             b's' => {
-                let v = pop(&mut stack)?;
-                let k = pop(&mut stack)?;
+                let (v, vd) = pop(&mut stack)?;
+                let (k, kd) = pop(&mut stack)?;
                 match top(&mut stack)? {
-                    Value::Dict(d) => d.push((k, v)),
+                    (Value::Dict(d), depth) => {
+                        *depth = (*depth).max(nest(vd.max(kd))?);
+                        d.push((k, v));
+                    }
                     _ => return Err(PickleError::Malformed("SETITEM on a non-dict")),
                 }
             }
             b'u' => {
-                let items = pop_mark(&mut stack)?;
+                let (items, nd) = pop_mark(&mut stack)?;
                 let new = pairs(items)?;
                 match top(&mut stack)? {
-                    Value::Dict(d) => d.extend(new),
+                    (Value::Dict(d), depth) => {
+                        *depth = (*depth).max(nest(nd)?);
+                        d.extend(new);
+                    }
                     _ => return Err(PickleError::Malformed("SETITEMS on a non-dict")),
                 }
             }
             b'a' => {
-                let v = pop(&mut stack)?;
+                let (v, vd) = pop(&mut stack)?;
                 match top(&mut stack)? {
-                    Value::List(l) => l.push(v),
+                    (Value::List(l), depth) => {
+                        *depth = (*depth).max(nest(vd)?);
+                        l.push(v);
+                    }
                     _ => return Err(PickleError::Malformed("APPEND on a non-list")),
                 }
             }
             b'e' => {
-                let items = pop_mark(&mut stack)?;
+                let (items, nd) = pop_mark(&mut stack)?;
                 match top(&mut stack)? {
-                    Value::List(l) => l.extend(items),
+                    (Value::List(l), depth) => {
+                        *depth = (*depth).max(nest(nd)?);
+                        l.extend(items);
+                    }
                     _ => return Err(PickleError::Malformed("APPENDS on a non-list")),
                 }
             }
-            0x8f => stack.push(Slot::Value(Value::List(Vec::new()))), // EMPTY_SET
+            0x8f => stack.push(Slot::leaf(Value::List(Vec::new()))), // EMPTY_SET
             0x90 => {
                 // ADDITEMS
-                let items = pop_mark(&mut stack)?;
+                let (items, nd) = pop_mark(&mut stack)?;
                 match top(&mut stack)? {
-                    Value::List(l) => l.extend(items),
+                    (Value::List(l), depth) => {
+                        *depth = (*depth).max(nest(nd)?);
+                        l.extend(items);
+                    }
                     _ => return Err(PickleError::Malformed("ADDITEMS on a non-set")),
                 }
             }
             0x91 => {
-                let items = pop_mark(&mut stack)?; // FROZENSET
-                stack.push(Slot::Value(Value::List(items)));
+                let (items, d) = pop_mark(&mut stack)?; // FROZENSET
+                stack.push(Slot::Value(Value::List(items), nest(d)?));
             }
             b'q' | b'r' | 0x94 | b'p' => {
                 let id = match op {
@@ -365,8 +459,10 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                         .map_err(|_| PickleError::Malformed("PUT"))?,
                     _ => memo.len() as u64, // MEMOIZE
                 };
-                let v = top(&mut stack)?.clone();
-                memo.insert(id, v);
+                let (v, d) = top(&mut stack)?;
+                let d = *d;
+                let v = budget.copy(v)?;
+                memo.insert(id, (v, d));
             }
             b'h' | b'j' | b'g' => {
                 let id = match op {
@@ -378,61 +474,70 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                         .parse()
                         .map_err(|_| PickleError::Malformed("GET"))?,
                 };
-                let v = memo
-                    .get(&id)
-                    .cloned()
-                    .ok_or(PickleError::Malformed("memo miss"))?;
-                stack.push(Slot::Value(v));
+                let (v, d) = memo.get(&id).ok_or(PickleError::Malformed("memo miss"))?;
+                stack.push(Slot::Value(budget.copy(v)?, *d));
             }
             b'c' => {
                 let module = r.line()?.to_owned();
                 let name = r.line()?.to_owned();
-                stack.push(Slot::Value(Value::Class { module, name }));
+                stack.push(Slot::leaf(Value::Class { module, name }));
             }
             0x93 => {
                 // STACK_GLOBAL
-                let name = pop(&mut stack)?;
-                let module = pop(&mut stack)?;
+                let (name, _) = pop(&mut stack)?;
+                let (module, _) = pop(&mut stack)?;
                 let (Value::Str(module), Value::Str(name)) = (module, name) else {
                     return Err(PickleError::Malformed("STACK_GLOBAL needs strings"));
                 };
-                stack.push(Slot::Value(Value::Class { module, name }));
+                stack.push(Slot::leaf(Value::Class { module, name }));
             }
             0x81 | b'R' => {
                 // NEWOBJ (cls, args) and REDUCE (callable, args): recorded, never called
-                let args = pop(&mut stack)?;
-                let class = pop(&mut stack)?;
+                let (args, ad) = pop(&mut stack)?;
+                let (class, cd) = pop(&mut stack)?;
                 let args = match args {
                     Value::Tuple(a) => a,
                     other => vec![other],
                 };
-                stack.push(Slot::Value(Value::Object {
-                    class: Box::new(class),
-                    args,
-                    state: None,
-                }));
+                stack.push(Slot::Value(
+                    Value::Object {
+                        class: Box::new(class),
+                        args,
+                        state: None,
+                    },
+                    nest(ad.max(cd))?,
+                ));
             }
             0x92 => {
                 // NEWOBJ_EX (cls, args, kwargs)
                 let _kwargs = pop(&mut stack)?;
-                let args = pop(&mut stack)?;
-                let class = pop(&mut stack)?;
-                stack.push(Slot::Value(Value::Object {
-                    class: Box::new(class),
-                    args: match args {
-                        Value::Tuple(a) => a,
-                        other => vec![other],
+                let (args, ad) = pop(&mut stack)?;
+                let (class, cd) = pop(&mut stack)?;
+                stack.push(Slot::Value(
+                    Value::Object {
+                        class: Box::new(class),
+                        args: match args {
+                            Value::Tuple(a) => a,
+                            other => vec![other],
+                        },
+                        state: None,
                     },
-                    state: None,
-                }));
+                    nest(ad.max(cd))?,
+                ));
             }
             b'b' => {
                 // BUILD: set the state of the object below
-                let state = pop(&mut stack)?;
+                let (state, sd) = pop(&mut stack)?;
                 match top(&mut stack)? {
-                    Value::Object { state: s, .. } => *s = Some(Box::new(state)),
+                    (Value::Object { state: s, .. }, depth) => {
+                        *depth = (*depth).max(nest(sd)?);
+                        *s = Some(Box::new(state));
+                    }
                     // Building onto something that isn't an object: keep the state.
-                    other => *other = state,
+                    (other, depth) => {
+                        *other = state;
+                        *depth = sd;
+                    }
                 }
             }
             b'0' => {
@@ -442,41 +547,48 @@ pub fn load(data: &[u8]) -> Result<Value, PickleError> {
                 pop_mark(&mut stack)?; // POP_MARK
             }
             b'2' => {
-                let v = top(&mut stack)?.clone(); // DUP
-                stack.push(Slot::Value(v));
+                let (v, d) = top(&mut stack)?; // DUP
+                let d = *d;
+                let v = budget.copy(v)?;
+                stack.push(Slot::Value(v, d));
             }
             other => return Err(PickleError::Opcode(other)),
         }
     }
 }
 
-fn pop(stack: &mut Vec<Slot>) -> Result<Value, PickleError> {
+fn pop(stack: &mut Vec<Slot>) -> Result<(Value, u32), PickleError> {
     match stack.pop() {
-        Some(Slot::Value(v)) => Ok(v),
+        Some(Slot::Value(v, d)) => Ok((v, d)),
         _ => Err(PickleError::Malformed("stack underflow")),
     }
 }
 
-/// Pop everything above the topmost mark, and the mark.
-fn pop_mark(stack: &mut Vec<Slot>) -> Result<Vec<Value>, PickleError> {
+/// Pop everything above the topmost mark, and the mark. Also returns the deepest item's
+/// depth.
+fn pop_mark(stack: &mut Vec<Slot>) -> Result<(Vec<Value>, u32), PickleError> {
     let at = stack
         .iter()
         .rposition(|s| matches!(s, Slot::Mark))
         .ok_or(PickleError::Malformed("no mark"))?;
+    let mut depth = 0;
     let items = stack
         .drain(at + 1..)
         .map(|s| match s {
-            Slot::Value(v) => v,
+            Slot::Value(v, d) => {
+                depth = depth.max(d);
+                v
+            }
             Slot::Mark => unreachable!("marks were searched from the top"),
         })
         .collect();
     stack.pop();
-    Ok(items)
+    Ok((items, depth))
 }
 
-fn top(stack: &mut [Slot]) -> Result<&mut Value, PickleError> {
+fn top(stack: &mut [Slot]) -> Result<(&mut Value, &mut u32), PickleError> {
     match stack.last_mut() {
-        Some(Slot::Value(v)) => Ok(v),
+        Some(Slot::Value(v, d)) => Ok((v, d)),
         _ => Err(PickleError::Malformed("no value on the stack")),
     }
 }
@@ -572,5 +684,40 @@ mod tests {
         ] {
             assert!(load(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn copies_count_against_the_limit() {
+        // DUP and APPEND double a list with every pair of opcodes.
+        let mut p = b"\x80\x02]".to_vec();
+        for _ in 0..64 {
+            p.extend_from_slice(b"2a");
+        }
+        p.push(b'.');
+        assert!(matches!(
+            load_limited(&p, 100_000),
+            Err(PickleError::TooLarge | PickleError::TooDeep)
+        ));
+        // The same through the memo: PUT, then GET it twice and append.
+        let mut p = b"\x80\x02]".to_vec();
+        for _ in 0..64 {
+            p.extend_from_slice(b"q\x00h\x00a");
+        }
+        p.push(b'.');
+        assert!(load_limited(&p, 100_000).is_err());
+        // The input the fuzzer found (out of memory at 2 GB before the fix).
+        let found = b"((l2222ra\xff\xff\xffRa222ra\xff\xff\xffRaaa2222aa2222ra2(l2222ra22222aa2222ra2(l2222r\x002222aaaa2222aaa22aa2222aa2222ra2(l2222ra22222aa2222ra2(l2222r\x002222aaaa2222aaa2222aa222";
+        assert!(load_limited(found, 100_000).is_err());
+    }
+
+    #[test]
+    fn deep_nesting_is_refused() {
+        let mut p = b"\x80\x02".to_vec();
+        p.extend(std::iter::repeat_n(b']', 10_000));
+        p.extend(std::iter::repeat_n(b'a', 9_999));
+        p.push(b'.');
+        assert_eq!(load(&p), Err(PickleError::TooDeep));
+        // Shallow nesting still loads.
+        assert!(load(b"\x80\x02]]]aa.").is_ok());
     }
 }
