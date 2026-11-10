@@ -326,9 +326,29 @@ the work started (see Findings).
 ## Open questions for the user
 
 1. The peer-attribution rule is the design's own call; say if it should be different.
-2. Should user invitations (follow-up 1) come next, so other people can be members?
-3. Should a space's admins get the Plugins page for their space-aware plugins
-   (follow-up 3)?
+
+Answered 2026-11-10:
+
+- **User invitations come next:** yes. Being built: see "Invitations" below.
+- **Space admins get the Plugins page:** yes. Plugins are either per space (space-aware: one
+  instance per space, settings and data per space) or shared (one instance for the whole
+  daemon, server admins only). A space admin sees and manages their space's space-aware
+  plugins; shared plugins stay with server admins.
+
+## Invitations (next, 2026-11-10)
+
+- **Who invites:** a server admin can invite into any space. A space admin can invite
+  only into their own space.
+- **The link:** an invitation is a one-time enrollment link that expires, by default after
+  7 days. It can be revoked. It carries the spaces and roles the new user gets.
+- **Enrolling:** the person opening the link picks a username and registers a passkey. A
+  password is allowed only when the daemon allows passwords.
+- **Managing users (server admins):**
+  - list users
+  - disable or delete a user
+  - change instance roles
+  - issue a recovery link for a user who lost their credentials, built the same way as an
+    invitation
 
 ## Things not to do
 
