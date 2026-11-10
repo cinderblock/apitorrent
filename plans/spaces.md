@@ -236,8 +236,7 @@ the work started (see Findings).
 - [x] Core: spaces table and migration (10), entries keyed by `Key { space, id }`, shared
       swarms (`spawn_entry`, `place_secondaries`, `move_swarm`), space limits and queue,
       `spaces.rs` (CRUD, save-path rules). Automation scoped (automation.db migration 2).
-      Core tests pass. Uncommitted until the workspace builds; snapshot in
-      `refs/wip/implement-spaces`.
+      (`bf3cd1a`)
 - [x] Auth: memberships (`space_members`), per-space roles (`Auth::space_role`),
       space-bound tokens (`api_tokens.space_id`, `create_token_in`), last space;
       auth.db migration 2. `crates/apitorrent-auth/src/spaces.rs`.
@@ -254,10 +253,42 @@ the work started (see Findings).
       accepts a token in the instance's space. `rss` (1.2.0) and `qbittorrent-api`
       (1.1.0) are space-aware. Server calls `spaces_changed` after creating/deleting a
       space.
-- [ ] Web UI: switcher, `/s/<slug>/` routes, spaces admin page
-- [ ] Deluge importer: `--space`, `--dry-run` text report, idempotent
-- [ ] Two-space end-to-end test
-- [ ] docs/architecture.md and README
+- [x] Web UI: switcher (hidden with one space), `/s/<slug>/` pages and API calls, the
+      Spaces page (`/spaces`, from Settings) with members; rules follow the space role;
+      tokens show their space (`1a2f038`)
+- [x] Deluge importer: `apitorrentd import deluge --config --space [--dry-run] [--map]
+      [--settings] [--paused]`, offline (rows for the next start); plain-text report;
+      idempotent; the web import goes into the request's space (`c51cf6b`)
+- [x] Two-space end-to-end test (`crates/apitorrent-core/tests/spaces.rs`), the server's
+      (`crates/apitorrent-server/tests/spaces.rs`), auth roles, the offline import
+      (`crates/apitorrent-core/tests/deluge_offline.rs`) (`34b8039`, `c51cf6b`)
+- [x] docs/architecture.md ("Spaces", "Deluge migration", limits, auth) and README
+      (`26b36db`)
+- [x] Side fix: pack supersession decided from the check's bitfield (`61c3f4f`; it was
+      ISSUES.md's flaky `a_repack…` test)
+- [x] Smoke test of the real daemon (headless, loopback, no auth): `/space`, creating a
+      space, `/s/tv/…`, 404 for an unknown slug, the UI at `/s/tv/rules`, one magnet in two
+      spaces listed apart.
+
+## Not done (follow-ups)
+
+1. **Users other than the first admin can't be created yet** (invitations were already
+   "still to come"). Members can be assigned only from existing users, so "different
+   people in different spaces" waits for that feature; space-bound tokens (one per app)
+   work today.
+2. **A space's tracker list can't be edited**: each entry announces to the trackers of
+   the `.torrent` (or magnet) it was added with in that space.
+3. **The Plugins page is for server admins only in the UI.** The API already lets a
+   space's admins read and change a space-aware plugin's settings and logs for their
+   space; the page doesn't offer it to them.
+4. **`--plugin-listen` serves `default`** (or a `--space-host` mapping). A client of
+   another space uses the `/s/<slug>/` URL base. `--plugin-listen <id>@<slug>=<addr>`
+   would be a small addition.
+5. **Another space's copy appears per completed file**, not while downloading (hard links
+   made at add time would show it at once on one volume).
+6. **The web UI wasn't looked at in a browser** (typecheck, unit tests and build only; no
+   foreground windows on this machine). The desktop thin client's `/s/<slug>/` paths are
+   untested.
 
 ## Findings / gotchas
 
@@ -278,13 +309,26 @@ the work started (see Findings).
   running here). This worktree's build dir was deleted again; free space came back to
   only ~1 GB. Uncommitted work was snapshotted with a temporary index into
   `refs/wip/implement-spaces` (no working-tree or branch change).
+- Engine `Shutdown` replied before unregistering the torrent from the session, so adding
+  the same info-hash again right after (moving a swarm) could fail as a duplicate. It
+  now unregisters first.
+- Saving resume data while a torrent is still checking stored an empty bitfield, so the
+  next start trusted that nothing was there and re-downloaded. It now stores none (the
+  next start checks). Found by the end-to-end test's restart after a swarm move.
+- After removing the primary, the store still shows the old "Seeding" summary until the
+  next one-second refresh: tests must ask `detail()` (live) before restarting.
+- A peer link closes once both ends are seeds, so "which entry owns this connection"
+  must be sampled during the download (the engine test throttles its seeder for that).
+- Windows reserves some ports (18742 was): use another for a smoke test.
 - The only other drives are network shares (`P:`, `S:`, `T:`, `W:` on uberfall); not
   used for builds.
 
 ## Open questions for the user
 
-None right now. The peer-attribution rule above is my own call; say if it should be
-different.
+1. The peer-attribution rule is the design's own call; say if it should be different.
+2. Should user invitations (follow-up 1) come next, so other people can be members?
+3. Should a space's admins get the Plugins page for their space-aware plugins
+   (follow-up 3)?
 
 ## Things not to do
 

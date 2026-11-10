@@ -4,7 +4,7 @@ import type { TorrentState } from "./TorrentState";
 export type TorrentSummary = { id: string, 
 /**
  * The space the torrent is in (see [`spaces`]). The same torrent can be in several,
- * each with its own summary.
+ * each with its own summary. Daemons from before spaces don't send it: `default`.
  */
 space: number, name: string, infoHashV1: string | null, infoHashV2: string | null, state: TorrentState, 
 /**
