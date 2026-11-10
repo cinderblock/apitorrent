@@ -5,6 +5,7 @@ import { notifyAuthLost } from "./client";
 import type { SyncMessage } from "./generated/SyncMessage";
 import { applySync, initialSyncState, type SyncState } from "../state/torrents";
 import { transport, type SocketLike } from "./transport";
+import { currentPrefix } from "../spaces/prefix";
 
 export type ConnectionStatus = "connecting" | "live" | "reconnecting";
 
@@ -35,7 +36,7 @@ export class SyncClient {
     // The first snapshot is large (about 6 MiB of JSON for 10,000 torrents), and WebSockets
     // here have no compression of their own: ask for big messages gzipped, as binary.
     const compress = typeof DecompressionStream === "function" ? "?compress=gzip" : "";
-    return new SyncClient(`${scheme}//${location.host}/api/v1/sync${compress}`);
+    return new SyncClient(`${scheme}//${location.host}${currentPrefix()}/api/v1/sync${compress}`);
   }
 
   start(): void {

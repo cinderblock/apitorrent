@@ -87,7 +87,18 @@ function NumberField({ label, value, onChange, hint }: { label: string; value: n
 
 const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null };
 
-export function SettingsDialog({ isAdmin, onClose, onImport }: { isAdmin: boolean; onClose: () => void; onImport: () => void }) {
+export function SettingsDialog({
+  isAdmin,
+  onClose,
+  onImport,
+  onSpaces,
+}: {
+  isAdmin: boolean;
+  onClose: () => void;
+  onImport: () => void;
+  /** Open the Spaces page; only for server admins. */
+  onSpaces?: () => void;
+}) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -321,6 +332,11 @@ export function SettingsDialog({ isAdmin, onClose, onImport }: { isAdmin: boolea
           <button type="button" className="link actions-start" onClick={onImport}>
             Import from Deluge…
           </button>
+          {onSpaces && (
+            <button type="button" className="link" onClick={onSpaces}>
+              Spaces…
+            </button>
+          )}
           <button type="button" onClick={onClose}>
             Cancel
           </button>

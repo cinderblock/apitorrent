@@ -8,6 +8,7 @@ import { DesktopProblem } from "../desktop/DesktopProblem";
 import { navigate, usePath } from "../router";
 import { PluginsPage } from "../plugins/PluginsPage";
 import { RulesPage } from "../rules/RulesPage";
+import { SpacesPage } from "../spaces/SpacesPage";
 import { AccountPage } from "./AccountPage";
 import { viewFor } from "./flow";
 import { LoginPage } from "./LoginPage";
@@ -65,5 +66,6 @@ export function AuthGate() {
   if (path === "/account") return <AccountPage status={status} onStatus={setStatus} refresh={refresh} />;
   if (path === "/plugins") return <PluginsPage status={status} onStatus={setStatus} />;
   if (path === "/rules") return <RulesPage status={status} />;
+  if (path === "/spaces") return <SpacesPage />;
   return <App status={status} />;
 }

@@ -1,0 +1,60 @@
+.space-switcher select {
+  max-width: 14em;
+}
+
+.space-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.space-head p {
+  margin: 4px 0 0;
+}
+
+.space-head .badge {
+  margin-left: 6px;
+}
+
+.space-members {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.space-member-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+
+.space-members li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.space-members .grow {
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .space-editor .field-row,
+  .space-members li {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.spaces-page .button-like {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: inherit;
+  text-decoration: none;
+}

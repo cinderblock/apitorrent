@@ -13,6 +13,7 @@ import { Cancelled, describeError, describeUserAgent, withReauth } from "./flow"
 import { InsecureBanner } from "./LoginPage";
 import { ReauthDialog } from "./ReauthDialog";
 import { createPasskey, passkeysSupported } from "./webauthn";
+import { useSpaceContext } from "../spaces/context";
 
 interface Props {
   status: AuthStatus;
@@ -371,17 +372,29 @@ function TokensSection({
   const [name, setName] = useState("");
   const [scope, setScope] = useState<TokenScope>("read");
   const [expiry, setExpiry] = useState(0);
+  // With several spaces, a token works in the one it was made in: say which.
+  const space = useSpaceContext();
+  const spaces = space && space.spaces.length > 1 ? space.spaces : null;
+  const spaceName = (id: number) => spaces?.find((s) => s.id === id)?.name ?? `space ${id}`;
   return (
     <section className="account-section">
       <h3>API tokens</h3>
       <p className="muted">
         For scripts and other apps. Send one as <code>Authorization: Bearer &lt;token&gt;</code>. Tokens can't
         manage passkeys, passwords or other tokens.
+        {spaces && space && (
+          <>
+            {" "}
+            A token works only in the space it was made in; new ones here work in <strong>{space.current.name}</strong>{" "}
+            (switch spaces to make one for another).
+          </>
+        )}
       </p>
       <table className="list">
         <thead>
           <tr>
             <th>Name</th>
+            {spaces && <th>Space</th>}
             <th>Access</th>
             <th>Token</th>
             <th>Created</th>
@@ -394,6 +407,7 @@ function TokensSection({
           {tokens.map((t) => (
             <tr key={t.id}>
               <td>{t.name}</td>
+              {spaces && <td>{spaceName(t.space)}</td>}
               <td>{t.scope === "full" ? "Full" : "Read only"}</td>
               <td>
                 <code>{t.prefix}…</code>
@@ -421,7 +435,7 @@ function TokensSection({
           ))}
           {tokens.length === 0 && (
             <tr>
-              <td colSpan={7} className="muted">
+              <td colSpan={spaces ? 8 : 7} className="muted">
                 No tokens.
               </td>
             </tr>

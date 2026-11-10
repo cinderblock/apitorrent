@@ -30,9 +30,13 @@ import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { UnwantedPolicy } from "./generated/UnwantedPolicy";
 import type { UpdateSettings } from "./generated/UpdateSettings";
 import type { UpdateStatus } from "./generated/UpdateStatus";
+import { currentPrefix } from "../spaces/prefix";
 import { transport } from "./transport";
 
-const BASE = "/api/v1";
+/** The API, in the page's space (`/s/<slug>/api/v1` under a space's pages). */
+function base(): string {
+  return `${currentPrefix()}/api/v1`;
+}
 
 export class ApiRequestError extends Error {
   constructor(
@@ -65,7 +69,7 @@ export async function request<T>(method: string, path: string, body?: unknown): 
     init.body = JSON.stringify(body);
     init.headers = { "content-type": "application/json" };
   }
-  const resp = await transport.fetch(`${BASE}${path}`, init);
+  const resp = await transport.fetch(`${base()}${path}`, init);
   if (!resp.ok) {
     let err: ApiError = { code: "http_error", message: `${resp.status} ${resp.statusText}` };
     try {

@@ -3,6 +3,8 @@
 
 import { useSyncExternalStore } from "react";
 
+import { stripPrefix, withPrefix } from "./spaces/prefix";
+
 const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void): () => void {
@@ -14,12 +16,15 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+/** Go to an app path (`/rules`), staying in the current space (`/s/<slug>/rules`). */
 export function navigate(path: string, { replace = false }: { replace?: boolean } = {}): void {
-  if (replace) history.replaceState(null, "", path);
-  else history.pushState(null, "", path);
+  const target = withPrefix(location.pathname, path);
+  if (replace) history.replaceState(null, "", target);
+  else history.pushState(null, "", target);
   for (const l of listeners) l();
 }
 
+/** The app path, without the space prefix. */
 export function usePath(): string {
-  return useSyncExternalStore(subscribe, () => location.pathname);
+  return useSyncExternalStore(subscribe, () => stripPrefix(location.pathname));
 }

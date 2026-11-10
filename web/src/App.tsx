@@ -20,6 +20,8 @@ import { useIncomingLinks } from "./desktop/links";
 import { formatRate } from "./format";
 import { navigate } from "./router";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
+import { SpaceSwitcher } from "./spaces/SpaceSwitcher";
+import { useSpaceContext } from "./spaces/context";
 import { useNarrow } from "./useNarrow";
 
 const sync = SyncClient.forCurrentPage();
@@ -41,6 +43,9 @@ export function App({ status: auth }: { status: AuthStatus }) {
     return () => sync.stop();
   }, []);
   const { state, status } = useSyncExternalStore(sync.subscribe, sync.getSnapshot);
+  const space = useSpaceContext();
+  // Without a space context (an older daemon), the instance role decides, as before.
+  const serverAdmin = space ? space.serverAdmin : auth.authDisabled || auth.user?.role === "admin";
 
   const [view, setView] = useState<View>({
     filter: "all",
@@ -57,7 +62,6 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const narrow = useNarrow();
-  const isAdmin = auth.authDisabled || auth.user?.role === "admin";
   // The filters drawer, on a phone.
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -168,6 +172,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
           ☰ Filters
         </button>
         <h1 className="brand">apitorrent</h1>
+        <SpaceSwitcher />
         <button type="button" className="primary" onClick={() => setAdding([])}>
           Add
         </button>
@@ -197,13 +202,13 @@ export function App({ status: auth }: { status: AuthStatus }) {
         <button type="button" onClick={() => navigate("/rules")}>
           Rules
         </button>
-        {isAdmin && (
+        {serverAdmin && (
           <button type="button" onClick={() => navigate("/plugins")}>
             Plugins
           </button>
         )}
         <ThemePicker />
-        <UpdateButton isAdmin={isAdmin} />
+        <UpdateButton isAdmin={serverAdmin} />
         <input
           type="search"
           className="search"
@@ -308,12 +313,20 @@ export function App({ status: auth }: { status: AuthStatus }) {
       )}
       {settingsOpen && (
         <SettingsDialog
-          isAdmin={isAdmin}
+          isAdmin={serverAdmin}
           onClose={() => setSettingsOpen(false)}
           onImport={() => {
             setSettingsOpen(false);
             setImporting(true);
           }}
+          onSpaces={
+            serverAdmin
+              ? () => {
+                  setSettingsOpen(false);
+                  navigate("/spaces");
+                }
+              : undefined
+          }
         />
       )}
       {importing && <ImportDeluge onClose={() => setImporting(false)} />}

@@ -8,6 +8,7 @@ import type { RuleInfo } from "../api/generated/RuleInfo";
 import type { StoredCandidate } from "../api/generated/StoredCandidate";
 import { describeError } from "../auth/flow";
 import { navigate } from "../router";
+import { atLeast, useSpaceContext } from "../spaces/context";
 import { rulesApi } from "./api";
 import { ChannelsSection } from "./ChannelsSection";
 import { RuleEditor } from "./RuleEditor";
@@ -23,8 +24,12 @@ export function RulesPage({ status }: { status: AuthStatus }) {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [busy, setBusy] = useState(false);
-  const mayWrite = status.authDisabled || (status.user !== null && status.user.role !== "viewer");
-  const admin = status.authDisabled || status.user?.role === "admin";
+  // What the caller may do in this space (the instance role, with an older daemon).
+  const space = useSpaceContext();
+  const mayWrite = space
+    ? atLeast(space.current.role, "user")
+    : status.authDisabled || (status.user !== null && status.user.role !== "viewer");
+  const admin = space ? atLeast(space.current.role, "admin") : status.authDisabled || status.user?.role === "admin";
 
   const load = useCallback(async () => {
     try {
