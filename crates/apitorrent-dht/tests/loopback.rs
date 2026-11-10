@@ -91,10 +91,16 @@ async fn twenty_nodes_announce_and_find() {
         // An unknown info-hash finds nothing, and the stream still ends.
         assert!(collect(nodes[5].get_peers([0x13; 20])).await.is_empty());
 
-        // Stats are a snapshot refreshed every 250 ms.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // Stats are a snapshot refreshed every 250 ms, later on a busy machine.
+        let stored = || nodes.iter().map(|d| d.stats().stored_peers).sum::<usize>();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while (nodes[0].stats().queries_received == 0 || stored() < 2)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         assert!(nodes[0].stats().queries_received > 0);
-        let stored: usize = nodes.iter().map(|d| d.stats().stored_peers).sum();
+        let stored = stored();
         assert!(stored >= 2, "announces were stored somewhere: {stored}");
 
         // Persistence: restart node 17 from its saved state, with no bootstrap routers.
