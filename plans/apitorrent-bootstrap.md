@@ -117,8 +117,11 @@ engine core stays in the main thread, because its pieces interlock.
   merged.
 - **What remains (2026-11-10):**
   - Spaces (several separate setups in one daemon): built and merged (`14e82b1`…
-    `f3a9384`). Next: user invitations, user management, and the Plugins page for space
-    admins. These are being built by a background agent. Plan: `plans/spaces.md`
+    `f3a9384`). Invitations, user management and the Plugins page for space admins were
+    merged on 2026-11-10 (`a0e7491`…`1fc7151`). Plans: `plans/spaces.md`,
+    `plans/invitations.md`
+  - Dependabot's five major bumps (sha1, sha2, hmac, num-bigint, getrandom; PRs #1–#5):
+    being upgraded together by a background agent, since they only work as a set.
   - The Deluge import of the user's two instances into two spaces: the user waits for
     more features first, then runs it by hand on the seedbox, with text pasted back and
     forth.
