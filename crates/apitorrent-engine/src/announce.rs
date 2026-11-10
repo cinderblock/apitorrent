@@ -121,11 +121,18 @@ impl Announcer {
     }
 
     /// The announces that are due now. Each is marked in flight until its result comes back.
+    #[cfg(test)]
     pub(crate) fn due(&mut self, now: Instant) -> Vec<Job> {
+        self.due_where(now, |_| true)
+    }
+
+    /// The announces that are due now to trackers `allowed` accepts. A tier whose current
+    /// tracker it refuses (another entry of the torrent announces there) waits, unchanged.
+    pub(crate) fn due_where(&mut self, now: Instant, allowed: impl Fn(&str) -> bool) -> Vec<Job> {
         let mut jobs = Vec::new();
         for (lane_index, lane) in self.lanes.iter_mut().enumerate() {
             for (tier_index, tier) in lane.tiers.iter_mut().enumerate() {
-                if tier.in_flight || tier.next > now {
+                if tier.in_flight || tier.next > now || !allowed(&tier.urls[tier.current]) {
                     continue;
                 }
                 let event = if !tier.started {

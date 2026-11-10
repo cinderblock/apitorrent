@@ -372,7 +372,7 @@ impl Core {
                 .collect()
         };
         for (handle, group) in changes {
-            handle.set_group(group).await;
+            handle.set_group(0, group).await;
         }
     }
 
@@ -456,7 +456,7 @@ impl Core {
         {
             e.limits = limits;
         }
-        handle.set_limits(engine_limits(limits)).await;
+        handle.set_limits(0, engine_limits(limits)).await;
         Ok(())
     }
 

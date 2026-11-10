@@ -114,6 +114,8 @@ pub(crate) struct Shared {
     pub(crate) half_open: Arc<Counter>,
     pub(crate) connect_rate: Bucket,
     groups: Mutex<HashMap<String, Arc<Group>>>,
+    /// Each space's shared limits, by the name the core gives it.
+    spaces: Mutex<HashMap<String, Arc<Group>>>,
     listen_port: u16,
     next_key: AtomicU64,
     torrents: Mutex<HashMap<Sha1Hash, mpsc::Sender<ActorMsg>>>,
@@ -171,6 +173,14 @@ impl Shared {
         self.groups
             .lock()
             .expect("groups poisoned")
+            .get(name)
+            .cloned()
+    }
+
+    pub(crate) fn space(&self, name: &str) -> Option<Arc<Group>> {
+        self.spaces
+            .lock()
+            .expect("spaces poisoned")
             .get(name)
             .cloned()
     }
@@ -273,6 +283,7 @@ impl Session {
             half_open: Counter::new(config.max_half_open),
             connect_rate: Bucket::new(config.connect_rate),
             groups: Mutex::new(HashMap::new()),
+            spaces: Mutex::new(HashMap::new()),
             public: Mutex::new(HashSet::new()),
             config,
             memory,
@@ -407,6 +418,28 @@ impl Session {
             .groups
             .lock()
             .expect("groups poisoned")
+            .remove(name)
+            .is_some()
+    }
+
+    /// Create a space's limits, or change them. Every entry of the space draws from them
+    /// (see [`crate::EntryParams::space`]), across all of its torrents.
+    pub fn set_space(&self, name: &str, limits: GroupLimits) {
+        let mut spaces = self.shared.spaces.lock().expect("spaces poisoned");
+        match spaces.get(name) {
+            Some(g) => g.set(limits),
+            None => {
+                spaces.insert(name.to_owned(), Group::new(limits));
+            }
+        }
+    }
+
+    /// Remove a space's limits. Entries already in it keep them until they go.
+    pub fn remove_space(&self, name: &str) -> bool {
+        self.shared
+            .spaces
+            .lock()
+            .expect("spaces poisoned")
             .remove(name)
             .is_some()
     }

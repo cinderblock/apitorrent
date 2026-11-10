@@ -1,7 +1,7 @@
 //! Rate and connection limits.
 //!
-//! Limits form a hierarchy: session, then group, then torrent. A transfer must fit every
-//! level it belongs to, so the tightest one wins. Rates are enforced by the peer I/O tasks:
+//! Limits form a hierarchy: session, then space, then group, then torrent entry. A transfer
+//! must fit every level it belongs to, so the tightest one wins. Rates are enforced by the peer I/O tasks:
 //! after reading (or before writing) `n` bytes they reserve `n` from each bucket in their
 //! chain and sleep for the longest wait. Reading slower is real backpressure: TCP's window
 //! closes and the remote end slows down.
@@ -147,7 +147,7 @@ impl Drop for Slot {
     }
 }
 
-/// Limits shared by a named set of torrents.
+/// Limits shared by a named set of torrents: a group (selected by label) or a space.
 #[derive(Debug)]
 pub struct Group {
     pub download: Bucket,
@@ -206,12 +206,13 @@ pub enum Direction {
     Upload,
 }
 
-/// The chain of buckets a torrent's connections draw from. The group can change while
-/// connections are open.
+/// The chain of buckets a torrent entry's connections draw from. The space and group can
+/// change while connections are open.
 #[derive(Debug)]
 pub struct Throttle {
     session_down: Arc<Bucket>,
     session_up: Arc<Bucket>,
+    space: Mutex<Option<Arc<Group>>>,
     group: Mutex<Option<Arc<Group>>>,
     pub(crate) torrent_down: Bucket,
     pub(crate) torrent_up: Bucket,
@@ -221,12 +222,14 @@ impl Throttle {
     pub(crate) fn new(
         session_down: Arc<Bucket>,
         session_up: Arc<Bucket>,
+        space: Option<Arc<Group>>,
         group: Option<Arc<Group>>,
         limits: TorrentLimits,
     ) -> Self {
         Self {
             session_down,
             session_up,
+            space: Mutex::new(space),
             group: Mutex::new(group),
             torrent_down: Bucket::new(limits.download_rate),
             torrent_up: Bucket::new(limits.upload_rate),
@@ -241,24 +244,28 @@ impl Throttle {
         self.group.lock().expect("throttle lock poisoned").clone()
     }
 
+    pub(crate) fn set_space(&self, space: Option<Arc<Group>>) {
+        *self.space.lock().expect("throttle lock poisoned") = space;
+    }
+
+    pub(crate) fn space(&self) -> Option<Arc<Group>> {
+        self.space.lock().expect("throttle lock poisoned").clone()
+    }
+
     /// Reserve `n` bytes at every level and return the longest wait.
     pub(crate) fn reserve(&self, dir: Direction, n: u64) -> Duration {
-        let group = self.group();
-        let (session, torrent, group) = match dir {
-            Direction::Download => (
-                &self.session_down,
-                &self.torrent_down,
-                group.as_ref().map(|g| &g.download),
-            ),
-            Direction::Upload => (
-                &self.session_up,
-                &self.torrent_up,
-                group.as_ref().map(|g| &g.upload),
-            ),
+        let shared = [self.space(), self.group()];
+        let (session, torrent) = match dir {
+            Direction::Download => (&self.session_down, &self.torrent_down),
+            Direction::Upload => (&self.session_up, &self.torrent_up),
         };
         let mut wait = session.reserve(n).max(torrent.reserve(n));
-        if let Some(g) = group {
-            wait = wait.max(g.reserve(n));
+        for g in shared.iter().flatten() {
+            let bucket = match dir {
+                Direction::Download => &g.download,
+                Direction::Upload => &g.upload,
+            };
+            wait = wait.max(bucket.reserve(n));
         }
         wait
     }
@@ -326,12 +333,37 @@ mod tests {
             download_rate: 1000,
             ..GroupLimits::default()
         });
-        let t = Throttle::new(session, up, Some(group), TorrentLimits::default());
+        let t = Throttle::new(session, up, None, Some(group), TorrentLimits::default());
         t.reserve(Direction::Download, 250);
         let wait = t.reserve(Direction::Download, 1000);
         assert!(wait >= Duration::from_millis(900), "{wait:?}");
         assert_eq!(t.reserve(Direction::Upload, 1_000_000), Duration::ZERO);
         t.set_group(None);
         assert!(t.reserve(Direction::Download, 1000) < Duration::from_millis(10));
+    }
+
+    #[test]
+    fn a_space_limits_its_entries() {
+        let session = Arc::new(Bucket::new(0));
+        let up = Arc::new(Bucket::new(0));
+        let space = Group::new(GroupLimits {
+            upload_rate: 1000,
+            ..GroupLimits::default()
+        });
+        let a = Throttle::new(
+            session.clone(),
+            up.clone(),
+            Some(space.clone()),
+            None,
+            TorrentLimits::default(),
+        );
+        let b = Throttle::new(session, up, Some(space), None, TorrentLimits::default());
+        // Two entries in one space share its bucket.
+        a.reserve(Direction::Upload, 250);
+        let wait = b.reserve(Direction::Upload, 1000);
+        assert!(wait >= Duration::from_millis(900), "{wait:?}");
+        assert_eq!(a.reserve(Direction::Download, 1_000_000), Duration::ZERO);
+        b.set_space(None);
+        assert!(b.reserve(Direction::Upload, 1000) < Duration::from_millis(10));
     }
 }

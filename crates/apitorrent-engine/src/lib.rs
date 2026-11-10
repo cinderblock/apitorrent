@@ -25,5 +25,6 @@ mod webseed;
 pub use announce::TrackerStatus;
 pub use session::{AddError, Session, SessionConfig};
 pub use torrent::{
-    AddTorrent, PeerInfo, TorrentHandle, TorrentState, TorrentStats, UnwantedPolicy,
+    AddTorrent, EntryKey, EntryParams, EntryStats, PeerInfo, TorrentHandle, TorrentState,
+    TorrentStats, UnwantedPolicy,
 };

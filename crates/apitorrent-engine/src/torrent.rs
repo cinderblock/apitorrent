@@ -103,6 +103,63 @@ pub struct TorrentStats {
     pub peers: u32,
     pub seeds: u32,
     pub error: Option<String>,
+    /// Each entry's own share, oldest first (see [`EntryParams`]).
+    pub entries: Vec<EntryStats>,
+}
+
+/// Which entry of a torrent something belongs to. A torrent has one entry per space that
+/// holds it, so most have exactly one.
+pub type EntryKey = u64;
+
+/// One entry of a torrent: a space's claim on the swarm. The swarm, the pieces and the
+/// storage are shared; each entry has its own trackers, limits, pause state and transfer
+/// counts. Every peer connection belongs to exactly one entry, whose limits it draws from and
+/// whose counts it adds to:
+///
+/// - a peer a tracker returned belongs to the entry that announced to that tracker;
+/// - DHT, PEX, LSD, web seed and incoming peers belong to the oldest running entry.
+///
+/// An entry reports to its trackers only its own peers' traffic, so data another entry
+/// brought in is never claimed as downloaded (or uploaded) twice. An announce URL that
+/// several running entries list is announced by the oldest of them only.
+#[derive(Debug, Clone)]
+pub struct EntryParams {
+    pub key: EntryKey,
+    /// Announce tiers; `None` uses the torrent's own.
+    pub trackers: Option<Vec<Vec<String>>>,
+    pub limits: TorrentLimits,
+    /// The group whose shared limits apply too (see [`crate::Session::set_group`]).
+    pub group: Option<String>,
+    /// The space whose shared limits apply too (see [`crate::Session::set_space`]).
+    pub space: Option<String>,
+    pub paused: bool,
+}
+
+impl EntryParams {
+    pub fn new(key: EntryKey) -> Self {
+        Self {
+            key,
+            trackers: None,
+            limits: TorrentLimits::default(),
+            group: None,
+            space: None,
+            paused: false,
+        }
+    }
+}
+
+/// One entry's statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryStats {
+    pub key: EntryKey,
+    pub paused: bool,
+    /// Payload bytes this entry's peers sent us and we sent them, in this session.
+    pub downloaded: u64,
+    pub uploaded: u64,
+    pub download_rate: u64,
+    pub upload_rate: u64,
+    pub peers: u32,
+    pub seeds: u32,
 }
 
 /// One connected peer, for display. The flags are the protocol's own state.
@@ -131,6 +188,8 @@ pub struct PeerInfo {
     pub utp: bool,
     /// The payload is encrypted (MSE with RC4).
     pub encrypted: bool,
+    /// The entry the connection belongs to.
+    pub entry: EntryKey,
 }
 
 /// What happens to a file that is deselected after some of it was downloaded.
@@ -163,6 +222,15 @@ pub struct AddTorrent {
     pub peers: Vec<SocketAddr>,
     /// One priority per file; `None` downloads everything at the default priority.
     pub file_priorities: Option<Vec<u8>>,
+    /// The first entry's key (see [`EntryParams`]). `paused`, `limits` and `group` are the
+    /// first entry's too.
+    pub entry: EntryKey,
+    /// The first entry's announce tiers; `None` uses the torrent's own.
+    pub trackers: Option<Vec<Vec<String>>>,
+    /// The first entry's space (see [`crate::Session::set_space`]).
+    pub space: Option<String>,
+    /// More entries, after the first, oldest first.
+    pub more_entries: Vec<EntryParams>,
     /// This torrent's own rate, connection and memory limits.
     pub limits: TorrentLimits,
     /// The group whose shared limits apply too (see [`crate::Session::set_group`]).
@@ -188,10 +256,26 @@ impl AddTorrent {
             paused: false,
             peers: Vec::new(),
             file_priorities: None,
+            entry: 0,
+            trackers: None,
+            space: None,
+            more_entries: Vec::new(),
             limits: TorrentLimits::default(),
             group: None,
             file_paths: None,
             linked: Vec::new(),
+        }
+    }
+
+    /// The first entry, from the fields that describe it.
+    fn first_entry(&self) -> EntryParams {
+        EntryParams {
+            key: self.entry,
+            trackers: self.trackers.clone(),
+            limits: self.limits,
+            group: self.group.clone(),
+            space: self.space.clone(),
+            paused: self.paused,
         }
     }
 }
@@ -200,13 +284,19 @@ pub(crate) enum Command {
     AddPeers(Vec<SocketAddr>),
     /// The pieces we have right now, for resume data.
     Have(oneshot::Sender<Bitfield>),
-    Trackers(oneshot::Sender<Vec<TrackerStatus>>),
+    /// The trackers of one entry, or of every entry.
+    Trackers(Option<EntryKey>, oneshot::Sender<Vec<TrackerStatus>>),
     Peers(oneshot::Sender<Vec<PeerInfo>>),
     /// One priority per file (0 = skip, up to [`crate::picker::MAX_PRIORITY`]).
     FilePriorities(Vec<u8>),
     SetUnwantedPolicy(UnwantedPolicy),
-    SetLimits(TorrentLimits),
-    SetGroup(Option<String>),
+    SetLimits(EntryKey, TorrentLimits),
+    SetGroup(EntryKey, Option<String>),
+    SetSpace(EntryKey, Option<String>),
+    AddEntry(EntryParams),
+    RemoveEntry(EntryKey),
+    PauseEntry(EntryKey),
+    ResumeEntry(EntryKey),
     /// Delete the held copies of these files.
     ReleaseHeld(Vec<usize>),
     Pause,
@@ -235,6 +325,7 @@ pub(crate) enum ActorMsg {
         result: Result<Bytes, String>,
     },
     Announced {
+        entry: EntryKey,
         job: Job,
         result: Result<apitorrent_tracker::AnnounceResponse, String>,
     },
@@ -293,18 +384,48 @@ impl TorrentHandle {
         rx.await.ok()
     }
 
-    /// The status of each tracker.
+    /// The status of each tracker, of every entry.
     pub async fn trackers(&self) -> Vec<TrackerStatus> {
+        self.trackers_of(None).await
+    }
+
+    /// The status of each tracker one entry announces to (or every entry's, with `None`).
+    /// A URL an older running entry also lists shows that entry's status.
+    pub async fn trackers_of(&self, entry: Option<EntryKey>) -> Vec<TrackerStatus> {
         let (tx, rx) = oneshot::channel();
         if self
             .tx
-            .send(ActorMsg::Command(Command::Trackers(tx)))
+            .send(ActorMsg::Command(Command::Trackers(entry, tx)))
             .await
             .is_err()
         {
             return Vec::new();
         }
         rx.await.unwrap_or_default()
+    }
+
+    /// Add an entry (see [`EntryParams`]). An entry with a key already present is ignored.
+    pub async fn add_entry(&self, entry: EntryParams) {
+        self.command(Command::AddEntry(entry)).await;
+    }
+
+    /// Remove an entry: its peers are disconnected and its trackers told `stopped`. The
+    /// torrent keeps running for its other entries; without any, it stays idle.
+    pub async fn remove_entry(&self, key: EntryKey) {
+        self.command(Command::RemoveEntry(key)).await;
+    }
+
+    /// Pause one entry. The torrent runs while any entry does.
+    pub async fn pause_entry(&self, key: EntryKey) {
+        self.command(Command::PauseEntry(key)).await;
+    }
+
+    pub async fn resume_entry(&self, key: EntryKey) {
+        self.command(Command::ResumeEntry(key)).await;
+    }
+
+    async fn command(&self, cmd: Command) {
+        let _ = self.tx.send(ActorMsg::Command(cmd)).await;
     }
 
     /// Set a download priority per file: 0 skips the file, higher values are fetched first.
@@ -331,20 +452,19 @@ impl TorrentHandle {
             .collect()
     }
 
-    /// Change this torrent's own limits.
-    pub async fn set_limits(&self, limits: TorrentLimits) {
-        let _ = self
-            .tx
-            .send(ActorMsg::Command(Command::SetLimits(limits)))
-            .await;
+    /// Change one entry's own limits.
+    pub async fn set_limits(&self, entry: EntryKey, limits: TorrentLimits) {
+        self.command(Command::SetLimits(entry, limits)).await;
     }
 
-    /// Join a group (or leave it, with `None`). An unknown group name means no group.
-    pub async fn set_group(&self, group: Option<String>) {
-        let _ = self
-            .tx
-            .send(ActorMsg::Command(Command::SetGroup(group)))
-            .await;
+    /// Put an entry in a group (or none, with `None`). An unknown group name means no group.
+    pub async fn set_group(&self, entry: EntryKey, group: Option<String>) {
+        self.command(Command::SetGroup(entry, group)).await;
+    }
+
+    /// Put an entry in a space's limits (or none). An unknown name means none.
+    pub async fn set_space(&self, entry: EntryKey, space: Option<String>) {
+        self.command(Command::SetSpace(entry, space)).await;
     }
 
     /// Choose what happens to files deselected from now on.
@@ -417,6 +537,8 @@ impl TorrentHandle {
 struct Peer {
     addr: SocketAddr,
     outbound: bool,
+    /// The entry this connection belongs to.
+    entry: EntryKey,
     tx: Option<mpsc::UnboundedSender<PeerCmd>>,
     peer_id: Option<PeerId>,
     fast: bool,
@@ -455,10 +577,17 @@ struct Peer {
 }
 
 impl Peer {
-    fn new(addr: SocketAddr, pieces: u32, outbound: bool, slots: Vec<Slot>) -> Self {
+    fn new(
+        addr: SocketAddr,
+        entry: EntryKey,
+        pieces: u32,
+        outbound: bool,
+        slots: Vec<Slot>,
+    ) -> Self {
         Self {
             addr,
             outbound,
+            entry,
             tx: None,
             peer_id: None,
             fast: false,
@@ -501,6 +630,45 @@ impl Peer {
     }
 }
 
+/// An entry's running state (see [`EntryParams`]).
+struct Entry {
+    key: EntryKey,
+    paused: bool,
+    /// Every announce URL the entry lists, to tell which an older entry covers.
+    urls: HashSet<String>,
+    announcer: Announcer,
+    throttle: Arc<Throttle>,
+    limits: TorrentLimits,
+    downloaded: u64,
+    uploaded: u64,
+    last_downloaded: u64,
+    last_uploaded: u64,
+}
+
+impl Entry {
+    fn new(params: EntryParams, torrent: &Torrent, keys: &[Sha1Hash], shared: &Shared) -> Self {
+        let trackers = params.trackers.unwrap_or_else(|| torrent.trackers.clone());
+        Self {
+            key: params.key,
+            paused: params.paused,
+            urls: trackers.iter().flatten().cloned().collect(),
+            announcer: Announcer::new(&trackers, keys, Instant::now()),
+            throttle: Arc::new(Throttle::new(
+                shared.download.clone(),
+                shared.upload.clone(),
+                params.space.as_deref().and_then(|s| shared.space(s)),
+                params.group.as_deref().and_then(|g| shared.group(g)),
+                params.limits,
+            )),
+            limits: params.limits,
+            downloaded: 0,
+            uploaded: 0,
+            last_downloaded: 0,
+            last_uploaded: 0,
+        }
+    }
+}
+
 pub(crate) struct TorrentActor {
     info_hashes: InfoHashes,
     short_hash: Sha1Hash,
@@ -516,7 +684,9 @@ pub(crate) struct TorrentActor {
     peer_rx: mpsc::Receiver<(PeerKey, PeerEvent)>,
     peers: HashMap<PeerKey, Peer>,
     buffers: HashMap<u32, Vec<u8>>,
-    candidates: VecDeque<SocketAddr>,
+    /// Addresses to dial, with the entry whose tracker named them (`None`: found by DHT,
+    /// PEX or LSD, so the oldest running entry's).
+    candidates: VecDeque<(SocketAddr, Option<EntryKey>)>,
     /// What PEX said about candidates' uTP support, until they are dialed.
     utp_hints: HashMap<SocketAddr, peer::UtpHint>,
     /// Candidates we shouldn't dial before the given time.
@@ -525,7 +695,10 @@ pub(crate) struct TorrentActor {
     seed_addrs: HashSet<SocketAddr>,
     known: HashSet<SocketAddr>,
     stats: watch::Sender<TorrentStats>,
-    paused: bool,
+    /// Oldest first. The torrent runs while any of them does.
+    entries: Vec<Entry>,
+    /// The wire info-hashes the torrent is announced under.
+    keys: Vec<Sha1Hash>,
     error: Option<String>,
     downloaded: u64,
     uploaded: u64,
@@ -537,8 +710,6 @@ pub(crate) struct TorrentActor {
     unwanted: UnwantedPolicy,
     /// Files whose placement change is in flight.
     moving: HashSet<usize>,
-    limits: TorrentLimits,
-    throttle: Arc<Throttle>,
     /// Bytes this torrent has counted against the session's memory budget.
     memory_held: u64,
     /// Who sent each block of each piece in progress.
@@ -551,14 +722,13 @@ pub(crate) struct TorrentActor {
     webseed_pieces: HashMap<u32, PeerKey>,
     webseed_tx: mpsc::Sender<WebSeedEvent>,
     webseed_rx: mpsc::Receiver<WebSeedEvent>,
-    announcer: Announcer,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
 }
 
 impl TorrentActor {
     pub(crate) fn spawn(params: AddTorrent, shared: Arc<Shared>) -> (TorrentHandle, Vec<Sha1Hash>) {
-        let torrent = params.torrent;
+        let torrent = params.torrent.clone();
         let info = &torrent.info;
         let info_hashes = info.info_hashes();
         let layout = Layout::from_info(info);
@@ -612,6 +782,7 @@ impl TorrentActor {
             peers: 0,
             seeds: 0,
             error: None,
+            entries: Vec::new(),
         };
         let (stats_tx, stats_rx) = watch::channel(initial);
         let mut keys = Vec::new();
@@ -623,12 +794,12 @@ impl TorrentActor {
         }
         let max_message = Decoder::max_len_for(u64::from(layout.piece_count()));
         let (webseed_tx, webseed_rx) = mpsc::channel(64);
-        let throttle = Arc::new(Throttle::new(
-            shared.download.clone(),
-            shared.upload.clone(),
-            params.group.as_deref().and_then(|g| shared.group(g)),
-            params.limits,
-        ));
+        let mut entries: Vec<Entry> = Vec::new();
+        for e in std::iter::once(params.first_entry()).chain(params.more_entries.clone()) {
+            if entries.iter().all(|x| x.key != e.key) {
+                entries.push(Entry::new(e, &torrent, &keys, &shared));
+            }
+        }
         let mut actor = TorrentActor {
             info_hashes,
             short_hash: info_hashes.primary_short(),
@@ -650,7 +821,8 @@ impl TorrentActor {
             seed_addrs: HashSet::new(),
             known: HashSet::new(),
             stats: stats_tx,
-            paused: params.paused,
+            entries,
+            keys: keys.clone(),
             error: None,
             downloaded: 0,
             uploaded: 0,
@@ -661,8 +833,6 @@ impl TorrentActor {
             file_priorities: params.file_priorities,
             unwanted: params.unwanted,
             moving: HashSet::new(),
-            limits: params.limits,
-            throttle,
             memory_held: 0,
             block_from: HashMap::new(),
             reputation: Reputation::default(),
@@ -671,10 +841,9 @@ impl TorrentActor {
             webseed_pieces: HashMap::new(),
             webseed_tx,
             webseed_rx,
-            announcer: Announcer::new(&torrent.trackers, &keys, Instant::now()),
             finished: false,
         };
-        actor.add_candidates(params.peers);
+        actor.add_candidates(params.peers, None);
         match params.have {
             Some(have) => {
                 let have = validate_resume(actor.storage.as_ref(), &actor.layout, have);
@@ -805,6 +974,9 @@ impl TorrentActor {
             name: info.name.clone(),
             single_file: info.is_single_file(),
         });
+        let Some(throttle) = self.default_entry().map(|e| e.throttle.clone()) else {
+            return;
+        };
         for url in self.torrent.web_seeds.clone() {
             let key = self.shared.next_key();
             self.webseeds.insert(
@@ -822,7 +994,7 @@ impl TorrentActor {
                 key,
                 shape.clone(),
                 self.shared.http.clone(),
-                self.throttle.clone(),
+                throttle.clone(),
                 self.webseed_tx.clone(),
             );
         }
@@ -839,6 +1011,9 @@ impl TorrentActor {
                     ws.failures = 0;
                 }
                 self.downloaded += data.len() as u64;
+                if let Some(e) = self.default_entry_mut() {
+                    e.downloaded += data.len() as u64;
+                }
                 let blocks = self.layout.blocks_in_piece(piece);
                 let size = self.layout.piece_size(piece) as usize;
                 let Some(picker) = self.picker.as_mut() else {
@@ -885,19 +1060,20 @@ impl TorrentActor {
 
     /// The next piece for a web seed to fetch: a whole piece of its own.
     fn webseed_pick(&mut self, key: PeerKey) -> Option<u32> {
-        if self.paused || self.error.is_some() {
+        if !self.running() {
             return None;
         }
         let ws = self.webseeds.get(&key)?;
         if ws.disabled || ws.piece.is_some() {
             return None;
         }
+        let memory_limit = self.memory_limit();
         let picker = self.picker.as_mut()?;
         let max_new = new_piece_room(
             &self.layout,
             picker.pieces_in_progress(),
             self.shared.memory.available(),
-            self.limits.memory,
+            memory_limit,
         )
         .min(1);
         let everything = Bitfield::full(self.layout.piece_count());
@@ -1222,19 +1398,52 @@ impl TorrentActor {
         match msg {
             ActorMsg::Command(cmd) => match cmd {
                 Command::AddPeers(peers) => {
-                    self.add_candidates(peers);
+                    self.add_candidates(peers, None);
                     self.connect_more();
                 }
                 Command::Pause => {
-                    self.paused = true;
-                    self.send_stopped();
-                    self.shutdown_peers();
+                    let keys: Vec<EntryKey> = self.entries.iter().map(|e| e.key).collect();
+                    for key in keys {
+                        self.pause_entry(key);
+                    }
                     self.publish_stats();
                 }
                 Command::Resume => {
                     // Resuming is also how the user retries after a disk error.
                     self.error = None;
-                    self.paused = false;
+                    for e in &mut self.entries {
+                        e.paused = false;
+                    }
+                    self.announce();
+                    self.connect_more();
+                    self.publish_stats();
+                }
+                Command::PauseEntry(key) => {
+                    self.pause_entry(key);
+                    self.publish_stats();
+                }
+                Command::ResumeEntry(key) => {
+                    self.error = None;
+                    if let Some(e) = self.entry_mut(key) {
+                        e.paused = false;
+                    }
+                    self.announce();
+                    self.connect_more();
+                    self.publish_stats();
+                }
+                Command::AddEntry(params) => {
+                    if self.entry(params.key).is_none() {
+                        let entry = Entry::new(params, &self.torrent, &self.keys, &self.shared);
+                        self.entries.push(entry);
+                        self.announce();
+                        self.connect_more();
+                        self.publish_stats();
+                    }
+                }
+                Command::RemoveEntry(key) => {
+                    self.pause_entry(key);
+                    self.entries.retain(|e| e.key != key);
+                    // Its trackers may now be the next entry's to announce to.
                     self.announce();
                     self.connect_more();
                     self.publish_stats();
@@ -1248,15 +1457,25 @@ impl TorrentActor {
                 }
                 Command::FilePriorities(prios) => self.set_file_priorities(&prios),
                 Command::SetUnwantedPolicy(policy) => self.unwanted = policy,
-                Command::SetLimits(limits) => {
-                    self.throttle.torrent_down.set_rate(limits.download_rate);
-                    self.throttle.torrent_up.set_rate(limits.upload_rate);
-                    self.limits = limits;
+                Command::SetLimits(key, limits) => {
+                    if let Some(e) = self.entry_mut(key) {
+                        e.throttle.torrent_down.set_rate(limits.download_rate);
+                        e.throttle.torrent_up.set_rate(limits.upload_rate);
+                        e.limits = limits;
+                    }
                     self.connect_more();
                 }
-                Command::SetGroup(name) => {
-                    self.throttle
-                        .set_group(name.as_deref().and_then(|g| self.shared.group(g)));
+                Command::SetGroup(key, name) => {
+                    let group = name.as_deref().and_then(|g| self.shared.group(g));
+                    if let Some(e) = self.entry(key) {
+                        e.throttle.set_group(group);
+                    }
+                }
+                Command::SetSpace(key, name) => {
+                    let space = name.as_deref().and_then(|s| self.shared.space(s));
+                    if let Some(e) = self.entry(key) {
+                        e.throttle.set_space(space);
+                    }
                 }
                 Command::ReleaseHeld(files) => {
                     let placements = self.storage.placements();
@@ -1270,8 +1489,8 @@ impl TorrentActor {
                     self.start_moves(moves);
                     self.publish_stats();
                 }
-                Command::Trackers(reply) => {
-                    let _ = reply.send(self.announcer.status());
+                Command::Trackers(key, reply) => {
+                    let _ = reply.send(self.tracker_status(key));
                 }
                 Command::Peers(reply) => {
                     let _ = reply.send(self.peer_infos());
@@ -1299,7 +1518,7 @@ impl TorrentActor {
                 block,
                 result,
             } => self.on_block_read(peer, block, result),
-            ActorMsg::Announced { job, result } => self.on_announced(&job, result),
+            ActorMsg::Announced { entry, job, result } => self.on_announced(entry, &job, result),
             ActorMsg::Moved { files, result } => self.on_moved(&files, result),
         }
     }
@@ -1307,21 +1526,63 @@ impl TorrentActor {
     // ----- trackers -----------------------------------------------------------------------
 
     fn announce(&mut self) {
-        if self.paused || self.picker.is_none() {
+        if self.error.is_some() || self.picker.is_none() {
             return;
         }
-        for job in self.announcer.due(Instant::now()) {
-            self.spawn_announce(job, true);
+        let now = Instant::now();
+        let mut jobs = Vec::new();
+        // URLs an older running entry lists are that entry's to announce to.
+        let mut covered: HashSet<String> = HashSet::new();
+        for e in &mut self.entries {
+            if e.paused {
+                continue;
+            }
+            for job in e.announcer.due_where(now, |url| !covered.contains(url)) {
+                jobs.push((e.key, job));
+            }
+            covered.extend(e.urls.iter().cloned());
+        }
+        for (key, job) in jobs {
+            self.spawn_announce(key, job, true);
         }
     }
 
-    fn spawn_announce(&self, job: Job, report: bool) {
+    /// Each tracker's status for one entry (or every entry). A URL an older running entry
+    /// also lists shows that entry's status, since it is the one announcing there.
+    fn tracker_status(&self, key: Option<EntryKey>) -> Vec<TrackerStatus> {
+        let mut by_url: HashMap<String, TrackerStatus> = HashMap::new();
+        let running = self.entries.iter().filter(|e| !e.paused);
+        for e in running.chain(self.entries.iter().filter(|e| e.paused)) {
+            for s in e.announcer.status() {
+                by_url.entry(s.url.clone()).or_insert(s);
+            }
+        }
+        let mut out: Vec<TrackerStatus> = Vec::new();
+        for e in &self.entries {
+            if key.is_some_and(|k| k != e.key) {
+                continue;
+            }
+            for s in e.announcer.status() {
+                let tier = s.tier;
+                let shown = by_url.get(&s.url).cloned().unwrap_or(s);
+                if !out.iter().any(|o| o.url == shown.url) {
+                    out.push(TrackerStatus { tier, ..shown });
+                }
+            }
+        }
+        out
+    }
+
+    fn spawn_announce(&self, key: EntryKey, job: Job, report: bool) {
+        let (uploaded, downloaded) = self
+            .entry(key)
+            .map_or((0, 0), |e| (e.uploaded, e.downloaded));
         let req = apitorrent_tracker::AnnounceRequest {
             info_hash: job.info_hash,
             peer_id: self.shared.peer_id,
             port: self.shared.listen_port(),
-            uploaded: self.uploaded,
-            downloaded: self.downloaded,
+            uploaded,
+            downloaded,
             left: self.bytes_left(),
             event: job.event,
             num_want: Some(if self.finished { 0 } else { 50 }),
@@ -1336,34 +1597,58 @@ impl TorrentActor {
                 .await
                 .map_err(|e| e.to_string());
             if report {
-                let _ = tx.send(ActorMsg::Announced { job, result }).await;
+                let _ = tx
+                    .send(ActorMsg::Announced {
+                        entry: key,
+                        job,
+                        result,
+                    })
+                    .await;
             }
         });
     }
 
-    /// Best-effort `stopped` announces; their results are not waited for.
+    /// Best-effort `stopped` announces for every entry; their results are not waited for.
     fn send_stopped(&mut self) {
-        for job in self.announcer.stop(Instant::now()) {
-            self.spawn_announce(job, false);
+        let keys: Vec<EntryKey> = self.entries.iter().map(|e| e.key).collect();
+        for key in keys {
+            self.send_stopped_for(key);
+        }
+    }
+
+    fn send_stopped_for(&mut self, key: EntryKey) {
+        let Some(e) = self.entry_mut(key) else {
+            return;
+        };
+        let jobs = e.announcer.stop(Instant::now());
+        for job in jobs {
+            self.spawn_announce(key, job, false);
         }
     }
 
     fn on_announced(
         &mut self,
+        key: EntryKey,
         job: &Job,
         result: Result<apitorrent_tracker::AnnounceResponse, String>,
     ) {
         let now = Instant::now();
+        let Some(entry) = self.entry_mut(key) else {
+            return;
+        };
         match result {
             Ok(resp) => {
                 tracing::debug!(url = %job.url, peers = resp.peers.len(), "announced");
-                self.announcer.on_success(job, &resp, now);
-                self.add_candidates(resp.peers);
-                self.connect_more();
+                entry.announcer.on_success(job, &resp, now);
+                // A stopped entry's late answer brings no peers.
+                if !entry.paused {
+                    self.add_candidates(resp.peers, Some(key));
+                    self.connect_more();
+                }
             }
             Err(e) => {
                 tracing::debug!(url = %job.url, error = %e, "announce failed");
-                self.announcer.on_failure(job, &e, now);
+                entry.announcer.on_failure(job, &e, now);
             }
         }
         // A failure may make the next tracker in the tier due right away.
@@ -1383,70 +1668,151 @@ impl TorrentActor {
 
     // ----- connections ------------------------------------------------------------------
 
-    fn add_candidates(&mut self, peers: Vec<SocketAddr>) {
+    /// Addresses to dial; `from` is the entry whose tracker named them.
+    fn add_candidates(&mut self, peers: Vec<SocketAddr>, from: Option<EntryKey>) {
         for addr in peers {
             if self.known.insert(addr) {
-                self.candidates.push_back(addr);
+                self.candidates.push_back((addr, from));
             }
         }
     }
 
-    fn max_peers(&self) -> usize {
-        self.limits
+    // ----- entries ----------------------------------------------------------------------
+
+    fn entry(&self, key: EntryKey) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.key == key)
+    }
+
+    fn entry_mut(&mut self, key: EntryKey) -> Option<&mut Entry> {
+        self.entries.iter_mut().find(|e| e.key == key)
+    }
+
+    /// The oldest running entry: DHT, PEX, LSD, web seed and incoming peers are its.
+    fn default_entry(&self) -> Option<&Entry> {
+        self.entries.iter().find(|e| !e.paused)
+    }
+
+    fn default_entry_mut(&mut self) -> Option<&mut Entry> {
+        self.entries.iter_mut().find(|e| !e.paused)
+    }
+
+    /// Whether the torrent transfers at all: some entry runs and no disk error stopped it.
+    fn running(&self) -> bool {
+        self.error.is_none() && self.entries.iter().any(|e| !e.paused)
+    }
+
+    /// Stop one entry: tell its trackers, and close its connections. Outbound peers stay
+    /// candidates for whichever entry runs next.
+    fn pause_entry(&mut self, key: EntryKey) {
+        let Some(e) = self.entry_mut(key) else {
+            return;
+        };
+        if e.paused {
+            return;
+        }
+        e.paused = true;
+        self.send_stopped_for(key);
+        let peers: Vec<PeerKey> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.entry == key)
+            .map(|(k, _)| *k)
+            .collect();
+        self.close_peers(&peers);
+    }
+
+    /// The torrent's cap on piece data in memory: the tightest any entry sets.
+    fn memory_limit(&self) -> Option<u64> {
+        self.entries.iter().filter_map(|e| e.limits.memory).min()
+    }
+
+    fn max_peers(&self, entry: &Entry) -> usize {
+        entry
+            .limits
             .max_connections
             .unwrap_or(self.shared.config.max_peers_per_torrent)
     }
 
-    /// Take a unit of the session's and group's connection counters, if both have room.
-    fn connection_slots(&self) -> Option<Vec<Slot>> {
+    /// Whether an entry runs and may have one more connection.
+    fn has_room(&self, key: EntryKey) -> bool {
+        self.entry(key).is_some_and(|e| {
+            !e.paused && self.peers.values().filter(|p| p.entry == key).count() < self.max_peers(e)
+        })
+    }
+
+    /// The entry a new connection would belong to: the one whose tracker named the peer if
+    /// it runs, else the oldest running entry.
+    fn entry_for(&self, from: Option<EntryKey>) -> Option<EntryKey> {
+        from.filter(|&k| self.entry(k).is_some_and(|e| !e.paused))
+            .or_else(|| self.default_entry().map(|e| e.key))
+    }
+
+    /// Take a unit of the session's, space's and group's connection counters, if all have
+    /// room.
+    fn connection_slots(&self, key: EntryKey) -> Option<Vec<Slot>> {
+        let throttle = &self.entry(key)?.throttle;
         let mut slots = vec![self.shared.connections.try_acquire()?];
-        if let Some(g) = self.throttle.group() {
+        for g in [throttle.space(), throttle.group()].into_iter().flatten() {
             slots.push(g.connections.try_acquire()?);
         }
         Some(slots)
     }
 
     fn connect_more(&mut self) {
-        if self.paused || self.picker.is_none() {
+        if !self.running() || self.picker.is_none() {
             return;
         }
-        let max = self.max_peers();
         let now = Instant::now();
         let mut deferred = Vec::new();
-        while self.peers.len() < max {
-            let Some(addr) = self.candidates.pop_front() else {
+        let mut full: HashSet<EntryKey> = HashSet::new();
+        while let Some((addr, from)) = self.candidates.pop_front() {
+            let Some(entry) = self.entry_for(from) else {
+                self.candidates.push_front((addr, from));
                 break;
             };
+            if full.contains(&entry) || !self.has_room(entry) {
+                full.insert(entry);
+                deferred.push((addr, from));
+                if self
+                    .entries
+                    .iter()
+                    .all(|e| e.paused || full.contains(&e.key))
+                {
+                    break;
+                }
+                continue;
+            }
             if self.peers.values().any(|p| p.addr == addr) {
                 continue;
             }
             if self.shared.filter.is_blocked(addr.ip()) {
                 self.retry_at.insert(addr, now + RETRY_AFTER);
-                deferred.push(addr);
+                deferred.push((addr, from));
                 continue;
             }
             let complete = self.picker.as_ref().is_some_and(|p| p.have().is_full());
             if self.retry_at.get(&addr).is_some_and(|&at| now < at)
                 || (complete && self.seed_addrs.contains(&addr))
             {
-                deferred.push(addr);
+                deferred.push((addr, from));
                 continue;
             }
             // Room under every connection limit, and the attempt rate allows one more?
-            let Some(slots) = self.connection_slots() else {
-                self.candidates.push_front(addr);
+            let Some(slots) = self.connection_slots(entry) else {
+                self.candidates.push_front((addr, from));
                 break;
             };
             let Some(half_open) = self.shared.half_open.try_acquire() else {
-                self.candidates.push_front(addr);
+                self.candidates.push_front((addr, from));
                 break;
             };
             if !self.shared.connect_rate.try_take(1) {
-                self.candidates.push_front(addr);
+                self.candidates.push_front((addr, from));
                 break;
             }
+            let throttle = self.entry(entry).expect("checked").throttle.clone();
             let key = self.shared.next_key();
-            let mut peer = Peer::new(addr, self.layout.piece_count(), true, slots);
+            let mut peer = Peer::new(addr, entry, self.layout.piece_count(), true, slots);
             peer.half_open = Some(half_open);
             self.peers.insert(key, peer);
             let ours = self.our_handshake();
@@ -1458,7 +1824,7 @@ impl TorrentActor {
                 key,
                 self.max_message,
                 self.peer_tx.clone(),
-                self.throttle.clone(),
+                throttle,
                 self.shared.dialer.clone(),
             ));
         }
@@ -1481,16 +1847,26 @@ impl TorrentActor {
         link: peer::Link,
         addr: SocketAddr,
     ) {
-        if self.paused || self.picker.is_none() || self.peers.len() >= self.max_peers() {
+        if !self.running() || self.picker.is_none() {
             return;
         }
-        let Some(slots) = self.connection_slots() else {
+        // Incoming peers are the oldest running entry's, or the next one with room.
+        let Some(entry) = self
+            .entries
+            .iter()
+            .map(|e| e.key)
+            .find(|&k| self.has_room(k))
+        else {
             return;
         };
+        let Some(slots) = self.connection_slots(entry) else {
+            return;
+        };
+        let throttle = self.entry(entry).expect("has room").throttle.clone();
         let key = self.shared.next_key();
         self.peers.insert(
             key,
-            Peer::new(addr, self.layout.piece_count(), false, slots),
+            Peer::new(addr, entry, self.layout.piece_count(), false, slots),
         );
         // Answer with the hash the peer asked for: v1, or truncated v2 for a v2 swarm.
         let mut ours = self.our_handshake();
@@ -1503,7 +1879,7 @@ impl TorrentActor {
             key,
             self.max_message,
             self.peer_tx.clone(),
-            self.throttle.clone(),
+            throttle,
         ));
     }
 
@@ -1511,12 +1887,18 @@ impl TorrentActor {
     /// again straight away.
     fn shutdown_peers(&mut self) {
         let keys: Vec<PeerKey> = self.peers.keys().copied().collect();
-        for key in keys {
+        self.close_peers(&keys);
+    }
+
+    /// Close these connections. Outbound peers go back to the candidates (no longer tied
+    /// to an entry), so whichever entry runs next can dial them straight away.
+    fn close_peers(&mut self, keys: &[PeerKey]) {
+        for &key in keys {
             if let Some(p) = self.peers.get(&key) {
                 p.close();
                 if p.outbound {
                     self.retry_at.remove(&p.addr);
-                    self.candidates.push_back(p.addr);
+                    self.candidates.push_back((p.addr, None));
                 }
             }
             self.drop_peer(key);
@@ -1572,7 +1954,7 @@ impl TorrentActor {
                             RECONNECT_AFTER
                         };
                         self.retry_at.insert(p.addr, Instant::now() + wait);
-                        self.candidates.push_back(p.addr);
+                        self.candidates.push_back((p.addr, Some(p.entry)));
                     }
                 }
                 self.drop_peer(key);
@@ -1768,7 +2150,7 @@ impl TorrentActor {
                         }
                         added.push(addr);
                     }
-                    self.add_candidates(added);
+                    self.add_candidates(added, None);
                     self.connect_more();
                 }
             }
@@ -1924,6 +2306,7 @@ impl TorrentActor {
 
     fn fill_requests(&mut self, key: PeerKey) {
         let depth = self.shared.config.request_queue;
+        let memory_limit = self.memory_limit();
         let (Some(picker), Some(peer)) = (self.picker.as_mut(), self.peers.get_mut(&key)) else {
             return;
         };
@@ -1935,7 +2318,7 @@ impl TorrentActor {
             &self.layout,
             picker.pieces_in_progress(),
             self.shared.memory.available(),
-            self.limits.memory,
+            memory_limit,
         );
         let blocks = if self.reputation.on_parole(peer.addr.ip()) {
             picker.pick_exclusive(key, &peer.has, want, max_new)
@@ -1984,8 +2367,12 @@ impl TorrentActor {
         };
         peer.requests.swap_remove(i);
         let peer_ip = peer.addr.ip();
+        let entry = peer.entry;
         peer.downloaded += data.len() as u64;
         self.downloaded += data.len() as u64;
+        if let Some(e) = self.entry_mut(entry) {
+            e.downloaded += data.len() as u64;
+        }
         let picker = self.picker.as_mut().expect("running");
         match picker.block_received(key, &block) {
             Received::Unwanted => {}
@@ -2130,7 +2517,10 @@ impl TorrentActor {
                     self.finished = true;
                     let _ = self.storage.sync();
                     tracing::info!(torrent = %self.info_hashes.id_string(), "download complete");
-                    self.announcer.completed(Instant::now());
+                    let now = Instant::now();
+                    for e in &mut self.entries {
+                        e.announcer.completed(now);
+                    }
                     self.announce();
                 }
             }
@@ -2207,12 +2597,17 @@ impl TorrentActor {
                     return;
                 }
                 peer.uploaded += data.len() as u64;
-                self.uploaded += data.len() as u64;
+                let entry = peer.entry;
+                let len = data.len() as u64;
                 peer.send(Message::Piece {
                     piece: block.piece,
                     offset: block.offset,
                     data,
                 });
+                self.uploaded += len;
+                if let Some(e) = self.entry_mut(entry) {
+                    e.uploaded += len;
+                }
             }
             Err(e) => {
                 tracing::error!(error = %e, "disk read error");
@@ -2321,6 +2716,10 @@ impl TorrentActor {
         self.publish_stats();
         self.last_downloaded = self.downloaded;
         self.last_uploaded = self.uploaded;
+        for e in &mut self.entries {
+            e.last_downloaded = e.downloaded;
+            e.last_uploaded = e.uploaded;
+        }
     }
 
     /// Stops the torrent after a storage error: every further transfer would be wasted (or,
@@ -2330,11 +2729,8 @@ impl TorrentActor {
             return;
         }
         self.error = Some(error);
-        if !self.paused {
-            self.paused = true;
-            self.send_stopped();
-            self.shutdown_peers();
-        }
+        self.send_stopped();
+        self.shutdown_peers();
         self.publish_stats();
     }
 
@@ -2372,6 +2768,7 @@ impl TorrentActor {
                     on_parole: self.reputation.on_parole(p.addr.ip()),
                     utp: p.link.utp,
                     encrypted: p.link.encrypted,
+                    entry: p.entry,
                 }
             })
             .collect();
@@ -2390,7 +2787,7 @@ impl TorrentActor {
             Some(p) => {
                 let state = if self.error.is_some() {
                     TorrentState::Error
-                } else if self.paused {
+                } else if !self.running() {
                     TorrentState::Paused
                 } else if p.is_finished() {
                     TorrentState::Seeding
@@ -2402,6 +2799,28 @@ impl TorrentActor {
         };
         let ready = self.peers.values().filter(|p| p.tx.is_some());
         let (peers, seeds) = ready.fold((0, 0), |(n, s), p| (n + 1, s + u32::from(p.is_seed)));
+        let entries = self
+            .entries
+            .iter()
+            .map(|e| {
+                let mine = self
+                    .peers
+                    .values()
+                    .filter(|p| p.tx.is_some() && p.entry == e.key);
+                let (peers, seeds) =
+                    mine.fold((0, 0), |(n, s), p| (n + 1, s + u32::from(p.is_seed)));
+                EntryStats {
+                    key: e.key,
+                    paused: e.paused,
+                    downloaded: e.downloaded,
+                    uploaded: e.uploaded,
+                    download_rate: e.downloaded - e.last_downloaded,
+                    upload_rate: e.uploaded - e.last_uploaded,
+                    peers,
+                    seeds,
+                }
+            })
+            .collect();
         let (wanted_total, wanted_have) = self
             .picker
             .as_ref()
@@ -2423,6 +2842,7 @@ impl TorrentActor {
             peers,
             seeds,
             error: self.error.clone(),
+            entries,
         };
         self.stats.send_if_modified(|old| {
             if *old == stats {

@@ -138,6 +138,7 @@ pub(crate) fn start(
         shared.download.clone(),
         shared.upload.clone(),
         None,
+        None,
         crate::limits::TorrentLimits::default(),
     ));
     let mut f = Fetcher {
