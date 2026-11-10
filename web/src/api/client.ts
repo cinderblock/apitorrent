@@ -28,6 +28,8 @@ import type { SetupPasswordRequest } from "./generated/SetupPasswordRequest";
 import type { SetupStartRequest } from "./generated/SetupStartRequest";
 import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { UnwantedPolicy } from "./generated/UnwantedPolicy";
+import type { UpdateSettings } from "./generated/UpdateSettings";
+import type { UpdateStatus } from "./generated/UpdateStatus";
 import { transport } from "./transport";
 
 const BASE = "/api/v1";
@@ -109,6 +111,15 @@ export const api = {
   /** Delete held copies of deselected files; all of them when `files` is omitted. */
   releaseHeld: (id: string, files?: number[]) =>
     request<void>("POST", `/torrents/${enc(id)}/held/release`, { files: files ?? null }),
+};
+
+/** `/api/v1/system/update`: the daemon's own updates (admins only). */
+export const updateApi = {
+  status: () => request<UpdateStatus>("GET", "/system/update"),
+  check: () => request<UpdateStatus>("POST", "/system/update/check"),
+  /** Answers once the new binary is in place; the daemon then restarts. */
+  install: () => request<UpdateStatus>("POST", "/system/update/install"),
+  setSettings: (s: UpdateSettings) => request<UpdateStatus>("PUT", "/system/update/settings", s),
 };
 
 /** `/api/v1/auth`. Sign-in calls answer with the new status and set the session cookie. */

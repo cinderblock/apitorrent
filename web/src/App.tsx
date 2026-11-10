@@ -13,6 +13,7 @@ import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
 import { ThemePicker } from "./components/ThemePicker";
 import { TorrentTable } from "./components/TorrentTable";
+import { UpdateButton } from "./components/Updates";
 import { DesktopMenu } from "./desktop/DesktopGate";
 import { isDesktop } from "./desktop/bridge";
 import { useIncomingLinks } from "./desktop/links";
@@ -56,6 +57,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importing, setImporting] = useState(false);
   const narrow = useNarrow();
+  const isAdmin = auth.authDisabled || auth.user?.role === "admin";
   // The filters drawer, on a phone.
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -195,12 +197,13 @@ export function App({ status: auth }: { status: AuthStatus }) {
         <button type="button" onClick={() => navigate("/rules")}>
           Rules
         </button>
-        {(auth.authDisabled || auth.user?.role === "admin") && (
+        {isAdmin && (
           <button type="button" onClick={() => navigate("/plugins")}>
             Plugins
           </button>
         )}
         <ThemePicker />
+        <UpdateButton isAdmin={isAdmin} />
         <input
           type="search"
           className="search"
@@ -305,6 +308,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
       )}
       {settingsOpen && (
         <SettingsDialog
+          isAdmin={isAdmin}
           onClose={() => setSettingsOpen(false)}
           onImport={() => {
             setSettingsOpen(false);

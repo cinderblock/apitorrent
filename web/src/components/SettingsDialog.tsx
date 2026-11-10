@@ -7,6 +7,7 @@ import type { Settings } from "../api/generated/Settings";
 import { formatDateTime, fromKiB, toKiB } from "../format";
 import { SeedLimitsFields } from "./SeedLimitsFields";
 import { TlsSection } from "./TlsSection";
+import { UpdatesSection } from "./Updates";
 
 const BAN_REASONS: Record<Ban["reason"], string> = {
   badData: "sent data that failed verification",
@@ -86,7 +87,7 @@ function NumberField({ label, value, onChange, hint }: { label: string; value: n
 
 const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null };
 
-export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onImport: () => void }) {
+export function SettingsDialog({ isAdmin, onClose, onImport }: { isAdmin: boolean; onClose: () => void; onImport: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -208,6 +209,7 @@ export function SettingsDialog({ onClose, onImport }: { onClose: () => void; onI
             </fieldset>
             <BansSection />
             <TlsSection />
+            {isAdmin && <UpdatesSection />}
             <fieldset className="settings-section">
               <legend>Library</legend>
               <label className="check">
