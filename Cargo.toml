@@ -66,7 +66,7 @@ tracing = "0.1"
 # Transport: MSE crypto. crypto-bigint gives a constant-time, fixed-width modpow.
 crypto-bigint = { version = "0.7", default-features = false }
 rc4 = "0.2"
-num-bigint = "0.4"
+num-bigint = "0.5"
 # Transport: uTP. socket2 sizes the UDP buffers before tokio takes the socket.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
