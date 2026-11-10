@@ -116,8 +116,9 @@ engine core stays in the main thread, because its pieces interlock.
   layout, CI, fuzzing, scale fixes, real-world v2 tests. Every delegated stream is
   merged.
 - **What remains (2026-11-09):**
-  - Spaces (several separate setups in one daemon): designed, being built.
-    Plan: `plans/spaces.md`
+  - Spaces (several separate setups in one daemon): built and merged (`14e82b1`…
+    `f3a9384`). The main follow-up is user invitations: until they exist, the only
+    members are the first admin and space-bound API tokens. Plan: `plans/spaces.md`
   - The Deluge import of the user's two instances into two spaces: run by hand on the
     seedbox when the user is ready, with text pasted back and forth.
   - Signed updates for the desktop app and the daemon: built and merged (`c50a793`…
