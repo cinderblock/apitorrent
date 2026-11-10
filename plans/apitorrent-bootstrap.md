@@ -115,23 +115,22 @@ engine core stays in the main thread, because its pieces interlock.
 - **Main thread meanwhile:** done: M3.2, content library step 8, seed limits, phone
   layout, CI, fuzzing, scale fixes, real-world v2 tests. Every delegated stream is
   merged.
-- **What remains (2026-11-10):**
-  - Spaces (several separate setups in one daemon): built and merged (`14e82b1`…
-    `f3a9384`). Invitations, user management and the Plugins page for space admins were
-    merged on 2026-11-10 (`a0e7491`…`1fc7151`). Plans: `plans/spaces.md`,
-    `plans/invitations.md`
-  - Dependabot's five major bumps (sha1, sha2, hmac, num-bigint, getrandom; PRs #1–#5):
-    being upgraded together by a background agent, since they only work as a set.
-  - The Deluge import of the user's two instances into two spaces: the user waits for
-    more features first, then runs it by hand on the seedbox, with text pasted back and
-    forth.
-  - Signed updates: merged, and the key is made (2026-11-10). Still to do: a real
-    release run end to end. Plan: `plans/update-signing.md`
-  - GitHub: `cinderblock/apitorrent`, created **private** on 2026-11-10, with master
-    pushed. CI runs there now.
-  - Optional: a Raspberry Pi images source plugin.
-  - Dropped by the user (2026-11-10): testing `qbittorrent-api` against a real Sonarr or
-    Radarr.
+- **What remains (2026-11-10, evening).** Background agents in worktrees, merged when
+  done:
+  - Dependabot's five major bumps, upgraded together.
+  - Network fixes: the uTP reset on CI, the encrypted-uTP flake, and a reflink CI job.
+    Plan: `plans/net-fixes.md`
+  - Spaces and accounts follow-ups: joining with an existing account, keeping a last
+    space admin, editable per-space trackers, `--plugin-listen <id>@<slug>`, and
+    `--no-update-check`. Plan: `plans/invitations.md`
+  - Web UI review in a headless browser at three widths and in both themes. Plan:
+    `plans/ui-review.md`
+  - Desktop: folder picker, share locators, device pairing. Plan: `plans/m7-desktop.md`
+- **Main thread:** merging those, then a first draft release (`v0.1.0`) to test the
+  release and update pipeline end to end.
+- **Waiting on the user:** the Deluge import, after more features.
+- **Dropped by the user:** testing against a real Sonarr or Radarr.
+- **Optional:** a Raspberry Pi images source plugin.
 
 ## Findings / gotchas
 
@@ -503,10 +502,9 @@ them, restarts, and reports. On this machine (release build, NVMe):
 - [x] M2.4 `apitorrentd` daemon, default port 8742 (`1220f9f`)
 - [x] M3.1 web UI: live table, filters, details, file priorities, add/remove, drag-drop
   (`d185833`); daemon serves it with CSP and other security headers (`f459ad6`)
-- [ ] M3.2 UI: per-tracker status (engine already reports it), peers tab, label
-  editing, column chooser (the table is tight at 1280 px), embedding `web/dist` into
-  release binaries, bans list, session stats (memory, connections), "slow torrents
-  don't count" queue option like Deluge's
+- [x] M3.2 UI: per-tracker status, peers tab, label editing, column chooser, embedded
+  `web/dist` in release binaries (`embedded-ui`), bans list, session stats, and the
+  "slow torrents don't count" queue option (`ignore_slow`). Confirmed present 2026-11-10
 - [x] Real-world Ubuntu swarm test: interop works; two bugs fixed (see Findings)
 - [x] Part store and unwanted files: `parts.rs` (per-torrent slot file), per-file
   placements (save, held, parts) in `FileStorage`, hold or delete on deselect, release
@@ -560,9 +558,9 @@ them, restarts, and reports. On this machine (release build, NVMe):
   pass every 5 minutes (skipped while checking), setting `fingerprintRate`, matches
   tagged `MatchedBy::{Root, Fingerprint, Pieces, Name}`. Core test
   `fingerprints_let_v2_torrents_reuse_v1_files`
-- [ ] Content library, next: tracker-adapter hook (after M8 lands)
-- [ ] Reflinks are untested on a filesystem that clones: this machine has only NTFS (C:,
-  28 GB free on 2026-11-08). Test in CI on a loop-mounted Btrfs or XFS
+- [x] Content library: tracker-adapter hook (`crates/apitorrent-core/src/adapters.rs`, plugin ecosystem)
+- [ ] Reflinks are untested on a filesystem that clones: this machine has only NTFS. A CI
+  job on loop-mounted Btrfs and XFS is being added (2026-11-10, `plans/net-fixes.md`)
 - [x] M9 (part): Deluge importer. `apitorrent-deluge` reads `state/*.torrent`,
   `torrents.fastresume`, the `torrents.state` pickle (safe unpickler; fixture made by
   Python), `label.conf` and `core.conf`. `Core::import_deluge` keeps files where they are
@@ -615,9 +613,9 @@ them, restarts, and reports. On this machine (release build, NVMe):
   single instance, link handling. Cherry-picked from `t3/m7-tauri-desktop-app` on
   2026-11-09. The LAN listener serves the embedded UI (`apitorrent-webui`). Pairing uses
   the daemon's short code. See `plans/m7-desktop.md`
-- [ ] M7 follow-ups: run the GUI once (needs your OK to use the screen, or a hidden
-  desktop), build installers and test link registration, a folder picker, share locators
-  on the daemon. Local mode's LAN listener now serves HTTPS with a self-signed certificate
+- [ ] M7 follow-ups: GUI run done 2026-11-09. Folder picker, share locators and device
+  pairing are being built (2026-11-10). Installers are built by the release workflow and
+  are still untested (first draft release pending). Local mode's LAN listener now serves HTTPS with a self-signed certificate
   and shows its pairing code (on by default; plain HTTP still needs a proxy or consent).
   Not yet run end to end in the app
 - [x] M10 (written, not yet run): `.github/workflows/ci.yml` (web; Rust on Linux, Windows
@@ -663,8 +661,9 @@ them, restarts, and reports. On this machine (release build, NVMe):
   `--no-plugins`, `@apitorrent/plugin-sdk`, the `rss` and `ubuntu-releases` plugins, and a
   Plugins page. Cherry-picked from `t3/m8-plugin-host-v8` on 2026-11-09. See
   `plans/m8-plugins.md`
-- [ ] M8 follow-ups: the `qbittorrent-api` plugin, shipping first-party plugin bundles
-  with the daemon, the tracker-adapter hook, the `dns-provider` role for ACME DNS-01
+- [x] M8 follow-ups: the `qbittorrent-api` plugin, first-party plugin bundles in the
+  daemon (`first-party-plugins`), the tracker-adapter hook, and the `dns-provider` role
+  for ACME DNS-01. All done in the plugin ecosystem stream
 
 ## Open questions for the user
 
