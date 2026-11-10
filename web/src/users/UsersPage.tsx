@@ -199,21 +199,18 @@ function UserCard({
       )}
       {!u.you && (
         <div className="actions start">
-          <label className="field inline">
-            <span className="visually-hidden">Server role</span>
-            <select
-              aria-label={`${u.name}'s server role`}
-              value={u.role}
-              disabled={busy}
-              onChange={(e) => void change(() => usersApi.update(u.id, { role: e.target.value as Role, disabled: null }))}
-            >
-              {(["user", "viewer", "admin"] as Role[]).map((r) => (
-                <option key={r} value={r}>
-                  {ROLE_TEXT[r]}
-                </option>
-              ))}
-            </select>
-          </label>
+          <select
+            aria-label={`${u.name}'s server role`}
+            value={u.role}
+            disabled={busy}
+            onChange={(e) => void change(() => usersApi.update(u.id, { role: e.target.value as Role, disabled: null }))}
+          >
+            {(["user", "viewer", "admin"] as Role[]).map((r) => (
+              <option key={r} value={r}>
+                {ROLE_TEXT[r]}
+              </option>
+            ))}
+          </select>
           <button
             type="button"
             disabled={busy}

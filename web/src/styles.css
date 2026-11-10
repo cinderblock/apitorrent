@@ -789,6 +789,18 @@ code {
   margin: 0;
 }
 
+.auth-card .field-row > .field {
+  min-width: 0;
+}
+
+/* Phones: setup and enrollment fields one above the other, never wider than the card. */
+@media (max-width: 480px) {
+  .auth-card .field-row {
+    flex-direction: column;
+    gap: 0;
+  }
+}
+
 .auth-alt {
   margin: 16px 0 0;
   padding: 12px 0 0;
