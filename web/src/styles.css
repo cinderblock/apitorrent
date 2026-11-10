@@ -798,6 +798,14 @@ code {
   width: min(46rem, 94vw);
 }
 
+/* Wraps every section, so one `disabled` makes the dialog read-only for non-admins. */
+.settings-all {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
 .settings-section {
   /* A fieldset is at least as wide as its widest content by default. */
   min-width: 0;
@@ -888,6 +896,13 @@ code {
 button.wide {
   width: 100%;
   padding: 8px 10px;
+}
+
+.banner-info {
+  background: var(--accent-soft);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0 0 12px;
 }
 
 .banner-warn {

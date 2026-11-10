@@ -21,7 +21,7 @@ import { formatRate } from "./format";
 import { navigate } from "./router";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
 import { SpaceSwitcher } from "./spaces/SpaceSwitcher";
-import { useSpaceContext } from "./spaces/context";
+import { atLeast, useSpaceContext } from "./spaces/context";
 import { useNarrow } from "./useNarrow";
 
 const sync = SyncClient.forCurrentPage();
@@ -49,6 +49,8 @@ export function App({ status: auth }: { status: AuthStatus }) {
   // A space's admins get its space-aware plugins, its members and its invitations.
   const spaceAdmin = serverAdmin || space?.current.role === "admin";
   const administersASpace = serverAdmin || (space?.spaces.some((s) => s.role === "admin") ?? false);
+  // Viewers read only: no add, pause, remove or queue controls, and no editors in the details.
+  const mayWrite = space ? atLeast(space.current.role, "user") : auth.authDisabled || auth.user?.role !== "viewer";
 
   const [view, setView] = useState<View>({
     filter: "all",
@@ -130,6 +132,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
 
   function onKey(e: KeyboardEvent) {
     if (selection.length === 0) return;
+    if (!mayWrite && e.key !== "a") return;
     if (e.key === "Delete") {
       e.preventDefault();
       setRemoving(selection);
@@ -144,6 +147,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
 
   // Drop .torrent files anywhere on the window.
   useEffect(() => {
+    if (!mayWrite) return;
     const over = (e: DragEvent) => {
       if (e.dataTransfer?.types.includes("Files")) {
         e.preventDefault();
@@ -167,10 +171,10 @@ export function App({ status: auth }: { status: AuthStatus }) {
       window.removeEventListener("dragleave", leave);
       window.removeEventListener("drop", drop);
     };
-  }, []);
+  }, [mayWrite]);
 
   return (
-    <div className={`app ${dragging ? "dragging" : ""} ${narrow && selection.length > 0 ? "has-selection" : ""}`}>
+    <div className={`app ${dragging ? "dragging" : ""} ${narrow && mayWrite && selection.length > 0 ? "has-selection" : ""}`}>
       <header className="toolbar">
         <button
           type="button"
@@ -183,29 +187,34 @@ export function App({ status: auth }: { status: AuthStatus }) {
         </button>
         <h1 className="brand">apitorrent</h1>
         <SpaceSwitcher />
-        <button type="button" className="primary" onClick={() => setAdding([])}>
-          Add
-        </button>
-        <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => pauseOrResume(selection)}>
-          Pause / Resume
-        </button>
-        <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => setRemoving(selection)}>
-          Remove
-        </button>
-        <div className="button-group wide-only" role="group" aria-label="Queue">
-          <button type="button" disabled={selection.length === 0} aria-label="Move to the top of the queue" onClick={() => queueMove("top")}>
-            ⤒
-          </button>
-          <button type="button" disabled={selection.length === 0} aria-label="Move up the queue" onClick={() => queueMove("up")}>
-            ↑
-          </button>
-          <button type="button" disabled={selection.length === 0} aria-label="Move down the queue" onClick={() => queueMove("down")}>
-            ↓
-          </button>
-          <button type="button" disabled={selection.length === 0} aria-label="Move to the bottom of the queue" onClick={() => queueMove("bottom")}>
-            ⤓
-          </button>
-        </div>
+        {mayWrite && (
+          <>
+            <button type="button" className="primary" onClick={() => setAdding([])}>
+              Add
+            </button>
+            <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => pauseOrResume(selection)}>
+              Pause / Resume
+            </button>
+            <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => setRemoving(selection)}>
+              Remove
+            </button>
+            <div className="button-group wide-only" role="group" aria-label="Queue">
+              <button type="button" disabled={selection.length === 0} aria-label="Move to the top of the queue" onClick={() => queueMove("top")}>
+                ⤒
+              </button>
+              <button type="button" disabled={selection.length === 0} aria-label="Move up the queue" onClick={() => queueMove("up")}>
+                ↑
+              </button>
+              <button type="button" disabled={selection.length === 0} aria-label="Move down the queue" onClick={() => queueMove("down")}>
+                ↓
+              </button>
+              <button type="button" disabled={selection.length === 0} aria-label="Move to the bottom of the queue" onClick={() => queueMove("bottom")}>
+                ⤓
+              </button>
+            </div>
+          </>
+        )}
+        {!mayWrite && <span className="badge">Read only</span>}
         <button type="button" onClick={() => setSettingsOpen(true)}>
           Settings
         </button>
@@ -277,6 +286,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
               setFocus(f);
             }}
             onOpen={(id) => setFocus(id)}
+            selectable={mayWrite}
           />
         ) : (
           <TorrentTable
@@ -293,9 +303,9 @@ export function App({ status: auth }: { status: AuthStatus }) {
             onKey={onKey}
           />
         )}
-        {focused && <DetailPane summary={focused} onClose={narrow ? () => setFocus(null) : undefined} />}
+        {focused && <DetailPane summary={focused} onClose={narrow ? () => setFocus(null) : undefined} readOnly={!mayWrite} />}
       </main>
-      {narrow && selection.length > 0 && (
+      {narrow && mayWrite && selection.length > 0 && (
         <div className="selection-bar" role="toolbar" aria-label={`${selection.length} selected`}>
           <span className="muted">{selection.length} selected</span>
           <button type="button" onClick={() => pauseOrResume(selection)}>
@@ -328,10 +338,14 @@ export function App({ status: auth }: { status: AuthStatus }) {
         <SettingsDialog
           isAdmin={serverAdmin}
           onClose={() => setSettingsOpen(false)}
-          onImport={() => {
-            setSettingsOpen(false);
-            setImporting(true);
-          }}
+          onImport={
+            spaceAdmin
+              ? () => {
+                  setSettingsOpen(false);
+                  setImporting(true);
+                }
+              : undefined
+          }
           onSpaces={
             administersASpace
               ? () => {

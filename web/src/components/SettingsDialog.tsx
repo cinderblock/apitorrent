@@ -94,9 +94,11 @@ export function SettingsDialog({
   onSpaces,
   onUsers,
 }: {
+  /** Server admins change these settings; everyone else reads them. */
   isAdmin: boolean;
   onClose: () => void;
-  onImport: () => void;
+  /** Open the Deluge import; for this space's admins. */
+  onImport?: () => void;
   /** Open the Spaces page; for server admins and spaces' admins. */
   onSpaces?: () => void;
   /** Open the Users page; only for server admins. */
@@ -137,7 +139,10 @@ export function SettingsDialog({
         <h2 id="settings-title">Settings</h2>
         {!settings && !error && <p className="muted">Loading…</p>}
         {settings && (
-          <>
+          <fieldset className="settings-all" disabled={!isAdmin}>
+            {!isAdmin && (
+              <p className="banner-info">These settings apply to every space on this server. Only a server admin can change them.</p>
+            )}
             <p className="hint muted">Rates are in KiB/s. Empty or 0 means unlimited.</p>
             <fieldset className="settings-section">
               <legend>Bandwidth</legend>
@@ -328,13 +333,15 @@ export function SettingsDialog({
                 Add group
               </button>
             </fieldset>
-          </>
+          </fieldset>
         )}
         {error && <p className="error-text">{error}</p>}
         <div className="actions">
-          <button type="button" className="link actions-start" onClick={onImport}>
-            Import from Deluge…
-          </button>
+          {onImport && (
+            <button type="button" className="link actions-start" onClick={onImport}>
+              Import from Deluge…
+            </button>
+          )}
           {onSpaces && (
             <button type="button" className="link" onClick={onSpaces}>
               Spaces…
@@ -346,11 +353,13 @@ export function SettingsDialog({
             </button>
           )}
           <button type="button" onClick={onClose}>
-            Cancel
+            {isAdmin ? "Cancel" : "Close"}
           </button>
-          <button type="submit" className="primary" disabled={!settings || saving}>
-            {saving ? "Saving…" : "Save"}
-          </button>
+          {isAdmin && (
+            <button type="submit" className="primary" disabled={!settings || saving}>
+              {saving ? "Saving…" : "Save"}
+            </button>
+          )}
         </div>
       </form>
     </dialog>

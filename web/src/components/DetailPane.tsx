@@ -21,6 +21,11 @@ const PRIORITIES: Array<[number, string]> = [
   [7, "High"],
 ];
 
+/** The listed priority nearest a file's own. */
+function nearestPriority(priority: number): number {
+  return PRIORITIES.reduce((best, [p]) => (Math.abs(p - priority) < Math.abs(best - priority) ? p : best), 4);
+}
+
 /** Fetch the detail for `id`, refreshing while it is shown. */
 function useDetail(id: string, revision: unknown) {
   const [detail, setDetail] = useState<TorrentDetail | null>(null);
@@ -102,10 +107,11 @@ function SupersededBy({ id }: { id: string }) {
   );
 }
 
-function LabelEditor({ id, label }: { id: string; label: string | null }) {
+function LabelEditor({ id, label, readOnly }: { id: string; label: string | null; readOnly: boolean }) {
   const [value, setValue] = useState(label ?? "");
   useEffect(() => setValue(label ?? ""), [label]);
   const dirty = value.trim() !== (label ?? "");
+  if (readOnly) return label ?? <span className="muted">none</span>;
   return (
     <form
       className="inline-edit"
@@ -128,7 +134,7 @@ function describeLimits(l: TorrentLimits): string {
   return parts.length > 0 ? parts.join(", ") : "None of its own";
 }
 
-function LimitsEditor({ id, limits, refetch }: { id: string; limits: TorrentLimits; refetch: () => void }) {
+function LimitsEditor({ id, limits, refetch, readOnly }: { id: string; limits: TorrentLimits; refetch: () => void; readOnly: boolean }) {
   const [editing, setEditing] = useState(false);
   const [down, setDown] = useState(toKiB(limits.downloadRate));
   const [up, setUp] = useState(toKiB(limits.uploadRate));
@@ -137,9 +143,11 @@ function LimitsEditor({ id, limits, refetch }: { id: string; limits: TorrentLimi
     return (
       <span className="inline-edit">
         {describeLimits(limits)}
-        <button type="button" className="link" onClick={() => setEditing(true)}>
-          Change
-        </button>
+        {!readOnly && (
+          <button type="button" className="link" onClick={() => setEditing(true)}>
+            Change
+          </button>
+        )}
       </span>
     );
   }
@@ -171,7 +179,7 @@ function LimitsEditor({ id, limits, refetch }: { id: string; limits: TorrentLimi
   );
 }
 
-function SeedLimitsEditor({ id, detail, refetch }: { id: string; detail: TorrentDetail; refetch: () => void }) {
+function SeedLimitsEditor({ id, detail, refetch, readOnly }: { id: string; detail: TorrentDetail; refetch: () => void; readOnly: boolean }) {
   const [editing, setEditing] = useState(false);
   const [own, setOwn] = useState(detail.seedLimits !== null);
   const [limits, setLimits] = useState(detail.seedLimits ?? detail.effectiveSeedLimits);
@@ -183,17 +191,19 @@ function SeedLimitsEditor({ id, detail, refetch }: { id: string; detail: Torrent
           <span className="muted"> ({detail.seedLimits ? "its own" : "from its group or the settings"})</span>
           {detail.seedLimitReached && <span className="muted">. Reached; it seeds on until these change</span>}
         </span>
-        <button
-          type="button"
-          className="link"
-          onClick={() => {
-            setOwn(detail.seedLimits !== null);
-            setLimits(detail.seedLimits ?? detail.effectiveSeedLimits);
-            setEditing(true);
-          }}
-        >
-          Change
-        </button>
+        {!readOnly && (
+          <button
+            type="button"
+            className="link"
+            onClick={() => {
+              setOwn(detail.seedLimits !== null);
+              setLimits(detail.seedLimits ?? detail.effectiveSeedLimits);
+              setEditing(true);
+            }}
+          >
+            Change
+          </button>
+        )}
       </span>
     );
   }
@@ -302,7 +312,7 @@ function TrackersTab({ detail }: { detail: TorrentDetail }) {
   );
 }
 
-function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detail: TorrentDetail; refetch: () => void }) {
+function FilesTab({ summary, detail, refetch, readOnly }: { summary: TorrentSummary; detail: TorrentDetail; refetch: () => void; readOnly: boolean }) {
   const held = detail.files.filter((f) => f.placement === "held");
   const heldBytes = held.reduce((n, f) => n + f.length, 0);
   const anyNotInFolder = detail.files.some((f) => f.placement !== "save");
@@ -312,14 +322,20 @@ function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detai
   return (
     <>
       <div className="files-bar">
-        <label className="inline-field">
-          <span>Deselected files with data:</span>
-          <select aria-label="What happens to deselected files" value={detail.unwantedPolicy} onChange={(e) => setPolicy(e.target.value as UnwantedPolicy)}>
-            <option value="hold">Move to the held area</option>
-            <option value="delete">Delete</option>
-          </select>
-        </label>
-        {held.length > 0 && (
+        {readOnly ? (
+          <span className="inline-field">
+            <span>Deselected files with data:</span> {detail.unwantedPolicy === "hold" ? "moved to the held area" : "deleted"}
+          </span>
+        ) : (
+          <label className="inline-field">
+            <span>Deselected files with data:</span>
+            <select aria-label="What happens to deselected files" value={detail.unwantedPolicy} onChange={(e) => setPolicy(e.target.value as UnwantedPolicy)}>
+              <option value="hold">Move to the held area</option>
+              <option value="delete">Delete</option>
+            </select>
+          </label>
+        )}
+        {!readOnly && held.length > 0 && (
           <button type="button" onClick={() => void api.releaseHeld(summary.id).then(refetch)}>
             Delete held files ({held.length}, {formatBytes(heldBytes)})
           </button>
@@ -352,17 +368,21 @@ function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detai
               <td>{formatPercent(f.progress)}</td>
               <td>{location(f)}</td>
               <td>
-                <select
-                  aria-label={`Priority of ${f.path}`}
-                  value={PRIORITIES.reduce((best, [p]) => (Math.abs(p - f.priority) < Math.abs(best - f.priority) ? p : best), 4)}
-                  onChange={(e) => {
-                    void api.setFilePriorities(summary.id, [{ index: f.index, priority: Number(e.target.value) }]).then(refetch);
-                  }}
-                >
-                  {PRIORITIES.map(([p, name]) => (
-                    <option key={p} value={p}>{name}</option>
-                  ))}
-                </select>
+                {readOnly ? (
+                  PRIORITIES.find(([p]) => p === nearestPriority(f.priority))?.[1]
+                ) : (
+                  <select
+                    aria-label={`Priority of ${f.path}`}
+                    value={nearestPriority(f.priority)}
+                    onChange={(e) => {
+                      void api.setFilePriorities(summary.id, [{ index: f.index, priority: Number(e.target.value) }]).then(refetch);
+                    }}
+                  >
+                    {PRIORITIES.map(([p, name]) => (
+                      <option key={p} value={p}>{name}</option>
+                    ))}
+                  </select>
+                )}
               </td>
             </tr>
           ))}
@@ -372,8 +392,11 @@ function FilesTab({ summary, detail, refetch }: { summary: TorrentSummary; detai
   );
 }
 
-/** `onClose` is given on a phone, where the details cover the screen. */
-export function DetailPane({ summary, onClose }: { summary: TorrentSummary; onClose?: () => void }) {
+/**
+ * `onClose` is given on a phone, where the details cover the screen. `readOnly`: the caller
+ * is a viewer here, so values show as text without their editors.
+ */
+export function DetailPane({ summary, onClose, readOnly = false }: { summary: TorrentSummary; onClose?: () => void; readOnly?: boolean }) {
   const [tab, setTab] = useState<Tab>("general");
   const { detail, error, refetch } = useDetail(summary.id, summary);
 
@@ -414,13 +437,13 @@ export function DetailPane({ summary, onClose }: { summary: TorrentSummary; onCl
                 </>
               }
             />
-            <Row label="Label" value={<LabelEditor id={summary.id} label={summary.label} />} />
+            <Row label="Label" value={<LabelEditor id={summary.id} label={summary.label} readOnly={readOnly} />} />
             <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings)</span>} />
             <Row label="Queue" value={`Position ${summary.queuePosition + 1}`} />
             {summary.supersededBy && <Row label="Superseded" value={<SupersededBy id={summary.supersededBy} />} />}
             {detail && <Row label="File names" value={detail.naming === "native" ? "Native" : "Portable"} />}
-            {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} />} />}
-            {detail && <Row label="Seeding limits" value={<SeedLimitsEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} />} />}
+            {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} readOnly={readOnly} />} />}
+            {detail && <Row label="Seeding limits" value={<SeedLimitsEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />} />}
             {detail && detail.seedingSecs > 0 && <Row label="Seeding time" value={formatSeedingTime(detail.seedingSecs)} />}
             <Row label="Added" value={<When ms={summary.addedAt} />} />
             {summary.infoHashV1 && <Row label="Info-hash v1" value={<code>{summary.infoHashV1}</code>} />}
@@ -444,7 +467,7 @@ export function DetailPane({ summary, onClose }: { summary: TorrentSummary; onCl
         {tab === "files" && detail && summary.state === "metadata" && (
           <p className="muted">The file list arrives with the metadata, which is being fetched from peers{summary.peers > 0 ? ` (${summary.peers} connected)` : ""}.</p>
         )}
-        {tab === "files" && detail && summary.state !== "metadata" && <FilesTab summary={summary} detail={detail} refetch={refetch} />}
+        {tab === "files" && detail && summary.state !== "metadata" && <FilesTab summary={summary} detail={detail} refetch={refetch} readOnly={readOnly} />}
         {tab === "peers" && detail && <PeersTab detail={detail} />}
         {tab === "trackers" && detail && <TrackersTab detail={detail} />}
       </div>

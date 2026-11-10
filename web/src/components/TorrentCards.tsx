@@ -8,7 +8,6 @@ import { COLUMNS } from "./TorrentTable";
 
 const CARD_HEIGHT = 84;
 
-
 interface Props {
   rows: TorrentSummary[];
   selected: ReadonlySet<string>;
@@ -17,6 +16,8 @@ interface Props {
   onSelect: (ids: Set<string>, focus: string | null) => void;
   focus: string | null;
   onOpen: (id: string) => void;
+  /** False for a viewer, who has no actions to select torrents for. */
+  selectable?: boolean;
 }
 
 /**
@@ -24,7 +25,7 @@ interface Props {
  * numbers that matter, instead of a grid too wide for the screen. Tapping a card opens its
  * details; the checkbox adds it to the selection for the action bar.
  */
-export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, onOpen }: Props) {
+export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, onOpen, selectable = true }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -77,7 +78,9 @@ export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, on
                   className={`card ${isSelected ? "selected" : ""}`}
                   style={{ transform: `translateY(${v.start}px)`, height: CARD_HEIGHT }}
                 >
-                  <input type="checkbox" className="card-check" aria-label={`Select ${t.name}`} checked={isSelected} onChange={() => toggle(t.id)} />
+                  {selectable && (
+                    <input type="checkbox" className="card-check" aria-label={`Select ${t.name}`} checked={isSelected} onChange={() => toggle(t.id)} />
+                  )}
                   <button type="button" className="card-main" onClick={() => onOpen(t.id)}>
                     <span className="card-name">{t.name}</span>
                     <span className={`progress progress-${t.state}`} role="progressbar" aria-valuenow={Math.round(t.progress * 100)} aria-valuemin={0} aria-valuemax={100}>
