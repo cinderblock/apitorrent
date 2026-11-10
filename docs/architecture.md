@@ -99,6 +99,7 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `crates/apitorrent-client` | A Rust client for the API with strict TLS and certificate pinning. Used by the desktop thin client and the CLI. |
 | `crates/apitorrent-plugin-api` | The plugin contract without V8: manifests, capabilities and their expansion, network grants, the settings-schema subset, and the `AppApi` (core implements), `PluginService` (host implements, server calls) and `SourceFetcher` (host implements, core's rules call) traits. |
 | `crates/apitorrent-plugins` | The plugin host on embedded V8 (`deno_core`): one isolate per plugin, capability-checked ops, curated globals, the plugin lifecycle. Only it and `apitorrentd` link V8. |
+| `crates/apitorrent-update` | The daemon's signed self-updates: the compiled-in update key, the latest published GitHub release, the signed manifest, download, verify, swap and restart. See "Updates". |
 | `crates/apitorrentd` | Daemon binary. |
 | `crates/apitorrent-cli` | `apitorrent` CLI. |
 | `apps/desktop` | Tauri 2 app. |
@@ -959,11 +960,51 @@ recheck. That is the onboarding path for existing Deluge users.
   using SHA-NI or ARMv8 crypto extensions where available. Writes are vectored, and the
   disk I/O pool is separate from the network.
 
+## Updates
+
+The desktop app and the daemon update themselves. They install only what apitorrent's own
+update key signed, so no paid code-signing certificate is involved. Plan and decisions:
+`plans/update-signing.md`.
+
+- **The key** is one minisign (Ed25519) pair, in the format the Tauri CLI writes. The
+  private half exists only in the GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (made once by `scripts/update-signing-key.ts`). The
+  public half, `release/update-signing.pub`, is compiled into both programs by
+  `apitorrent-update`'s build script. **A build without that file never installs an
+  update**; it still says when one exists. There is no switch to accept an unsigned or
+  older build.
+- **Releases** (`.github/workflows/release.yml`): every file gets a `.sig`; the desktop
+  build makes signed updater bundles; the last job writes `latest.json` (the desktop
+  app's) and `apitorrentd-manifest.json`, which lists each target's bare executable with its
+  URL, size and SHA-256, and signs both. The release is a draft; programs look only at
+  GitHub's latest *published* release (`/releases/latest` never returns drafts or
+  prereleases), so nothing ships until a person publishes it.
+- **The daemon** checks once a day (`UpdateSettings.checkDaily`, on by default, kept in
+  `<data dir>/update.json`) and tells admins in the web UI. An admin installs with
+  `POST /api/v1/system/update/install` (audited), the UI's button, or `apitorrentd
+  update`; `autoInstall` (off by default) installs without asking. The install, in
+  order: the manifest's signature against the compiled-in key (before parsing it), its
+  `product`, a version newer than the running one, an entry for this build's target, and
+  a download whose size and SHA-256 match. Everything comes from the signed manifest, not
+  the release's metadata. The download lands next to the executable and is renamed over
+  it (Unix: atomic; Windows: the running exe is renamed to `<exe>.old` first and removed
+  on the next start). Then the daemon shuts down cleanly and restarts: under systemd
+  (`INVOCATION_ID` set) it exits with code 75 for `Restart=on-failure` to start the new
+  binary; otherwise it re-executes itself with the same arguments.
+- **The desktop app** uses `tauri-plugin-updater` with the same key, checks daily, and
+  installs when the user clicks. Local mode runs the core inside the app's process, so
+  the app update is its daemon update; the in-process server has no update endpoints.
+  The plugin refuses older versions, but the Tauri CLI that signs (2.10.1) doesn't record
+  the version in the signature yet, so `requireSignedVersion` is off: a forged
+  `latest.json` could pair a higher version number with an older signed installer. That
+  needs control of the release's assets.
+
 ## Cross-platform notes
 
 - **Paths**: torrent file names are sanitised. That covers Windows reserved names (`CON`,
   `NUL`, …), trailing dots and spaces, illegal characters, `..` and absolute components, and
   long paths: the core uses `\\?\` internally on Windows.
 - **Services**: a systemd unit, a Windows service (`windows-service` crate) and a launchd
-  plist.
+  plist. A systemd unit needs `Restart=on-failure` (or `always`) for self-updates: the
+  daemon exits with code 75 to be restarted into the new binary.
 - **Desktop**: Tauri 2, with WebView2 on Windows, WKWebView on macOS and WebKitGTK on Linux.

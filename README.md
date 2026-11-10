@@ -28,6 +28,8 @@ Most of this is built.
   - Strict TLS: a certificate is trusted through a CA or a key pinned at pairing, never
     accepted unverified.
   - Plugins are sandboxed and get only the capabilities you grant them.
+  - Signed updates: the daemon and the desktop app install only builds signed with
+    apitorrent's key, never an older version, and only when you say so.
 - **Skipped files stay out of your folders.** A deselected file is never in the save
   directory, not even partly: bytes it shares with wanted files go to an internal part
   store, and a file deselected after downloading moves to a held area (or is deleted), so
@@ -309,6 +311,31 @@ it received. Pair only if the two match. The app then trusts exactly that key. B
 warn about a self-signed certificate (and won't offer passkeys behind the warning), so
 for browser use prefer your own certificate or ACME. The code is also shown by
 `GET /api/v1/tls`, which reports the current certificate and ACME progress.
+
+## Updates
+
+The daemon looks for a new published release once a day and tells admins in the web UI
+(a button in the toolbar, and Settings → Updates). Install it from there, or on the
+command line:
+
+```sh
+apitorrentd update --check   # is there a newer release?
+apitorrentd update           # install it; restart the daemon afterwards
+```
+
+An update installs only if it is signed with apitorrent's update key, is newer than the
+running version, and matches the SHA-256 in the signed manifest. The daemon replaces its
+own executable, so it needs write access to the executable's directory; if it was
+installed by a package manager, update it that way instead. After an install from the
+web UI it restarts by itself: under systemd it exits and lets the unit restart it (use
+`Restart=on-failure`), otherwise it starts itself again. Settings → Updates can turn the
+daily check off, or install new releases automatically.
+
+The desktop app checks too, and offers "Install and restart". In "This computer" mode
+that also updates the engine running inside it.
+
+Builds without `release/update-signing.pub` (forks, or before the key is made) say when
+a new release exists but never install it. See `release/README.md`.
 
 ## The desktop app
 
