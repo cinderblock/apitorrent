@@ -25,6 +25,19 @@ In the desktop window (1280×800) the toolbar's "Pause / Resume" button and the 
 button ("Loopback daemon") wrap onto two lines while the search box has room to give.
 Cosmetic; the toolbar should shrink the search field first.
 
+## uTP test `transfer_through_a_lossy_reordering_proxy` reset once on Linux CI
+
+Seen once on 2026-11-10 at about 4:30 PM PST (00:30Z), in GitHub Actions run
+[42915843916](https://github.com/cinderblock/apitorrent/actions/runs/42915843916), job
+"Rust (ubuntu-latest)": `crates/apitorrent-utp/tests/socket.rs:49` unwrapped
+`Custom { kind: ConnectionReset, error: Reset }`, so the test's join at line 53 panicked.
+The other 10 uTP socket tests passed, and the same commit passed on Windows and macOS.
+
+Why it matters: unlike a timing flake, a reset while data crosses a lossy, reordering
+link could be a real protocol bug (a state the socket treats as fatal that it should
+recover from). To start: run the test in a loop on Linux with the proxy's seed logged,
+and find which side sends the reset and in what state.
+
 ## Engine test `default_links_are_encrypted_utp` fails under load
 
 Seen once on 2026-11-09 at about 6:20 PM PST (02:20Z), in a full `cargo test -p
