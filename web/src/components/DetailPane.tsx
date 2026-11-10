@@ -7,7 +7,7 @@ import type { TorrentFile } from "../api/generated/TorrentFile";
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
 import { PathActions } from "../desktop/PathActions";
-import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, toKiB } from "../format";
+import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, STATE_LABEL, toKiB } from "../format";
 import { describeSeedLimits, formatSeedingTime, SeedLimitsFields } from "./SeedLimitsFields";
 
 type Tab = "general" | "files" | "peers" | "trackers";
@@ -399,7 +399,7 @@ export function DetailPane({ summary, onClose }: { summary: TorrentSummary; onCl
         {tab === "general" && (
           <dl className="facts">
             <Row label="Name" value={summary.name} />
-            <Row label="Status" value={summary.error ? <span className="error-text">Error: {summary.error}</span> : summary.state} />
+            <Row label="Status" value={summary.error ? <span className="error-text">Error: {summary.error}</span> : STATE_LABEL[summary.state]} />
             <Row label="Progress" value={`${formatPercent(summary.progress)} (${summary.piecesHave} of ${summary.piecesTotal} pieces)`} />
             <Row label="Size" value={formatBytes(summary.size)} />
             <Row label="Peers" value={`${summary.peers} connected, ${summary.seeds} of them seeds`} />

@@ -1,6 +1,19 @@
 // Formatting helpers. Sizes use binary units (KiB, MiB, …), which is what file managers on
 // every platform agree on for disk sizes.
 
+import type { TorrentSummary } from "./api/generated/TorrentSummary";
+
+/** A torrent's state, as the list, the cards and the details all show it. */
+export const STATE_LABEL: Record<TorrentSummary["state"], string> = {
+  checking: "Checking",
+  downloading: "Downloading",
+  seeding: "Seeding",
+  paused: "Paused",
+  queued: "Queued",
+  metadata: "Fetching metadata",
+  error: "Error",
+};
+
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
 export function formatBytes(bytes: number): string {

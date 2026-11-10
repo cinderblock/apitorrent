@@ -2,21 +2,12 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRef } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
-import { formatBytes, formatEta, formatPercent, formatRate } from "../format";
+import { formatBytes, formatEta, formatPercent, formatRate, STATE_LABEL } from "../format";
 import { etaSeconds, type Sort, type SortKey } from "../state/torrents";
 import { COLUMNS } from "./TorrentTable";
 
 const CARD_HEIGHT = 84;
 
-const STATE_LABEL: Record<TorrentSummary["state"], string> = {
-  checking: "Checking",
-  downloading: "Downloading",
-  seeding: "Seeding",
-  paused: "Paused",
-  queued: "Queued",
-  metadata: "Fetching metadata",
-  error: "Error",
-};
 
 interface Props {
   rows: TorrentSummary[];

@@ -2,7 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
-import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio } from "../format";
+import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio, STATE_LABEL } from "../format";
 import { loadColumnPrefs, saveColumnPrefs, visibleColumns, type ColumnInfo, type ColumnPrefs } from "../state/columns";
 import { etaSeconds, type Sort, type SortKey } from "../state/torrents";
 import { ColumnChooser } from "./ColumnChooser";
@@ -17,15 +17,6 @@ export interface Column extends ColumnInfo {
   render: (t: TorrentSummary) => React.ReactNode;
 }
 
-const STATE_LABEL: Record<TorrentSummary["state"], string> = {
-  checking: "Checking",
-  downloading: "Downloading",
-  seeding: "Seeding",
-  paused: "Paused",
-  queued: "Queued",
-  metadata: "Metadata…",
-  error: "Error",
-};
 
 function eta(t: TorrentSummary): string {
   const s = etaSeconds(t);

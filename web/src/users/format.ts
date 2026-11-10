@@ -38,7 +38,8 @@ export function timeLeft(expiresAt: number, now: number): string {
   const ms = expiresAt - now;
   if (ms <= 0) return "expired";
   const hours = Math.floor(ms / 3_600_000);
-  if (hours >= 48) return `in ${Math.floor(hours / 24)} days`;
+  // Whole days to the nearest: a 3-day link a minute old still says "in 3 days".
+  if (hours >= 48) return `in ${Math.round(ms / 86_400_000)} days`;
   if (hours >= 1) return `in ${hours} hour${hours === 1 ? "" : "s"}`;
   const minutes = Math.max(1, Math.floor(ms / 60_000));
   return `in ${minutes} minute${minutes === 1 ? "" : "s"}`;

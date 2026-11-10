@@ -23,6 +23,8 @@ describe("invitation words", () => {
     expect(timeLeft(now + 3_600_000, now)).toBe("in 1 hour");
     expect(timeLeft(now + 47 * 3_600_000, now)).toBe("in 47 hours");
     expect(timeLeft(now + 7 * 86_400_000, now)).toBe("in 7 days");
+    expect(timeLeft(now + 3 * 86_400_000 - 60_000, now)).toBe("in 3 days");
+    expect(timeLeft(now + 2 * 86_400_000 + 3_600_000, now)).toBe("in 2 days");
   });
 
   test("the link elsewhere keeps its secret in the fragment", () => {
