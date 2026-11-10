@@ -57,7 +57,24 @@ const PUBLIC: &[&str] = &[
     "/auth/login/passkey/finish",
     "/auth/login/password",
     "/auth/logout",
+    "/auth/enroll/info",
+    "/auth/enroll/start",
+    "/auth/enroll/finish",
+    "/auth/enroll/password",
 ];
+
+/// Routes that name what they act on (a space by slug, an invitation, a user) and check the
+/// caller's rights there themselves: the request's own space is optional, and the caller's
+/// role in it doesn't matter. A space's admin may manage its members from a page in another
+/// space where they only read.
+fn space_independent(path: &str) -> bool {
+    ["/spaces", "/invitations", "/users"].iter().any(|p| {
+        path == *p
+            || path
+                .strip_prefix(p)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
 
 /// Endpoints a session waiting for its second factor may use.
 const PENDING_OK: &[&str] = &["/auth/status", "/auth/login/password", "/auth/logout"];
@@ -370,7 +387,7 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
         }
         match ctx.principal.clone() {
             // Under `/auth/` a space is optional (it binds new API tokens).
-            Some(p) if under_auth => {
+            Some(p) if under_auth || space_independent(path) => {
                 ctx.space = crate::space::resolve(&s, &p, prefix.as_deref(), &ctx.host).ok();
                 Ok(())
             }
@@ -497,6 +514,22 @@ mod tests {
             "/torrents/x",
         ] {
             assert_eq!(plugin_route_path(not), None, "{not}");
+        }
+    }
+
+    #[test]
+    fn space_independent_paths() {
+        for p in [
+            "/spaces",
+            "/spaces/tv/members",
+            "/invitations/x",
+            "/users",
+            "/users/a/recovery",
+        ] {
+            assert!(space_independent(p), "{p}");
+        }
+        for p in ["/space", "/spacesx", "/torrents", "/usersx", "/"] {
+            assert!(!space_independent(p), "{p}");
         }
     }
 

@@ -29,7 +29,9 @@ impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let status = match &self.0 {
             AuthError::InvalidRequest(_) | AuthError::Unavailable(_) => StatusCode::BAD_REQUEST,
-            AuthError::Unauthorized | AuthError::InvalidSetupToken => StatusCode::UNAUTHORIZED,
+            AuthError::Unauthorized | AuthError::InvalidSetupToken | AuthError::InvalidLink => {
+                StatusCode::UNAUTHORIZED
+            }
             AuthError::AlreadySetUp | AuthError::Conflict(_) => StatusCode::CONFLICT,
             AuthError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             AuthError::ReauthRequired | AuthError::Forbidden(_) => StatusCode::FORBIDDEN,
@@ -53,7 +55,7 @@ impl IntoResponse for Failure {
     }
 }
 
-type AuthResult<T> = Result<T, Failure>;
+pub(crate) type AuthResult<T> = Result<T, Failure>;
 
 fn enabled(s: &AppState) -> AuthResult<&Auth> {
     match &s.auth {
@@ -71,7 +73,7 @@ fn principal(ctx: &RequestCtx) -> AuthResult<&Principal> {
 }
 
 /// Run blocking auth work (password hashing) off the async workers.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> apitorrent_auth::Result<T> + Send + 'static,
 ) -> AuthResult<T> {
     tokio::task::spawn_blocking(f)
@@ -136,7 +138,11 @@ fn status_for(
 }
 
 /// Set the new session's cookie and answer with the resulting status.
-fn signed_in(s: &AppState, ctx: &RequestCtx, session: &NewSession) -> AuthResult<Response> {
+pub(crate) fn signed_in(
+    s: &AppState,
+    ctx: &RequestCtx,
+    session: &NewSession,
+) -> AuthResult<Response> {
     let auth = enabled(s)?;
     let principal = auth.authenticate_session(&session.secret)?;
     let status = status_for(s, ctx, principal.as_ref())?;

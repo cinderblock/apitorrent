@@ -13,6 +13,10 @@ pub enum AuthError {
     InvalidSetupToken,
     #[error("this instance is already set up")]
     AlreadySetUp,
+    /// An invitation or recovery link that is wrong, used, revoked or expired. Which of
+    /// these is not said.
+    #[error("this link doesn't work: it was already used, was revoked, or has expired")]
+    InvalidLink,
     #[error("too many attempts; try again in {} seconds", .0.as_secs().max(1))]
     RateLimited(Duration),
     #[error("sign in again to confirm it's you")]
@@ -38,6 +42,7 @@ impl AuthError {
             Self::Unauthorized => "unauthorized",
             Self::InvalidSetupToken => "invalid_setup_token",
             Self::AlreadySetUp => "already_set_up",
+            Self::InvalidLink => "invalid_link",
             Self::RateLimited(_) => "rate_limited",
             Self::ReauthRequired => "reauth_required",
             Self::Forbidden(_) => "forbidden",

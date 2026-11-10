@@ -16,6 +16,7 @@ pub mod plugins;
 pub mod spaces;
 pub mod tls;
 pub mod update;
+pub mod users;
 
 /// The API version in the URL prefix.
 pub const API_VERSION: u32 = 1;

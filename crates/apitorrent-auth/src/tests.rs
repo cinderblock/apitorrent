@@ -504,6 +504,7 @@ fn space_roles_and_bound_tokens() {
         display_name: "Bob".into(),
         role: Role::User,
         password_hash: None,
+        disabled: false,
     };
     store::insert_user(&f.auth.db(), &bob, 1).unwrap();
     let bob_p = Principal {
@@ -585,4 +586,462 @@ fn space_roles_and_bound_tokens() {
     f.auth.forget_space(2).unwrap();
     assert!(f.auth.authenticate_token(&made.token).unwrap().is_none());
     assert_eq!(f.auth.last_space(&admin.user.id).unwrap(), None);
+}
+
+// ----- Invitations, recovery links and user management -----
+
+mod enrollment {
+    use apitorrent_types::spaces::SpaceRole;
+    use apitorrent_types::users::{EnrollmentKind, EnrollmentState};
+
+    use super::*;
+
+    const PW: &str = "correct horse battery";
+
+    /// Enroll with a link and a password; returns the new user's session.
+    fn enroll(f: &Fixture, secret: &str, name: &str) -> Result<Principal> {
+        let s = f
+            .auth
+            .enroll_with_password(secret, name, None, PW, &meta(), None)?;
+        Ok(f.auth.authenticate_session(&s.secret)?.unwrap())
+    }
+
+    fn invite(f: &Fixture, actor: &Principal, spaces: &[(i64, SpaceRole)]) -> IssuedLink {
+        f.auth
+            .create_invitation(actor, Role::User, spaces, None, Some("for tests"), &meta())
+            .unwrap()
+    }
+
+    fn token(f: &Fixture, p: &Principal, space: i64) -> String {
+        f.auth
+            .create_token_in(
+                p,
+                space,
+                &CreateTokenRequest {
+                    name: "app".into(),
+                    scope: TokenScope::Full,
+                    expires_in_days: None,
+                },
+                &meta(),
+            )
+            .unwrap()
+            .token
+    }
+
+    #[test]
+    fn an_invitation_creates_a_user_once() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let link = invite(&f, &admin, &[(2, SpaceRole::User), (3, SpaceRole::Viewer)]);
+        assert_eq!(link.secret.len(), 43);
+        assert_eq!(link.record.kind, EnrollmentKind::Invitation);
+        assert_eq!(link.record.state, EnrollmentState::Pending);
+        assert_eq!(
+            link.record.expires_at - link.record.created_at,
+            7 * 86_400_000,
+            "seven days by default"
+        );
+        // Only its hash is stored.
+        let stored: Vec<u8> = f
+            .auth
+            .db()
+            .query_row("SELECT secret_hash FROM enrollments", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, secret::sha256(link.secret.as_bytes()));
+
+        let info = f.auth.enroll_info(&link.secret, &meta()).unwrap();
+        assert_eq!(info.spaces.len(), 2);
+        assert_eq!(info.created_by.as_deref(), Some("admin"));
+
+        // The username must be free.
+        assert!(matches!(
+            enroll(&f, &link.secret, "admin"),
+            Err(AuthError::Conflict(_))
+        ));
+        let bob = enroll(&f, &link.secret, "Bob").unwrap();
+        assert_eq!(bob.user.name, "bob");
+        assert_eq!(bob.user.role, Role::User);
+        assert_eq!(
+            f.auth.memberships(&bob.user.id).unwrap(),
+            [(2, SpaceRole::User), (3, SpaceRole::Viewer)]
+        );
+        assert_eq!(f.auth.last_space(&bob.user.id).unwrap(), Some(2));
+
+        // It works once.
+        assert!(matches!(
+            enroll(&f, &link.secret, "carol"),
+            Err(AuthError::InvalidLink)
+        ));
+        assert!(matches!(
+            f.auth.enroll_info(&link.secret, &meta()),
+            Err(AuthError::InvalidLink)
+        ));
+        let all = f.auth.enrollments(&admin, None).unwrap();
+        assert_eq!(all[0].state, EnrollmentState::Used);
+        assert_eq!(all[0].user_name.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn expired_and_revoked_links_fail() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let short = f
+            .auth
+            .create_invitation(
+                &admin,
+                Role::User,
+                &[(1, SpaceRole::User)],
+                Some(1),
+                None,
+                &meta(),
+            )
+            .unwrap();
+        let revoked = invite(&f, &admin, &[(1, SpaceRole::User)]);
+        f.auth
+            .revoke_enrollment(&admin, &revoked.record.id, &meta())
+            .unwrap();
+        assert!(matches!(
+            f.auth
+                .revoke_enrollment(&admin, &revoked.record.id, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        assert!(matches!(
+            enroll(&f, &revoked.secret, "a"),
+            Err(AuthError::InvalidLink)
+        ));
+        // Lifetimes are bounded.
+        for days in [0, 31] {
+            assert!(matches!(
+                f.auth
+                    .create_invitation(&admin, Role::User, &[], Some(days), None, &meta()),
+                Err(AuthError::InvalidRequest(_))
+            ));
+        }
+        f.clock.advance(Duration::from_secs(86_400 + 1));
+        assert!(matches!(
+            enroll(&f, &short.secret, "b"),
+            Err(AuthError::InvalidLink)
+        ));
+        let states: Vec<_> = f
+            .auth
+            .enrollments(&admin, None)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.state)
+            .collect();
+        assert!(states.contains(&EnrollmentState::Expired));
+        assert!(states.contains(&EnrollmentState::Revoked));
+    }
+
+    #[test]
+    fn wrong_links_count_toward_lockout() {
+        let f = fixture(PasswordMode::Fallback);
+        f.admin();
+        for _ in 0..10 {
+            assert!(matches!(
+                f.auth.enroll_info(&"x".repeat(43), &meta()),
+                Err(AuthError::InvalidLink)
+            ));
+        }
+        assert!(matches!(
+            f.auth.enroll_info(&"x".repeat(43), &meta()),
+            Err(AuthError::RateLimited(_))
+        ));
+        let failures: i64 = f
+            .auth
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM auth_events WHERE kind = 'enroll_failed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(failures, 10);
+    }
+
+    #[test]
+    fn space_admins_invite_only_into_their_spaces() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let link = invite(&f, &admin, &[(2, SpaceRole::Admin), (3, SpaceRole::Viewer)]);
+        let sam = enroll(&f, &link.secret, "sam").unwrap();
+        assert!(!sam.server_admin());
+
+        // Into a space they administer, as `user`: yes.
+        let ok = f
+            .auth
+            .create_invitation(
+                &sam,
+                Role::User,
+                &[(2, SpaceRole::Admin)],
+                None,
+                None,
+                &meta(),
+            )
+            .unwrap();
+        // Another space, one they only view, or a server role: no.
+        for (role, spaces) in [
+            (Role::User, vec![(4, SpaceRole::User)]),
+            (Role::User, vec![(3, SpaceRole::User)]),
+            (Role::User, vec![(2, SpaceRole::User), (4, SpaceRole::User)]),
+            (Role::Admin, vec![(2, SpaceRole::User)]),
+            (Role::Viewer, vec![(2, SpaceRole::User)]),
+            (Role::User, vec![]),
+        ] {
+            let r = f
+                .auth
+                .create_invitation(&sam, role, &spaces, None, None, &meta());
+            assert!(
+                matches!(
+                    r,
+                    Err(AuthError::Forbidden(_) | AuthError::InvalidRequest(_))
+                ),
+                "{role:?} {spaces:?}: {r:?}"
+            );
+        }
+        // A token can't invite, even a server admin's.
+        let admin_token = token(&f, &admin, 1);
+        let p = f.auth.authenticate_token(&admin_token).unwrap().unwrap();
+        assert!(matches!(
+            f.auth
+                .create_invitation(&p, Role::User, &[], None, None, &meta()),
+            Err(AuthError::Forbidden(_))
+        ));
+        // Space 2's list shows the invitations into 2, and only that space.
+        let mine = f.auth.enrollments(&sam, Some(2)).unwrap();
+        assert_eq!(mine.len(), 2);
+        assert!(
+            mine.iter()
+                .all(|r| r.spaces.len() == 1 && r.spaces[0].0 == 2)
+        );
+        assert!(matches!(
+            f.auth.enrollments(&sam, Some(3)),
+            Err(AuthError::Forbidden(_))
+        ));
+        assert!(matches!(
+            f.auth.enrollments(&sam, None),
+            Err(AuthError::Forbidden(_))
+        ));
+        // They may revoke their own kind, not one that also grants another space.
+        let wide = invite(&f, &admin, &[(2, SpaceRole::User), (4, SpaceRole::User)]);
+        assert!(matches!(
+            f.auth.revoke_enrollment(&sam, &wide.record.id, &meta()),
+            Err(AuthError::Forbidden(_))
+        ));
+        let elsewhere = invite(&f, &admin, &[(4, SpaceRole::User)]);
+        assert!(matches!(
+            f.auth
+                .revoke_enrollment(&sam, &elsewhere.record.id, &meta()),
+            Err(AuthError::NotFound)
+        ));
+        f.auth
+            .revoke_enrollment(&sam, &ok.record.id, &meta())
+            .unwrap();
+
+        // Members: a space admin changes and removes existing members of their space only.
+        let bob_link = invite(&f, &admin, &[(2, SpaceRole::User)]);
+        let bob = enroll(&f, &bob_link.secret, "bob").unwrap();
+        f.auth
+            .set_member(&sam, 2, &bob.user.id, SpaceRole::Viewer, &meta())
+            .unwrap();
+        assert!(matches!(
+            f.auth
+                .set_member(&sam, 4, &bob.user.id, SpaceRole::User, &meta()),
+            Err(AuthError::Forbidden(_))
+        ));
+        // Adding someone who isn't a member is a server admin's.
+        assert!(matches!(
+            f.auth
+                .set_member(&sam, 2, &admin.user.id, SpaceRole::User, &meta()),
+            Err(AuthError::NotFound)
+        ));
+        f.auth
+            .remove_member(&sam, 2, &bob.user.id, &meta())
+            .unwrap();
+        // Deleting a space forgets its invitations.
+        let pending = invite(&f, &admin, &[(5, SpaceRole::User)]);
+        f.auth.forget_space(5).unwrap();
+        let rec = f.auth.enroll_info(&pending.secret, &meta()).unwrap();
+        assert!(rec.spaces.is_empty());
+    }
+
+    #[test]
+    fn disabling_ends_sessions_and_suspends_tokens() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let link = invite(&f, &admin, &[(1, SpaceRole::User)]);
+        let bob = enroll(&f, &link.secret, "bob").unwrap();
+        let bob_token = token(&f, &bob, 1);
+        let bob_token_p = f.auth.authenticate_token(&bob_token).unwrap().unwrap();
+        let mut revoked = f.auth.revocations();
+        revoked.mark_unchanged();
+
+        f.auth
+            .set_user_disabled(&admin, &bob.user.id, true, &meta())
+            .unwrap();
+        assert!(revoked.has_changed().unwrap(), "open sockets re-check");
+        assert!(!f.auth.still_valid(&bob).unwrap());
+        assert!(!f.auth.still_valid(&bob_token_p).unwrap());
+        assert!(f.auth.authenticate_token(&bob_token).unwrap().is_none());
+        assert!(matches!(
+            f.auth.password_login("bob", PW, &meta(), None),
+            Err(AuthError::Unauthorized)
+        ));
+        let users = f.auth.managed_users(&admin).unwrap();
+        let b = users.iter().find(|u| u.info.name == "bob").unwrap();
+        assert!(b.disabled);
+        assert_eq!(b.tokens, 1);
+
+        // Enabled again: the token works, the old session stays gone.
+        f.auth
+            .set_user_disabled(&admin, &bob.user.id, false, &meta())
+            .unwrap();
+        assert!(f.auth.authenticate_token(&bob_token).unwrap().is_some());
+        assert!(!f.auth.still_valid(&bob).unwrap());
+        f.auth.password_login("bob", PW, &meta(), None).unwrap();
+    }
+
+    #[test]
+    fn admins_cant_lock_themselves_or_everyone_out() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let id = admin.user.id.clone();
+        for r in [
+            f.auth.set_user_disabled(&admin, &id, true, &meta()),
+            f.auth.delete_user(&admin, &id, &meta()),
+            f.auth.set_user_role(&admin, &id, Role::User, &meta()),
+        ] {
+            assert!(matches!(r, Err(AuthError::Forbidden(_))), "{r:?}");
+        }
+        // The synthetic local owner isn't a user, so only the last-admin rule stops it.
+        let local = Principal::local();
+        assert!(matches!(
+            f.auth.delete_user(&local, &id, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        assert!(matches!(
+            f.auth.set_user_disabled(&local, &id, true, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        assert!(matches!(
+            f.auth.set_user_role(&local, &id, Role::Viewer, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+
+        // Another admin can be demoted and deleted; their tokens go with them.
+        let second = f
+            .auth
+            .create_invitation(&admin, Role::Admin, &[], None, None, &meta())
+            .unwrap();
+        let eve = enroll(&f, &second.secret, "eve").unwrap();
+        assert!(eve.server_admin());
+        let eve_token = token(&f, &eve, 1);
+        f.auth
+            .set_user_role(&admin, &eve.user.id, Role::Viewer, &meta())
+            .unwrap();
+        let eve = f.auth.authenticate_token(&eve_token).unwrap().unwrap();
+        assert!(!eve.server_admin());
+        // Not a server admin: manages nobody.
+        assert!(matches!(
+            f.auth.managed_users(&eve),
+            Err(AuthError::Forbidden(_))
+        ));
+        f.auth.delete_user(&admin, &eve.user.id, &meta()).unwrap();
+        assert!(f.auth.authenticate_token(&eve_token).unwrap().is_none());
+        assert!(matches!(
+            f.auth.delete_user(&admin, &eve.user.id, &meta()),
+            Err(AuthError::NotFound)
+        ));
+        // Managing users needs a recent sign-in.
+        f.clock.advance(Duration::from_secs(11 * 60));
+        let zed_link = invite(&f, &local, &[(1, SpaceRole::User)]);
+        let zed = enroll(&f, &zed_link.secret, "zed").unwrap();
+        assert!(matches!(
+            f.auth
+                .set_user_disabled(&admin, &zed.user.id, true, &meta()),
+            Err(AuthError::ReauthRequired)
+        ));
+    }
+
+    #[test]
+    fn recovery_replaces_credentials() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let link = invite(&f, &admin, &[(1, SpaceRole::User)]);
+        let bob = enroll(&f, &link.secret, "bob").unwrap();
+        let bob_token = token(&f, &bob, 1);
+        let first = f
+            .auth
+            .create_recovery(&admin, &bob.user.id, None, &meta())
+            .unwrap();
+        let second = f
+            .auth
+            .create_recovery(&admin, &bob.user.id, Some(2), &meta())
+            .unwrap();
+        assert_eq!(second.record.kind, EnrollmentKind::Recovery);
+        // A new link replaces the one still waiting.
+        assert!(matches!(
+            f.auth.enroll_info(&first.secret, &meta()),
+            Err(AuthError::InvalidLink)
+        ));
+        let info = f.auth.enroll_info(&second.secret, &meta()).unwrap();
+        assert_eq!(info.user_name.as_deref(), Some("bob"));
+
+        // The username given is ignored; the new password replaces the old one, and every
+        // session ends. API tokens stay.
+        let s = f
+            .auth
+            .enroll_with_password(
+                &second.secret,
+                "mallory",
+                None,
+                "a brand new password",
+                &meta(),
+                None,
+            )
+            .unwrap();
+        let again = f.auth.authenticate_session(&s.secret).unwrap().unwrap();
+        assert_eq!(again.user.id, bob.user.id);
+        assert!(!f.auth.still_valid(&bob).unwrap());
+        assert!(f.auth.authenticate_token(&bob_token).unwrap().is_some());
+        assert!(f.auth.password_login("bob", PW, &meta(), None).is_err());
+        f.auth
+            .password_login("bob", "a brand new password", &meta(), None)
+            .unwrap();
+        assert!(
+            store::user_by_name(&f.auth.db(), "mallory")
+                .unwrap()
+                .is_none()
+        );
+
+        // A disabled user's link doesn't work until they are enabled.
+        let third = f
+            .auth
+            .create_recovery(&admin, &bob.user.id, None, &meta())
+            .unwrap();
+        f.auth
+            .set_user_disabled(&admin, &bob.user.id, true, &meta())
+            .unwrap();
+        assert!(matches!(
+            f.auth.enroll_info(&third.secret, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        // Only server admins issue them.
+        assert!(matches!(
+            f.auth
+                .create_recovery(&again, &admin.user.id, None, &meta()),
+            Err(AuthError::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn passwords_need_fallback_mode() {
+        let f = fixture(PasswordMode::SecondFactor);
+        let local = Principal::local();
+        let link = invite(&f, &local, &[(1, SpaceRole::User)]);
+        assert!(matches!(
+            enroll(&f, &link.secret, "bob"),
+            Err(AuthError::Unavailable(_))
+        ));
+    }
 }

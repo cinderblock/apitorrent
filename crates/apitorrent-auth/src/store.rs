@@ -16,7 +16,7 @@ pub(crate) fn role_str(r: Role) -> &'static str {
     }
 }
 
-fn role_from(s: &str) -> Role {
+pub(crate) fn role_from(s: &str) -> Role {
     match s {
         "admin" => Role::Admin,
         "user" => Role::User,
@@ -63,6 +63,8 @@ pub(crate) struct UserRow {
     pub display_name: String,
     pub role: Role,
     pub password_hash: Option<String>,
+    /// Disabled users can't sign in, and their sessions and tokens don't work.
+    pub disabled: bool,
 }
 
 impl UserRow {
@@ -77,7 +79,7 @@ impl UserRow {
     }
 }
 
-const USER_COLS: &str = "id, name, display_name, role, password_hash";
+const USER_COLS: &str = "id, name, display_name, role, password_hash, disabled_at IS NOT NULL";
 
 fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<UserRow> {
     Ok(UserRow {
@@ -86,6 +88,7 @@ fn user_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<UserRow> {
         display_name: r.get(2)?,
         role: role_from(&r.get::<_, String>(3)?),
         password_hash: r.get(4)?,
+        disabled: r.get(5)?,
     })
 }
 

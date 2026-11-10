@@ -76,6 +76,29 @@ const MIGRATIONS: &[&str] = &[
      INSERT INTO space_members (user_id, space_id, role) SELECT id, 1, role FROM users;
      ALTER TABLE api_tokens ADD COLUMN space_id INTEGER NOT NULL DEFAULT 1;
      ALTER TABLE users ADD COLUMN last_space_id INTEGER;",
+    // 3: invitations and recovery links (one-time enrollment links, stored as the SHA-256
+    // of their secret), the spaces an invitation grants, and disabled users.
+    "ALTER TABLE users ADD COLUMN disabled_at INTEGER;
+     CREATE TABLE enrollments (
+         id TEXT PRIMARY KEY,
+         kind TEXT NOT NULL CHECK (kind IN ('invite', 'recovery')),
+         secret_hash BLOB NOT NULL UNIQUE,
+         created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+         created_at INTEGER NOT NULL,
+         expires_at INTEGER NOT NULL,
+         role TEXT CHECK (role IN ('admin', 'user', 'viewer')),  -- an invitation's instance role
+         user_id TEXT REFERENCES users(id) ON DELETE CASCADE,    -- recovery: whose; invite: created
+         note TEXT,
+         used_at INTEGER,
+         revoked_at INTEGER
+     );
+     CREATE INDEX enrollments_user ON enrollments(user_id);
+     CREATE TABLE enrollment_spaces (
+         enrollment_id TEXT NOT NULL REFERENCES enrollments(id) ON DELETE CASCADE,
+         space_id INTEGER NOT NULL,
+         role TEXT NOT NULL CHECK (role IN ('admin', 'user', 'viewer')),
+         PRIMARY KEY (enrollment_id, space_id)
+     );",
 ];
 
 pub(crate) fn open(path: &Path) -> rusqlite::Result<Connection> {

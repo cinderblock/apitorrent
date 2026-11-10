@@ -7,7 +7,10 @@
 //! Who may do what, on top of the general rules in `authn` (a credential for everything,
 //! one that may write for anything but `GET`):
 //!
-//! - **Management is admin-only.** Plugins run code inside the daemon.
+//! - **Management is the server admins'.** Plugins run code inside the daemon. A space's
+//!   admins may list the plugins (to find their space's), and read and change the
+//!   settings and logs of a space-aware plugin's instance in their space; shared plugins
+//!   are read-only to them.
 //! - **Installing, approving and uninstalling need a browser session with recent
 //!   authentication**, as creating an API token does: approving grants privileges, and
 //!   uninstalling deletes the plugin's data. Each is recorded in the security audit log.
@@ -158,11 +161,19 @@ fn audit(s: &AppState, ctx: &RequestCtx, p: &Principal, kind: &str, detail: &str
     }
 }
 
+/// A server admin, or an admin of the request's space (who may look at the plugins).
+fn admin_here(ctx: &RequestCtx) -> PluginResult<&Principal> {
+    match &ctx.space {
+        Some(here) if here.role == apitorrent_types::spaces::SpaceRole::Admin => principal(ctx),
+        _ => admin(ctx),
+    }
+}
+
 async fn list(
     State(s): State<AppState>,
     Extension(ctx): Extension<RequestCtx>,
 ) -> PluginResult<Json<Vec<PluginInfo>>> {
-    admin(&ctx)?;
+    admin_here(&ctx)?;
     Ok(Json(service(&s)?.list()))
 }
 
@@ -171,7 +182,7 @@ async fn detail(
     Extension(ctx): Extension<RequestCtx>,
     Path(id): Path<String>,
 ) -> PluginResult<Json<PluginInfo>> {
-    admin(&ctx)?;
+    admin_here(&ctx)?;
     Ok(Json(service(&s)?.get(&id)?))
 }
 

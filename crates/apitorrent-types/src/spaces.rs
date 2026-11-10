@@ -163,18 +163,6 @@ pub struct SetMemberRequest {
     pub role: SpaceRole,
 }
 
-/// A user, for picking members (server admins only).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct UserSummary {
-    pub id: String,
-    pub name: String,
-    pub display_name: String,
-    /// The instance role; `admin` is a server admin.
-    pub role: String,
-}
-
 /// Whether `slug` may name a space: 1 to 40 of `a-z`, `0-9` and `-`, not starting or
 /// ending with `-`.
 pub fn valid_slug(slug: &str) -> bool {

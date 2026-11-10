@@ -32,6 +32,7 @@ mod space_routes;
 mod sync;
 mod tls;
 mod update_routes;
+mod user_routes;
 mod webui;
 
 pub use plugin_credentials::plugin_credentials;
@@ -295,6 +296,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .merge(automation_routes::router())
         .merge(update_routes::router())
         .merge(space_routes::router())
+        .merge(user_routes::router())
         .fallback(routes::not_found)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

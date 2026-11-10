@@ -13,7 +13,8 @@ use crate::{
     Auth, AuthError, ClientMeta, Credential, Principal, Result, Role, TokenScope, UserInfo, store,
 };
 
-const ADMINS_ONLY: AuthError = AuthError::Forbidden("only a server admin manages members");
+const ADMINS_ONLY: AuthError =
+    AuthError::Forbidden("only a server admin or the space's admins manage its members");
 
 impl Principal {
     /// The instance's admin: every space, its members, new spaces, instance settings.
@@ -107,7 +108,27 @@ impl Auth {
             .collect())
     }
 
-    /// Give a user a role in a space (or change it). Server admins only; audited.
+    /// Whether `actor` may manage a space's existing members: a server admin, or an admin
+    /// of that space.
+    pub fn manages_members(&self, actor: &Principal, space: SpaceId) -> Result<bool> {
+        Ok(actor.server_admin() || self.space_role(actor, space)? == Some(SpaceRole::Admin))
+    }
+
+    fn is_member(&self, space: SpaceId, user_id: &str) -> Result<bool> {
+        Ok(self
+            .db()
+            .query_row(
+                "SELECT 1 FROM space_members WHERE user_id = ?1 AND space_id = ?2",
+                params![user_id, space],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Give a user a role in a space (or change it). A server admin may add anyone; a
+    /// space's admin may change the role of its existing members (new people join by
+    /// invitation). Audited.
     pub fn set_member(
         &self,
         actor: &Principal,
@@ -117,7 +138,12 @@ impl Auth {
         meta: &ClientMeta,
     ) -> Result<()> {
         if !actor.server_admin() {
-            return Err(ADMINS_ONLY);
+            if !self.manages_members(actor, space)? {
+                return Err(ADMINS_ONLY);
+            }
+            if !self.is_member(space, user_id)? {
+                return Err(AuthError::NotFound);
+            }
         }
         let conn = self.db();
         if store::user_by_id(&conn, user_id)?.is_none() {
@@ -139,7 +165,7 @@ impl Auth {
     }
 
     /// Take a user out of a space. Their tokens bound to it stop working. Server admins
-    /// only; audited.
+    /// and the space's admins; audited.
     pub fn remove_member(
         &self,
         actor: &Principal,
@@ -147,7 +173,7 @@ impl Auth {
         user_id: &str,
         meta: &ClientMeta,
     ) -> Result<()> {
-        if !actor.server_admin() {
+        if !self.manages_members(actor, space)? {
             return Err(ADMINS_ONLY);
         }
         let conn = self.db();
@@ -180,6 +206,7 @@ impl Auth {
     pub fn forget_space(&self, space: SpaceId) -> Result<()> {
         let conn = self.db();
         conn.execute("DELETE FROM space_members WHERE space_id = ?1", [space])?;
+        conn.execute("DELETE FROM enrollment_spaces WHERE space_id = ?1", [space])?;
         let tokens = conn.execute("DELETE FROM api_tokens WHERE space_id = ?1", [space])?;
         conn.execute(
             "UPDATE users SET last_space_id = NULL WHERE last_space_id = ?1",

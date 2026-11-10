@@ -17,6 +17,7 @@
 
 mod clock;
 mod db;
+mod enroll;
 mod error;
 mod limit;
 mod password;
@@ -47,6 +48,7 @@ pub use apitorrent_types::auth::{
     SessionInfo, SessionMethod, SessionState, TokenScope, UserInfo,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use enroll::{EnrollmentRecord, IssuedLink, UserRecord};
 pub use error::{AuthError, Result};
 pub use password::PasswordCost;
 
@@ -287,6 +289,14 @@ enum Pending {
     AddPasskey {
         reg: PasskeyRegistration,
         session: Digest32,
+    },
+    /// An invitation or recovery link's passkey registration.
+    Enroll {
+        reg: PasskeyRegistration,
+        enrollment: String,
+        user_id: Uuid,
+        username: String,
+        display_name: String,
     },
 }
 
@@ -891,7 +901,7 @@ impl Auth {
         if now - row.last_seen_at >= ms(TOUCH_EVERY) {
             store::touch_session(&conn, &hash, now)?;
         }
-        let Some(user) = store::user_by_id(&conn, &row.user_id)? else {
+        let Some(user) = store::user_by_id(&conn, &row.user_id)?.filter(|u| !u.disabled) else {
             return Ok(None);
         };
         Ok(Some(Principal {
@@ -931,7 +941,8 @@ impl Auth {
         {
             store::touch_token(&conn, &row.info.id, now)?;
         }
-        let Some(user) = store::user_by_id(&conn, &row.user_id)? else {
+        // A disabled user's tokens stay, but don't work until the user is enabled again.
+        let Some(user) = store::user_by_id(&conn, &row.user_id)?.filter(|u| !u.disabled) else {
             return Ok(None);
         };
         Ok(Some(Principal {
@@ -948,6 +959,11 @@ impl Auth {
     pub fn still_valid(&self, p: &Principal) -> Result<bool> {
         let conn = self.db();
         let now = self.now();
+        if !matches!(p.credential, Credential::Local)
+            && store::user_by_id(&conn, &p.user.id)?.is_none_or(|u| u.disabled)
+        {
+            return Ok(false);
+        }
         Ok(match &p.credential {
             Credential::Local => true,
             Credential::Session(s) => store::session_by_hash(&conn, &s.hash)?.is_some_and(|row| {
@@ -1031,6 +1047,7 @@ impl Auth {
             display_name,
             role: Role::Admin,
             password_hash: None,
+            disabled: false,
         };
         let mut conn = self.db();
         let tx = conn.transaction()?;
@@ -1096,6 +1113,7 @@ impl Auth {
             display_name,
             role: Role::Admin,
             password_hash: Some(hash),
+            disabled: false,
         };
         let mut conn = self.db();
         let tx = conn.transaction()?;
@@ -1177,6 +1195,10 @@ impl Auth {
         };
         store::update_passkey_use(&conn, &row.id, updated.as_deref(), self.now())?;
         let user = load_user(&conn, &row.user_id)?;
+        if user.disabled {
+            drop(conn);
+            return Err(self.failed(meta, Some(&user.id), "login_failed", "user disabled"));
+        }
         let pending =
             self.inner.password_mode == PasswordMode::SecondFactor && user.password_hash.is_some();
         let session = self.new_session(
@@ -1230,7 +1252,7 @@ impl Auth {
             password,
             user.as_ref().and_then(|u| u.password_hash.as_deref()),
         )?;
-        let Some(user) = user.filter(|_| ok) else {
+        let Some(user) = user.filter(|u| ok && !u.disabled) else {
             if self.inner.limiter.fail(&account, &limit::ACCOUNT) {
                 tracing::warn!(account = %name, "password lockout after repeated failures");
             }

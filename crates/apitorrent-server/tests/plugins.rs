@@ -159,6 +159,10 @@ impl PluginService for Fake {
     fn shutdown(&self) -> BoxFuture<()> {
         Box::pin(async {})
     }
+    /// `rss` runs per space; anything else is shared.
+    fn space_aware(&self, id: &str) -> bool {
+        id == "rss"
+    }
 }
 
 fn config(auth: AuthMode, fake: &Arc<Fake>) -> ServerConfig {
@@ -620,4 +624,108 @@ async fn without_a_host_plugins_are_off() {
     let r = send(&app, Req::get("/api/v1/plugins")).await;
     assert_eq!(r.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(r.code(), "plugins_disabled");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_admins_manage_their_space_aware_plugins_only() {
+    use apitorrent_auth::Role;
+    use apitorrent_types::spaces::{CreateSpaceRequest, SpaceRole, SpaceSettings};
+
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let fake = Arc::new(Fake::default());
+    let app = router(
+        core.clone(),
+        &config(AuthMode::Enabled(f.auth.clone()), &fake),
+    );
+    let meta = ClientMeta::default();
+    let s = f
+        .auth
+        .setup_with_password(&f.setup_token(), "admin", None, PASSWORD, &meta)
+        .unwrap();
+    let admin = f.auth.authenticate_session(&s.secret).unwrap().unwrap();
+    let tv = core
+        .create_space(CreateSpaceRequest {
+            slug: "tv".into(),
+            name: "TV".into(),
+            description: String::new(),
+            settings: SpaceSettings::default(),
+        })
+        .await
+        .unwrap()
+        .id;
+    // Sam administers tv; Una only uses it.
+    let member = |name: &str, role| {
+        let link = f
+            .auth
+            .create_invitation(&admin, Role::User, &[(tv, role)], None, None, &meta)
+            .unwrap();
+        let s = f
+            .auth
+            .enroll_with_password(&link.secret, name, None, PASSWORD, &meta, None)
+            .unwrap();
+        format!("apitorrent-session={}", s.secret)
+    };
+    let sam = member("sam", SpaceRole::Admin);
+    let una = member("una", SpaceRole::User);
+    let as_ = |method: &'static str, path: &str, cookie: &str| {
+        Req::new(method, path)
+            .browser()
+            .cookie(cookie)
+            .json(&json!({ "values": {} }))
+    };
+
+    // Sam sees the plugins and manages rss's instance in tv: settings and logs.
+    for (method, path) in [
+        ("GET", "/s/tv/api/v1/plugins"),
+        ("GET", "/s/tv/api/v1/plugins/rss"),
+        ("GET", "/s/tv/api/v1/plugins/rss/-/settings"),
+        ("PUT", "/s/tv/api/v1/plugins/rss/-/settings"),
+        ("GET", "/s/tv/api/v1/plugins/rss/-/logs"),
+    ] {
+        let r = send(&app, as_(method, path, &sam)).await;
+        assert_eq!(r.status, StatusCode::OK, "{method} {path}: {}", r.json());
+    }
+    // A shared plugin's settings, and managing plugins at all, stay with server admins.
+    for (method, path) in [
+        ("GET", "/s/tv/api/v1/plugins/shared/-/settings"),
+        ("GET", "/s/tv/api/v1/plugins/shared/-/logs"),
+        ("POST", "/s/tv/api/v1/plugins/rss/-/disable"),
+        ("POST", "/s/tv/api/v1/plugins/rss/-/enable"),
+        ("DELETE", "/s/tv/api/v1/plugins/rss"),
+    ] {
+        let r = send(&app, as_(method, path, &sam)).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{method} {path}");
+    }
+    let r = send(
+        &app,
+        Req::post("/s/tv/api/v1/plugins")
+            .browser()
+            .cookie(&sam)
+            .json(&bundle()),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "install");
+    // Outside tv (default isn't Sam's), nothing.
+    let r = send(&app, as_("GET", "/s/default/api/v1/plugins", &sam)).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+    // A member who isn't tv's admin can't look either.
+    for path in [
+        "/s/tv/api/v1/plugins",
+        "/s/tv/api/v1/plugins/rss/-/settings",
+    ] {
+        let r = send(&app, as_("GET", path, &una)).await;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}");
+    }
+    assert!(
+        !fake
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| c.starts_with("enabled")),
+        "nothing was switched"
+    );
+    core.shutdown().await.unwrap();
 }

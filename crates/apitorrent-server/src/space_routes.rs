@@ -3,8 +3,10 @@
 //! - `GET /space`: the request's space, the caller's role there, and every space the caller
 //!   may switch to. Signed-in browser sessions also remember it as their last space.
 //! - `GET /spaces`: the spaces the caller may use (all of them for a server admin).
-//! - Server admins only: `POST /spaces`, `GET/PUT/DELETE /spaces/{slug}`, the members
-//!   under `/spaces/{slug}/members`, and `GET /users` to pick members from.
+//! - Server admins only: `POST /spaces` and `GET/PUT/DELETE /spaces/{slug}`.
+//! - Server admins and the space's admins: its members under `/spaces/{slug}/members`
+//!   (a space's admins change and remove existing members; only server admins add users,
+//!   whom they pick from `GET /users`). Invitations are in `user_routes`.
 //!
 //! A space the caller can't use is a 404, as for one that doesn't exist.
 
@@ -20,7 +22,7 @@ use axum::{Json, Router};
 use apitorrent_auth::Principal;
 use apitorrent_types::spaces::{
     CreateSpaceRequest, SetMemberRequest, Space, SpaceContext, SpaceMember, SpaceRole, SpaceView,
-    UpdateSpaceRequest, UserSummary,
+    UpdateSpaceRequest,
 };
 
 use crate::authn::RequestCtx;
@@ -38,7 +40,6 @@ pub(crate) fn router() -> Router<AppState> {
             "/spaces/{slug}/members/{user}",
             put(set_member).delete(remove_member),
         )
-        .route("/users", get(users))
 }
 
 fn not_found() -> Response {
@@ -131,6 +132,28 @@ fn admin_space(s: &AppState, ctx: &RequestCtx, slug: &str) -> Result<Space, Resp
     s.core.space_by_slug(slug).ok_or_else(not_found)
 }
 
+/// A space by slug, for someone who manages its members: a server admin or one of its
+/// admins. A space the caller can't use at all is a 404; one they use but don't
+/// administer, a 403.
+fn member_space(s: &AppState, ctx: &RequestCtx, slug: &str) -> Result<Space, Response> {
+    let p = principal(ctx)?;
+    let space = s.core.space_by_slug(slug).ok_or_else(not_found)?;
+    if p.server_admin() {
+        return Ok(space);
+    }
+    let auth = enabled(s)?;
+    match auth.space_role(p, space.id).map_err(auth_failure)? {
+        Some(SpaceRole::Admin) => Ok(space),
+        Some(_) => Err(error(
+            StatusCode::FORBIDDEN,
+            "space_role",
+            "only an admin of this space can do that",
+        )
+        .into_response()),
+        None => Err(not_found()),
+    }
+}
+
 async fn create(
     State(s): State<AppState>,
     Extension(ctx): Extension<RequestCtx>,
@@ -218,7 +241,7 @@ async fn members(
     Extension(ctx): Extension<RequestCtx>,
     Path(slug): Path<String>,
 ) -> Response {
-    let space = match admin_space(&s, &ctx, &slug) {
+    let space = match member_space(&s, &ctx, &slug) {
         Ok(space) => space,
         Err(r) => return r,
     };
@@ -234,7 +257,7 @@ async fn set_member(
     Path((slug, user)): Path<(String, String)>,
     Json(req): Json<SetMemberRequest>,
 ) -> Response {
-    let space = match admin_space(&s, &ctx, &slug) {
+    let space = match member_space(&s, &ctx, &slug) {
         Ok(space) => space,
         Err(r) => return r,
     };
@@ -254,7 +277,7 @@ async fn remove_member(
     Extension(ctx): Extension<RequestCtx>,
     Path((slug, user)): Path<(String, String)>,
 ) -> Response {
-    let space = match admin_space(&s, &ctx, &slug) {
+    let space = match member_space(&s, &ctx, &slug) {
         Ok(space) => space,
         Err(r) => return r,
     };
@@ -265,26 +288,6 @@ async fn remove_member(
     });
     match result {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(r) => r,
-    }
-}
-
-async fn users(State(s): State<AppState>, Extension(ctx): Extension<RequestCtx>) -> Response {
-    if let Err(e) = server_admin(&ctx) {
-        return e.into_response();
-    }
-    match enabled(&s).and_then(|a| a.users().map_err(auth_failure)) {
-        Ok(list) => Json(
-            list.into_iter()
-                .map(|u| UserSummary {
-                    id: u.id,
-                    name: u.name,
-                    display_name: u.display_name,
-                    role: format!("{:?}", u.role).to_ascii_lowercase(),
-                })
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
         Err(r) => r,
     }
 }
