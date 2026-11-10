@@ -11,11 +11,22 @@
   padding: 6px 10px;
 }
 
+/* Role selects as wide as their words, not the whole form. */
+.invite-form .field > select {
+  justify-self: start;
+}
+
 .invite-space {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 3px 0;
+  /* The height of a role select, so ticking a space doesn't move the rows below. */
+  min-height: 34px;
+}
+
+.invite-space .check {
+  margin: 0;
 }
 
 .invite-space .grow,
