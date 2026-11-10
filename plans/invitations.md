@@ -94,13 +94,12 @@ can see the user list).
 1. ~~Plan doc~~
 2. ~~Auth crate: migration 3, enrollments, enroll ceremonies, user management, disabled
    users refused everywhere, unit tests.~~
-3. ~~Types (ts-rs) and server routes; permission checks~~; server tests for every edge.
-   ← current (running)
+3. ~~Types (ts-rs) and server routes; permission checks; server tests for every edge.~~
 4. ~~Plugins: list/detail/settings/logs for space admins.~~
-5. Web UI: ~~enrollment page, invitations + members on the Spaces page, Users page,
-   Plugins page for space admins~~; bun tests; 390 px check in headless Chrome.
-6. Docs (architecture "Authentication", "Spaces"; README), `plans/spaces.md` follow-ups.
-7. Full checks, commit.
+5. ~~Web UI: enrollment page, invitations + members on the Spaces page, Users page,
+   Plugins page for space admins; bun tests; 390 px check in headless Chrome.~~
+6. ~~Docs (architecture "Authentication", "Spaces"; README), `plans/spaces.md` follow-ups.~~
+7. ~~Full checks, commit.~~ All done 2026-11-10.
 
 ## Choices the decisions didn't cover
 
@@ -132,6 +131,12 @@ can see the user list).
 
 ## Findings / gotchas
 
+- Windows reserves ports 17691 to 19290 here (Hyper-V/WSL): the smoke daemon used 27431.
+- A headless Chrome started with `spawn` leaves its child processes when only the parent
+  is killed: clean up by the profile directory in the command line.
+- `cargo test` stops at the first failing test binary; use `--no-fail-fast` to see all.
+- DHT loopback test flaked once under load (ISSUES.md).
+
 - The bash tool's heredoc wrapper fails on longer quoted heredocs here (as `m4-auth.md`
   noted): patch scripts go through files in the scratchpad.
 
@@ -141,10 +146,28 @@ can see the user list).
 - [x] Auth crate (`enroll.rs`, migration 3; 8 new unit tests)
 - [x] Types (`apitorrent-types/src/users.rs`) and server (`user_routes.rs`)
 - [x] Plugins for space admins (list/detail; settings/logs already allowed)
-- [ ] Server tests (`tests/invitations.rs`, plugins test) passing
-- [ ] Web UI
-- [ ] Docs
-- [ ] Full checks
+- [x] Server tests (`tests/invitations.rs`: 4 tests; plugins: space admins) passing
+- [x] Web UI (`web/src/users/`, `auth/EnrollPage.tsx`, Spaces and Plugins pages)
+- [x] 390 px check: headless Chrome (DevTools protocol, no window) against a real
+      daemon on loopback, driven through setup, two spaces, a server admin's and a
+      space admin's invitations, enrollment and disabling. Enrollment, setup, Users,
+      Spaces (space admin, members and invite form open) and Plugins all fit; the
+      auth card's two-column row overflowed and was fixed.
+- [x] Docs (architecture, README, `plans/spaces.md`)
+- [x] Full checks: fmt, workspace clippy, `cargo test --locked` (all suites), web
+      typecheck/test/build, `typecheck:plugins`, `test:plugins`
+
+## Not done (follow-ups)
+
+1. **Joining with an existing account.** An invitation always creates a new user. A
+   space admin can't add someone who already has an account; a server admin can (from
+   the members list). Redeeming a link while signed in could add its spaces to that
+   account instead.
+2. **Passkey enrollment wasn't clicked through in a browser**: the passkey ceremony is
+   covered by the server tests' software authenticator, and the page was rendered
+   headless; the password path was driven over the API.
+3. **A space admin can remove themselves** from their space (as any member); nothing
+   stops the last space admin from leaving, since server admins can always restore it.
 
 ## Open questions for the user
 

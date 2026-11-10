@@ -36,3 +36,14 @@ suite. Most likely the uTP connect timed out under CPU load and the link fell ba
 Why it matters: a flaky test hides real failures in CI. To start: log the link the
 leecher ended up with when the assertion fails, and consider waiting for the uTP attempt
 (or retrying the link check) instead of taking the first connection.
+
+## DHT test `twenty_nodes_announce_and_find` fails under load
+
+Seen once on 2026-11-10 at about 2:00 PM PST (22:00Z), in a full `cargo test --locked` run
+while other projects' builds held every core: `crates/apitorrent-dht/tests/loopback.rs:98`
+panicked with "announces were stored somewhere: 0". The next full run passed it.
+
+Why it matters: a flaky test hides real failures, and `cargo test` without
+`--no-fail-fast` stops at it, so later suites never run. To start: check how long the
+test waits for the twenty nodes to bootstrap before announcing, and wait for the routing
+tables to fill instead of a fixed delay.
