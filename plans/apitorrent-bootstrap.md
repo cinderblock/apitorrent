@@ -116,11 +116,12 @@ engine core stays in the main thread, because its pieces interlock.
   layout, CI, fuzzing, scale fixes, real-world v2 tests. Every delegated stream is
   merged.
 - **What remains (2026-11-09):**
-  - Your call on *spaces* (several separate "instances" in one daemon); see "Open
-    questions". You run two Deluge instances for this today, and both are to be imported.
-  - The Deluge importer against your two real configs (where they live is an open
-    question).
-  - Self-signed update signing (no Authenticode or Apple certificates for now).
+  - Spaces (several separate setups in one daemon): designed, being built.
+    Plan: `plans/spaces.md`
+  - The Deluge import of the user's two instances into two spaces: run by hand on the
+    seedbox when the user is ready, with text pasted back and forth.
+  - Signed updates for the desktop app and the daemon: being built.
+    Plan: `plans/update-signing.md`
   - A GitHub remote and push so CI and releases run.
   - Someone else with Sonarr or Radarr to try `qbittorrent-api` against (you don't run
     them).
@@ -658,20 +659,16 @@ them, restarts, and reports. On this machine (release build, NVMe):
 
 ## Open questions for the user
 
-1. **Spaces: several separate setups in one daemon** (asked 2026-11-09; you run two
-   Deluge instances to keep two parts of your hosting apart: storage, speed limits,
-   access). Recommendation: a *space* is a named partition with its own storage roots and
-   download folder, its own bandwidth/connection limits (a level between session and
-   group), its own labels, rules, channels and plugin settings, and its own members with
-   a role each (admin, user, viewer). Server admins see every space. Built on what exists
-   (storage roots, the limits hierarchy, roles). Questions inside it:
-   - Does each part need its own network identity (listen port, interface or VPN)?
-   - Who uses each part: different people, or you plus different apps?
-   - Should identical files be shared between the two parts' storage, or never?
-2. **Where are the two Deluge configs**, and how should I read them (a copy here, or SSH
-   to the seedbox)?
-3. **Update signing**: desktop app only, or the daemon too? Where the private key lives
-   (recommendation: generated here, kept outside the repo, later a GitHub secret).
+None open. Answered 2026-11-09:
+
+- **Spaces:** yes. Login picks the space, and a `/s/<slug>/` prefix or a mapped hostname
+  can too. Spaces share one network identity. They are used both by different people and
+  by different apps. Identical data is shared silently, and internal transfers are never
+  reported to trackers. Plan: `plans/spaces.md`.
+- **Deluge configs:** both are on the seedbox, and the user isn't ready yet. The import
+  will be run by hand there, with text output pasted back and forth.
+- **Update signing:** the desktop app and the daemon. The key lives in GitHub secrets.
+  Plan: `plans/update-signing.md`.
 
 ## How to run it
 
