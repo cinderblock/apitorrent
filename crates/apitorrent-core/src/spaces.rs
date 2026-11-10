@@ -229,19 +229,10 @@ impl Core {
     /// after it in the instance's download directory.
     pub fn download_dir(&self, space: SpaceId) -> PathBuf {
         let instance = &self.inner.config.download_dir;
-        let Ok(s) = self.space(space) else {
-            return instance.clone();
-        };
-        if let Some(d) = &s.settings.download_dir {
-            return PathBuf::from(d);
+        match self.space(space) {
+            Ok(s) => crate::deluge_import::default_folder(s.id, &s.slug, &s.settings, instance),
+            Err(_) => instance.clone(),
         }
-        if space == DEFAULT_SPACE {
-            return instance.clone();
-        }
-        s.settings
-            .storage_roots
-            .first()
-            .map_or_else(|| instance.join(&s.slug), PathBuf::from)
     }
 
     /// The save path for a new torrent: the one asked for, else the folder its label's rule

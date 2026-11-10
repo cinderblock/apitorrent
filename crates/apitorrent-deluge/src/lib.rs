@@ -60,6 +60,9 @@ pub struct DelugeTorrent {
     pub stop_at_ratio: Option<(f64, bool)>,
     /// libtorrent's `seeding_time`, in seconds.
     pub seeding_secs: u64,
+    /// Deluge options set on this torrent that apitorrent has no equivalent for, in plain
+    /// words (`move completed to /done`).
+    pub not_carried: Vec<String>,
 }
 
 /// Deluge's settings that matter to apitorrent.
@@ -85,6 +88,9 @@ pub struct DelugeSettings {
 pub struct DelugeState {
     pub torrents: Vec<DelugeTorrent>,
     pub settings: DelugeSettings,
+    /// Label plugin options (per label) that apitorrent has no equivalent for, in plain
+    /// words. The labels themselves carry over.
+    pub label_options: Vec<String>,
     /// Problems that didn't stop the import, in plain words.
     pub warnings: Vec<String>,
 }
@@ -136,11 +142,25 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
         Err(e) => out.warnings.push(format!("torrents.state: {e}")),
     }
 
-    let labels = read_config(&config_dir.join("label.conf"))
-        .ok()
+    let label_conf = read_config(&config_dir.join("label.conf")).ok();
+    let labels = label_conf
+        .as_ref()
         .and_then(|c| c.get("torrent_labels").cloned())
         .and_then(|m| m.as_object().cloned())
         .unwrap_or_default();
+    if let Some(options) = label_conf
+        .as_ref()
+        .and_then(|c| c.get("labels"))
+        .and_then(serde_json::Value::as_object)
+    {
+        let mut names: Vec<&String> = options.keys().collect();
+        names.sort();
+        for name in names {
+            for note in label_notes(&options[name]) {
+                out.label_options.push(format!("label {name}: {note}"));
+            }
+        }
+    }
 
     if let Ok(core) = read_config(&config_dir.join("core.conf")) {
         out.settings = settings_from(&core);
@@ -194,6 +214,7 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
             magnet: None,
             stop_at_ratio: None,
             seeding_secs: 0,
+            not_carried: Vec::new(),
         };
         if let Some(r) = resume.get(&id)
             && let Err(e) = apply_resume(&mut t, r)
@@ -337,6 +358,85 @@ fn apply_deluge_state(t: &mut DelugeTorrent, d: &pickle::Value) {
     {
         t.magnet = Some(m.to_owned());
     }
+    t.not_carried = torrent_notes(d);
+}
+
+/// The options of a torrent in `torrents.state` that apitorrent has no equivalent for.
+fn torrent_notes(d: &pickle::Value) -> Vec<String> {
+    use pickle::Value;
+    let on = |key: &str| d.get(key).and_then(Value::as_bool) == Some(true);
+    let mut out = Vec::new();
+    if on("move_completed") {
+        let to = d
+            .get("move_completed_path")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        out.push(format!(
+            "move completed downloads to {to} (apitorrent keeps files where they download)"
+        ));
+    }
+    if let Some(n) = d
+        .get("max_upload_slots")
+        .and_then(Value::as_int)
+        .filter(|&n| n > 0)
+    {
+        out.push(format!(
+            "{n} upload slots of its own (apitorrent's are per session)"
+        ));
+    }
+    if on("prioritize_first_last_pieces") {
+        out.push("first and last pieces first".to_owned());
+    }
+    if on("sequential_download") {
+        out.push("sequential download".to_owned());
+    }
+    if on("super_seeding") {
+        out.push("super-seeding".to_owned());
+    }
+    if d.get("auto_managed").and_then(Value::as_bool) == Some(false) {
+        out.push(
+            "kept out of Deluge's queue (apitorrent's queue manages every torrent)".to_owned(),
+        );
+    }
+    out
+}
+
+/// A Label plugin label's options that apitorrent has no equivalent for.
+fn label_notes(o: &serde_json::Value) -> Vec<String> {
+    let on = |key: &str| o.get(key).and_then(serde_json::Value::as_bool) == Some(true);
+    let mut out = Vec::new();
+    if on("move_completed") {
+        let to = o
+            .get("move_completed_path")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?");
+        out.push(format!("move completed downloads to {to}"));
+    }
+    if on("apply_max") {
+        let n = |key: &str| {
+            o.get(key)
+                .and_then(serde_json::Value::as_f64)
+                .filter(|&v| v > 0.0)
+        };
+        let parts: Vec<String> = [
+            ("download KiB/s", n("max_download_speed")),
+            ("upload KiB/s", n("max_upload_speed")),
+            ("connections", n("max_connections")),
+        ]
+        .into_iter()
+        .filter_map(|(what, v)| v.map(|v| format!("{v} {what}")))
+        .collect();
+        if !parts.is_empty() {
+            out.push(format!(
+                "limits for the label ({}); set them as a group in apitorrent's settings",
+                parts.join(", ")
+            ));
+        }
+    }
+    if on("auto_add") {
+        out.push("adds torrents from trackers it names automatically".to_owned());
+    }
+    out
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]

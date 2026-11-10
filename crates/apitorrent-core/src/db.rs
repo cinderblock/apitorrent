@@ -233,6 +233,41 @@ impl Database {
         Self::init(conn)
     }
 
+    /// Open an existing database without changing it: read-only, and only if its schema is
+    /// this build's (`Ok(None)` otherwise, or when there is no file).
+    pub fn open_read_only(path: &Path) -> rusqlite::Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let db = Self { conn };
+        Ok((db.schema_version()? == MIGRATIONS.len()).then_some(db))
+    }
+
+    /// The torrent ids a space has (with metadata or not).
+    pub fn torrent_ids(
+        &self,
+        space: SpaceId,
+    ) -> rusqlite::Result<std::collections::HashSet<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM torrents WHERE space_id = ?1")?;
+        stmt.query_map([space], |r| r.get(0))?.collect()
+    }
+
+    /// The end of a space's queue.
+    pub fn next_queue_position(&self, space: SpaceId) -> rusqlite::Result<u32> {
+        let max: Option<i64> = self.conn.query_row(
+            "SELECT MAX(queue_position) FROM torrents WHERE space_id = ?1",
+            [space],
+            |r| r.get(0),
+        )?;
+        Ok(max.map_or(0, |m| u32::try_from(m + 1).unwrap_or(u32::MAX)))
+    }
+
     pub fn open_in_memory() -> rusqlite::Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }

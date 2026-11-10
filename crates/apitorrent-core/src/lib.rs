@@ -7,6 +7,7 @@
 pub mod adapters;
 pub mod automation;
 pub mod db;
+pub mod deluge_import;
 pub mod fingerprint;
 pub mod import;
 pub mod library;
@@ -49,20 +50,6 @@ pub use crate::store::{Patch, Snapshot, Store};
 const REFRESH: Duration = Duration::from_secs(1);
 /// How often resume state is saved.
 const SAVE_EVERY: Duration = Duration::from_secs(30);
-/// Deluge's "stop seeding at ratio" (with "remove") as seed limits.
-fn deluge_seed_limits(stop: Option<(f64, bool)>) -> apitorrent_types::SeedLimits {
-    use apitorrent_types::{SeedLimitAction, SeedLimits};
-    stop.map_or_else(SeedLimits::default, |(ratio, remove)| SeedLimits {
-        ratio,
-        seed_minutes: 0,
-        action: if remove {
-            SeedLimitAction::Remove
-        } else {
-            SeedLimitAction::Pause
-        },
-    })
-}
-
 /// How often the fingerprinter looks for files to fingerprint.
 const FINGERPRINT_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often superseded torrents are checked for retirement.
@@ -279,7 +266,7 @@ struct Inner {
     adapters: adapters::AdapterState,
 }
 
-const SETTINGS_KEY: &str = "settings";
+pub(crate) const SETTINGS_KEY: &str = "settings";
 /// The DHT's node id and good nodes, base64 of its own encoding.
 const DHT_STATE_KEY: &str = "dht_state";
 
@@ -1052,247 +1039,172 @@ impl Core {
         pending.retain(|id, _| torrents.contains_key(id));
     }
 
-    /// Bring in a Deluge installation's torrents: files where Deluge left them, progress from
-    /// its resume data (validated against the files on disk, so nothing is rehashed),
-    /// labels, queue order, per-torrent limits and all-time totals.
+    /// Bring in a Deluge installation's torrents into a space: files where Deluge left them,
+    /// progress from its resume data (validated against the files on disk, so nothing is
+    /// rehashed), labels, queue order, per-torrent limits and all-time totals. Torrents the
+    /// space already has are left alone, so importing twice is safe. See `deluge_import`.
     pub async fn import_deluge(
         &self,
         space: SpaceId,
         req: apitorrent_types::ImportDelugeRequest,
     ) -> Result<apitorrent_types::ImportReport, CoreError> {
         use apitorrent_types::{ImportReport, ImportSkip};
-        self.space(space)?;
+        let target_space = self.space(space)?;
         let dir = PathBuf::from(&req.config_dir);
         let state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
             .await
             .expect("Deluge reader panicked")
             .map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
-        let map: Vec<(String, String)> = req
-            .path_map
-            .iter()
-            .map(|m| (m.from.clone(), m.to.clone()))
-            .collect();
-        let mut report = ImportReport {
-            warnings: state.warnings.clone(),
-            ..ImportReport::default()
-        };
-        // Deluge's global "stop at ratio" is instance-wide here; another space's torrents
-        // each get it as limits of their own instead.
-        let space_wide_ratio = space != DEFAULT_SPACE && req.import_settings;
         if req.import_settings {
-            let d = &state.settings;
             if space == DEFAULT_SPACE {
                 let mut s = self.settings();
-                s.download_rate = d.max_download_rate.unwrap_or(0);
-                s.upload_rate = d.max_upload_rate.unwrap_or(0);
-                if let Some(n) = d.max_connections {
-                    s.max_connections = n;
-                }
-                s.queue.max_active_downloads = d.max_active_downloading.unwrap_or(0);
-                s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
-                s.queue.max_active = d.max_active_limit.unwrap_or(0);
-                s.queue.ignore_slow = d.dont_count_slow;
-                s.seed_limits = deluge_seed_limits(d.stop_at_ratio);
+                deluge_import::apply_instance_settings(&mut s, &state.settings);
                 self.set_settings(s).await?;
             } else {
-                let current = self.space(space)?;
-                let mut s = current.settings.clone();
-                s.download_rate = d.max_download_rate.unwrap_or(0);
-                s.upload_rate = d.max_upload_rate.unwrap_or(0);
-                s.max_connections = d.max_connections.unwrap_or(0);
-                s.max_active_downloads = d.max_active_downloading.unwrap_or(0);
-                s.max_active_seeds = d.max_active_seeding.unwrap_or(0);
-                s.max_active = d.max_active_limit.unwrap_or(0);
+                let mut s = target_space.settings.clone();
+                deluge_import::apply_space_settings(&mut s, &state.settings);
                 self.update_space(
                     space,
                     apitorrent_types::spaces::UpdateSpaceRequest {
-                        name: current.name.clone(),
-                        description: current.description.clone(),
+                        name: target_space.name.clone(),
+                        description: target_space.description.clone(),
                         settings: s,
                     },
                 )
                 .await?;
             }
         }
-        let ours = self.download_dir(space);
-        for t in state.torrents {
-            let label = || t.id.clone();
-            let skip = |report: &mut ImportReport, name: String, reason: String| {
-                report.skipped.push(ImportSkip { name, reason });
-            };
-            let bytes = match &t.trackers {
-                Some(tiers) => {
-                    import::with_trackers(&t.torrent, tiers).unwrap_or_else(|| t.torrent.clone())
-                }
-                None => t.torrent.clone(),
-            };
-            let torrent = match Torrent::from_bytes(&bytes) {
-                Ok(parsed) => Arc::new(parsed),
-                Err(e) => {
-                    // A magnet that never got its metadata in Deluge: add it as a magnet.
-                    if let Some(uri) = &t.magnet {
-                        match self
-                            .add(
-                                space,
-                                AddTorrentRequest {
-                                    source: AddSource::Magnet { uri: uri.clone() },
-                                    save_path: t
-                                        .save_path
-                                        .as_deref()
-                                        .map(|p| import::remap(p, &map)),
-                                    paused: req.paused || t.paused,
-                                    label: t.label.clone(),
-                                    file_priorities: None,
-                                    unwanted_policy: UnwantedPolicy::Hold,
-                                },
-                            )
-                            .await
-                        {
-                            Ok(_) => report.imported.push(label()),
-                            Err(e) => skip(&mut report, label(), e.to_string()),
-                        }
-                    } else {
-                        skip(&mut report, label(), format!("unreadable .torrent: {e}"));
-                    }
-                    continue;
-                }
-            };
-            let name = torrent.info.name.clone();
-            let id = torrent.info.info_hashes().id_string();
-            let key = Key::new(space, id.clone());
-            let taken = self
-                .inner
-                .torrents
-                .read()
-                .expect("torrents lock poisoned")
-                .contains_key(&key);
-            if taken {
-                skip(&mut report, name, "already in this space".into());
-                continue;
-            }
-            let save_path = import::save_path(
-                t.save_path.as_deref(),
-                state.settings.download_location.as_deref(),
-                &ours,
-                &map,
-            );
-            let files = torrent.info.files.len();
-            let prios = t
-                .file_priorities
-                .clone()
-                .filter(|p| p.len() == files)
-                .unwrap_or_else(|| vec![4; files]);
-            let pieces = u32::try_from(torrent.info.piece_count()).unwrap_or(0);
-            let have = t
-                .pieces
-                .as_deref()
-                .and_then(|p| import::pieces_bitfield(p, pieces));
-            let file_paths = {
-                let (tor, save, renamed) = (torrent.clone(), save_path.clone(), t.renamed.clone());
-                tokio::task::spawn_blocking(move || import::file_layout(&tor, &save, &renamed))
-                    .await
-                    .unwrap_or(None)
-            };
-            if let Err(e) = self.check_save_path(space, &save_path) {
-                skip(&mut report, name, e.to_string());
-                continue;
-            }
-            let held_path = held_path_for(&self.inner.config.data_dir, &save_path, &id);
-            let limits = TorrentLimits {
-                download_rate: t.max_download_rate.unwrap_or(0),
-                upload_rate: t.max_upload_rate.unwrap_or(0),
-                max_connections: t.max_connections,
-            };
-            let paused = req.paused || t.paused;
-            let hashes = torrent.info.info_hashes();
-            let trackers = torrent.trackers.clone();
-            let row = TorrentRow {
-                space,
-                id: id.clone(),
-                info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
-                info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
+        let map: Vec<(String, String)> = req
+            .path_map
+            .iter()
+            .map(|m| (m.from.clone(), m.to.clone()))
+            .collect();
+        let present: std::collections::HashSet<String> = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let pending = self.inner.pending.read().expect("pending lock poisoned");
+            torrents
+                .keys()
+                .chain(pending.keys())
+                .filter(|k| k.space == space)
+                .map(|k| k.id.clone())
+                .collect()
+        };
+        let download_dir = self.download_dir(space);
+        let target = deluge_import::Target {
+            space,
+            slug: &target_space.slug,
+            roots: &target_space.settings.storage_roots,
+            download_dir: &download_dir,
+            present: &present,
+            map: &map,
+            paused: req.paused,
+            ratio_per_torrent: space != DEFAULT_SPACE && req.import_settings,
+            first_position: self.next_queue_position(space),
+        };
+        let plan = deluge_import::plan(&state, &target);
+        let mut report = ImportReport {
+            warnings: state.warnings.clone(),
+            skipped: plan.skipped.clone(),
+            ..ImportReport::default()
+        };
+        report
+            .skipped
+            .extend(plan.already.iter().map(|name| ImportSkip {
                 name: name.clone(),
-                torrent: bytes,
-                save_path: save_path.to_string_lossy().into_owned(),
-                label: t.label.clone(),
-                added_at: t.added_at.map_or_else(now_ms, |s| s.saturating_mul(1000)),
-                paused,
-                have: have.as_ref().map(|h| h.as_bytes().to_vec()),
-                file_priorities: Some(prios.clone()),
-                downloaded_total: t.total_downloaded,
-                uploaded_total: t.total_uploaded,
-                placements: None,
-                held_path: Some(held_path.to_string_lossy().into_owned()),
-                unwanted_policy: 0,
-                queue_position: self.next_queue_position(space),
-                download_rate: limits.download_rate,
-                upload_rate: limits.upload_rate,
-                max_connections: limits.max_connections,
-                magnet: None,
-                naming: 0,
-                linked: None,
-                file_paths: file_paths
-                    .as_ref()
-                    .map(|p| serde_json::to_string(p).expect("serialize")),
+                reason: "already in this space".into(),
+            }));
+        for m in plan.magnets {
+            let added = self
+                .add(
+                    space,
+                    AddTorrentRequest {
+                        source: AddSource::Magnet { uri: m.uri.clone() },
+                        save_path: Some(m.row.save_path.clone()),
+                        paused: m.row.paused,
+                        label: m.row.label.clone(),
+                        file_priorities: None,
+                        unwanted_policy: UnwantedPolicy::Hold,
+                    },
+                )
+                .await;
+            match added {
+                Ok(_) => report.imported.push(m.name),
+                Err(e) => report.skipped.push(ImportSkip {
+                    name: m.name,
+                    reason: e.to_string(),
+                }),
+            }
+        }
+        for t in plan.torrents {
+            let key = Key::new(space, t.row.id.clone());
+            let save_path = PathBuf::from(&t.row.save_path);
+            let held_path = {
+                let (data, save, id) = (
+                    self.inner.config.data_dir.clone(),
+                    save_path.clone(),
+                    key.id.clone(),
+                );
+                tokio::task::spawn_blocking(move || held_path_for(&data, &save, &id))
+                    .await
+                    .expect("held path probe panicked")
             };
-            let (added_at, queue_position) = (row.added_at, row.queue_position);
+            let mut row = t.row.clone();
+            row.held_path = Some(held_path.to_string_lossy().into_owned());
+            let (added_at, queue_position, paused) = (row.added_at, row.queue_position, row.paused);
             if let Err(e) = self.db(move |db| db.insert_torrent(&row)).await {
-                skip(&mut report, name, e.to_string());
+                report.skipped.push(ImportSkip {
+                    name: t.name,
+                    reason: e.to_string(),
+                });
                 continue;
             }
             let spawned = self
                 .spawn_entry(Spawn {
                     key: key.clone(),
                     peers: Vec::new(),
-                    torrent,
-                    trackers,
+                    trackers: t.torrent.trackers.clone(),
+                    torrent: t.torrent.clone(),
                     save_path,
                     held_path,
-                    have,
+                    have: t.have.clone(),
                     placements: None,
                     paused,
-                    file_priorities: prios,
+                    file_priorities: t.row.file_priorities.clone().unwrap_or_default(),
                     unwanted: UnwantedPolicy::Hold,
                     label: t.label.clone(),
                     added_at,
-                    totals: (t.total_downloaded, t.total_uploaded),
+                    totals: (t.row.downloaded_total, t.row.uploaded_total),
                     queue_position,
-                    limits,
+                    limits: t.limits,
                     queued: !paused && self.queue_limited(),
                     naming: 0,
                     linked: Vec::new(),
-                    file_paths,
+                    file_paths: t.file_paths.clone(),
                 })
                 .await;
             match spawned {
                 Ok(_) => {
-                    // Deluge copies its global "stop at ratio" into every torrent, so only
-                    // a torrent that differs from the global setting gets limits of its own
-                    // (in another space, every torrent does: see above).
-                    let own = (space_wide_ratio || t.stop_at_ratio != state.settings.stop_at_ratio)
-                        .then(|| deluge_seed_limits(t.stop_at_ratio));
-                    let seed = seeding::SeedState {
-                        seed_ms: t.seeding_secs.saturating_mul(1000),
-                        limits: own,
-                        reached: false,
-                    };
                     self.inner
                         .seeding
                         .lock()
                         .expect("seeding lock poisoned")
-                        .insert(key.clone(), seed);
-                    let k = key.clone();
+                        .insert(key.clone(), t.seed);
+                    let (k, seed) = (key.clone(), t.seed);
                     let _ = self.db(move |db| db.save_seed_states(&[(k, seed)])).await;
-                    report.imported.push(name);
+                    report.imported.push(t.name);
                 }
                 Err(e) => {
                     let k = key.clone();
                     let _ = self.db(move |db| db.remove_torrent(&k)).await;
-                    skip(&mut report, name, e.to_string());
+                    report.skipped.push(ImportSkip {
+                        name: t.name,
+                        reason: e.to_string(),
+                    });
                 }
             }
         }
         tracing::info!(
+            space = %target_space.slug,
             imported = report.imported.len(),
             skipped = report.skipped.len(),
             "Deluge import finished"

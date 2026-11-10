@@ -1,6 +1,7 @@
 //! `apitorrentd`: the headless apitorrent daemon.
 
 mod bundled;
+mod import;
 mod plugins;
 mod tls;
 mod update;
@@ -75,6 +76,10 @@ enum Command {
     /// Install the latest published release, if it is newer and signed with apitorrent's
     /// update key. The running daemon keeps the old version until it restarts.
     Update(update::UpdateArgs),
+    /// Bring torrents in from another client, with the daemon stopped. They start on its
+    /// next start.
+    #[command(subcommand)]
+    Import(import::ImportCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -85,11 +90,11 @@ struct Args {
     command: Option<Command>,
 
     /// Where the database and state live. Defaults to the platform's app data directory.
-    #[arg(long, env = "APITORRENT_DATA_DIR")]
+    #[arg(long, env = "APITORRENT_DATA_DIR", global = true)]
     data_dir: Option<PathBuf>,
 
     /// The default directory for downloads. Defaults to `<Downloads>/apitorrent`.
-    #[arg(long, env = "APITORRENT_DOWNLOAD_DIR")]
+    #[arg(long, env = "APITORRENT_DOWNLOAD_DIR", global = true)]
     download_dir: Option<PathBuf>,
 
     /// Address for the HTTP API and web UI. A non-loopback address needs built-in TLS (see
@@ -278,12 +283,19 @@ fn print_setup_token(token: &SetupToken, urls: &[String], now_ms: i64) {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
     let args = Args::parse();
+    // An import prints a report meant for copying: logs go to stderr, and only warnings.
+    let importing = args.command.is_some();
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(if importing { "warn" } else { "info" }));
+    if importing {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
     let defaults = default_dirs();
     let (Some(data_dir), Some(download_dir)) = (
         args.data_dir
@@ -294,6 +306,18 @@ async fn main() -> ExitCode {
         eprintln!("could not determine default directories; pass --data-dir and --download-dir");
         return ExitCode::FAILURE;
     };
+    if let Some(Command::Import(cmd)) = &args.command {
+        return match import::run(cmd, &data_dir, &download_dir) {
+            Ok(report) => {
+                print!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let Some(Command::Update(u)) = &args.command {
         return update::run_cli(u, data_dir).await;
     }
