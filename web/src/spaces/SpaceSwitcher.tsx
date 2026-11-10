@@ -18,7 +18,7 @@ export function SpaceSwitcher() {
         }}
       >
         {ctx.spaces.map((s) => (
-          <option key={s.id} value={s.slug} title={s.description || undefined}>
+          <option key={s.id} value={s.slug}>
             {s.name}
           </option>
         ))}

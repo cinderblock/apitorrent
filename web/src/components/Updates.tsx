@@ -60,7 +60,11 @@ async function waitForRestart(version: string): Promise<void> {
 }
 
 function When({ ms }: { ms: number }) {
-  return <time title={formatUtc(ms)}>{formatDateTime(ms)}</time>;
+  return (
+    <>
+      <time>{formatDateTime(ms)}</time> <small className="muted">{formatUtc(ms)}</small>
+    </>
+  );
 }
 
 /** What's available, and the install button. */

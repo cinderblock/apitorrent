@@ -217,7 +217,7 @@ export function InvitationList({
               {inv.state === "used" && inv.usedAt !== null && (
                 <>
                   {" "}
-                  · used <time title={formatUtc(inv.usedAt)}>{formatDateTime(inv.usedAt)}</time>
+                  · used <time>{formatDateTime(inv.usedAt)}</time> ({formatUtc(inv.usedAt)})
                 </>
               )}
             </small>

@@ -180,7 +180,7 @@ function UserCard({
         {" · "}
         {u.lastSeenAt !== null ? (
           <>
-            last seen <time title={formatUtc(u.lastSeenAt)}>{formatDateTime(u.lastSeenAt)}</time>
+            last seen <time>{formatDateTime(u.lastSeenAt)}</time> <small className="muted">{formatUtc(u.lastSeenAt)}</small>
           </>
         ) : (
           "not signed in"

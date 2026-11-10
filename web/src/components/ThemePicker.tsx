@@ -13,7 +13,6 @@ export function ThemePicker() {
     <select
       className="theme-picker"
       aria-label="Colour theme"
-      title="Colour theme on this device"
       value={theme}
       onChange={(e) => setTheme(e.target.value as ThemePreference)}
     >
