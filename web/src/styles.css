@@ -164,10 +164,16 @@ code {
    width first (its basis is its smallest size, and it grows to 16rem when there's room);
    it fits one row at 1280 px for a space admin with several spaces;
    only then does .toolbar-end move to a second row. */
-.toolbar > *,
-.toolbar-end > * {
+.toolbar > :not(dialog),
+.toolbar-end > :not(dialog) {
   flex-shrink: 0;
   white-space: nowrap;
+}
+
+/* The update button and the desktop menu render their dialogs inside the toolbar; text in
+   them wraps as anywhere else. */
+.toolbar dialog {
+  white-space: normal;
 }
 
 .toolbar > .search {
