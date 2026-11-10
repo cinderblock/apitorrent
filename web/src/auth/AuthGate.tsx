@@ -9,7 +9,9 @@ import { navigate, usePath } from "../router";
 import { PluginsPage } from "../plugins/PluginsPage";
 import { RulesPage } from "../rules/RulesPage";
 import { SpacesPage } from "../spaces/SpacesPage";
+import { UsersPage } from "../users/UsersPage";
 import { AccountPage } from "./AccountPage";
+import { EnrollPage } from "./EnrollPage";
 import { viewFor } from "./flow";
 import { LoginPage } from "./LoginPage";
 import { SetupPage } from "./SetupPage";
@@ -62,10 +64,13 @@ export function AuthGate() {
     );
   }
   if (view === "setup") return <SetupPage status={status} onSignedIn={setStatus} />;
+  // An invitation or recovery link, signed in or not.
+  if (path === "/enroll" && !status.authDisabled) return <EnrollPage status={status} onSignedIn={setStatus} />;
   if (view === "login" || view === "secondFactor") return <LoginPage status={status} onSignedIn={setStatus} />;
   if (path === "/account") return <AccountPage status={status} onStatus={setStatus} refresh={refresh} />;
   if (path === "/plugins") return <PluginsPage status={status} onStatus={setStatus} />;
   if (path === "/rules") return <RulesPage status={status} />;
-  if (path === "/spaces") return <SpacesPage />;
+  if (path === "/spaces") return <SpacesPage status={status} onStatus={setStatus} />;
+  if (path === "/users") return <UsersPage status={status} onStatus={setStatus} />;
   return <App status={status} />;
 }

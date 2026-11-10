@@ -1,16 +1,23 @@
-// The Spaces page (/spaces), for server admins: every space, its storage and limits, and
-// its members. A space keeps its own torrents, folders, limits, labels, rules and plugin
-// settings; one torrent in two spaces is downloaded once and shared.
+// The Spaces page (/spaces). Server admins see every space, its storage and limits, its
+// members and invitations. A space's admins see their spaces' members and invitations only.
+// A space keeps its own torrents, folders, limits, labels, rules and plugin settings; one
+// torrent in two spaces is downloaded once and shared.
 
 import { useCallback, useEffect, useState } from "react";
 
+import type { AuthStatus } from "../api/generated/AuthStatus";
+import type { CreatedInvitation } from "../api/generated/CreatedInvitation";
+import type { InvitationInfo } from "../api/generated/InvitationInfo";
+import type { ManagedUser } from "../api/generated/ManagedUser";
 import type { Space } from "../api/generated/Space";
 import type { SpaceMember } from "../api/generated/SpaceMember";
 import type { SpaceRole } from "../api/generated/SpaceRole";
 import type { SpaceView } from "../api/generated/SpaceView";
-import type { UserSummary } from "../api/generated/UserSummary";
-import { describeError } from "../auth/flow";
+import { Cancelled, describeError, withReauth } from "../auth/flow";
+import { ReauthDialog } from "../auth/ReauthDialog";
 import { navigate } from "../router";
+import { invitationsApi, usersApi } from "../users/api";
+import { InvitationList, InviteForm, NewLink, type Change } from "../users/Invitations";
 import { spacesApi } from "./api";
 import { loadSpaceContext, useSpaceContext } from "./context";
 import { emptyForm, formOf, settingsOf, slugFrom, type SpaceForm } from "./form";
@@ -25,8 +32,10 @@ const ROLES: { value: SpaceRole; text: string }[] = [
 
 type Editing = { slug: string | null; form: SpaceForm } | null;
 
-export function SpacesPage() {
+export function SpacesPage({ status, onStatus }: { status: AuthStatus; onStatus: (s: AuthStatus) => void }) {
   const ctx = useSpaceContext();
+  const serverAdmin = ctx?.serverAdmin ?? false;
+  const [reauth, setReauth] = useState<{ resolve: () => void; reject: (e: unknown) => void } | null>(null);
   const [spaces, setSpaces] = useState<SpaceView[] | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [members, setMembers] = useState<string | null>(null);
@@ -35,7 +44,9 @@ export function SpacesPage() {
 
   const load = useCallback(async () => {
     try {
-      setSpaces(await spacesApi.list());
+      const all = await spacesApi.list();
+      // A space's admins manage only the spaces they administer.
+      setSpaces(all.filter((s) => s.role === "admin"));
     } catch (e) {
       setError(describeError(e));
     }
@@ -86,10 +97,29 @@ export function SpacesPage() {
     if (ok) setEditing(null);
   }
 
-  if (ctx && !ctx.serverAdmin) {
+  const confirmIdentity = useCallback(
+    () => new Promise<void>((resolve, reject) => setReauth({ resolve, reject })),
+    [],
+  );
+  // Changes that may need a fresh sign-in (creating invitations).
+  const change: Change = useCallback(
+    async (action) => {
+      setError(null);
+      try {
+        await withReauth(action, confirmIdentity);
+        return true;
+      } catch (e) {
+        if (!(e instanceof Cancelled)) setError(describeError(e));
+        return false;
+      }
+    },
+    [confirmIdentity],
+  );
+
+  if (ctx && !serverAdmin && spaces?.length === 0) {
     return (
       <div className="account">
-        <p className="account-section muted">Only a server admin manages spaces.</p>
+        <p className="account-section muted">Only a server admin or a space's admins manage spaces.</p>
       </div>
     );
   }
@@ -111,9 +141,11 @@ export function SpacesPage() {
           ← Torrents
         </button>
         <span className="spacer" />
-        <button type="button" className="primary" onClick={() => setEditing({ slug: null, form: emptyForm() })}>
-          New space…
-        </button>
+        {serverAdmin && (
+          <button type="button" className="primary" onClick={() => setEditing({ slug: null, form: emptyForm() })}>
+            New space…
+          </button>
+        )}
       </header>
       <section className="account-section">
         <h2>Spaces</h2>
@@ -122,6 +154,10 @@ export function SpacesPage() {
           are at <code>/s/&lt;slug&gt;/</code>; an API token made in a space works there only, which is how a
           qBittorrent client (Sonarr, Radarr) lands in the right one. The same torrent in two spaces is downloaded once,
           and each space gets its own copy of the files (a hard link where the disk allows).
+        </p>
+        <p className="muted">
+          New people join by invitation: a link that works once and expires, giving them a role in the space.
+          {serverAdmin ? " The Users page manages everyone's accounts." : " You manage the spaces you administer."}
         </p>
       </section>
       {error && (
@@ -215,20 +251,110 @@ export function SpacesPage() {
               <a className="button-like" href={spaceHome(s.slug)}>
                 Open
               </a>
-              <button type="button" disabled={busy} onClick={() => void edit(s.slug)}>
-                Change…
+              {serverAdmin && (
+                <button type="button" disabled={busy} onClick={() => void edit(s.slug)}>
+                  Change…
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={busy}
+                aria-expanded={members === s.slug}
+                onClick={() => setMembers(members === s.slug ? null : s.slug)}
+              >
+                Members and invitations
               </button>
-              <button type="button" disabled={busy} onClick={() => setMembers(members === s.slug ? null : s.slug)}>
-                Members
-              </button>
-              {s.slug !== "default" && (
+              {serverAdmin && s.slug !== "default" && (
                 <DeleteButton busy={busy} onDelete={() => void act(() => spacesApi.remove(s.slug))} />
               )}
             </div>
           </div>
-          {members === s.slug && <Members slug={s.slug} onError={setError} />}
+          {members === s.slug && (
+            <>
+              <Members slug={s.slug} serverAdmin={serverAdmin} onError={setError} />
+              <Invitations space={s} change={change} onError={setError} />
+            </>
+          )}
         </section>
       ))}
+      {reauth && (
+        <ReauthDialog
+          status={status}
+          reason="Inviting someone needs a fresh sign-in."
+          onDone={(next) => {
+            onStatus(next);
+            reauth.resolve();
+            setReauth(null);
+          }}
+          onCancel={() => {
+            reauth.reject(new Cancelled());
+            setReauth(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** A space's invitations: new ones (shown once), and those waiting, used or revoked. */
+function Invitations({
+  space,
+  change,
+  onError,
+}: {
+  space: SpaceView;
+  change: Change;
+  onError: (e: string | null) => void;
+}) {
+  const [list, setList] = useState<InvitationInfo[] | null>(null);
+  const [inviting, setInviting] = useState(false);
+  const [created, setCreated] = useState<CreatedInvitation | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setList(await invitationsApi.ofSpace(space.slug));
+    } catch (e) {
+      onError(describeError(e));
+    }
+  }, [space.slug, onError]);
+  useEffect(() => void load(), [load]);
+
+  const changeAndLoad: Change = async (action) => {
+    const ok = await change(action);
+    await load();
+    return ok;
+  };
+
+  return (
+    <div className="space-members">
+      <div className="space-head">
+        <strong>Invitations</strong>
+        {!inviting && !created && (
+          <button type="button" onClick={() => setInviting(true)}>
+            Invite someone…
+          </button>
+        )}
+      </div>
+      {created ? (
+        <NewLink
+          created={created}
+          onDone={() => {
+            setCreated(null);
+            setInviting(false);
+          }}
+        />
+      ) : (
+        inviting && (
+          <InviteForm
+            spaces={[space]}
+            only={space}
+            change={changeAndLoad}
+            onCreated={setCreated}
+            onCancel={() => setInviting(false)}
+          />
+        )
+      )}
+      {list && <InvitationList list={list} change={changeAndLoad} showSpaces={false} />}
     </div>
   );
 }
@@ -254,20 +380,29 @@ function DeleteButton({ busy, onDelete }: { busy: boolean; onDelete: () => void 
   );
 }
 
-function Members({ slug, onError }: { slug: string; onError: (e: string | null) => void }) {
+function Members({
+  slug,
+  serverAdmin,
+  onError,
+}: {
+  slug: string;
+  serverAdmin: boolean;
+  onError: (e: string | null) => void;
+}) {
   const [list, setList] = useState<SpaceMember[] | null>(null);
-  const [users, setUsers] = useState<UserSummary[]>([]);
+  // Only server admins see everyone's accounts, to add existing users.
+  const [users, setUsers] = useState<ManagedUser[]>([]);
   const [adding, setAdding] = useState({ user: "", role: "user" as SpaceRole });
 
   const load = useCallback(async () => {
     try {
-      const [m, u] = await Promise.all([spacesApi.members(slug), spacesApi.users()]);
+      const [m, u] = await Promise.all([spacesApi.members(slug), serverAdmin ? usersApi.list() : Promise.resolve([])]);
       setList(m);
       setUsers(u);
     } catch (e) {
       onError(describeError(e));
     }
-  }, [slug, onError]);
+  }, [slug, serverAdmin, onError]);
   useEffect(() => void load(), [load]);
 
   const act = async (f: () => Promise<unknown>) => {
@@ -283,6 +418,7 @@ function Members({ slug, onError }: { slug: string; onError: (e: string | null) 
   const outside = users.filter((u) => !list?.some((m) => m.userId === u.id));
   return (
     <div className="space-members">
+      <strong>Members</strong>
       <p className="muted">Server admins can use every space without being members.</p>
       {list?.length === 0 && <p className="muted">No members yet.</p>}
       <ul className="space-member-list">

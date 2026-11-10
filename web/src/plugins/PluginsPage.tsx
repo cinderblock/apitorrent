@@ -1,5 +1,9 @@
 // The Plugins page (/plugins): installed plugins, approving what they ask for, enabling
 // and disabling them, their logs, and a settings form drawn from each plugin's schema.
+//
+// Server admins manage everything. A space's admins see the same list, and manage the
+// settings and logs of the space-aware plugins' instances in their space; shared plugins
+// (one instance for the whole server) are read-only to them.
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 
@@ -13,6 +17,7 @@ import { Cancelled, describeError, withReauth } from "../auth/flow";
 import { ReauthDialog } from "../auth/ReauthDialog";
 import { formatDateTime, formatUtc } from "../format";
 import { navigate } from "../router";
+import { useSpaceContext } from "../spaces/context";
 import { pluginsApi, readBundle } from "./api";
 import { SchemaForm } from "./SchemaForm";
 import {
@@ -36,6 +41,10 @@ const STATUS_TEXT: Record<PluginInfo["status"], string> = {
 };
 
 export function PluginsPage({ status, onStatus }: { status: AuthStatus; onStatus: (s: AuthStatus) => void }) {
+  const ctx = useSpaceContext();
+  const serverAdmin = ctx ? ctx.serverAdmin : status.authDisabled || status.user?.role === "admin";
+  // With several spaces, a space-aware plugin's settings are this space's.
+  const spaceName = ctx && ctx.spaces.length > 1 ? ctx.current.name : null;
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState<string | null>(null);
@@ -110,7 +119,7 @@ export function PluginsPage({ status, onStatus }: { status: AuthStatus; onStatus
           ← Torrents
         </button>
         <span className="spacer" />
-        {!unavailable && (
+        {!unavailable && serverAdmin && (
           <label className="button-like">
             Install a plugin…
             <input type="file" accept=".json,application/json" hidden onChange={(e) => void install(e)} disabled={busy} />
@@ -118,13 +127,22 @@ export function PluginsPage({ status, onStatus }: { status: AuthStatus; onStatus
         )}
       </header>
       <section className="account-section">
-        <h2>Plugins</h2>
-        <p className="muted">
-          Plugins run inside apitorrent, each in its own sandbox. A plugin can do only what you approve: the hosts
-          it may reach, what it may do with torrents, and the rest. An update that asks for more waits for your
-          approval while the current version keeps running. Install files are <code>*.plugin.json</code>, made by{" "}
-          <code>apitorrent-plugin-build</code>.
-        </p>
+        <h2>Plugins{spaceName && <span className="muted"> in {spaceName}</span>}</h2>
+        {serverAdmin ? (
+          <p className="muted">
+            Plugins run inside apitorrent, each in its own sandbox. A plugin can do only what you approve: the hosts
+            it may reach, what it may do with torrents, and the rest. An update that asks for more waits for your
+            approval while the current version keeps running. Install files are <code>*.plugin.json</code>, made by{" "}
+            <code>apitorrent-plugin-build</code>.
+          </p>
+        ) : (
+          <p className="muted">
+            A plugin marked <em>per space</em> runs separately in each space, with its own settings and data: you
+            manage its settings{spaceName && <> for {spaceName}</>} here and can read its logs. A <em>shared</em>{" "}
+            plugin runs once for the whole server; only a server admin installs, approves, enables or configures
+            plugins.
+          </p>
+        )}
       </section>
       {unavailable && <p className="banner-warn">{unavailable}</p>}
       {error && (
@@ -142,7 +160,15 @@ export function PluginsPage({ status, onStatus }: { status: AuthStatus; onStatus
       )}
       {plugins?.length === 0 && <p className="muted">No plugins installed.</p>}
       {plugins?.map((p) => (
-        <PluginCard key={p.id} plugin={p} busy={busy} change={change} onApprove={() => setApproving(p)} />
+        <PluginCard
+          key={p.id}
+          plugin={p}
+          busy={busy}
+          change={change}
+          onApprove={() => setApproving(p)}
+          serverAdmin={serverAdmin}
+          spaceName={spaceName}
+        />
       ))}
       {approving && (
         <ApproveDialog
@@ -201,16 +227,23 @@ function PluginCard({
   busy,
   change,
   onApprove,
+  serverAdmin,
+  spaceName,
 }: {
   plugin: PluginInfo;
   busy: boolean;
   change: Change;
   onApprove: () => void;
+  serverAdmin: boolean;
+  spaceName: string | null;
 }) {
   const [open, setOpen] = useState<"settings" | "logs" | "grants" | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const manifest = p.active ?? p.pending?.manifest;
-  const hasSettings = Boolean(manifest?.settings);
+  const perSpace = manifest?.spaceAware === true;
+  // A space's admin manages a per-space plugin's instance here; a shared one is read-only.
+  const mine = serverAdmin || perSpace;
+  const hasSettings = Boolean(manifest?.settings) && mine;
   const toggle = (section: typeof open) => setOpen(open === section ? null : section);
 
   return (
@@ -219,27 +252,34 @@ function PluginCard({
         <div className="plugin-title">
           {manifest ? <ManifestSummary m={manifest} /> : <strong>{p.id}</strong>}
         </div>
-        <span className={`badge plugin-status plugin-status-${p.status}`}>{STATUS_TEXT[p.status]}</span>
+        <span className="plugin-badges">
+          <span className="badge" title={perSpace ? "Runs separately in each space" : "One instance for the whole server"}>
+            {perSpace ? "per space" : "shared"}
+          </span>
+          <span className={`badge plugin-status plugin-status-${p.status}`}>{STATUS_TEXT[p.status]}</span>
+        </span>
       </div>
+      {!mine && <p className="muted">Shared by every space; a server admin manages it.</p>}
       {p.error && (
         <p className="error-text">
           {p.error}
           {p.enabled && " Enable it again to restart it."}
         </p>
       )}
-      {p.pending && (
+      {p.pending && serverAdmin && (
         <p className="banner-warn">
           {p.active ? `Version ${p.pending.manifest.version} is waiting for approval.` : "Waiting for your approval."}{" "}
           It asks to: {p.pending.newCapabilities.join("; ") || "nothing beyond what it has"}.
         </p>
       )}
       <div className="actions start">
-        {p.pending && (
+        {p.pending && serverAdmin && (
           <button type="button" className="primary" disabled={busy} onClick={onApprove}>
             Review and approve…
           </button>
         )}
         {p.active &&
+          serverAdmin &&
           (p.enabled && p.status !== "failed" ? (
             <button type="button" disabled={busy} onClick={() => void change(() => pluginsApi.disable(p.id))}>
               Disable
@@ -254,15 +294,17 @@ function PluginCard({
             Settings
           </button>
         )}
-        <button type="button" aria-expanded={open === "logs"} onClick={() => toggle("logs")}>
-          Logs
-        </button>
+        {mine && (
+          <button type="button" aria-expanded={open === "logs"} onClick={() => toggle("logs")}>
+            Logs
+          </button>
+        )}
         {p.active && (
           <button type="button" aria-expanded={open === "grants"} onClick={() => toggle("grants")}>
             Permissions
           </button>
         )}
-        {confirmRemove ? (
+        {!serverAdmin ? null : confirmRemove ? (
           <>
             <span className="muted">Remove it, with its settings and data?</span>
             <button
@@ -294,7 +336,12 @@ function PluginCard({
           {describeCapabilities(p.granted).length === 0 && <li>Nothing: it only computes.</li>}
         </ul>
       )}
-      {open === "settings" && <SettingsPanel id={p.id} />}
+      {open === "settings" && (
+        <>
+          {perSpace && spaceName && <p className="muted">Settings for {spaceName}; other spaces have their own.</p>}
+          <SettingsPanel id={p.id} />
+        </>
+      )}
       {open === "logs" && <LogsPanel id={p.id} />}
     </section>
   );

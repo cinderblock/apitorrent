@@ -46,6 +46,9 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const space = useSpaceContext();
   // Without a space context (an older daemon), the instance role decides, as before.
   const serverAdmin = space ? space.serverAdmin : auth.authDisabled || auth.user?.role === "admin";
+  // A space's admins get its space-aware plugins, its members and its invitations.
+  const spaceAdmin = serverAdmin || space?.current.role === "admin";
+  const administersASpace = serverAdmin || (space?.spaces.some((s) => s.role === "admin") ?? false);
 
   const [view, setView] = useState<View>({
     filter: "all",
@@ -202,7 +205,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
         <button type="button" onClick={() => navigate("/rules")}>
           Rules
         </button>
-        {serverAdmin && (
+        {spaceAdmin && (
           <button type="button" onClick={() => navigate("/plugins")}>
             Plugins
           </button>
@@ -320,10 +323,18 @@ export function App({ status: auth }: { status: AuthStatus }) {
             setImporting(true);
           }}
           onSpaces={
-            serverAdmin
+            administersASpace
               ? () => {
                   setSettingsOpen(false);
                   navigate("/spaces");
+                }
+              : undefined
+          }
+          onUsers={
+            serverAdmin && !auth.authDisabled
+              ? () => {
+                  setSettingsOpen(false);
+                  navigate("/users");
                 }
               : undefined
           }

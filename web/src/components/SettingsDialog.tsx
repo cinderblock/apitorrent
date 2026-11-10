@@ -92,12 +92,15 @@ export function SettingsDialog({
   onClose,
   onImport,
   onSpaces,
+  onUsers,
 }: {
   isAdmin: boolean;
   onClose: () => void;
   onImport: () => void;
-  /** Open the Spaces page; only for server admins. */
+  /** Open the Spaces page; for server admins and spaces' admins. */
   onSpaces?: () => void;
+  /** Open the Users page; only for server admins. */
+  onUsers?: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -335,6 +338,11 @@ export function SettingsDialog({
           {onSpaces && (
             <button type="button" className="link" onClick={onSpaces}>
               Spaces…
+            </button>
+          )}
+          {onUsers && (
+            <button type="button" className="link" onClick={onUsers}>
+              Users…
             </button>
           )}
           <button type="button" onClick={onClose}>

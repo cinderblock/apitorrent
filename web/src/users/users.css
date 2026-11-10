@@ -1,0 +1,119 @@
+.invite-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.invite-spaces {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.invite-space {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.invite-space .grow,
+.invitation .grow,
+.user-card .grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.new-link {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin-top: 10px;
+}
+
+.new-link p {
+  margin: 0 0 8px;
+}
+
+.new-link-row {
+  display: flex;
+  gap: 8px;
+}
+
+.new-link-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+}
+
+.invitation-list,
+.user-spaces {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.invitation {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.invitation:first-child {
+  border-top: 0;
+}
+
+.invitation-used,
+.invitation-revoked,
+.invitation-expired {
+  opacity: 0.7;
+}
+
+.user-card .user-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.user-card .badge {
+  margin-left: 6px;
+}
+
+.user-facts {
+  margin: 4px 0;
+}
+
+.user-spaces li {
+  display: inline;
+}
+
+.user-spaces li + li::before {
+  content: ", ";
+}
+
+.enroll-spaces {
+  margin: 0 0 8px;
+}
+
+.badge-danger {
+  color: var(--err);
+  border-color: currentColor;
+}
+
+/* Phones: everything in one column, nothing wider than the screen. */
+@media (max-width: 640px) {
+  .invite-form .field-row,
+  .invitation {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .user-card .actions {
+    flex-wrap: wrap;
+  }
+}

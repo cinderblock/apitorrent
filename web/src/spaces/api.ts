@@ -1,5 +1,5 @@
-// `/api/v1/space` (the page's space and the caller's spaces) and the server admins'
-// `/api/v1/spaces`, members and users.
+// `/api/v1/space` (the page's space and the caller's spaces) and `/api/v1/spaces` with
+// members (server admins, and a space's admins for its members). Users are in `users/api`.
 
 import { request } from "../api/client";
 import type { CreateSpaceRequest } from "../api/generated/CreateSpaceRequest";
@@ -9,7 +9,6 @@ import type { SpaceMember } from "../api/generated/SpaceMember";
 import type { SpaceRole } from "../api/generated/SpaceRole";
 import type { SpaceView } from "../api/generated/SpaceView";
 import type { UpdateSpaceRequest } from "../api/generated/UpdateSpaceRequest";
-import type { UserSummary } from "../api/generated/UserSummary";
 
 const enc = encodeURIComponent;
 
@@ -25,5 +24,4 @@ export const spacesApi = {
     request<void>("PUT", `/spaces/${enc(slug)}/members/${enc(user)}`, { role }),
   removeMember: (slug: string, user: string) =>
     request<void>("DELETE", `/spaces/${enc(slug)}/members/${enc(user)}`),
-  users: () => request<UserSummary[]>("GET", "/users"),
 };
