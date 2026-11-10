@@ -1241,12 +1241,9 @@ fn op_at_digest(#[string] alg: &str, #[buffer] data: &[u8]) -> Result<Vec<u8>, J
 }
 
 fn hmac_of(alg: &str, key: &[u8], data: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
-    use hmac::{Mac, SimpleHmac};
-    fn run<D: sha2::Digest + sha2::digest::core_api::BlockSizeUser>(
-        key: &[u8],
-        data: &[u8],
-    ) -> Vec<u8> {
-        let mut mac = SimpleHmac::<D>::new_from_slice(key).expect("HMAC takes any key length");
+    use hmac::{EagerHash, Hmac, KeyInit, Mac};
+    fn run<D: EagerHash>(key: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut mac = Hmac::<D>::new_from_slice(key).expect("HMAC takes any key length");
         mac.update(data);
         mac.finalize().into_bytes().to_vec()
     }

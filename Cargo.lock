@@ -149,12 +149,12 @@ dependencies = [
  "apitorrent-types",
  "argon2",
  "data-encoding",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "hex",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
@@ -187,7 +187,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
@@ -218,7 +218,7 @@ dependencies = [
  "ring",
  "rusqlite",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -285,7 +285,7 @@ dependencies = [
  "futures-util",
  "proptest",
  "rand 0.9.5",
- "sha1 0.10.7",
+ "sha1 0.11.0",
  "socket2",
  "thiserror 2.0.21",
  "tokio",
@@ -308,8 +308,8 @@ dependencies = [
  "proptest",
  "rand 0.9.5",
  "reflink-copy",
- "sha1 0.10.7",
- "sha2 0.10.9",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
  "socket2",
  "tempfile",
  "thiserror 2.0.21",
@@ -329,8 +329,8 @@ dependencies = [
  "hex",
  "percent-encoding",
  "proptest",
- "sha1 0.10.7",
- "sha2 0.10.9",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
  "thiserror 2.0.21",
 ]
 
@@ -341,11 +341,11 @@ dependencies = [
  "apitorrent-metainfo",
  "crypto-bigint",
  "hex",
- "num-bigint",
+ "num-bigint 0.5.1",
  "proptest",
  "rand 0.9.5",
  "rc4",
- "sha1 0.10.7",
+ "sha1 0.11.0",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -375,14 +375,14 @@ dependencies = [
  "deno_error",
  "encoding_rs",
  "hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "rand 0.9.5",
  "rcgen",
  "rusqlite",
  "serde",
  "serde_json",
- "sha1 0.10.7",
- "sha2 0.10.9",
+ "sha1 0.11.0",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -410,7 +410,7 @@ dependencies = [
  "data-encoding",
  "flate2",
  "futures-util",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -420,7 +420,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -449,7 +449,7 @@ dependencies = [
  "rustls-platform-verifier",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "time",
@@ -506,7 +506,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -520,7 +520,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "rand 0.9.5",
- "sha1 0.10.7",
+ "sha1 0.11.0",
  "socket2",
  "thiserror 2.0.21",
  "tokio",
@@ -534,7 +534,7 @@ dependencies = [
  "brotli",
  "flate2",
  "hex",
- "sha2 0.10.9",
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -1871,7 +1871,7 @@ dependencies = [
  "indexmap 2.14.2",
  "inventory",
  "libc",
- "num-bigint",
+ "num-bigint 0.4.8",
  "parking_lot",
  "percent-encoding",
  "pin-project",
@@ -1988,7 +1988,7 @@ dependencies = [
  "asn1-rs",
  "displaydoc",
  "nom",
- "num-bigint",
+ "num-bigint 0.4.8",
  "num-traits",
  "rusticata-macros",
 ]
@@ -4142,7 +4142,7 @@ version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.8",
  "num-complex",
  "num-integer",
  "num-iter",
@@ -4155,6 +4155,16 @@ name = "num-bigint"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93e7820bc0a80a0238e650327316f929ba18d5be054b647490a3a6a339f3e7c0"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -4200,7 +4210,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
 dependencies = [
- "num-bigint",
+ "num-bigint 0.4.8",
  "num-integer",
  "num-traits",
 ]
@@ -5930,7 +5940,7 @@ checksum = "6973c29f2c5cc313d6f5fbed7fbfc7e5c4064d6f3f8bb8ec09838a5a8176b809"
 dependencies = [
  "deno_error",
  "deno_v8",
- "num-bigint",
+ "num-bigint 0.4.8",
  "serde",
  "smallvec",
  "thiserror 2.0.21",
