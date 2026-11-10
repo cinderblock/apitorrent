@@ -193,3 +193,69 @@ Times are US Pacific (UTC alongside).
 - Don't load a remote daemon's origin in the webview, and don't give a remote origin IPC.
 - Don't put tokens in JavaScript, URLs or the profile JSON: keychain only.
 - Don't launch the GUI on the user's screen.
+
+---
+
+# Follow-ups: folder picker, share locators, device pairing (2026-11-10)
+
+Branch `t3/365da07f` (worktree `C:\Users\camer\.t3\worktrees\apitorrent\t3-365da07f`), off
+master `e2bbdc1`. Not pushed; the main thread merges it.
+
+## Goal
+
+The three follow-ups above that need no installer run:
+
+1. A native folder picker wherever the desktop app asks for a local path (Local mode's data
+   and download folders, path mappings, the Add dialog's save folder in Local mode). A plain
+   browser keeps typed paths.
+2. Share locators: an admin attaches UNC / `smb://` / `nfs://` hints to each storage root on
+   the daemon, and the desktop app suggests mappings from them.
+3. Device pairing: the desktop thin client gets a device credential approved from a
+   signed-in browser session, instead of a pasted API token (which keeps working).
+
+## Decisions (made here; see the report)
+
+- **Folder picker through our own command** (`pick_folder`), with `tauri-plugin-dialog`
+  used from Rust only. The page gets no dialog permission, in keeping with "commands are the
+  whole of what the webview can do". Returns `null` when cancelled.
+- **Share locators are stored per storage root** in the instance database (keyed by the
+  root's id) and returned with `GET /roots`. Editing them is a server-admin action
+  (`PUT /roots/{id}/locators`), in the Settings dialog. Kinds: UNC (`\host\share\…`),
+  `smb://host/share/…`, `nfs://host/export/…`; each is validated and normalised.
+- **Suggestions from locators**: for each root, each locator becomes a candidate local path
+  for this OS (UNC on Windows as is, `smb://` → `\host\share\…` on Windows; on macOS and
+  Linux the share must be mounted, so the app looks for a mount whose source matches and
+  otherwise offers the URL for the user to mount). A candidate is pre-filled only when the
+  root's marker reads correctly through it; otherwise it is still offered, unverified.
+- **Device pairing is the OAuth device-grant shape** (RFC 8628): the app asks
+  (`POST /auth/devices/requests`, unauthenticated, rate-limited), gets a short user code
+  and a poll secret, shows the code and a link to `<server>/pair#code=…`; a signed-in
+  browser session (recent authentication, like creating a token) approves it there or by
+  typing the code on the Account page; the app polls and receives the credential once.
+- **The credential** is `apd_` + 256 bits, stored as SHA-256 in a new `devices` table, with
+  scope (`full`/`read`, chosen by the approver), the approver's space, name and platform,
+  last use and address. It is a new `Credential::Device` variant. Like tokens, it can't
+  manage credentials.
+- **Bound to the TLS key**: the app sends the SPKI hash it pinned; when the daemon serves
+  TLS itself it refuses a request whose pin isn't the key it serves (something sits in
+  between), and stores the key with the device. A bound credential is accepted only while
+  the daemon serves that key, so a re-keyed server needs devices re-paired. With OS or
+  private-CA trust, or behind a proxy, the credential is unbound (still per-device and
+  revocable).
+- **Pending requests live in memory** (10-minute expiry, capped), like WebAuthn ceremonies.
+- The credential goes to the same keychain entry as a pasted token; the profile JSON keeps
+  only the non-secret device id and name, for the UI.
+
+## Progress log
+
+- [ ] Plan section (this)
+- [ ] 1 Folder picker
+- [ ] 2 Share locators: core + API + types, settings UI, desktop suggestions
+- [ ] 3 Device pairing: auth crate, server routes + binding, Account page and `/pair`,
+  desktop flow
+- [ ] Docs: architecture, README
+- [ ] All checks (fmt, clippy, tests, desktop tests, bun typecheck/test/build)
+
+## Findings / gotchas
+
+*(none yet)*
