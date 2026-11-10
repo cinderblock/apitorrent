@@ -115,19 +115,20 @@ engine core stays in the main thread, because its pieces interlock.
 - **Main thread meanwhile:** done: M3.2, content library step 8, seed limits, phone
   layout, CI, fuzzing, scale fixes, real-world v2 tests. Every delegated stream is
   merged.
-- **What remains (2026-11-09):**
+- **What remains (2026-11-10):**
   - Spaces (several separate setups in one daemon): built and merged (`14e82b1`…
-    `f3a9384`). The main follow-up is user invitations: until they exist, the only
-    members are the first admin and space-bound API tokens. Plan: `plans/spaces.md`
-  - The Deluge import of the user's two instances into two spaces: run by hand on the
-    seedbox when the user is ready, with text pasted back and forth.
-  - Signed updates for the desktop app and the daemon: built and merged (`c50a793`…
-    `a3199c6`). Still to do: make the key and store it in GitHub secrets once the remote
-    exists, then a real release run end to end. Plan: `plans/update-signing.md`
-  - A GitHub remote and push so CI and releases run.
-  - Someone else with Sonarr or Radarr to try `qbittorrent-api` against (you don't run
-    them).
+    `f3a9384`). Next: user invitations, user management, and the Plugins page for space
+    admins. These are being built by a background agent. Plan: `plans/spaces.md`
+  - The Deluge import of the user's two instances into two spaces: the user waits for
+    more features first, then runs it by hand on the seedbox, with text pasted back and
+    forth.
+  - Signed updates: merged, and the key is made (2026-11-10). Still to do: a real
+    release run end to end. Plan: `plans/update-signing.md`
+  - GitHub: `cinderblock/apitorrent`, created **private** on 2026-11-10, with master
+    pushed. CI runs there now.
   - Optional: a Raspberry Pi images source plugin.
+  - Dropped by the user (2026-11-10): testing `qbittorrent-api` against a real Sonarr or
+    Radarr.
 
 ## Findings / gotchas
 
@@ -642,8 +643,9 @@ them, restarts, and reports. On this machine (release build, NVMe):
   updates with our own key instead
 - [x] Self-signed update signing: one minisign key signs the release files and both
   manifests. The app and the daemon check it before installing, and refuse downgrades.
-  Merged `c50a793`…`a3199c6`. The key isn't made yet: run `bun scripts/update-signing-key.ts`
-  once the remote exists. See `plans/update-signing.md`
+  Merged `c50a793`…`a3199c6`. The key was made 2026-11-10: the private key exists only
+  in GitHub secrets, and the public key is `release/update-signing.pub`. See
+  `plans/update-signing.md`
 - [x] First desktop GUI run (2026-11-09, user OK'd the foreground): Remote profile against
   a loopback daemon with `--tls-self-signed`: OS trust refused, pairing by code, save,
   connect, live sync, add by dialog and by a `magnet:` link to a second launch (forwarded
@@ -689,5 +691,5 @@ For UI development, run `bun run dev` in `web/` (Vite proxies `/api` to the daem
 
 - Don't add an "ignore certificate errors" option anywhere.
 - Don't use `rbuild`/sentinel for this repo until it's approved.
-- Don't push or create a remote until the user asks.
+- Don't force-push. Push master normally; the repo is `cinderblock/apitorrent`, private.
 - Don't fork `librqbit`'s session or storage. Depend on leaf crates instead.

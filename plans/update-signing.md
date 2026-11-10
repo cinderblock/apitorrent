@@ -173,9 +173,11 @@ Times US Pacific.
   - [x] desktop updater, plus a bridge test (`223904f`)
   - [x] release workflow, manifest script with 4 tests, key script (`626aa40`)
   - [x] docs: architecture "Updates", README "Updates", `release/README.md`
-- [ ] Generate the key and store it as GitHub secrets, once the remote exists (needs the
-  user): `bun scripts/update-signing-key.ts`, then commit `release/update-signing.pub`
-- [ ] Not tested end to end: a real release run in Actions (no remote yet), the desktop
+- [x] Key generated 2026-11-10 with `bun scripts/update-signing-key.ts`. The private key
+  and its password are the repo's Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The public key, `release/update-signing.pub`
+  (key ID 4EAD1BDC7E95B474), is committed
+- [ ] Not tested end to end: a real release run in Actions (the remote exists now; no tag yet), the desktop
   install on a real installer, and the daemon's restart under systemd / re-exec (the
   pieces are unit-tested; the full loop needs a published release)
 
