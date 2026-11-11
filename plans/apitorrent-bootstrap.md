@@ -137,6 +137,21 @@ engine core stays in the main thread, because its pieces interlock.
 - **Waiting on the user:** the Deluge import, after more features.
 - **Dropped by the user:** testing against a real Sonarr or Radarr.
 - **Optional:** a Raspberry Pi images source plugin.
+- **Content library gaps (found 2026-11-11, not started).** Matching runs only once, when a
+  torrent is added, and only against complete files of torrents the daemon has. Missing:
+  1. Re-matching when a source file completes later. Today two torrents downloading the
+     same file at once both download all of it.
+  2. Sharing between in-progress torrents: verified pieces of a partial file aren't
+     offered to another torrent with the same file.
+  3. Retroactive dedupe: identical files that were downloaded separately are never
+     merged into hard links later, so the space isn't reclaimed.
+  4. Files outside torrents (a media folder, the files of a torrent that was removed)
+     aren't candidates. That needs a scan-and-fingerprint index of chosen folders.
+  5. Bookend mixing (`docs/architecture.md`, "Going further"): a boundary piece is
+     downloaded whole from peers instead of taking the library's part of it. Costs at
+     most two pieces per file.
+  6. Visibility: the UI shows only "Superseded by". It should show per file "reused from
+     <torrent> (hard link/clone/copy)" and the bytes saved.
 
 ## Findings / gotchas
 
