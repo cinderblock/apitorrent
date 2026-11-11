@@ -760,3 +760,265 @@ async fn disabling_and_deleting_users() {
     assert_eq!(users.len(), 1);
     core.shutdown().await.unwrap();
 }
+
+/// Someone with an account takes an invitation into it: no new user, its spaces and roles
+/// added, used once, refused to tokens and to the signed-out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn existing_users_join_with_their_account() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let admin = bootstrap(&f);
+    new_space(&app, &admin, "tv").await;
+    new_space(&app, &admin, "movies").await;
+    let sam = enroll_with_password(
+        &app,
+        &admin,
+        "sam",
+        json!({ "spaces": [{ "slug": "tv", "role": "admin" }] }),
+    )
+    .await;
+    let bob = enroll_with_password(
+        &app,
+        &admin,
+        "bob",
+        json!({ "spaces": [{ "slug": "movies", "role": "user" }] }),
+    )
+    .await;
+    let users_before = get(&app, "/api/v1/users", &admin).await.json();
+
+    // Sam, tv's admin, invites; the link says it can be joined.
+    let r = invite(
+        &app,
+        &sam,
+        json!({ "spaces": [{ "slug": "tv", "role": "user" }] }),
+    )
+    .await;
+    let link: CreatedInvitation = r.typed();
+    let token = secret_of(&link.link);
+    let info = post(
+        &app,
+        "/api/v1/auth/enroll/info",
+        json!({ "token": token }),
+        None,
+    )
+    .await
+    .json();
+    assert_eq!(info["joinable"], true);
+
+    // Signed out, or with an API token: no.
+    let r = post(
+        &app,
+        "/api/v1/auth/enroll/accept",
+        json!({ "token": token }),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+    let bob_p = f
+        .auth
+        .authenticate_session(bob.split_once('=').unwrap().1)
+        .unwrap()
+        .unwrap();
+    let bob_token = f
+        .auth
+        .create_token_in(
+            &bob_p,
+            core.space_by_slug("movies").unwrap().id,
+            &apitorrent_auth::CreateTokenRequest {
+                name: "script".into(),
+                scope: apitorrent_auth::TokenScope::Full,
+                expires_in_days: None,
+            },
+            &apitorrent_auth::ClientMeta::default(),
+        )
+        .unwrap()
+        .token;
+    let r = send(
+        &app,
+        Req::post("/api/v1/auth/enroll/accept")
+            .bearer(&bob_token)
+            .json(&json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // Bob, signed in, joins: tv is his now, movies kept, and no user was created.
+    let r = post(
+        &app,
+        "/api/v1/auth/enroll/accept",
+        json!({ "token": token }),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json());
+    assert_eq!(r.json()["spaces"][0]["slug"], "tv");
+    assert_eq!(r.json()["spaces"][0]["role"], "user");
+    let ctx: SpaceContext = get(&app, "/api/v1/space", &bob).await.typed();
+    let mut slugs: Vec<_> = ctx.spaces.iter().map(|s| s.slug.clone()).collect();
+    slugs.sort();
+    assert_eq!(slugs, ["movies", "tv"]);
+    assert_eq!(
+        get(&app, "/api/v1/users", &admin)
+            .await
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        users_before.as_array().unwrap().len()
+    );
+    // Sam sees Bob among tv's members, and the invitation as used by him.
+    let members = get(&app, "/api/v1/spaces/tv/members", &sam).await.json();
+    assert!(
+        members
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "bob")
+    );
+    let mine = get(&app, "/api/v1/spaces/tv/invitations", &sam)
+        .await
+        .json();
+    let used = mine
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == link.invitation.id.as_str())
+        .unwrap();
+    assert_eq!(used["state"], "used");
+    assert_eq!(used["userName"], "bob");
+
+    // Used once.
+    let r = post(
+        &app,
+        "/api/v1/auth/enroll/accept",
+        json!({ "token": token }),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(r.code(), "invalid_link");
+
+    // An invitation that gives nothing new is refused, and stays usable.
+    let r = invite(
+        &app,
+        &sam,
+        json!({ "spaces": [{ "slug": "tv", "role": "viewer" }] }),
+    )
+    .await;
+    let nothing: CreatedInvitation = r.typed();
+    let r = post(
+        &app,
+        "/api/v1/auth/enroll/accept",
+        json!({ "token": secret_of(&nothing.link) }),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    let r = post(
+        &app,
+        "/api/v1/auth/enroll/info",
+        json!({ "token": secret_of(&nothing.link) }),
+        None,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    // An invitation that makes a server admin only creates new accounts.
+    let r = invite(&app, &admin, json!({ "role": "admin", "spaces": [] })).await;
+    let promote: CreatedInvitation = r.typed();
+    let info = post(
+        &app,
+        "/api/v1/auth/enroll/info",
+        json!({ "token": secret_of(&promote.link) }),
+        None,
+    )
+    .await
+    .json();
+    assert_eq!(info["joinable"], false);
+    let r = post(
+        &app,
+        "/api/v1/auth/enroll/accept",
+        json!({ "token": secret_of(&promote.link) }),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    let status = get(&app, "/api/v1/auth/status", &bob).await.json();
+    assert_eq!(status["user"]["role"], "user");
+    core.shutdown().await.unwrap();
+}
+
+async fn user_id(app: &axum::Router, cookie: &str) -> String {
+    get(app, "/api/v1/auth/status", cookie).await.json()["user"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A space's last admin can't leave or step down; server admins don't count as its admins
+/// and can still do anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_last_space_admin_cant_leave() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let admin = bootstrap(&f);
+    new_space(&app, &admin, "tv").await;
+    let sam = enroll_with_password(
+        &app,
+        &admin,
+        "sam",
+        json!({ "spaces": [{ "slug": "tv", "role": "admin" }] }),
+    )
+    .await;
+    let sam_id = user_id(&app, &sam).await;
+    let admin_id = user_id(&app, &admin).await;
+    // The server admin, listed as tv's admin too, doesn't count.
+    let r = call(
+        &app,
+        "PUT",
+        &format!("/api/v1/spaces/tv/members/{admin_id}"),
+        json!({ "role": "admin" }),
+        &admin,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let leave = format!("/api/v1/spaces/tv/members/{sam_id}");
+    let r = call(&app, "PUT", &leave, json!({ "role": "user" }), &sam).await;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{}", r.json());
+    let r = call(&app, "DELETE", &leave, json!({}), &sam).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    // Staying admin is allowed.
+    let r = call(&app, "PUT", &leave, json!({ "role": "admin" }), &sam).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+
+    // With a second admin, Sam may step down; then Tia is the last.
+    let tia = enroll_with_password(
+        &app,
+        &sam,
+        "tia",
+        json!({ "spaces": [{ "slug": "tv", "role": "admin" }] }),
+    )
+    .await;
+    let tia_id = user_id(&app, &tia).await;
+    let r = call(&app, "PUT", &leave, json!({ "role": "viewer" }), &sam).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let tia_leave = format!("/api/v1/spaces/tv/members/{tia_id}");
+    let r = call(&app, "DELETE", &tia_leave, json!({}), &tia).await;
+    assert_eq!(r.status, StatusCode::CONFLICT);
+    // A server admin can still do it, leaving the space to server admins.
+    let r = call(&app, "DELETE", &tia_leave, json!({}), &admin).await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    let r = call(
+        &app,
+        "DELETE",
+        &format!("/api/v1/spaces/tv/members/{admin_id}"),
+        json!({}),
+        &admin,
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT);
+    core.shutdown().await.unwrap();
+}

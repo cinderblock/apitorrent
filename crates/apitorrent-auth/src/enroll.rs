@@ -128,6 +128,12 @@ fn clean_note(note: Option<&str>) -> Result<Option<String>> {
     Ok(Some(n.to_owned()))
 }
 
+/// Whether a signed-in user may accept this link into their own account: an invitation
+/// that doesn't make a server admin (joining never changes the instance role).
+pub fn joinable(rec: &EnrollmentRecord) -> bool {
+    rec.kind == EnrollmentKind::Invitation && rec.role != Some(Role::Admin)
+}
+
 fn is_constraint(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation)
 }
@@ -778,6 +784,104 @@ impl Auth {
         self.inner.limiter.succeed(&limit::address_key(meta.ip));
         tracing::info!(user = %user_id, kind = event, "enrollment link used");
         Ok(session)
+    }
+
+    // ----- Joining with an existing account -----
+
+    /// Accept an invitation into the caller's own account instead of creating a user: they
+    /// get its spaces, each with the higher of the role they have and the role it gives.
+    /// The instance role never changes, so an invitation that makes a server admin can't
+    /// be joined this way. Needs a browser session; rate-limited, one-time and audited like
+    /// the other ways of using a link. An invitation that would grant nothing new is
+    /// refused and stays usable. Returns what changed.
+    pub fn accept_invitation(
+        &self,
+        actor: &Principal,
+        token: &str,
+        meta: &ClientMeta,
+    ) -> Result<Vec<(SpaceId, SpaceRole)>> {
+        if actor.session().is_none() || actor.pending_second_factor() {
+            return Err(AuthError::Forbidden(
+                "join an invitation from a signed-in browser",
+            ));
+        }
+        let rec = self.usable_link(token, meta)?;
+        if !joinable(&rec) {
+            return Err(match rec.kind {
+                EnrollmentKind::Recovery => AuthError::InvalidRequest(
+                    "a recovery link can't be joined; it is for its own account".into(),
+                ),
+                EnrollmentKind::Invitation => AuthError::Conflict(
+                    "this invitation makes a new server admin, so it can only create a new \
+                     account; a server admin promotes existing users on the Users page"
+                        .into(),
+                ),
+            });
+        }
+        let user_id = actor.user.id.as_str();
+        let now = self.now();
+        let mut conn = self.db();
+        let tx = conn.transaction()?;
+        // Checked again inside the transaction, as for enrolling.
+        let Some(rec) = record(&tx, &rec.id, now)?.filter(|r| r.state == EnrollmentState::Pending)
+        else {
+            drop(tx);
+            drop(conn);
+            return Err(self.bad_link(meta, "link stopped working while joining"));
+        };
+        let mut granted = Vec::new();
+        for &(space, role) in &rec.spaces {
+            let have: Option<String> = tx
+                .query_row(
+                    "SELECT role FROM space_members WHERE user_id = ?1 AND space_id = ?2",
+                    params![user_id, space],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if have.as_deref().and_then(SpaceRole::parse) >= Some(role) {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO space_members (user_id, space_id, role) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (user_id, space_id) DO UPDATE SET role = excluded.role",
+                params![user_id, space, role.as_str()],
+            )?;
+            granted.push((space, role));
+        }
+        if granted.is_empty() {
+            return Err(AuthError::Conflict(
+                "you already have everything this invitation gives; it is still unused, so \
+                 it can go to someone else"
+                    .into(),
+            ));
+        }
+        tx.execute(
+            "UPDATE users SET last_space_id = ?2 WHERE id = ?1",
+            params![user_id, granted[0].0],
+        )?;
+        let used = tx.execute(
+            "UPDATE enrollments SET used_at = ?2, user_id = ?3
+             WHERE id = ?1 AND used_at IS NULL AND revoked_at IS NULL",
+            params![rec.id, now, user_id],
+        )?;
+        if used != 1 {
+            return Err(AuthError::InvalidLink);
+        }
+        let detail = format!(
+            "invitation {}: {}",
+            rec.id,
+            granted
+                .iter()
+                .map(|(s, r)| format!("{s}={}", r.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        self.log_with(&tx, "joined", Some(user_id), meta, &detail);
+        tx.commit()?;
+        drop(conn);
+        self.inner.limiter.succeed(&limit::address_key(meta.ip));
+        tracing::info!(user = %user_id, "invitation joined with an existing account");
+        Ok(granted)
     }
 
     // ----- Managing users -----

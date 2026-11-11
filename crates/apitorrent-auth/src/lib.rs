@@ -48,7 +48,7 @@ pub use apitorrent_types::auth::{
     SessionInfo, SessionMethod, SessionState, TokenScope, UserInfo,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
-pub use enroll::{EnrollmentRecord, IssuedLink, UserRecord};
+pub use enroll::{EnrollmentRecord, IssuedLink, UserRecord, joinable};
 pub use error::{AuthError, Result};
 pub use password::PasswordCost;
 

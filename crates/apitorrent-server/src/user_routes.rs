@@ -3,6 +3,8 @@
 //! - `POST /auth/enroll/info`, `/auth/enroll/start`, `/auth/enroll/finish` and
 //!   `/auth/enroll/password` (public): open an invitation or recovery link. The link's
 //!   secret travels in the body, never the URL.
+//! - `POST /auth/enroll/accept` (a signed-in browser session): accept an invitation into
+//!   the caller's own account instead of creating a user.
 //! - `POST /invitations` (server admins, or a space's admins for that space),
 //!   `GET /invitations` (server admins), `GET /spaces/{slug}/invitations` (the space's
 //!   admins) and `DELETE /invitations/{id}`.
@@ -17,13 +19,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 
-use apitorrent_auth::{Auth, AuthError, EnrollmentRecord, IssuedLink, Principal, Role};
+use apitorrent_auth::{Auth, AuthError, EnrollmentRecord, IssuedLink, Principal, Role, joinable};
 use apitorrent_types::auth::CeremonyStart;
 use apitorrent_types::spaces::{SpaceId, SpaceRole};
 use apitorrent_types::users::{
     CreateInvitationRequest, CreateRecoveryRequest, CreatedInvitation, EnrollFinishRequest,
     EnrollInfo, EnrollPasswordRequest, EnrollSpace, EnrollStartRequest, EnrollTokenRequest,
-    GrantedSpace, InvitationInfo, ManagedUser, UpdateUserRequest, UserSpace,
+    GrantedSpace, InvitationInfo, JoinedInvitation, ManagedUser, UpdateUserRequest, UserSpace,
 };
 
 use crate::auth_routes::{Failure, blocking, signed_in};
@@ -39,6 +41,7 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/auth/enroll/start", post(enroll_start))
         .route("/auth/enroll/finish", post(enroll_finish))
         .route("/auth/enroll/password", post(enroll_password))
+        .route("/auth/enroll/accept", post(enroll_accept))
         .route("/invitations", get(invitations).post(invite))
         .route("/invitations/{id}", delete(revoke))
         .route("/spaces/{slug}/invitations", get(space_invitations))
@@ -130,6 +133,7 @@ async fn enroll_info(
     let auth = enabled(&s)?;
     let r = auth.enroll_info(&req.token, &ctx.meta)?;
     Ok(Json(EnrollInfo {
+        joinable: joinable(&r),
         kind: r.kind,
         username: r.user_name,
         display_name: r.user_display_name,
@@ -200,6 +204,29 @@ async fn enroll_password(
     })
     .await?;
     signed_in(&s, &ctx, &session)
+}
+
+async fn enroll_accept(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Json(req): Json<EnrollTokenRequest>,
+) -> R<Json<JoinedInvitation>> {
+    let auth = enabled(&s)?;
+    let granted = auth.accept_invitation(principal(&ctx)?, &req.token, &ctx.meta)?;
+    Ok(Json(JoinedInvitation {
+        spaces: granted
+            .into_iter()
+            .filter_map(|(space, role)| {
+                let (slug, name) = named(&s, space)?;
+                Some(GrantedSpace {
+                    space,
+                    slug,
+                    name,
+                    role,
+                })
+            })
+            .collect(),
+    }))
 }
 
 // ----- Invitations -----

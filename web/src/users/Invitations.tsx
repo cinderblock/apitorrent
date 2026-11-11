@@ -163,6 +163,7 @@ export function NewLink({ created, onDone }: { created: CreatedInvitation; onDon
         <strong>{recovery ? "Recovery link" : "Invitation link"}</strong>: send it to{" "}
         {recovery ? created.invitation.userName : "the person it is for"} privately. It works once, and this is the only
         time it is shown.
+        {!recovery && created.invitation.role !== "admin" && " Someone who already has an account can open it signed in and join with that account."}
       </p>
       <div className="new-link-row">
         <input readOnly value={created.link} aria-label="The link" onFocus={(e) => e.target.select()} />

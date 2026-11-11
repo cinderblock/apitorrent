@@ -15,6 +15,7 @@ import type { EnrollInfo } from "../api/generated/EnrollInfo";
 import type { EnrollPasswordRequest } from "../api/generated/EnrollPasswordRequest";
 import type { EnrollStartRequest } from "../api/generated/EnrollStartRequest";
 import type { InvitationInfo } from "../api/generated/InvitationInfo";
+import type { JoinedInvitation } from "../api/generated/JoinedInvitation";
 import type { ManagedUser } from "../api/generated/ManagedUser";
 import type { UpdateUserRequest } from "../api/generated/UpdateUserRequest";
 
@@ -26,6 +27,8 @@ export const enrollApi = {
   finish: (ceremonyId: string, credential: unknown, passkeyName: string | null) =>
     request<AuthStatus>("POST", "/auth/enroll/finish", { ceremonyId, credential, passkeyName }),
   password: (req: EnrollPasswordRequest) => request<AuthStatus>("POST", "/auth/enroll/password", req),
+  /** Accept an invitation into the signed-in account (no new user). */
+  accept: (token: string) => request<JoinedInvitation>("POST", "/auth/enroll/accept", { token }),
 };
 
 export const invitationsApi = {

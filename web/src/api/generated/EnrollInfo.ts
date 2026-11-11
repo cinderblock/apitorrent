@@ -19,4 +19,9 @@ invitedBy: string | null,
 /**
  * Whether a password can stand in for a passkey here (`--passwords fallback`).
  */
-passwordMode: PasswordMode, };
+passwordMode: PasswordMode, 
+/**
+ * Whether a signed-in user may accept it into their own account
+ * (`POST /auth/enroll/accept`): an invitation that doesn't make a server admin.
+ */
+joinable: boolean, };

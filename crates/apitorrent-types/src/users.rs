@@ -156,6 +156,19 @@ pub struct EnrollInfo {
     pub invited_by: Option<String>,
     /// Whether a password can stand in for a passkey here (`--passwords fallback`).
     pub password_mode: PasswordMode,
+    /// Whether a signed-in user may accept it into their own account
+    /// (`POST /auth/enroll/accept`): an invitation that doesn't make a server admin.
+    #[serde(default)]
+    pub joinable: bool,
+}
+
+/// `POST /api/v1/auth/enroll/accept`: the spaces joining gave the signed-in account (those
+/// it already had at that role or higher are left out).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct JoinedInvitation {
+    pub spaces: Vec<GrantedSpace>,
 }
 
 /// `POST /api/v1/auth/enroll/start`. A recovery link ignores `username`.

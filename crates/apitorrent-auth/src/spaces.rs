@@ -144,6 +144,9 @@ impl Auth {
             if !self.is_member(space, user_id)? {
                 return Err(AuthError::NotFound);
             }
+            if role != SpaceRole::Admin {
+                self.not_last_admin(actor, space, user_id, "step down")?;
+            }
         }
         let conn = self.db();
         if store::user_by_id(&conn, user_id)?.is_none() {
@@ -164,6 +167,34 @@ impl Auth {
         Ok(())
     }
 
+    /// A space's admin may not leave it or step down while nobody else administers it.
+    /// Server admins don't count as its admins (they administer every space without being
+    /// its members), and they are never stopped by this.
+    fn not_last_admin(
+        &self,
+        actor: &Principal,
+        space: SpaceId,
+        user_id: &str,
+        what: &str,
+    ) -> Result<()> {
+        if actor.server_admin() || actor.user.id != user_id {
+            return Ok(());
+        }
+        let others: i64 = self.db().query_row(
+            "SELECT COUNT(*) FROM space_members m JOIN users u ON u.id = m.user_id
+             WHERE m.space_id = ?1 AND m.role = 'admin' AND m.user_id != ?2
+               AND u.role != 'admin' AND u.disabled_at IS NULL",
+            params![space, user_id],
+            |r| r.get(0),
+        )?;
+        if others == 0 {
+            return Err(AuthError::Conflict(format!(
+                "you are this space's last admin; make someone else its admin before you {what}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Take a user out of a space. Their tokens bound to it stop working. Server admins
     /// and the space's admins; audited.
     pub fn remove_member(
@@ -175,6 +206,9 @@ impl Auth {
     ) -> Result<()> {
         if !self.manages_members(actor, space)? {
             return Err(ADMINS_ONLY);
+        }
+        if !actor.server_admin() {
+            self.not_last_admin(actor, space, user_id, "leave")?;
         }
         let conn = self.db();
         let removed = conn.execute(

@@ -1,7 +1,8 @@
 // The page an invitation or recovery link opens (`/enroll#token=…`). An invitation lets the
 // person pick a username and register a passkey (or a password, when the daemon allows
 // passwords); a recovery link registers new credentials for an existing account in place of
-// the lost ones.
+// the lost ones. Someone already signed in may instead take an invitation into their own
+// account ("Join as …"), which adds its spaces to it.
 
 import { useEffect, useState, type FormEvent } from "react";
 
@@ -9,6 +10,7 @@ import { ApiRequestError } from "../api/client";
 import type { AuthStatus } from "../api/generated/AuthStatus";
 import type { EnrollInfo } from "../api/generated/EnrollInfo";
 import { navigate } from "../router";
+import { spaceHome } from "../spaces/prefix";
 import { enrollApi } from "../users/api";
 import { ROLE_TEXT, SPACE_ROLE_TEXT, enrollLinkAt, validUsername } from "../users/format";
 import { formatDateTime, formatUtc } from "../format";
@@ -80,6 +82,23 @@ export function EnrollPage({ status, onSignedIn }: Props) {
     void run(() => enrollApi.password({ token, username, displayName: displayName || null, password }));
   }
 
+  async function join() {
+    if (!token) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const joined = await enrollApi.accept(token);
+      // A full load, so the space switcher and roles start afresh in the new space.
+      const first = joined.spaces[0];
+      location.assign(first ? spaceHome(first.slug) : "/");
+    } catch (e) {
+      setError(describeError(e));
+      setBusy(false);
+    }
+  }
+
+  const joinAs = status.user && info?.joinable ? status.user : null;
+
   let body;
   if (!token) {
     body = (
@@ -100,11 +119,28 @@ export function EnrollPage({ status, onSignedIn }: Props) {
     body = (
       <>
         <Summary info={info} />
+        {joinAs && (
+          <fieldset className="auth-alt">
+            <legend>With your account</legend>
+            <p>
+              Add these spaces to <strong>{joinAs.displayName}</strong> ({joinAs.name}), the account you&apos;re signed in with. A role you already
+              have that is higher stays.
+            </p>
+            <div className="actions">
+              <button type="button" className="primary" disabled={busy} onClick={() => void join()}>
+                Join as {joinAs.displayName}
+              </button>
+            </div>
+          </fieldset>
+        )}
         {status.user && (
           <p className="banner-warn">
-            You're signed in as {status.user.displayName} ({status.user.name}). Continuing signs you out of that
-            account here.
+            {joinAs ? "Or create a new account below. " : ""}You're signed in as {status.user.displayName} ({status.user.name}).{" "}
+            {joinAs ? "Creating a new account" : "Continuing"} signs you out of that account here.
           </p>
+        )}
+        {status.user && !recovery && info.kind === "invitation" && !info.joinable && (
+          <p className="muted">This invitation makes a server admin, so it can only create a new account.</p>
         )}
         {!recovery && (
           <div className="field-row">
@@ -141,7 +177,7 @@ export function EnrollPage({ status, onSignedIn }: Props) {
               />
             </label>
             <div className="actions">
-              <button type="submit" className="primary" disabled={busy || !nameOk}>
+              <button type="submit" className={joinAs ? undefined : "primary"} disabled={busy || !nameOk}>
                 {recovery ? "Register a new passkey" : "Create my account with a passkey"}
               </button>
             </div>

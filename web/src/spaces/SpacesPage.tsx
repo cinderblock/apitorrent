@@ -419,7 +419,10 @@ function Members({
   return (
     <div className="space-members">
       <strong>Members</strong>
-      <p className="muted">Server admins can use every space without being members.</p>
+      <p className="muted">
+        Server admins can use every space without being members.
+        {!serverAdmin && " To add someone who already has an account, invite them: signed in, they join with that account."}
+      </p>
       {list?.length === 0 && <p className="muted">No members yet.</p>}
       <ul className="space-member-list">
         {list?.map((m) => (

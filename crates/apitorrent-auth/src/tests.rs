@@ -1034,6 +1034,193 @@ mod enrollment {
         ));
     }
 
+    fn sign_in(f: &Fixture, name: &str) -> Principal {
+        let s = f.auth.password_login(name, PW, &meta(), None).unwrap();
+        f.auth.authenticate_session(&s.secret).unwrap().unwrap()
+    }
+
+    #[test]
+    fn existing_users_join_invitations() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let sam_link = invite(&f, &admin, &[(2, SpaceRole::Admin), (3, SpaceRole::User)]);
+        let sam = enroll(&f, &sam_link.secret, "sam").unwrap();
+        let bob_link = invite(&f, &admin, &[(3, SpaceRole::Viewer)]);
+        let bob = enroll(&f, &bob_link.secret, "bob").unwrap();
+        let users_before = f.auth.users().unwrap().len();
+
+        // A space admin invites into their space; bob, signed in, takes it into his account.
+        let link = invite(&f, &sam, &[(2, SpaceRole::User)]);
+        assert!(crate::joinable(
+            &f.auth.enroll_info(&link.secret, &meta()).unwrap()
+        ));
+        let granted = f
+            .auth
+            .accept_invitation(&bob, &link.secret, &meta())
+            .unwrap();
+        assert_eq!(granted, [(2, SpaceRole::User)]);
+        assert_eq!(
+            f.auth.memberships(&bob.user.id).unwrap(),
+            [(2, SpaceRole::User), (3, SpaceRole::Viewer)]
+        );
+        assert_eq!(f.auth.users().unwrap().len(), users_before, "no new user");
+        assert_eq!(f.auth.last_space(&bob.user.id).unwrap(), Some(2));
+        let all = f.auth.enrollments(&admin, None).unwrap();
+        let rec = all.iter().find(|r| r.id == link.record.id).unwrap();
+        assert_eq!(rec.state, EnrollmentState::Used);
+        assert_eq!(rec.user_name.as_deref(), Some("bob"));
+        // Once only, by joining or enrolling.
+        assert!(matches!(
+            f.auth.accept_invitation(&bob, &link.secret, &meta()),
+            Err(AuthError::InvalidLink)
+        ));
+        assert!(matches!(
+            enroll(&f, &link.secret, "carol"),
+            Err(AuthError::InvalidLink)
+        ));
+
+        // Never a lower role; an invitation that gives nothing new stays unused.
+        let lower = invite(
+            &f,
+            &admin,
+            &[(2, SpaceRole::Viewer), (3, SpaceRole::Viewer)],
+        );
+        assert!(matches!(
+            f.auth.accept_invitation(&bob, &lower.secret, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        assert_eq!(
+            f.auth.memberships(&bob.user.id).unwrap(),
+            [(2, SpaceRole::User), (3, SpaceRole::Viewer)]
+        );
+        let higher = invite(&f, &admin, &[(2, SpaceRole::Viewer), (3, SpaceRole::User)]);
+        assert_eq!(
+            f.auth
+                .accept_invitation(&bob, &higher.secret, &meta())
+                .unwrap(),
+            [(3, SpaceRole::User)]
+        );
+        enroll(&f, &lower.secret, "dave").unwrap();
+
+        // The instance role never changes: a viewer stays a viewer.
+        f.auth
+            .set_user_role(&admin, &bob.user.id, Role::Viewer, &meta())
+            .unwrap();
+        let bob = sign_in(&f, "bob");
+        let more = invite(&f, &admin, &[(4, SpaceRole::User)]);
+        f.auth
+            .accept_invitation(&bob, &more.secret, &meta())
+            .unwrap();
+        assert_eq!(
+            store::user_by_id(&f.auth.db(), &bob.user.id)
+                .unwrap()
+                .unwrap()
+                .role,
+            Role::Viewer
+        );
+        // An invitation that makes a server admin, and a recovery link, can't be joined.
+        let admin_link = f
+            .auth
+            .create_invitation(
+                &admin,
+                Role::Admin,
+                &[(5, SpaceRole::User)],
+                None,
+                None,
+                &meta(),
+            )
+            .unwrap();
+        assert!(!crate::joinable(&admin_link.record));
+        assert!(matches!(
+            f.auth.accept_invitation(&bob, &admin_link.secret, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        let recovery = f
+            .auth
+            .create_recovery(&admin, &sam.user.id, None, &meta())
+            .unwrap();
+        assert!(matches!(
+            f.auth.accept_invitation(&bob, &recovery.secret, &meta()),
+            Err(AuthError::InvalidRequest(_))
+        ));
+        // An API token can't join, even with a good link.
+        let tok = token(&f, &sam, 2);
+        let tok = f.auth.authenticate_token(&tok).unwrap().unwrap();
+        let pending = invite(&f, &admin, &[(6, SpaceRole::User)]);
+        assert!(matches!(
+            f.auth.accept_invitation(&tok, &pending.secret, &meta()),
+            Err(AuthError::Forbidden(_))
+        ));
+        // Wrong links count as failures, as for enrolling.
+        assert!(matches!(
+            f.auth.accept_invitation(&bob, &"x".repeat(43), &meta()),
+            Err(AuthError::InvalidLink)
+        ));
+        let joined: i64 = f
+            .auth
+            .db()
+            .query_row(
+                "SELECT COUNT(*) FROM auth_events WHERE kind = 'joined'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(joined, 3);
+    }
+
+    #[test]
+    fn the_last_space_admin_stays() {
+        let f = fixture(PasswordMode::Fallback);
+        let admin = f.admin();
+        let sam_link = invite(&f, &admin, &[(2, SpaceRole::Admin)]);
+        let sam = enroll(&f, &sam_link.secret, "sam").unwrap();
+        // A server admin who is also listed as the space's admin doesn't count.
+        f.auth
+            .set_member(&admin, 2, &admin.user.id, SpaceRole::Admin, &meta())
+            .unwrap();
+        for r in [
+            f.auth
+                .set_member(&sam, 2, &sam.user.id, SpaceRole::User, &meta()),
+            f.auth.remove_member(&sam, 2, &sam.user.id, &meta()),
+        ] {
+            assert!(matches!(r, Err(AuthError::Conflict(_))), "{r:?}");
+        }
+        // Staying admin is fine.
+        f.auth
+            .set_member(&sam, 2, &sam.user.id, SpaceRole::Admin, &meta())
+            .unwrap();
+        let tia_link = invite(&f, &admin, &[(2, SpaceRole::Admin)]);
+        let tia = enroll(&f, &tia_link.secret, "tia").unwrap();
+        // A disabled admin doesn't count either.
+        f.auth
+            .set_user_disabled(&admin, &tia.user.id, true, &meta())
+            .unwrap();
+        assert!(matches!(
+            f.auth.remove_member(&sam, 2, &sam.user.id, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        // With a second admin of the space, either may step down.
+        f.auth
+            .set_user_disabled(&admin, &tia.user.id, false, &meta())
+            .unwrap();
+        f.auth
+            .set_member(&sam, 2, &sam.user.id, SpaceRole::User, &meta())
+            .unwrap();
+        // Now tia is the last one; a server admin can still remove her.
+        let tia = sign_in(&f, "tia");
+        assert!(matches!(
+            f.auth.remove_member(&tia, 2, &tia.user.id, &meta()),
+            Err(AuthError::Conflict(_))
+        ));
+        f.auth
+            .remove_member(&admin, 2, &tia.user.id, &meta())
+            .unwrap();
+        // A server admin is never stopped, even in a space they belong to.
+        f.auth
+            .remove_member(&admin, 2, &admin.user.id, &meta())
+            .unwrap();
+    }
+
     #[test]
     fn passwords_need_fallback_mode() {
         let f = fixture(PasswordMode::SecondFactor);
