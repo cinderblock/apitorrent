@@ -1,4 +1,4 @@
-//! A listener of its own for one plugin (`--plugin-listen <id>=<address>`).
+//! A listener of its own for one plugin (`--plugin-listen <id>[@<space>]=<address>`).
 //!
 //! Some clients can't be given a URL base: they expect another program's API at the root
 //! of a host and port (qBittorrent's `/api/v2/…`, say). This listener serves one plugin's
@@ -13,6 +13,11 @@
 //! it serves HTTPS with the same certificates. Nothing else of the API is reachable
 //! through it: management paths (`/-/…`) and anything that isn't a plugin route get a 404.
 //! The plugin itself still never opens a socket.
+//!
+//! It serves the `default` space (or the one a `--space-host` mapping or the caller's
+//! token picks), unless it is bound to a space ([`PluginListener::with_space`]): then every
+//! request is in that space, as if it came in under `/s/<slug>/`. A token from another
+//! space is refused there (403), as on the API.
 
 use std::net::SocketAddr;
 
@@ -34,13 +39,15 @@ pub struct PluginListener {
     core: Core,
     config: ServerConfig,
     plugin: String,
+    /// The space every request is in, by slug.
+    space: Option<String>,
     tls: Option<TlsServe>,
     listener: TcpListener,
 }
 
 /// The plugin route a request on the plugin's listener is for, as an API path, or `None`
 /// for paths that could reach anything else (management actions, dot segments).
-fn api_path(plugin: &str, path: &str) -> Option<String> {
+fn api_path(plugin: &str, space: Option<&str>, path: &str) -> Option<String> {
     let routable = path.starts_with('/')
         && !path.starts_with("/-")
         && !path.contains('\\')
@@ -50,7 +57,10 @@ fn api_path(plugin: &str, path: &str) -> Option<String> {
                 "." | ".." | "%2e" | "%2e%2e" | ".%2e" | "%2e."
             )
         });
-    routable.then(|| format!("/api/v1/plugins/{plugin}{path}"))
+    routable.then(|| match space {
+        Some(slug) => format!("/s/{slug}/api/v1/plugins/{plugin}{path}"),
+        None => format!("/api/v1/plugins/{plugin}{path}"),
+    })
 }
 
 impl PluginListener {
@@ -81,9 +91,21 @@ impl PluginListener {
             core,
             config,
             plugin,
+            space: None,
             tls: tls.cloned(),
             listener,
         })
+    }
+
+    /// Serve the plugin's instance in this space (by slug), which must exist.
+    pub fn with_space(mut self, slug: &str) -> Result<Self, ServeError> {
+        if self.core.space_by_slug(slug).is_none() {
+            return Err(ServeError::Io(std::io::Error::other(format!(
+                "there is no space `{slug}`"
+            ))));
+        }
+        self.space = Some(slug.to_owned());
+        Ok(self)
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -99,15 +121,16 @@ impl PluginListener {
             core,
             config,
             plugin,
+            space,
             tls,
             listener,
         } = self;
         let api = crate::build_router(core, &config, tls.as_ref().map(TlsServe::ctx));
-        let app = mount(api, plugin.clone());
+        let app = mount(api, plugin.clone(), space.clone());
         let local = listener.local_addr()?;
         match tls {
             None => {
-                tracing::info!(addr = %local, %plugin, "plugin listening");
+                tracing::info!(addr = %local, %plugin, space = ?space, "plugin listening");
                 axum::serve(
                     listener,
                     app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -116,7 +139,7 @@ impl PluginListener {
                 .await?;
             }
             Some(tls) => {
-                tracing::info!(addr = %local, %plugin, "plugin listening (HTTPS)");
+                tracing::info!(addr = %local, %plugin, space = ?space, "plugin listening (HTTPS)");
                 let server_config = tls
                     .store
                     .server_config()
@@ -128,14 +151,16 @@ impl PluginListener {
     }
 }
 
-/// The API router, mounted so that `/<path>` is the plugin's route `<path>`.
-pub(crate) fn mount(api: Router, plugin: String) -> Router {
+/// The API router, mounted so that `/<path>` is the plugin's route `<path>`, in `space` when
+/// one is given.
+pub(crate) fn mount(api: Router, plugin: String, space: Option<String>) -> Router {
     Router::new().fallback(move |mut req: Request| {
         let api = api.clone();
         let plugin = plugin.clone();
+        let space = space.clone();
         async move {
             let original = req.uri().clone();
-            let Some(path) = api_path(&plugin, original.path()) else {
+            let Some(path) = api_path(&plugin, space.as_deref(), original.path()) else {
                 return not_found();
             };
             let pq = match original.query() {
@@ -172,8 +197,12 @@ mod tests {
     #[test]
     fn only_plugin_routes_are_reachable() {
         assert_eq!(
-            api_path("qbittorrent-api", "/api/v2/auth/login").as_deref(),
+            api_path("qbittorrent-api", None, "/api/v2/auth/login").as_deref(),
             Some("/api/v1/plugins/qbittorrent-api/api/v2/auth/login")
+        );
+        assert_eq!(
+            api_path("qbittorrent-api", Some("tv"), "/api/v2/auth/login").as_deref(),
+            Some("/s/tv/api/v1/plugins/qbittorrent-api/api/v2/auth/login")
         );
         for bad in [
             "/-/approve",
@@ -185,7 +214,8 @@ mod tests {
             "/a/%2E./b",
             "/a\\..\\b",
         ] {
-            assert_eq!(api_path("qb", bad), None, "{bad}");
+            assert_eq!(api_path("qb", None, bad), None, "{bad}");
+            assert_eq!(api_path("qb", Some("tv"), bad), None, "{bad}");
         }
     }
 }

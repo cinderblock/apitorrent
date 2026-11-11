@@ -518,6 +518,85 @@ async fn sonarr_talks_to_apitorrent_as_if_it_were_qbittorrent() {
     assert_eq!(r.status, 200, "{}", r.text());
     assert!(core.list(None).is_empty());
 
+    // A listener of its own for another space (`--plugin-listen qbittorrent-api@tv=…`):
+    // that space's instance, for that space's tokens only.
+    let tv = core
+        .create_space(apitorrent_types::spaces::CreateSpaceRequest {
+            slug: "tv".into(),
+            name: "TV".into(),
+            description: String::new(),
+            settings: apitorrent_types::spaces::SpaceSettings::default(),
+        })
+        .await
+        .unwrap();
+    host.spaces_changed().await;
+    let unbound = PluginListener::bind(
+        core.clone(),
+        config.clone(),
+        "qbittorrent-api".into(),
+        "127.0.0.1:0".parse().unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(unbound.with_space("nope").is_err(), "no such space");
+    let tv_own = PluginListener::bind(
+        core.clone(),
+        config.clone(),
+        "qbittorrent-api".into(),
+        "127.0.0.1:0".parse().unwrap(),
+        None,
+    )
+    .await
+    .unwrap()
+    .with_space("tv")
+    .unwrap();
+    let tv_addr = tv_own.local_addr().unwrap();
+    tokio::spawn(tv_own.run(std::future::pending()));
+    let tv_token = auth
+        .create_token_in(
+            &admin,
+            tv.id,
+            &CreateTokenRequest {
+                name: "sonarr-tv".into(),
+                scope: TokenScope::Full,
+                expires_in_days: None,
+            },
+            &meta,
+        )
+        .unwrap();
+    let tv_bearer = format!("Bearer {}", tv_token.token);
+    // The tv instance may take a moment to start.
+    let mut categories = None;
+    for _ in 0..200 {
+        let r = http(
+            tv_addr,
+            "GET",
+            "/api/v2/torrents/categories",
+            &[("authorization", &tv_bearer)],
+            b"",
+        )
+        .await;
+        if r.status == 200 {
+            categories = Some(r.json());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    // Default's categories aren't tv's.
+    let categories = categories.expect("the tv instance answers");
+    assert!(categories.get("tv").is_none(), "{categories}");
+    // A token of `default` is refused there, as under /s/tv/ on the API.
+    let r = http(
+        tv_addr,
+        "GET",
+        "/api/v2/torrents/categories",
+        &[("authorization", &format!("Bearer {}", again.token))],
+        b"",
+    )
+    .await;
+    assert_eq!(r.status, 403, "{}", r.text());
+
     host.shutdown().await;
     core.shutdown().await.unwrap();
 }
