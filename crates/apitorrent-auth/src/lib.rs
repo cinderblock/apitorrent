@@ -17,6 +17,7 @@
 
 mod clock;
 mod db;
+mod devices;
 mod enroll;
 mod error;
 mod limit;
@@ -48,6 +49,7 @@ pub use apitorrent_types::auth::{
     SessionInfo, SessionMethod, SessionState, TokenScope, UserInfo,
 };
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use devices::DEVICE_PREFIX;
 pub use enroll::{EnrollmentRecord, IssuedLink, UserRecord, joinable};
 pub use error::{AuthError, Result};
 pub use password::PasswordCost;
@@ -198,6 +200,13 @@ pub enum Credential {
         /// The space the token works in.
         space: apitorrent_types::spaces::SpaceId,
     },
+    /// A paired device (see `devices`): like a token, but approved from a browser session
+    /// and named after the device.
+    Device {
+        id: String,
+        scope: TokenScope,
+        space: apitorrent_types::spaces::SpaceId,
+    },
     /// `--insecure-no-auth-loopback`: a loopback request with authentication disabled.
     Local,
 }
@@ -253,15 +262,21 @@ impl Principal {
     }
 
     pub fn may_write(&self) -> bool {
-        self.may_read()
-            && self.user.role != Role::Viewer
-            && !matches!(
-                self.credential,
-                Credential::Token {
-                    scope: TokenScope::Read,
-                    ..
-                }
-            )
+        self.may_read() && self.user.role != Role::Viewer && !self.read_only_credential()
+    }
+
+    /// A `read`-scoped token or device: `GET` and the sync socket only.
+    pub fn read_only_credential(&self) -> bool {
+        matches!(
+            self.credential,
+            Credential::Token {
+                scope: TokenScope::Read,
+                ..
+            } | Credential::Device {
+                scope: TokenScope::Read,
+                ..
+            }
+        )
     }
 }
 
@@ -337,6 +352,8 @@ struct Inner {
     gate: password::Gate,
     /// Bumped whenever a session or token ends early, so open sockets re-check at once.
     revoked: watch::Sender<u64>,
+    /// Device pairing requests waiting for approval or for their app to collect them.
+    device_requests: Mutex<Vec<devices::PendingDevice>>,
 }
 
 /// The auth service. Cheap to clone.
@@ -539,6 +556,7 @@ impl Auth {
                 setup: Mutex::new(SetupState::default()),
                 gate: password::Gate::new(2),
                 revoked: watch::Sender::new(0),
+                device_requests: Mutex::new(Vec::new()),
             }),
         };
         auth.tick()?;
@@ -972,6 +990,7 @@ impl Auth {
             Credential::Token { id, .. } => store::tokens_for_user(&conn, &p.user.id)?
                 .iter()
                 .any(|t| &t.info.id == id && t.info.expires_at.is_none_or(|e| e > now)),
+            Credential::Device { id, .. } => devices::exists(&conn, &p.user.id, id)?,
         })
     }
 

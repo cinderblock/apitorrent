@@ -99,6 +99,22 @@ const MIGRATIONS: &[&str] = &[
          role TEXT NOT NULL CHECK (role IN ('admin', 'user', 'viewer')),
          PRIMARY KEY (enrollment_id, space_id)
      );",
+    // 4: paired devices (the desktop thin client). Like API tokens, but approved from a
+    // browser session, named after the device, and optionally bound to the server's TLS key.
+    "CREATE TABLE devices (
+         id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+         name TEXT NOT NULL,
+         platform TEXT NOT NULL,
+         scope TEXT NOT NULL CHECK (scope IN ('read', 'full')),
+         space_id INTEGER NOT NULL,
+         credential_hash BLOB NOT NULL UNIQUE,  -- SHA-256 of the credential
+         server_key BLOB,                       -- SPKI SHA-256 it is bound to, if any
+         created_at INTEGER NOT NULL,
+         last_used_at INTEGER,
+         last_ip TEXT
+     );
+     CREATE INDEX devices_user ON devices(user_id);",
 ];
 
 pub(crate) fn open(path: &Path) -> rusqlite::Result<Connection> {

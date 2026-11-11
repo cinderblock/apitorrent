@@ -61,6 +61,8 @@ const PUBLIC: &[&str] = &[
     "/auth/enroll/start",
     "/auth/enroll/finish",
     "/auth/enroll/password",
+    "/auth/devices/requests",
+    "/auth/devices/poll",
 ];
 
 /// Routes that name what they act on (a space by slug, an invitation, a user) and check the
@@ -295,6 +297,22 @@ pub(crate) async fn layer(State(s): State<AppState>, mut req: Request, next: Nex
         _ if in_process => ctx.principal = Some(owner()),
         (_, Some(Err(()))) => {
             return unauthorized("invalid_token", "use `Authorization: Bearer <token>`");
+        }
+        (AuthMode::Enabled(auth), Some(Ok(token)))
+            if token.starts_with(apitorrent_auth::DEVICE_PREFIX) =>
+        {
+            let served = s.tls.as_ref().and_then(crate::tls::TlsCtx::served_key);
+            match auth.authenticate_device(token, served, &ctx.meta) {
+                Ok(Some(p)) => ctx.principal = Some(p),
+                Ok(None) => {
+                    return unauthorized(
+                        "invalid_token",
+                        "unknown or removed device, or paired with another key of this server: \
+                         pair this device again",
+                    );
+                }
+                Err(e) => return crate::auth_routes::Failure(e).into_response(),
+            }
         }
         (AuthMode::Enabled(auth), Some(Ok(token))) => match auth.authenticate_token(token) {
             Ok(Some(p)) => ctx.principal = Some(p),

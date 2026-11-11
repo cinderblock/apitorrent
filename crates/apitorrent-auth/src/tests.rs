@@ -299,6 +299,166 @@ fn api_tokens() {
 }
 
 #[test]
+fn device_pairing() {
+    use apitorrent_types::auth::{ApproveDeviceRequest, DevicePollResponse, DeviceRequestStart};
+
+    let f = fixture(PasswordMode::Fallback);
+    let admin = f.admin();
+    let key = [7u8; 32];
+    let ask = |server_key: Option<[u8; 32]>, served: Option<[u8; 32]>| {
+        f.auth.start_device_request(
+            &DeviceRequestStart {
+                name: "Laptop".into(),
+                platform: "apitorrent on tests".into(),
+                server_key: server_key.map(hex::encode),
+            },
+            served,
+            &meta(),
+        )
+    };
+
+    // A pin that isn't the served key: something sits in between.
+    assert!(matches!(
+        ask(Some([9; 32]), Some(key)),
+        Err(AuthError::InvalidRequest(_))
+    ));
+
+    let started = ask(Some(key), Some(key)).unwrap();
+    assert!(started.bound);
+    assert_eq!(started.user_code.len(), 9);
+    let poll = |s: &str| f.auth.poll_device_request(s, &meta()).unwrap();
+    assert_eq!(poll(&started.poll_secret), DevicePollResponse::Pending);
+    assert_eq!(poll("not the secret"), DevicePollResponse::Expired);
+
+    // Looking up and approving need a browser session; tokens can't.
+    let token = f
+        .auth
+        .create_token(
+            &admin,
+            &CreateTokenRequest {
+                name: "t".into(),
+                scope: TokenScope::Full,
+                expires_in_days: None,
+            },
+            &meta(),
+        )
+        .unwrap();
+    let by_token = f.auth.authenticate_token(&token.token).unwrap().unwrap();
+    assert!(matches!(
+        f.auth
+            .lookup_device_request(&by_token, &started.user_code, &meta()),
+        Err(AuthError::Forbidden(_))
+    ));
+    // Codes are forgiving about case and dashes; wrong ones are refused.
+    let info = f
+        .auth
+        .lookup_device_request(
+            &admin,
+            &started.user_code.to_lowercase().replace('-', ""),
+            &meta(),
+        )
+        .unwrap();
+    assert_eq!(info.name, "Laptop");
+    assert_eq!(info.ip.as_deref(), Some("192.0.2.7"));
+    assert!(info.server_key_code.is_some());
+    assert!(
+        f.auth
+            .lookup_device_request(&admin, "AAAA-AAAA", &meta())
+            .is_err()
+    );
+
+    // Approval needs a recent sign-in.
+    let approve = ApproveDeviceRequest {
+        user_code: started.user_code.clone(),
+        scope: TokenScope::Read,
+    };
+    f.clock.advance(Duration::from_secs(11 * 60));
+    assert!(matches!(
+        f.auth.approve_device_request(&admin, 1, &approve, &meta()),
+        Err(AuthError::ReauthRequired)
+    ));
+    // (The request expired meanwhile too.) Start again and approve promptly.
+    let started = ask(Some(key), Some(key)).unwrap();
+    let s = f
+        .auth
+        .password_login("admin", "correct horse battery", &meta(), None)
+        .unwrap();
+    let admin = f.auth.authenticate_session(&s.secret).unwrap().unwrap();
+    f.auth
+        .approve_device_request(
+            &admin,
+            1,
+            &ApproveDeviceRequest {
+                user_code: started.user_code.clone(),
+                scope: TokenScope::Read,
+            },
+            &meta(),
+        )
+        .unwrap();
+    let DevicePollResponse::Approved { credential, device } = poll(&started.poll_secret) else {
+        panic!("not approved");
+    };
+    assert!(credential.starts_with(DEVICE_PREFIX));
+    assert!(device.current);
+    assert_eq!(device.scope, TokenScope::Read);
+    // Collected once.
+    assert_eq!(poll(&started.poll_secret), DevicePollResponse::Expired);
+
+    // Bound to the key: only while the daemon serves it.
+    let p = f
+        .auth
+        .authenticate_device(&credential, Some(key), &meta())
+        .unwrap()
+        .unwrap();
+    assert!(p.may_read());
+    assert!(!p.may_write(), "read scope");
+    assert_eq!(p.token_space(), Some(1));
+    assert!(
+        f.auth
+            .authenticate_device(&credential, Some([1; 32]), &meta())
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.auth
+            .authenticate_device(&credential, None, &meta())
+            .unwrap()
+            .is_none()
+    );
+    // Not an API token, and can't manage credentials.
+    assert!(f.auth.authenticate_token(&credential).unwrap().is_none());
+    assert!(matches!(
+        f.auth.list_tokens(&p),
+        Err(AuthError::Forbidden(_))
+    ));
+    // A device sees only itself, its owner all.
+    assert_eq!(f.auth.list_devices(&p).unwrap().len(), 1);
+    let listed = f.auth.list_devices(&admin).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert!(!listed[0].current);
+    assert!(listed[0].last_used_at.is_some());
+
+    // A refused request.
+    let refused = ask(None, Some(key)).unwrap();
+    assert!(!refused.bound, "not pinned: not bound");
+    f.auth
+        .deny_device_request(&admin, &refused.user_code, &meta())
+        .unwrap();
+    assert_eq!(poll(&refused.poll_secret), DevicePollResponse::Denied);
+
+    // Removal: by the device itself; its sockets close.
+    assert!(f.auth.still_valid(&p).unwrap());
+    f.auth.revoke_device(&p, &device.id, &meta()).unwrap();
+    assert!(!f.auth.still_valid(&p).unwrap());
+    assert!(
+        f.auth
+            .authenticate_device(&credential, Some(key), &meta())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn sensitive_changes_need_recent_auth() {
     let f = fixture(PasswordMode::Fallback);
     let admin = f.admin();

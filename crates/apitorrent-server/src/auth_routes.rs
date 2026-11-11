@@ -11,6 +11,10 @@ use apitorrent_types::auth::{
     CreatedToken, PasskeyFinishRequest, PasskeyInfo, PasswordLoginRequest, PasswordRequest,
     RenameRequest, SessionInfo, SetupFinishRequest, SetupPasswordRequest, SetupStartRequest,
 };
+use apitorrent_types::auth::{
+    ApproveDeviceRequest, DeviceCodeRequest, DeviceInfo, DevicePollRequest, DevicePollResponse,
+    DeviceRequestInfo, DeviceRequestStart, DeviceRequestStarted,
+};
 
 use crate::authn::{RequestCtx, is_loopback_host};
 use crate::routes::error;
@@ -437,4 +441,88 @@ pub(crate) async fn session_delete(
             .insert(header::SET_COOKIE, ctx.clear_cookie());
     }
     Ok(resp)
+}
+
+// ----- Paired devices -----
+
+/// Answers that carry a secret are never cached.
+fn no_store(mut resp: Response) -> Response {
+    resp.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    resp
+}
+
+/// An app asks to be paired (no sign-in).
+pub(crate) async fn device_request(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Json(req): Json<DeviceRequestStart>,
+) -> AuthResult<Response> {
+    let served = s.tls.as_ref().and_then(crate::tls::TlsCtx::served_key);
+    let started: DeviceRequestStarted =
+        enabled(&s)?.start_device_request(&req, served, &ctx.meta)?;
+    Ok(no_store(
+        (StatusCode::CREATED, Json(started)).into_response(),
+    ))
+}
+
+/// The app polls for the approval (no sign-in; the poll secret is the proof).
+pub(crate) async fn device_poll(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Json(req): Json<DevicePollRequest>,
+) -> AuthResult<Response> {
+    let r: DevicePollResponse = enabled(&s)?.poll_device_request(&req.poll_secret, &ctx.meta)?;
+    Ok(no_store(Json(r).into_response()))
+}
+
+pub(crate) async fn device_lookup(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Json(req): Json<DeviceCodeRequest>,
+) -> AuthResult<Json<DeviceRequestInfo>> {
+    Ok(Json(enabled(&s)?.lookup_device_request(
+        principal(&ctx)?,
+        &req.user_code,
+        &ctx.meta,
+    )?))
+}
+
+/// Approve a device into the space the request is in, as tokens are bound.
+pub(crate) async fn device_approve(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Json(req): Json<ApproveDeviceRequest>,
+) -> AuthResult<StatusCode> {
+    let space = ctx
+        .space
+        .as_ref()
+        .map_or(apitorrent_types::spaces::DEFAULT_SPACE, |h| h.id);
+    enabled(&s)?.approve_device_request(principal(&ctx)?, space, &req, &ctx.meta)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn device_deny(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Json(req): Json<DeviceCodeRequest>,
+) -> AuthResult<StatusCode> {
+    enabled(&s)?.deny_device_request(principal(&ctx)?, &req.user_code, &ctx.meta)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn devices(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+) -> AuthResult<Json<Vec<DeviceInfo>>> {
+    Ok(Json(enabled(&s)?.list_devices(principal(&ctx)?)?))
+}
+
+pub(crate) async fn device_delete(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Path(id): Path<String>,
+) -> AuthResult<StatusCode> {
+    enabled(&s)?.revoke_device(principal(&ctx)?, &id, &ctx.meta)?;
+    Ok(StatusCode::NO_CONTENT)
 }

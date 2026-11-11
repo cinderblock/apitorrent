@@ -284,3 +284,129 @@ pub struct SessionInfo {
     /// The session making this request.
     pub current: bool,
 }
+
+// ----- Device pairing -----
+//
+// An app (the desktop thin client) asks to be paired, shows a short code, and polls; a
+// signed-in browser session approves the request by that code; the app then receives a
+// device credential (`apd_…`) once. The shape follows OAuth's device authorization grant
+// (RFC 8628).
+
+/// `POST /api/v1/auth/devices/requests` (no sign-in): an app asks to become a device of
+/// whoever approves it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DeviceRequestStart {
+    /// What the device calls itself ("Sam's laptop"); the approver sees it.
+    pub name: String,
+    /// The app and system, such as "apitorrent 0.3 on Windows".
+    pub platform: String,
+    /// The SHA-256 of the server key the app pinned (hex), when it pairs by pinned key.
+    /// A daemon serving TLS itself refuses a request whose pin isn't its own key, and binds
+    /// the device to it.
+    #[serde(default)]
+    pub server_key: Option<String>,
+}
+
+/// The answer to [`DeviceRequestStart`]. The poll secret stays in the app; the user code is
+/// what the person sees and the approver types or compares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DeviceRequestStarted {
+    /// Proves the poller is the app that asked. Never shown.
+    pub poll_secret: String,
+    /// Eight characters in two groups (`ABCD-EFGH`).
+    pub user_code: String,
+    #[ts(type = "number")]
+    pub expires_at: i64,
+    /// Poll no more often than this.
+    pub interval_secs: u32,
+    /// Whether the device will be bound to the server's TLS key.
+    pub bound: bool,
+}
+
+/// `POST /api/v1/auth/devices/poll` (no sign-in).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DevicePollRequest {
+    pub poll_secret: String,
+}
+
+/// Where a pairing request stands. `approved` carries the credential, once: the request is
+/// gone afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "camelCase")]
+#[ts(export)]
+pub enum DevicePollResponse {
+    Pending,
+    Approved {
+        /// Send it as `Authorization: Bearer <credential>`.
+        credential: String,
+        device: DeviceInfo,
+    },
+    Denied,
+    /// Expired, or never existed.
+    Expired,
+}
+
+/// `POST /api/v1/auth/devices/lookup` and the approval calls: a pairing request by the code
+/// the app shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DeviceCodeRequest {
+    pub user_code: String,
+}
+
+/// A pending pairing request, as the approver sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DeviceRequestInfo {
+    pub user_code: String,
+    pub name: String,
+    pub platform: String,
+    /// The address the request came from.
+    pub ip: Option<String>,
+    #[ts(type = "number")]
+    pub requested_at: i64,
+    #[ts(type = "number")]
+    pub expires_at: i64,
+    /// The pairing code of the server key the device will be bound to, if any.
+    pub server_key_code: Option<String>,
+}
+
+/// `POST /api/v1/auth/devices/approve`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ApproveDeviceRequest {
+    pub user_code: String,
+    pub scope: TokenScope,
+}
+
+/// A paired device, as its owner sees it on the Account page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub platform: String,
+    pub scope: TokenScope,
+    /// The space the device works in, as for API tokens.
+    #[ts(type = "number")]
+    pub space: crate::spaces::SpaceId,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number | null")]
+    pub last_used_at: Option<i64>,
+    pub last_ip: Option<String>,
+    /// The pairing code of the server key it is bound to; `None` when unbound.
+    pub server_key_code: Option<String>,
+    /// The device making this request.
+    pub current: bool,
+}

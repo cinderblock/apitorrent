@@ -9,9 +9,7 @@ use rusqlite::{OptionalExtension, params};
 
 use apitorrent_types::spaces::{SpaceId, SpaceMember, SpaceRole};
 
-use crate::{
-    Auth, AuthError, ClientMeta, Credential, Principal, Result, Role, TokenScope, UserInfo, store,
-};
+use crate::{Auth, AuthError, ClientMeta, Credential, Principal, Result, Role, UserInfo, store};
 
 const ADMINS_ONLY: AuthError =
     AuthError::Forbidden("only a server admin or the space's admins manage its members");
@@ -22,10 +20,10 @@ impl Principal {
         matches!(self.credential, Credential::Local) || self.user.role == Role::Admin
     }
 
-    /// The space an API token is bound to, for token credentials.
+    /// The space an API token or paired device is bound to.
     pub fn token_space(&self) -> Option<SpaceId> {
         match &self.credential {
-            Credential::Token { space, .. } => Some(*space),
+            Credential::Token { space, .. } | Credential::Device { space, .. } => Some(*space),
             _ => None,
         }
     }
@@ -67,13 +65,7 @@ impl Auth {
             .optional()?
             .and_then(|r| SpaceRole::parse(&r))
         };
-        let read_only = matches!(
-            p.credential,
-            Credential::Token {
-                scope: TokenScope::Read,
-                ..
-            }
-        );
+        let read_only = p.read_only_credential();
         Ok(role.map(|r| if read_only { SpaceRole::Viewer } else { r }))
     }
 

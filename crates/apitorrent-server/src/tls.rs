@@ -218,6 +218,14 @@ pub(crate) async fn serve_https(
     result
 }
 
+impl TlsCtx {
+    /// The SPKI SHA-256 of the certificate being served now, which paired devices are
+    /// bound to. The self-signed key that pinning is for stays the same across renewals.
+    pub(crate) fn served_key(&self) -> Option<[u8; 32]> {
+        self.store.current().map(|c| c.info.spki_sha256)
+    }
+}
+
 impl TlsServe {
     /// The TLS context request handlers see, for another listener sharing these
     /// certificates.
