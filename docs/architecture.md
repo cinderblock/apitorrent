@@ -1,8 +1,9 @@
 # apitorrent architecture
 
-apitorrent is a BitTorrent client meant to replace Deluge. It has its own Rust BitTorrent
-engine, a native desktop app (Tauri), and a full web UI. The daemon, the desktop app and the
-web UI share one API and one security model.
+apitorrent is a new BitTorrent client. It takes the best features of existing clients,
+without being held to their old decisions, and adds new ones for the communities that use
+them. It has its own Rust BitTorrent engine, a native desktop app (Tauri), and a full web
+UI. The daemon, the desktop app and the web UI share one API and one security model.
 
 This document describes the target design. `plans/` tracks what is built so far.
 
@@ -288,7 +289,7 @@ certificate errors" switch. A server is trusted in one of three ways:
 2. **Private CA**: the user imports a CA certificate for that profile.
 3. **Pinned key, established by pairing.** The server shows a short pairing code, and the
    client verifies the server's SPKI hash against it out of band before pinning it. This
-   replaces Deluge's accept-any-self-signed behaviour with something you actually checked.
+   means a self-signed certificate is trusted only after you've checked it.
    - The pin is the SHA-256 of the leaf certificate's DER `SubjectPublicKeyInfo`. The
      pairing code is the first 100 bits of it as RFC 4648 base32, in five groups of four
      (`ABCD-EFGH-IJKL-MNOP-QRST`): matching it takes about 2^100 key generations. Compare
@@ -659,7 +660,7 @@ again (the store remembers offers). Decided 2026-11-09, `plans/plugin-ecosystem.
 
 ## Content library (cross-torrent file sharing)
 
-This is the feature Deluge cannot do, and it is designed in from the start.
+This is one of apitorrent's new features, and it is designed in from the start.
 
 ### Model
 

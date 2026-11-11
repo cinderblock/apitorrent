@@ -2,7 +2,9 @@
 
 ## Goal
 
-Build a complete replacement for Deluge with:
+Build a new BitTorrent client that takes the best features of existing ones (Deluge,
+qBittorrent, Transmission, …), is not held back by their old decisions, and adds new features
+for the communities that use them. It has:
 - a fast, cross-platform core: our own Rust BitTorrent engine;
 - a native Tauri desktop app that can also serve the web UI, or act as a thin client to a
   headless daemon (with path mappings to open remote folders over OS file sharing);
@@ -11,8 +13,8 @@ Build a complete replacement for Deluge with:
 - first-class file sharing between torrents ("packs");
 - strict TLS: never accept an unverified certificate.
 
-The project will eventually be public, MIT-licensed, with GitHub CI builds. For now it stays
-**local only**.
+The project is public at `cinderblock/apitorrent` (since 2026-11-10), MIT-licensed, with
+GitHub CI builds.
 
 The target design is in `docs/architecture.md`.
 
@@ -28,7 +30,11 @@ The target design is in `docs/architecture.md`.
 
 ## Decisions already made (don't re-ask)
 
-- **License**: MIT. Local only until the user says to publish. *(user)*
+- **License**: MIT. Public since 2026-11-10. *(user)*
+- **Positioning**: something new that borrows the best of Deluge and the other clients, not
+  a Deluge replacement. Docs and UI speak well of other clients and don't frame apitorrent
+  as beating or replacing any of them. Deluge import is an onboarding feature, nothing
+  more. *(user, 2026-11-10)*
 - **Engine**: our own pure-Rust engine, sans-IO protocol core, depending on rqbit's
   separable leaf crates (DHT, uTP, UPnP, LSD; Apache-2.0) where each passes evaluation.
   Don't fork `librqbit`'s session. libtorrent is dropped as a backend and kept only as an

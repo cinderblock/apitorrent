@@ -1,7 +1,9 @@
 # apitorrent
 
-A BitTorrent client meant to replace Deluge. It has its own Rust engine, a native desktop app,
-a full web UI with passkey login, and sandboxed TypeScript plugins.
+A new BitTorrent client that takes the best ideas from the clients people already love
+(Deluge, qBittorrent, Transmission and others) and builds on them, with features of its own
+for the communities that use them. It has its own Rust engine, a native desktop app, a full
+web UI with passkey login, and sandboxed TypeScript plugins.
 
 > **Status: early development.** The engine downloads and seeds v1, v2 and hybrid
 > torrents from `.torrent` files and magnet links, finds peers through HTTP, HTTPS and UDP
