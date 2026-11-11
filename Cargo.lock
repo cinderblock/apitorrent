@@ -375,7 +375,7 @@ dependencies = [
  "deno_error",
  "encoding_rs",
  "hex",
- "hmac 0.12.1",
+ "hmac 0.13.0",
  "rand 0.9.5",
  "rcgen",
  "rusqlite",
