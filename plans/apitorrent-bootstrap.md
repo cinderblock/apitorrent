@@ -693,5 +693,5 @@ For UI development, run `bun run dev` in `web/` (Vite proxies `/api` to the daem
 
 - Don't add an "ignore certificate errors" option anywhere.
 - Don't use `rbuild`/sentinel for this repo until it's approved.
-- Don't force-push. Push master normally; the repo is `cinderblock/apitorrent`, private.
+- Don't force-push. Push master normally; the repo is `cinderblock/apitorrent`, public since 2026-11-10 (CI is free there). Never start CI on a private repo without asking.
 - Don't fork `librqbit`'s session or storage. Depend on leaf crates instead.
