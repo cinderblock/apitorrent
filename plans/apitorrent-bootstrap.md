@@ -559,8 +559,8 @@ them, restarts, and reports. On this machine (release build, NVMe):
   tagged `MatchedBy::{Root, Fingerprint, Pieces, Name}`. Core test
   `fingerprints_let_v2_torrents_reuse_v1_files`
 - [x] Content library: tracker-adapter hook (`crates/apitorrent-core/src/adapters.rs`, plugin ecosystem)
-- [ ] Reflinks are untested on a filesystem that clones: this machine has only NTFS. A CI
-  job on loop-mounted Btrfs and XFS is being added (2026-11-10, `plans/net-fixes.md`)
+- [x] Reflinks tested on filesystems that clone: the CI job "Reflinks on Btrfs and XFS"
+  (loop-mounted) passed its first run on 2026-11-10. See `plans/net-fixes.md`
 - [x] M9 (part): Deluge importer. `apitorrent-deluge` reads `state/*.torrent`,
   `torrents.fastresume`, the `torrents.state` pickle (safe unpickler; fixture made by
   Python), `label.conf` and `core.conf`. `Core::import_deluge` keeps files where they are
