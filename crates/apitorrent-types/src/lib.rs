@@ -13,6 +13,7 @@ use ts_rs::TS;
 pub mod auth;
 pub mod automation;
 pub mod plugins;
+pub mod share;
 pub mod spaces;
 pub mod tls;
 pub mod update;
@@ -582,6 +583,18 @@ pub struct StorageRoot {
     pub id: String,
     /// The path on the daemon's machine.
     pub path: String,
+    /// Where other machines reach this root: UNC paths, `smb://` and `nfs://` URLs, set by a
+    /// server admin (see [`share`]). Clients suggest path mappings from them.
+    #[serde(default)]
+    pub locators: Vec<String>,
+}
+
+/// `PUT /api/v1/roots/{id}/locators`: replace a storage root's share locators.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetLocatorsRequest {
+    pub locators: Vec<String>,
 }
 
 /// The contents of `.apitorrent-root`, the marker file at the top of every storage root.

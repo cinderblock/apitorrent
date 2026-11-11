@@ -87,6 +87,23 @@ pub(crate) async fn roots(State(s): State<AppState>) -> Json<Vec<apitorrent_type
     Json(s.core.storage_roots())
 }
 
+/// Set where other machines reach a storage root (UNC, `smb://`, `nfs://`). Roots belong to
+/// the instance: server admins only.
+pub(crate) async fn set_root_locators(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+    Path(id): Path<String>,
+    Json(req): Json<apitorrent_types::SetLocatorsRequest>,
+) -> Response {
+    if let Err(e) = server_admin(&ctx) {
+        return e.into_response();
+    }
+    match s.core.set_root_locators(&id, &req.locators).await {
+        Ok(root) => Json(root).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListQuery {
     /// `all`: every space's torrents (server admins only).

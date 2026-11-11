@@ -12,4 +12,9 @@ id: string,
 /**
  * The path on the daemon's machine.
  */
-path: string, };
+path: string, 
+/**
+ * Where other machines reach this root: UNC paths, `smb://` and `nfs://` URLs, set by a
+ * server admin (see [`share`]). Clients suggest path mappings from them.
+ */
+locators: Array<string>, };

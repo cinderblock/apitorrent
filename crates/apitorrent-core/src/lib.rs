@@ -259,7 +259,8 @@ struct Inner {
     seeding: Mutex<HashMap<Key, seeding::SeedState>>,
     /// When seeding time was last counted.
     seed_clock: Mutex<std::time::Instant>,
-    roots: Vec<apitorrent_types::StorageRoot>,
+    /// Storage roots; only their share locators change while running.
+    roots: RwLock<Vec<apitorrent_types::StorageRoot>>,
     /// Rules, aliases and channels (see `automation`).
     automation: automation::Automation,
     /// Tracker adapters for pack switchover (see `adapters`).
@@ -335,7 +336,7 @@ impl Core {
                 stopping: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 seeding: Mutex::new(HashMap::new()),
                 seed_clock: Mutex::new(std::time::Instant::now()),
-                roots: vec![root],
+                roots: RwLock::new(vec![root]),
                 automation,
                 adapters: adapters::AdapterState::default(),
             }),
@@ -1328,7 +1329,31 @@ impl Core {
 
     /// The directories this instance downloads into, each with a `.apitorrent-root` marker.
     pub fn storage_roots(&self) -> Vec<apitorrent_types::StorageRoot> {
-        self.inner.roots.clone()
+        self.inner.roots.read().expect("roots lock").clone()
+    }
+
+    /// Replace a storage root's share locators (where other machines reach it), after
+    /// checking and normalising them. Returns the updated root.
+    pub async fn set_root_locators(
+        &self,
+        id: &str,
+        locators: &[String],
+    ) -> Result<apitorrent_types::StorageRoot, CoreError> {
+        if !self.storage_roots().iter().any(|r| r.id == id) {
+            return Err(CoreError::NotFound);
+        }
+        let normal = apitorrent_types::share::normalise_locators(locators)
+            .map_err(CoreError::InvalidRequest)?;
+        let (key, value) = (id.to_owned(), normal.clone());
+        self.db(move |db| roots::save_locators(db, &key, &value))
+            .await?;
+        let mut roots = self.inner.roots.write().expect("roots lock");
+        let root = roots
+            .iter_mut()
+            .find(|r| r.id == id)
+            .ok_or(CoreError::NotFound)?;
+        root.locators = normal;
+        Ok(root.clone())
     }
 
     pub fn peer_port(&self) -> u16 {

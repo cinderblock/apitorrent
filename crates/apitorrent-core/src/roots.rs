@@ -16,6 +16,30 @@ fn meta_key(path: &str) -> String {
     format!("storage_root:{path}")
 }
 
+/// A root's share locators, by root id (a moved root is a new root, and starts without).
+fn locators_key(id: &str) -> String {
+    format!("storage_root_locators:{id}")
+}
+
+/// The root's saved share locators. A value that doesn't parse (written by a newer
+/// version, say) is ignored with a warning rather than failing the start.
+fn load_locators(db: &Database, id: &str) -> rusqlite::Result<Vec<String>> {
+    let Some(json) = db.meta(&locators_key(id))? else {
+        return Ok(Vec::new());
+    };
+    Ok(serde_json::from_str(&json).unwrap_or_else(|e| {
+        tracing::warn!(root = id, error = %e, "stored share locators don't parse; ignoring them");
+        Vec::new()
+    }))
+}
+
+/// Save a root's share locators, already checked and normalised
+/// ([`apitorrent_types::share::normalise_locators`]).
+pub(crate) fn save_locators(db: &Database, id: &str, locators: &[String]) -> rusqlite::Result<()> {
+    let json = serde_json::to_string(locators).expect("strings always serialise");
+    db.set_meta(&locators_key(id), &json)
+}
+
 /// The root at `dir`, with the id made the first time `dir` was a root. A root moved to a
 /// new path is a new root with a new id, so a mapping to the old location stops verifying.
 pub(crate) fn root_for(db: &Database, dir: &Path) -> rusqlite::Result<StorageRoot> {
@@ -36,7 +60,8 @@ pub(crate) fn root_for(db: &Database, dir: &Path) -> rusqlite::Result<StorageRoo
         db.set_meta(&key, &id)?;
         id
     };
-    Ok(StorageRoot { id, path })
+    let locators = load_locators(db, &id)?;
+    Ok(StorageRoot { id, path, locators })
 }
 
 /// Write the root's marker, unless it already holds this id. A failure is only logged: a
@@ -96,5 +121,19 @@ mod tests {
         let marker = std::fs::read(a.join(RootMarker::FILE_NAME)).unwrap();
         assert_eq!(RootMarker::parse(&marker).unwrap().id, ra.id);
         assert!(!a.join(".apitorrent-root.tmp").exists());
+    }
+
+    #[test]
+    fn locators_are_saved_and_reloaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Database::open(&tmp.path().join("db")).unwrap();
+        let root = root_for(&db, tmp.path()).unwrap();
+        assert!(root.locators.is_empty());
+        let saved = vec![r"\\nas\t".to_owned(), "nfs://nas/srv/t".to_owned()];
+        save_locators(&db, &root.id, &saved).unwrap();
+        assert_eq!(root_for(&db, tmp.path()).unwrap().locators, saved);
+        // Junk in the database is ignored, not fatal.
+        db.set_meta(&locators_key(&root.id), "{").unwrap();
+        assert!(root_for(&db, tmp.path()).unwrap().locators.is_empty());
     }
 }

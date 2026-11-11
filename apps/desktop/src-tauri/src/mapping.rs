@@ -429,6 +429,7 @@ mod tests {
         StorageRoot {
             id: id.into(),
             path: path.into(),
+            locators: Vec::new(),
         }
     }
 
