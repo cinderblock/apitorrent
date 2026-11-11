@@ -416,6 +416,14 @@ from the torrent database.
     wrong, used, revoked or expired secret counts as a failure and is audited
     (`enroll_failed`). The link is checked again inside the transaction that creates the
     user, so two tabs can't both use it.
+  - **Joining with an existing account** (`POST /auth/enroll/accept`, a signed-in browser
+    session, not an API token): the invitation's spaces go to the caller's own account,
+    each at the higher of the role it gives and the one they have; no user is made. The
+    same rate limit, one-time use, expiry and audit (`joined`) apply. The instance role
+    never changes, so an invitation that makes a server admin can't be joined (409), and
+    a viewer cap a server admin set stays. An invitation that would give nothing new is
+    refused (409) and stays usable. This is how a space's admins add people who already
+    have accounts. `enroll/info` says whether a link can be joined (`joinable`).
 - **Managing users** (server admins, recent authentication): list users with their spaces,
   credentials and last activity; change instance roles; disable, enable or delete a user.
   Nobody can do this to themselves, and the last enabled server admin can't be demoted,
@@ -559,7 +567,9 @@ validates and the UI renders; unsupported keywords are refused at install. Top-l
   listener (`/api/v2/…` there is `/api/v1/plugins/<id>/api/v2/…`), for clients that can't
   take a URL base. It is the API's router with the path rewritten, so the host check,
   authentication, sandboxing and listen rules are the same, and it shares built-in TLS.
-  Management paths (`/-/…`) and dot segments get a 404.
+  Management paths (`/-/…`) and dot segments get a 404. `--plugin-listen <id>@<slug>=<address>`
+  serves that space's instance: every request there is in the space, as under
+  `/s/<slug>/` (a token of another space gets 403). The space must exist at start.
 - The UI's Plugins page (`/plugins`) installs, approves, enables, shows logs and permissions,
   and renders each plugin's settings form.
 - On disk: `<data dir>/plugins/plugins.db` (versions, grants, settings, KV, schedule) and
@@ -1050,8 +1060,12 @@ works as before, and the UI hides the switcher.
   `admin`. Instance settings, bans, plugin management and spaces themselves are server
   admins'.
 - A space's **admins** see its members and invitations, invite people into it (see
-  "Authentication"), and change or remove its existing members; adding an existing user
-  to a space stays with server admins, who can see every account. Routes that name what
+  "Authentication"), and change or remove its existing members. They add someone who
+  already has an account by inviting them: signed in, the person joins with that account.
+  Adding a user directly stays with server admins, who can see every account.
+- **A space keeps an admin**: its last admin can't leave it or step down (409). Server
+  admins don't count as its admins (they administer every space anyway), nor do disabled
+  users; a server admin can still change or remove anyone. Routes that name what
   they act on (`/spaces/…`, `/invitations…`, `/users…`) check the caller's rights there,
   not in the request's own space, so this works from a page in any space.
 - `GET /space` (the request's space, the caller's role and the spaces they may switch to),
@@ -1078,6 +1092,15 @@ drawing from its space's and group's buckets), pause state and transfer counts.
   announces `left=0` from the start. A URL two running entries list is announced by the
   older only; pausing or removing it hands that tracker to the next. Private torrents
   keep DHT and PEX off, as before.
+- **Editing an entry's trackers** (`PUT /torrents/{id}/trackers {tiers}`, the space's
+  users; the details' Trackers tab): tiers are trimmed, empty ones dropped, each URL
+  `http`, `https` or `udp` and listed once. The list is stored per entry
+  (`torrents.trackers`, JSON; NULL means the `.torrent`'s own) and survives restarts and
+  swarm moves. The engine retargets the running entry (`TorrentHandle::set_trackers`):
+  a new tier that keeps a tracker of an old one takes over its state (started, tracker
+  id, schedule, an announce under way), so a tracker that stays never sees `stopped` and
+  `started` again; a started tier whose trackers are all gone is told `stopped`. A
+  magnet still fetching its metadata can't be edited yet.
 - **Internal transfers are never reported.** Data one entry's peers brought in reaches
   the others through the files (below), not the wire, so no other entry's tracker ever
   hears of it as downloaded or uploaded.
@@ -1143,7 +1166,10 @@ update key signed, so no paid code-signing certificate is involved. Plan and dec
   GitHub's latest *published* release (`/releases/latest` never returns drafts or
   prereleases), so nothing ships until a person publishes it.
 - **The daemon** checks once a day (`UpdateSettings.checkDaily`, on by default, kept in
-  `<data dir>/update.json`) and tells admins in the web UI. An admin installs with
+  `<data dir>/update.json`) and tells admins in the web UI. `--no-update-check`
+  (`APITORRENT_NO_UPDATE_CHECK`), for installs a package manager keeps current, starts no
+  updater at all: no check, the update endpoints answer `updates_unavailable` (so the UI
+  shows nothing), and `apitorrentd update` reports but won't install. An admin installs with
   `POST /api/v1/system/update/install` (audited), the UI's button, or `apitorrentd
   update`; `autoInstall` (off by default) installs without asking. The install, in
   order: the manifest's signature against the compiled-in key (before parsing it), its

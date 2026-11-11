@@ -185,7 +185,9 @@ Times US Pacific.
 
 - `requireSignedVersion` for the desktop updater, once the Tauri CLI records versions
   (see Findings).
-- A `--no-update-check` flag or env for package-managed installs (today: the setting).
+- ~~A `--no-update-check` flag or env for package-managed installs~~ Done 2026-11-10:
+  `--no-update-check` / `APITORRENT_NO_UPDATE_CHECK` (`plans/invitations.md`, "Follow-ups
+  round 2").
 - The daemon as a Windows service: restart there would need the service manager's
   restart-on-failure; only console and systemd are handled.
 

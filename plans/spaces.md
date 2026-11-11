@@ -274,13 +274,13 @@ the work started (see Findings).
 
 1. ~~**Users other than the first admin can't be created yet**~~ Done 2026-11-10:
    invitations, recovery links and the Users page (`plans/invitations.md`).
-2. **A space's tracker list can't be edited**: each entry announces to the trackers of
-   the `.torrent` (or magnet) it was added with in that space.
+2. ~~**A space's tracker list can't be edited**~~ Done 2026-11-10: `PUT
+   /torrents/{id}/trackers` and the Trackers tab's editor (`plans/invitations.md`,
+   "Follow-ups round 2").
 3. ~~**The Plugins page is for server admins only in the UI.**~~ Done 2026-11-10: space
    admins get it for their space's per-space plugins (`plans/invitations.md`).
-4. **`--plugin-listen` serves `default`** (or a `--space-host` mapping). A client of
-   another space uses the `/s/<slug>/` URL base. `--plugin-listen <id>@<slug>=<addr>`
-   would be a small addition.
+4. ~~**`--plugin-listen` serves `default`**~~ Done 2026-11-10:
+   `--plugin-listen <id>@<slug>=<addr>` serves that space.
 5. **Another space's copy appears per completed file**, not while downloading (hard links
    made at add time would show it at once on one volume).
 6. **The web UI wasn't looked at in a browser** (typecheck, unit tests and build only; no

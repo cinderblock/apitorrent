@@ -160,7 +160,8 @@ as a qBittorrent download client:
   (for another space, `/s/<slug>/api/v1/plugins/qbittorrent-api`, and a token made in
   that space). A client that can't take a URL base gets a port of its own:
   `--plugin-listen qbittorrent-api=127.0.0.1:8080` serves the API at that port's root
-  (the same rules as `--api` apply to where it may listen).
+  (the same rules as `--api` apply to where it may listen), for `default`;
+  `--plugin-listen qbittorrent-api@tv=127.0.0.1:8081` serves space `tv` there.
 - **Username**: anything. **Password**: an apitorrent API token (Account page, API
   tokens). A `read` token can watch but not change anything. Revoking the token signs
   the client out at once. There is no other password: the token is the credential.
@@ -224,7 +225,9 @@ always did until a server admin adds another (Settings, Spaces…).
   copy of the files placed by hard link (a clone or a copy across disks). Removing it
   from one space, with its files or not, leaves the other's files and seeding alone.
   Each space announces to its own trackers and reports only its own transfers: data one
-  space brought in is never reported to another space's trackers.
+  space brought in is never reported to another space's trackers. A space's users edit
+  its tracker list in the details' Trackers tab (add, remove and reorder tiers); a
+  tracker two spaces list is announced to once.
 - **One network identity**: a single peer port, DHT node and peer id for every space.
 - `--space-host torrents-tv.example.com=tv` puts requests for a host name in a space.
 
@@ -283,6 +286,13 @@ server log. Send it privately.
 
 - **Server admins** invite from Settings, Users…, into any spaces and with any server
   role; a **space's admins** invite into their own space from Settings, Spaces….
+- **Someone who already has an account** opens the link while signed in and picks "Join
+  as …": the invitation's spaces are added to their account (a higher role they already
+  have stays), and no new user is made. That is how a space's admins add existing users.
+  Joining never changes the server role, so an invitation that makes a server admin only
+  creates a new account.
+- A space's **last admin** can't leave it or step down; make someone else its admin
+  first. Server admins don't count as its admins, and can still change anything.
 - The **Users** page (server admins) lists everyone; changes server roles; disables a
   user (signed out everywhere at once, API tokens paused until enabled again) or deletes
   one; and issues a **recovery link** for someone who lost their passkey. Opening it
@@ -396,6 +406,11 @@ installed by a package manager, update it that way instead. After an install fro
 web UI it restarts by itself: under systemd it exits and lets the unit restart it (use
 `Restart=on-failure`), otherwise it starts itself again. Settings → Updates can turn the
 daily check off, or install new releases automatically.
+
+Packages that keep apitorrent up to date themselves run it with `--no-update-check` (or
+`APITORRENT_NO_UPDATE_CHECK=true`): no daily check, no update endpoints and no update
+buttons. `apitorrentd update --check` still says what's new; `apitorrentd update` refuses
+to install.
 
 The desktop app checks too, and offers "Install and restart". In "This computer" mode
 that also updates the engine running inside it.
