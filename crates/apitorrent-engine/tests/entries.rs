@@ -321,3 +321,70 @@ async fn a_shared_tracker_is_announced_once() {
     assert_eq!(events, ["started", "stopped", "started"], "{events:?}");
     handle.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_entrys_trackers_change_while_it_runs() {
+    let data = data();
+    let t = torrent(&data);
+    let (one, two) = (Tracker::default(), Tracker::default());
+    let (url_one, url_two) = (one.start().await, two.start().await);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("file.bin"), &data).unwrap();
+    let session = Session::start(config()).await.unwrap();
+    let port = session.listen_addr().port();
+    let handle = session
+        .add_torrent(AddTorrent {
+            entry: 1,
+            trackers: Some(vec![vec![url_one.clone()]]),
+            more_entries: vec![EntryParams {
+                trackers: Some(vec![vec![url_two.clone()]]),
+                ..EntryParams::new(2)
+            }],
+            ..AddTorrent::new(t.clone(), dir.path().to_path_buf())
+        })
+        .unwrap();
+    handle.wait_finished().await;
+    eventually("both first announces", || {
+        !one.from(port).is_empty() && !two.from(port).is_empty()
+    })
+    .await;
+
+    // Entry 2 adds tracker one in front of its own: entry 1 already announces there, so
+    // nothing new goes to it; tracker two isn't told anything either.
+    handle
+        .set_trackers(2, vec![vec![url_one.clone()], vec![url_two.clone()]])
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let events =
+        |t: &Tracker| -> Vec<String> { t.from(port).into_iter().map(|a| a.event).collect() };
+    assert_eq!(events(&one), ["started"]);
+    assert_eq!(events(&two), ["started"]);
+    let shown: Vec<_> = handle
+        .trackers_of(Some(2))
+        .await
+        .into_iter()
+        .map(|s| (s.tier, s.url))
+        .collect();
+    assert_eq!(shown, [(0, url_one.clone()), (1, url_two.clone())]);
+
+    // Entry 2 drops tracker two: it is told `stopped`.
+    handle.set_trackers(2, vec![vec![url_one.clone()]]).await;
+    eventually("tracker two hears stopped", || {
+        events(&two) == ["started", "stopped"]
+    })
+    .await;
+    // With entry 1 paused, tracker one is entry 2's now, and it starts there.
+    handle.pause_entry(1).await;
+    eventually("entry 2 takes tracker one over", || {
+        events(&one) == ["started", "stopped", "started"]
+    })
+    .await;
+    // An empty list: entry 2 announces nowhere, and tells tracker one so.
+    handle.set_trackers(2, Vec::new()).await;
+    eventually("tracker one hears stopped", || {
+        events(&one) == ["started", "stopped", "started", "stopped"]
+    })
+    .await;
+    assert!(handle.trackers_of(Some(2)).await.is_empty());
+    handle.shutdown().await;
+}

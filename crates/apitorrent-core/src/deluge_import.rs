@@ -214,6 +214,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
                     naming: 0,
                     linked: None,
                     file_paths: None,
+                    trackers: None,
                 };
                 position += 1;
                 out.magnets.push(PlannedMagnet {
@@ -293,6 +294,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             file_paths: file_paths
                 .as_ref()
                 .map(|p| serde_json::to_string(p).expect("paths serialize")),
+            trackers: None,
         };
         position += 1;
         // Deluge copies its global "stop at ratio" into every torrent, so only a torrent

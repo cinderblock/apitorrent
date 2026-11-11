@@ -105,6 +105,8 @@ export const api = {
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),
   setLimits: (id: string, limits: TorrentLimits) => request<void>("PUT", `/torrents/${enc(id)}/limits`, limits),
   setLabel: (id: string, label: string | null) => request<void>("PUT", `/torrents/${enc(id)}/label`, { label }),
+  /** This space's announce tiers for the torrent (each URL once). */
+  setTrackers: (id: string, tiers: string[][]) => request<void>("PUT", `/torrents/${enc(id)}/trackers`, { tiers }),
   /** The server's HTTPS: certificate, pairing code, ACME progress. */
   tls: () => request<TlsStatus>("GET", "/tls"),
   /** A torrent's own seed limits; null follows its group's or the instance's. */

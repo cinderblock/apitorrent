@@ -6,9 +6,11 @@ import type { TorrentLimits } from "../api/generated/TorrentLimits";
 import type { TorrentFile } from "../api/generated/TorrentFile";
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
+import { describeError } from "../auth/flow";
 import { PathActions } from "../desktop/PathActions";
 import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, STATE_LABEL, toKiB } from "../format";
 import { describeSeedLimits, formatSeedingTime, SeedLimitsFields } from "./SeedLimitsFields";
+import { badUrls, duplicateUrls, fromDrafts, moveTier, newTier, sameTiers, toDrafts, type TierDraft } from "./trackerTiers";
 
 type Tab = "general" | "files" | "peers" | "trackers";
 
@@ -273,11 +275,129 @@ function PeersTab({ detail }: { detail: TorrentDetail }) {
   );
 }
 
-function TrackersTab({ detail }: { detail: TorrentDetail }) {
+/** This space's tracker list for the torrent: tiers of announce URLs, edited as a whole. */
+function TrackersEditor({ id, tiers, onDone }: { id: string; tiers: string[][]; onDone: (saved: boolean) => void }) {
+  const [drafts, setDrafts] = useState<TierDraft[]>(() => (tiers.length > 0 ? toDrafts(tiers) : [newTier()]));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const result = fromDrafts(drafts);
+  const twice = duplicateUrls(result);
+  const bad = badUrls(result);
+  const problem =
+    twice.length > 0 ? `Listed twice: ${twice.join(", ")}` : bad.length > 0 ? `Not an http, https or udp tracker URL: ${bad.join(", ")}` : null;
+  const set = (key: number, text: string) => setDrafts((ds) => ds.map((d) => (d.key === key ? { ...d, text } : d)));
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setTrackers(id, result);
+      onDone(true);
+    } catch (e) {
+      setError(describeError(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="tracker-editor"
+      aria-label="Edit trackers"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <p className="muted">
+        One announce URL per line. Each tier is tried in turn, and within a tier one tracker at a time until one answers. Only this space&apos;s copy of the
+        torrent changes; a tracker another space&apos;s copy also lists is announced to once, by the copy added first.
+      </p>
+      <ol className="tracker-tiers">
+        {drafts.map((d, i) => (
+          <li key={d.key} className="tracker-tier">
+            <div className="tracker-tier-head">
+              <strong>Tier {i + 1}</strong>
+              <span className="tracker-tier-actions">
+                <button type="button" aria-label={`Move tier ${i + 1} up`} disabled={i === 0} onClick={() => setDrafts((ds) => moveTier(ds, i, -1))}>
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Move tier ${i + 1} down`}
+                  disabled={i === drafts.length - 1}
+                  onClick={() => setDrafts((ds) => moveTier(ds, i, 1))}
+                >
+                  ↓
+                </button>
+                <button type="button" aria-label={`Remove tier ${i + 1}`} onClick={() => setDrafts((ds) => ds.filter((x) => x.key !== d.key))}>
+                  Remove
+                </button>
+              </span>
+            </div>
+            <textarea
+              aria-label={`Tier ${i + 1} trackers`}
+              rows={Math.max(2, d.text.split("\n").length)}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              placeholder="udp://tracker.example:6969/announce"
+              value={d.text}
+              onChange={(e) => set(d.key, e.target.value)}
+            />
+          </li>
+        ))}
+      </ol>
+      <div className="tracker-editor-buttons">
+        <button type="button" onClick={() => setDrafts((ds) => [...ds, newTier()])}>
+          Add tier
+        </button>
+        <span className="spacer" />
+        <button type="button" onClick={() => onDone(false)} disabled={busy}>
+          Cancel
+        </button>
+        <button type="submit" className="primary" disabled={busy || problem !== null || sameTiers(result, tiers)}>
+          Save
+        </button>
+      </div>
+      {result.length === 0 && <p className="muted">With no trackers, peers come only from the DHT, peer exchange and the local network.</p>}
+      {problem && <p className="error-text">{problem}</p>}
+      {error && <p className="error-text">{error}</p>}
+    </form>
+  );
+}
+
+function TrackersTab({ detail, id, mayEdit, refetch }: { detail: TorrentDetail; id: string; mayEdit: boolean; refetch: () => void }) {
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <TrackersEditor
+        id={id}
+        tiers={detail.trackers}
+        onDone={(saved) => {
+          setEditing(false);
+          if (saved) refetch();
+        }}
+      />
+    );
+  }
+  const edit = mayEdit && (
+    <p>
+      <button type="button" onClick={() => setEditing(true)}>
+        Edit trackers
+      </button>
+    </p>
+  );
   if (detail.trackerStatus.length === 0) {
-    return <p className="muted">No trackers. Peers come from other sources.</p>;
+    return (
+      <>
+        <p className="muted">No trackers. Peers come from other sources.</p>
+        {edit}
+      </>
+    );
   }
   return (
+    <>
+    {edit}
     <table className="files">
       <thead>
         <tr>
@@ -309,6 +429,7 @@ function TrackersTab({ detail }: { detail: TorrentDetail }) {
         ))}
       </tbody>
     </table>
+    </>
   );
 }
 
@@ -469,7 +590,9 @@ export function DetailPane({ summary, onClose, readOnly = false }: { summary: To
         )}
         {tab === "files" && detail && summary.state !== "metadata" && <FilesTab summary={summary} detail={detail} refetch={refetch} readOnly={readOnly} />}
         {tab === "peers" && detail && <PeersTab detail={detail} />}
-        {tab === "trackers" && detail && <TrackersTab detail={detail} />}
+        {tab === "trackers" && detail && (
+          <TrackersTab key={summary.id} detail={detail} id={summary.id} mayEdit={!readOnly && summary.state !== "metadata"} refetch={refetch} />
+        )}
       </div>
     </section>
   );

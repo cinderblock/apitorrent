@@ -172,6 +172,10 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE superseded_v10 RENAME TO superseded;
     CREATE INDEX torrents_by_id ON torrents(id);
     ",
+    // 11: each entry's own tracker list, once edited (JSON tiers; NULL = the .torrent's).
+    "
+    ALTER TABLE torrents ADD COLUMN trackers TEXT;
+    ",
 ];
 
 /// A torrent as stored.
@@ -209,6 +213,8 @@ pub struct TorrentRow {
     pub linked: Option<Vec<u8>>,
     /// Per-file paths overriding the naming policy, as JSON.
     pub file_paths: Option<String>,
+    /// The entry's announce tiers as JSON, once edited; `None` uses the `.torrent`'s own.
+    pub trackers: Option<String>,
 }
 
 /// Resume state saved periodically for one torrent.
@@ -313,9 +319,10 @@ impl Database {
             "INSERT INTO torrents (id, info_hash_v1, info_hash_v2, name, torrent, save_path,
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
                  placements, held_path, unwanted_policy, queue_position, download_rate,
-                 upload_rate, max_connections, magnet, naming, linked, file_paths, space_id)
+                 upload_rate, max_connections, magnet, naming, linked, file_paths, space_id,
+                 trackers)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -342,6 +349,7 @@ impl Database {
                 row.linked,
                 row.file_paths,
                 row.space,
+                row.trackers,
             ],
         )?;
         Ok(())
@@ -378,7 +386,8 @@ impl Database {
             "SELECT id, info_hash_v1, info_hash_v2, name, torrent, save_path, label, added_at,
                     paused, have, file_priorities, downloaded_total, uploaded_total,
                     placements, held_path, unwanted_policy, queue_position, download_rate,
-                    upload_rate, max_connections, magnet, naming, linked, file_paths, space_id
+                    upload_rate, max_connections, magnet, naming, linked, file_paths, space_id,
+                    trackers
              FROM torrents ORDER BY queue_position, added_at, space_id",
         )?;
         stmt.query_map([], |r| {
@@ -408,6 +417,7 @@ impl Database {
                 naming: r.get(21)?,
                 linked: r.get(22)?,
                 file_paths: r.get(23)?,
+                trackers: r.get(25)?,
             })
         })?
         .collect()
@@ -526,6 +536,15 @@ impl Database {
                 file_priorities,
                 key.space
             ],
+        )?;
+        Ok(())
+    }
+
+    /// An entry's own announce tiers (JSON), or `None` for the `.torrent`'s.
+    pub fn set_trackers(&self, key: &Key, trackers: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE torrents SET trackers = ?3 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, trackers],
         )?;
         Ok(())
     }
@@ -811,7 +830,22 @@ mod tests {
             naming: 0,
             linked: None,
             file_paths: None,
+            trackers: None,
         }
+    }
+
+    #[test]
+    fn an_entrys_own_trackers_are_kept() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_torrent(&row("a")).unwrap();
+        let a = Key::new(1, "a");
+        db.set_trackers(&a, Some(r#"[["udp://t:1"]]"#)).unwrap();
+        assert_eq!(
+            db.torrents().unwrap()[0].trackers.as_deref(),
+            Some(r#"[["udp://t:1"]]"#)
+        );
+        db.set_trackers(&a, None).unwrap();
+        assert_eq!(db.torrents().unwrap()[0].trackers, None);
     }
 
     #[test]

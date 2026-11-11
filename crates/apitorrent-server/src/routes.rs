@@ -10,8 +10,8 @@ use apitorrent_core::CoreError;
 use apitorrent_types::{
     API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, Ban, BanRequest,
     ImportDelugeRequest, ImportReport, QueueMoveRequest, ReleaseHeldRequest, ServerInfo,
-    SessionStats, SetFilePrioritiesRequest, SetLabelRequest, SetUnwantedPolicyRequest, Settings,
-    TorrentDetail, TorrentLimits,
+    SessionStats, SetFilePrioritiesRequest, SetLabelRequest, SetTrackersRequest,
+    SetUnwantedPolicyRequest, Settings, TorrentDetail, TorrentLimits,
 };
 
 use crate::AppState;
@@ -227,6 +227,17 @@ pub(crate) async fn set_label(
     Json(req): Json<SetLabelRequest>,
 ) -> ApiResult<StatusCode> {
     s.core.set_label(&here.key(id), req.label).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// An entry's own tracker list (the space's users; viewers are refused before this).
+pub(crate) async fn set_trackers(
+    State(s): State<AppState>,
+    here: Here,
+    Path(id): Path<String>,
+    Json(req): Json<SetTrackersRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_trackers(&here.key(id), req.tiers).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

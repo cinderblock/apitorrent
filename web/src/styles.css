@@ -711,6 +711,70 @@ code {
   width: 9rem;
 }
 
+/* The Trackers tab's editor */
+
+.tracker-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 48rem;
+}
+
+.tracker-tiers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tracker-tier {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tracker-tier-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tracker-tier-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.tracker-tier textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.tracker-editor-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tracker-editor-buttons .spacer {
+  flex: 1;
+}
+
 /* Dialogs */
 
 .dialog {

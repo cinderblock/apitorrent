@@ -544,6 +544,48 @@ impl Core {
         Ok(())
     }
 
+    /// Replace an entry's announce tiers. Each space's entry has its own list; a URL two
+    /// running entries list is still announced once, by the older. Trackers that stay carry
+    /// on where they were; dropped ones are told `stopped`. Tiers are trimmed and empty ones
+    /// dropped. A magnet link still fetching its metadata can't be changed yet.
+    pub async fn set_trackers(&self, key: &Key, tiers: Vec<Vec<String>>) -> Result<(), CoreError> {
+        let tiers = clean_tiers(tiers)?;
+        if self
+            .inner
+            .pending
+            .read()
+            .expect("pending lock poisoned")
+            .contains_key(key)
+        {
+            return Err(CoreError::InvalidRequest(
+                "its trackers can be changed once its metadata has arrived".into(),
+            ));
+        }
+        let (handle, own) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let e = torrents.get(key).ok_or(CoreError::NotFound)?;
+            (e.handle.clone(), e.torrent.trackers.clone())
+        };
+        // The .torrent's own list again is stored as no list of its own.
+        let stored =
+            (tiers != own).then(|| serde_json::to_string(&tiers).expect("tiers serialize"));
+        let k = key.clone();
+        self.db(move |db| db.set_trackers(&k, stored.as_deref()))
+            .await?;
+        if let Some(e) = self
+            .inner
+            .torrents
+            .write()
+            .expect("torrents lock poisoned")
+            .get_mut(key)
+        {
+            e.trackers.clone_from(&tiers);
+        }
+        handle.set_trackers(key.engine(), tiers).await;
+        self.refresh();
+        Ok(())
+    }
+
     /// Change a torrent's label, which also picks its group.
     pub async fn set_label(&self, key: &Key, label: Option<String>) -> Result<(), CoreError> {
         let label = label.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
@@ -1398,11 +1440,16 @@ impl Core {
                 || held_path_for(&self.inner.config.data_dir, &save_path, &row.id),
                 PathBuf::from,
             );
+            let trackers = row
+                .trackers
+                .as_deref()
+                .and_then(|t| serde_json::from_str::<Vec<Vec<String>>>(t).ok())
+                .unwrap_or_else(|| torrent.trackers.clone());
             let spawned = self
                 .spawn_entry(Spawn {
                     key: key.clone(),
                     peers: Vec::new(),
-                    trackers: torrent.trackers.clone(),
+                    trackers,
                     torrent,
                     save_path,
                     held_path,
@@ -1743,6 +1790,7 @@ impl Core {
             naming,
             linked: None,
             file_paths: None,
+            trackers: None,
         };
         let (added_at, queue_position) = (row.added_at, row.queue_position);
         self.db(move |db| db.insert_torrent(&row)).await?;
@@ -2015,6 +2063,7 @@ impl Core {
             naming: self.choose_naming(&save_path).await,
             linked: None,
             file_paths: None,
+            trackers: None,
         };
         let queue_position = row.queue_position;
         let naming = row.naming;
@@ -3282,6 +3331,80 @@ fn held_path_for(data_dir: &std::path::Path, save_path: &std::path::Path, id: &s
         Err(e) => {
             tracing::warn!(error = %e, "could not probe the save path's volume");
             fallback
+        }
+    }
+}
+
+/// Most trackers one entry may list.
+const MAX_TRACKERS: usize = 200;
+
+/// Announce tiers as given by a user: trimmed, empty tiers dropped, each URL `http`,
+/// `https` or `udp` and listed once.
+fn clean_tiers(tiers: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, CoreError> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for tier in tiers {
+        let mut urls = Vec::new();
+        for raw in tier {
+            let url = raw.trim().to_owned();
+            if url.is_empty() {
+                continue;
+            }
+            let ok = url.len() <= 2048
+                && url::Url::parse(&url).is_ok_and(|u| {
+                    matches!(u.scheme(), "http" | "https" | "udp") && u.host().is_some()
+                });
+            if !ok {
+                return Err(CoreError::InvalidRequest(format!(
+                    "{url:?} is not an http, https or udp tracker URL"
+                )));
+            }
+            if !seen.insert(url.clone()) {
+                return Err(CoreError::InvalidRequest(format!("{url} is listed twice")));
+            }
+            urls.push(url);
+        }
+        if !urls.is_empty() {
+            out.push(urls);
+        }
+    }
+    if seen.len() > MAX_TRACKERS {
+        return Err(CoreError::InvalidRequest(format!(
+            "at most {MAX_TRACKERS} trackers"
+        )));
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tracker_list_tests {
+    use super::*;
+
+    fn tiers(v: &[&[&str]]) -> Vec<Vec<String>> {
+        v.iter()
+            .map(|t| t.iter().map(|&u| u.to_owned()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn tracker_lists_are_cleaned() {
+        assert_eq!(
+            clean_tiers(tiers(&[
+                &[" http://a/announce ", ""],
+                &[],
+                &["udp://b:80", "https://c/x"]
+            ]))
+            .unwrap(),
+            tiers(&[&["http://a/announce"], &["udp://b:80", "https://c/x"]])
+        );
+        assert!(clean_tiers(Vec::new()).unwrap().is_empty());
+        for bad in [
+            tiers(&[&["http://a"], &["http://a"]]),
+            tiers(&[&["ftp://a"]]),
+            tiers(&[&["not a url"]]),
+            tiers(&[&["http://"]]),
+        ] {
+            assert!(clean_tiers(bad.clone()).is_err(), "{bad:?}");
         }
     }
 }

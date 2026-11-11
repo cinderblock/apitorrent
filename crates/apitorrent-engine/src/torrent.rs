@@ -293,6 +293,7 @@ pub(crate) enum Command {
     SetLimits(EntryKey, TorrentLimits),
     SetGroup(EntryKey, Option<String>),
     SetSpace(EntryKey, Option<String>),
+    SetTrackers(EntryKey, Vec<Vec<String>>),
     AddEntry(EntryParams),
     RemoveEntry(EntryKey),
     PauseEntry(EntryKey),
@@ -473,6 +474,13 @@ impl TorrentHandle {
     /// Put an entry in a space's limits (or none). An unknown name means none.
     pub async fn set_space(&self, entry: EntryKey, space: Option<String>) {
         self.command(Command::SetSpace(entry, space)).await;
+    }
+
+    /// Replace one entry's announce tiers. Trackers it keeps carry on where they were (no
+    /// `stopped` and `started` again); trackers it drops are told `stopped`. A URL an older
+    /// running entry lists is still announced by that entry only.
+    pub async fn set_trackers(&self, entry: EntryKey, tiers: Vec<Vec<String>>) {
+        self.command(Command::SetTrackers(entry, tiers)).await;
     }
 
     /// Choose what happens to files deselected from now on.
@@ -1492,6 +1500,17 @@ impl TorrentActor {
                     if let Some(e) = self.entry(key) {
                         e.throttle.set_space(space);
                     }
+                }
+                Command::SetTrackers(key, tiers) => {
+                    let now = Instant::now();
+                    let stops = self.entry_mut(key).map(|e| {
+                        e.urls = tiers.iter().flatten().cloned().collect();
+                        e.announcer.retarget(&tiers, now)
+                    });
+                    for job in stops.unwrap_or_default() {
+                        self.spawn_announce(key, job, false);
+                    }
+                    self.announce();
                 }
                 Command::ReleaseHeld(files) => {
                     let placements = self.storage.placements();

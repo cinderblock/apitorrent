@@ -466,6 +466,16 @@ pub struct SetLabelRequest {
     pub label: Option<String>,
 }
 
+/// `PUT /torrents/{id}/trackers`: the entry's announce tiers, first tier first. Each URL
+/// (`http`, `https` or `udp`) once; empty tiers are dropped, and an empty list announces
+/// nowhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetTrackersRequest {
+    pub tiers: Vec<Vec<String>>,
+}
+
 /// Where to move a torrent in the queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

@@ -10,6 +10,9 @@
 //!   `completed` straight away; stopping sends `stopped` to the tiers that had started.
 //! - A hybrid torrent is announced under both its v1 hash and its truncated v2 hash, which
 //!   are separate swarms on most trackers. Each hash is a separate lane.
+//! - The tiers can change while running ([`Announcer::retarget`]). A tier that keeps one of
+//!   its trackers keeps its state, so a tracker that stays never sees `stopped` and
+//!   `started` again; a started tier whose trackers are all gone gets `stopped`.
 
 use std::time::{Duration, Instant};
 
@@ -64,6 +67,83 @@ struct Tier {
     status: Vec<TrackerStatus>,
 }
 
+impl Tier {
+    fn new(urls: &[String], index: usize, now: Instant, rng: &mut impl rand::Rng) -> Self {
+        let mut urls = urls.to_vec();
+        urls.shuffle(rng);
+        let status = urls.iter().map(|u| fresh_status(u, index)).collect();
+        Self {
+            urls,
+            current: 0,
+            misses: 0,
+            failures: 0,
+            next: now,
+            in_flight: false,
+            started: false,
+            completed_pending: false,
+            tracker_id: None,
+            status,
+        }
+    }
+
+    /// Take over an old tier's state, for the trackers this one keeps of it.
+    fn adopt(&mut self, prev: Tier) {
+        let index = self.status.first().map_or(0, |s| s.tier);
+        // The trackers both list, in the old order (the working one first), then new ones.
+        let mut urls: Vec<String> = prev
+            .urls
+            .iter()
+            .filter(|u| self.urls.contains(u))
+            .cloned()
+            .collect();
+        for u in &self.urls {
+            if !urls.contains(u) {
+                urls.push(u.clone());
+            }
+        }
+        // An announce still under way to a tracker that stays is this tier's to finish.
+        let flying = prev
+            .in_flight
+            .then(|| prev.urls[prev.current].clone())
+            .filter(|u| urls.contains(u));
+        self.current = flying
+            .as_ref()
+            .and_then(|f| urls.iter().position(|u| u == f))
+            .unwrap_or(0);
+        self.in_flight = flying.is_some();
+        self.status = urls
+            .iter()
+            .map(|u| {
+                prev.status.iter().find(|s| &s.url == u).map_or_else(
+                    || fresh_status(u, index),
+                    |s| TrackerStatus {
+                        tier: index,
+                        ..s.clone()
+                    },
+                )
+            })
+            .collect();
+        self.urls = urls;
+        self.failures = prev.failures;
+        self.next = prev.next;
+        self.started = prev.started;
+        self.completed_pending = prev.completed_pending;
+        self.tracker_id = prev.tracker_id;
+    }
+}
+
+fn fresh_status(url: &str, tier: usize) -> TrackerStatus {
+    TrackerStatus {
+        url: url.to_owned(),
+        tier,
+        peers: None,
+        seeders: None,
+        leechers: None,
+        error: None,
+        warning: None,
+    }
+}
+
 #[derive(Debug)]
 struct Lane {
     info_hash: Sha1Hash,
@@ -86,34 +166,7 @@ impl Announcer {
                     .iter()
                     .enumerate()
                     .filter(|(_, urls)| !urls.is_empty())
-                    .map(|(i, urls)| {
-                        let mut urls = urls.clone();
-                        urls.shuffle(&mut rng);
-                        let status = urls
-                            .iter()
-                            .map(|u| TrackerStatus {
-                                url: u.clone(),
-                                tier: i,
-                                peers: None,
-                                seeders: None,
-                                leechers: None,
-                                error: None,
-                                warning: None,
-                            })
-                            .collect();
-                        Tier {
-                            urls,
-                            current: 0,
-                            misses: 0,
-                            failures: 0,
-                            next: now,
-                            in_flight: false,
-                            started: false,
-                            completed_pending: false,
-                            tracker_id: None,
-                            status,
-                        }
-                    })
+                    .map(|(i, urls)| Tier::new(urls, i, now, &mut rng))
                     .collect(),
             })
             .collect();
@@ -259,8 +312,61 @@ impl Announcer {
             .unwrap_or_default()
     }
 
+    /// Change the tiers. A new tier that lists a tracker of an old one takes over that
+    /// tier's state (started, tracker id, schedule, an announce under way, the statuses of
+    /// the trackers it keeps). Returns `stopped` announces for the old tiers that had
+    /// started and whose trackers are all gone; nothing waits for their results.
+    pub(crate) fn retarget(&mut self, trackers: &[Vec<String>], now: Instant) -> Vec<Job> {
+        let mut rng = rand::rng();
+        let mut stops = Vec::new();
+        for (lane_index, lane) in self.lanes.iter_mut().enumerate() {
+            let mut old: Vec<Option<Tier>> = std::mem::take(&mut lane.tiers)
+                .into_iter()
+                .map(Some)
+                .collect();
+            for (i, urls) in trackers.iter().enumerate().filter(|(_, u)| !u.is_empty()) {
+                let mut tier = Tier::new(urls, i, now, &mut rng);
+                let prev = old
+                    .iter_mut()
+                    .find(|t| {
+                        t.as_ref()
+                            .is_some_and(|t| t.urls.iter().any(|u| urls.contains(u)))
+                    })
+                    .and_then(Option::take);
+                if let Some(prev) = prev {
+                    tier.adopt(prev);
+                }
+                lane.tiers.push(tier);
+            }
+            for (tier_index, t) in old.into_iter().enumerate() {
+                let Some(t) = t.filter(|t| t.started) else {
+                    continue;
+                };
+                stops.push(Job {
+                    lane: lane_index,
+                    tier: tier_index,
+                    url: t.urls[t.current].clone(),
+                    info_hash: lane.info_hash,
+                    event: AnnounceEvent::Stopped,
+                    tracker_id: t.tracker_id,
+                });
+            }
+        }
+        stops
+    }
+
+    /// The tier waiting for this job's answer. Tiers move when they are retargeted, and a
+    /// stop forgets announces under way, so it is found by what it waits for, not by its
+    /// index; an answer nothing waits for is ignored.
     fn tier(&mut self, job: &Job) -> Option<&mut Tier> {
-        self.lanes.get_mut(job.lane)?.tiers.get_mut(job.tier)
+        let lane = self.lanes.get_mut(job.lane)?;
+        let waiting = |t: &Tier| t.in_flight && t.urls[t.current] == job.url;
+        let at = if lane.tiers.get(job.tier).is_some_and(waiting) {
+            job.tier
+        } else {
+            lane.tiers.iter().position(waiting)?
+        };
+        lane.tiers.get_mut(at)
     }
 }
 
@@ -349,6 +455,76 @@ mod tests {
         a.on_success(&second, &response(60), t0);
         let next = a.due(t0 + MIN_INTERVAL).remove(0);
         assert_eq!(next.url, second.url);
+    }
+
+    fn urls(v: &[&str]) -> Vec<String> {
+        v.iter().map(|&u| u.to_owned()).collect()
+    }
+
+    #[test]
+    fn retargeting_keeps_trackers_that_stay() {
+        let t0 = Instant::now();
+        let mut a = Announcer::new(
+            &[urls(&["http://a"]), urls(&["http://b"])],
+            &[Sha1Hash([1; 20])],
+            t0,
+        );
+        let jobs = a.due(t0);
+        for j in &jobs {
+            a.on_success(j, &response(1800), t0);
+        }
+        // Drop b, keep a (now the second tier), add c in front.
+        let stops = a.retarget(&[urls(&["udp://c"]), urls(&["http://a"])], t0);
+        assert_eq!(stops.len(), 1);
+        assert_eq!(stops[0].url, "http://b");
+        assert_eq!(stops[0].event, AnnounceEvent::Stopped);
+        // c starts now; a waits for its interval, and isn't `started` again.
+        let due = a.due(t0);
+        assert_eq!(due.len(), 1);
+        assert_eq!(
+            (due[0].url.as_str(), due[0].event),
+            ("udp://c", AnnounceEvent::Started)
+        );
+        let later = a.due(t0 + Duration::from_secs(1800));
+        assert_eq!(later.len(), 1);
+        assert_eq!(
+            (later[0].url.as_str(), later[0].event),
+            ("http://a", AnnounceEvent::None)
+        );
+        let status = a.status();
+        assert_eq!(status.len(), 2);
+        let kept = status.iter().find(|s| s.url == "http://a").unwrap();
+        assert_eq!((kept.tier, kept.seeders), (1, Some(1)), "its status stays");
+    }
+
+    #[test]
+    fn an_answer_under_way_survives_retargeting() {
+        let t0 = Instant::now();
+        let mut a = Announcer::new(&[urls(&["http://a"])], &[Sha1Hash([1; 20])], t0);
+        let job = a.due(t0).remove(0);
+        // a moves to the second tier while its announce is under way.
+        assert!(
+            a.retarget(&[urls(&["http://z"]), urls(&["http://a"])], t0)
+                .is_empty()
+        );
+        let due = a.due(t0);
+        assert_eq!(due.len(), 1, "only z: a is still in flight");
+        a.on_success(&job, &response(1800), t0);
+        assert_eq!(
+            a.status()
+                .iter()
+                .find(|s| s.url == "http://a")
+                .unwrap()
+                .peers,
+            Some(0)
+        );
+        // An answer from a tracker that is gone is ignored.
+        let gone = Job {
+            url: "http://gone".into(),
+            ..job
+        };
+        a.on_failure(&gone, "late", t0);
+        assert!(a.status().iter().all(|s| s.error.is_none()));
     }
 
     #[test]
