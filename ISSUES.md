@@ -29,3 +29,18 @@ can't verify a path mapping for a torrent saved there and "Show in folder" stays
 unavailable for it. Why it matters: with spaces that keep their downloads elsewhere, the
 thin client can't open their files. A fix makes every space storage root a root (id and
 marker when the space settings change, listed per the request's space).
+
+## Engine loopback tests time out under heavy load
+
+Seen 2026-11-10 about 5:40 PM PST (01:40Z) while stress-testing the link tests: six
+copies of `cargo test -p apitorrent-engine --test loopback` at once, at idle priority, on a
+machine already at 100% CPU. In 18 suite runs, 6 failed: `hybrid_transfer` five times
+("seeder check timed out", `tests/loopback.rs:92`, a 30 s limit on hashing the seed),
+`v2_magnet_chunked_layers` once ("v2 seeder check timed out", line 1081, still
+`Checking` with 0 of 640 pieces) and `disk_error_stops_the_torrent` once ("torrent never
+reported the disk error", line 302).
+
+Why it matters: the load was extreme, but CI runners are slow too, and wall-clock limits on
+CPU-bound work (debug-build hashing) are the likely next flakes. To start: reproduce by
+running several suites at once at idle priority, then decide whether those limits should
+scale or wait on progress instead of time.
