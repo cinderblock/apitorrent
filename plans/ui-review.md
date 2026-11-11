@@ -84,6 +84,9 @@ Fixed:
    values as text, Settings read-only with a note for non-server-admins, Import only for
    space admins. `5d01157`.
 7. **Invitation form** role selects 930 px wide; checkbox rows 43 px apart. `d2b85e8`.
+8. **Regression from fix 1, caught in the after set**: the toolbar's no-wrap rule reached the
+   update dialog (rendered inside the toolbar), so it scrolled sideways. `af2276a`. The
+   probe now also reports `dialogOverflow`.
 
 Looked at and fine: sign-in, setup, enrollment (all sizes and themes), Rules (empty and new
 rule), Import, Remove (turns red with "delete files"), update dialog, space switcher, Spaces
@@ -122,7 +125,7 @@ Not changed (judgement calls, for the user):
 
 - [x] Daemon running with UI, test data seeded
 - [x] Before set (198 + 6 setup), reviewed
-- [x] Fixes: `1b5047c`, `df5b617`, `2ab4b89`, `de3d13a`, `5d01157`, `d2b85e8`
+- [x] Fixes: `1b5047c`, `df5b617`, `2ab4b89`, `de3d13a`, `5d01157`, `d2b85e8`, `af2276a`
 - [ ] After set reviewed
 - [ ] Final checks, daemon stopped
 

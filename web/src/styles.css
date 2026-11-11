@@ -162,7 +162,6 @@ code {
 
 /* Toolbar labels stay on one line. When the row runs short the search box gives up its
    width first (its basis is its smallest size, and it grows to 16rem when there's room);
-   it fits one row at 1280 px for a space admin with several spaces;
    only then does .toolbar-end move to a second row. */
 .toolbar > :not(dialog),
 .toolbar-end > :not(dialog) {
@@ -176,21 +175,25 @@ code {
   white-space: normal;
 }
 
-.toolbar > .search {
+/* Its basis is its smallest size (the search box at 7rem), so the row breaks only when the
+   group can't fit even then; spare width then goes to the search box, up to 16rem. */
+.toolbar > .toolbar-end {
+  display: flex;
+  flex: 1 1 0;
+  min-width: min-content;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-end > .search {
   flex: 1 1 7rem;
+  width: 7rem;
   min-width: 7rem;
   max-width: 16rem;
 }
 
-.toolbar-end {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-}
-
 .search {
-  margin-left: auto;
   padding: 4px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -1217,11 +1220,11 @@ button.link.danger-text {
   }
 
   /* Search on a row of its own, then rates and status; the account button stays up top. */
-  .toolbar-end {
+  .toolbar > .toolbar-end {
     display: contents;
   }
 
-  .toolbar > .search {
+  .toolbar .search {
     order: 10;
     flex: 1 1 100%;
     max-width: none;

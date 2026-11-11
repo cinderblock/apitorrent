@@ -228,17 +228,18 @@ export function App({ status: auth }: { status: AuthStatus }) {
         )}
         <ThemePicker />
         <UpdateButton isAdmin={serverAdmin} />
-        <input
-          type="search"
-          className="search"
-          placeholder="Search"
-          aria-label="Search torrents"
-          value={view.search}
-          onChange={(e) => setView({ ...view, search: e.target.value })}
-        />
-        {/* Rates, status and account stay together: when the row is too narrow even with
-            the search box at its smallest, they move to a second row as one group. */}
+        {/* Search, rates, status and account: the group takes the row's spare width, right
+            aligned. The search box gives up its width first; when the row is too narrow even
+            with it at its smallest, the group moves to a second row as one. */}
         <div className="toolbar-end">
+          <input
+            type="search"
+            className="search"
+            placeholder="Search"
+            aria-label="Search torrents"
+            value={view.search}
+            onChange={(e) => setView({ ...view, search: e.target.value })}
+          />
           <div className="rates" aria-label="Total transfer rates">
             {rates}
           </div>
