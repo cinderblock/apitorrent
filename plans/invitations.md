@@ -159,15 +159,110 @@ can see the user list).
 
 ## Not done (follow-ups)
 
-1. **Joining with an existing account.** An invitation always creates a new user. A
-   space admin can't add someone who already has an account; a server admin can (from
-   the members list). Redeeming a link while signed in could add its spaces to that
-   account instead.
+1. ~~**Joining with an existing account.**~~ Done 2026-11-10 ("Follow-ups round 2").
 2. **Passkey enrollment wasn't clicked through in a browser**: the passkey ceremony is
    covered by the server tests' software authenticator, and the page was rendered
    headless; the password path was driven over the API.
-3. **A space admin can remove themselves** from their space (as any member); nothing
-   stops the last space admin from leaving, since server admins can always restore it.
+3. ~~**A space admin can remove themselves**~~ Done 2026-11-10: the last admin of a space
+   can't leave or step down ("Follow-ups round 2").
+
+## Follow-ups round 2 (worktree `t3/9c1d89aa`, 2026-11-10)
+
+Worktree `C:\Users\camer\.t3\worktrees\apitorrent\t3-9c1d89aa`, branch `t3/9c1d89aa`, off
+`e2bbdc1`. Local only. Builds: `srmctl run --slots 4 --low --label apitorrent-follow`.
+
+### Tasks
+
+1. **Joining with an existing account.** A signed-in user who opens an invitation link
+   accepts it into their own account: `POST /auth/enroll/accept {token}`. Same rate
+   limit, one-time use, expiry and audit (`joined`). The enrollment page offers
+   "Join as <name>" beside creating a new account. This is how a space admin adds
+   someone who already has an account.
+2. **The last admin of a space can't leave or demote themselves** (409). Server admins
+   don't count as the space's admins, and they can still do anything.
+3. **Editable tracker lists per space entry**: `PUT /torrents/{id}/trackers {tiers}`
+   (the space's users), stored per entry, and an editor in the detail pane's Trackers
+   tab. The engine retargets the entry's announcer without restarting tiers that keep
+   a tracker; the dedup rule (one announce per URL across entries) is unchanged.
+4. **`--plugin-listen <id>@<slug>=<addr>`**: the listener serves that space.
+5. **`--no-update-check` / `APITORRENT_NO_UPDATE_CHECK`**: no updater, so no daily check,
+   no update endpoints (`updates_unavailable`) and no update UI.
+
+### Choices the requests didn't cover
+
+- **Joining never changes the instance role.** A viewer cap set by a server admin stays,
+  even when a space admin's invitation (role `user`) is accepted. An invitation that
+  makes a server admin can't be joined with an existing account (409); a server admin
+  promotes existing users on the Users page.
+- **Joining never lowers a space role**: an existing membership keeps the higher of its
+  role and the invitation's.
+- **Joining needs a browser session** (not an API token), but not a recent sign-in: the
+  link is the authority, and nothing about the account's credentials changes.
+- **An invitation that would grant nothing new** (already a member at that role or
+  above everywhere) is refused with 409 and stays usable, so it can go to someone else.
+- **Recovery links can't be joined.**
+- **The tracker editor rejects a magnet still fetching metadata with 400** (the core has
+  no 409 for it), not 409 as first planned.
+- **"Last admin"** counts enabled members with the space's `admin` role whose instance
+  role isn't `admin`. Only a space admin acting on themselves is checked (anyone else
+  acting on a space's admin is either a server admin or another admin of it).
+- **Edited trackers** live in a new `torrents.trackers` column (JSON tiers; NULL = the
+  `.torrent`'s own). A magnet still waiting for its metadata can't be edited (409).
+  Tiers are trimmed, empty tiers dropped, a URL listed twice in one entry is refused;
+  only `http`, `https` and `udp` URLs.
+- **`update` subcommand under `--no-update-check`**: `--check` still reports; installing
+  is refused ("update it the way it was installed").
+- **Joining lands in the first space it gave** (a full page load at `/s/<slug>/`), and
+  makes that the user's last space.
+- **The Trackers tab edits tiers as text boxes** (one URL per line) with up, down and
+  remove per tier and "Add tier"; viewers don't get the button. Shown only once the
+  metadata is in.
+
+### Progress
+
+All done 2026-11-10 (times US Pacific).
+
+- [x] 1 and 2. Joining with an existing account, and the last space admin (`910dc03`):
+      auth unit tests `existing_users_join_invitations`, `the_last_space_admin_stays`;
+      server tests `existing_users_join_with_their_account`,
+      `the_last_space_admin_cant_leave`
+- [x] 5. `--no-update-check` (`b3509bd`): a parse test; the server's
+      `updates_unavailable` path was already tested
+- [x] 4. `--plugin-listen <id>@<slug>` (`40644ba`): parse and path tests, and the
+      qBittorrent end-to-end test serves space `tv` on its own listener (tv's token
+      works, default's gets 403)
+- [x] 3. Editable trackers (`2f1cd2c`): announcer retarget unit tests, the engine
+      test `an_entrys_trackers_change_while_it_runs` (real HTTP trackers: no
+      stop/start for kept trackers, `stopped` for dropped ones, hand-over on pause),
+      the core's list cleaning and db round-trip, the server test
+      `a_spaces_users_edit_their_entrys_trackers` (viewers and read tokens refused,
+      other spaces untouched, kept across a restart), and web tests for the tier helpers
+- [x] Docs (`c4fc83e`): architecture, README, `plans/spaces.md` and
+      `plans/update-signing.md` follow-ups
+- [x] Full checks: fmt, workspace clippy, `cargo test --locked` (737 passed),
+      web typecheck/test/build, `typecheck:plugins`, `test:plugins`
+- [x] 390 px check, 6:08 PM PST (02:08Z): headless Chrome (playwright-core, a
+      headless shell) against the debug daemon on 127.0.0.1:27431 with
+      `--no-update-check`. Bob, signed in, joined a second invitation with "Join as
+      Bob" and landed in `/s/default/` as a viewer, keeping tv. The Trackers tab's
+      editor was used to add a tier and move it up, then saved. All three screens fit
+      at 390 px.
+- [x] Rebased onto `master` (`9ec0b99`, the web UI review). The only conflict was
+      `DetailPane.tsx`: master added a `readOnly` prop for viewers, so the Trackers
+      editor now follows it instead of its own space-role check. No Rust source
+      changed in the rebase. Web typecheck, tests and build, and the 390 px check, were
+      run again on the rebased branch; a viewer gets no "Edit trackers".
+
+### Findings
+
+- The bash tool's heredoc wrapper still fails on long quoted heredocs: write patch
+  scripts to the scratchpad with the Write tool.
+- With the auth tests' manual clock, links made in one test share `created_at`, so
+  "newest first" can't pick one: find a record by id.
+- `cargo` puts the linked daemon in the worktree's `target/debug`, not in the shared
+  build dir.
+- The Trackers tab lists each tier's trackers in the engine's order, which is shuffled
+  once per tier (BEP 12). The editor shows the saved order.
 
 ## Open questions for the user
 
