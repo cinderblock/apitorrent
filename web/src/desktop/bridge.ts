@@ -32,11 +32,18 @@ export interface LanSettings {
   https: boolean;
 }
 
+/** The device a profile is paired as; set by the app, never by the page. */
+export interface PairedDevice {
+  id: string;
+  name: string;
+}
+
 export interface RemoteProfile {
   mode: "remote";
   baseUrl: string;
   trust: Trust;
   mappings: PathMapping[];
+  device?: PairedDevice | null;
 }
 
 export interface LocalProfile {
@@ -100,9 +107,18 @@ export interface MappingStatus {
   problem: string | null;
 }
 
+/** A mapping to offer for one of the server's storage roots (mapping.rs `Suggestion`). */
 export interface Suggestion {
+  /** The root's path on the server. */
   remote: string;
+  /** The best local path found: verified if one was, else the first candidate. */
   local: string | null;
+  /** The root's marker reads correctly through `local`. */
+  verified: boolean;
+  /** The share locator `local` came from; null when the root's own path works here. */
+  via: string | null;
+  /** The root's share locators, as the server's admin set them. */
+  locators: string[];
 }
 
 export type IncomingLink =
@@ -134,6 +150,24 @@ export interface AppUpdateView {
   error: string | null;
 }
 
+/** A device pairing in progress (pairing.rs). The credential never reaches the page. */
+export interface PairingStarted {
+  pairingId: string;
+  /** The code to compare in the browser (ABCD-EFGH). */
+  userCode: string;
+  expiresAt: number;
+  intervalSecs: number;
+  /** Bound to the server's pinned key. */
+  bound: boolean;
+  approveUrl: string;
+}
+
+export type PairingStatus =
+  | { status: "pending" }
+  | { status: "approved"; deviceName: string }
+  | { status: "denied" }
+  | { status: "expired" };
+
 /** Command errors arrive as plain strings; make them Errors. */
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   try {
@@ -145,9 +179,19 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 
 export const desktop = {
   state: () => call<DesktopState>("desktop_state"),
-  /** `token`: undefined keeps the saved one, "" removes it. */
-  saveProfile: (profile: Profile, token?: string) =>
-    call<ProfileView>("profile_save", { profile, token: token ?? null }),
+  /**
+   * `token`: undefined keeps the saved one, "" removes it. `pairing`: an approved device
+   * pairing whose credential the app saves in place of a token.
+   */
+  saveProfile: (profile: Profile, token?: string, pairing?: string) =>
+    call<ProfileView>("profile_save", { profile, token: token ?? null, pairing: pairing ?? null }),
+  /** Ask the server to pair this app as a device; `name` defaults to the computer's. */
+  pairStart: (baseUrl: string, trust: Trust, name?: string) =>
+    call<PairingStarted>("device_pair_start", { baseUrl, trust, name: name ?? null }),
+  pairPoll: (pairingId: string) => call<PairingStatus>("device_pair_poll", { pairingId }),
+  /** Open the server's approval page in the default browser. */
+  pairOpen: (pairingId: string) => call<void>("device_pair_open", { pairingId }),
+  pairCancel: (pairingId: string) => call<void>("device_pair_cancel", { pairingId }),
   deleteProfile: (id: string) => call<void>("profile_delete", { id }),
   activate: (id: string) => call<void>("profile_activate", { id }),
   disconnect: () => call<void>("profile_disconnect"),
@@ -164,6 +208,8 @@ export const desktop = {
     call<void>("path_action", { action, savePath, file: file ?? null }),
   /** null when the path can be opened here, else why not. */
   pathAvailable: (savePath: string) => call<string | null>("path_available", { savePath }),
+  /** The OS's folder picker; null when cancelled. Opens at `start` when it exists. */
+  pickFolder: (title: string, start?: string) => call<string | null>("pick_folder", { title, start: start ?? null }),
   /** The window's own theme (title bar, background), kept in step with the page's. */
   setTheme: (theme: ThemePreference) => call<void>("theme_set", { theme }),
   /** The last update check (at most a day old), or a fresh one with `force`. */

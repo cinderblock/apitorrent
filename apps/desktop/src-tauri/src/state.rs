@@ -51,6 +51,8 @@ pub struct AppState {
     pub pending_links: Mutex<Vec<IncomingLink>>,
     /// The task that watches for finished torrents (for notifications).
     pub watcher: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Device pairings in progress (see `pairing`).
+    pub pairings: crate::pairing::Pairings,
 }
 
 impl AppState {
@@ -68,6 +70,7 @@ impl AppState {
             next_sync: AtomicU32::new(1),
             pending_links: Mutex::new(Vec::new()),
             watcher: Mutex::new(None),
+            pairings: crate::pairing::Pairings::default(),
         }
     }
 

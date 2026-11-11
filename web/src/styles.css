@@ -899,6 +899,24 @@ code {
   gap: 8px 12px;
 }
 
+.root-row {
+  margin-bottom: 10px;
+}
+
+.root-row .field {
+  margin-bottom: 4px;
+}
+
+.root-row code {
+  overflow-wrap: anywhere;
+}
+
+.root-row textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono, ui-monospace, monospace);
+}
+
 .group-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 5.5rem 5.5rem 5.5rem auto;
@@ -1044,6 +1062,19 @@ button.wide {
 
 .account-toolbar .spacer {
   flex: 1;
+}
+
+/* A device asking to pair, on the Account page. */
+.device-request {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.device-request code,
+.account-section code.key {
+  overflow-wrap: anywhere;
 }
 
 .account-section {

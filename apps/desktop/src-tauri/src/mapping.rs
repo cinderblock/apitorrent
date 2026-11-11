@@ -278,24 +278,73 @@ pub fn verify(
     }
 }
 
-/// Mappings worth offering for a server's roots: each root's own path, already filled in
-/// when this machine can read the root's marker at the same path (the daemon runs here,
-/// or the path is a UNC share).
+/// A mapping worth offering for one of the server's roots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Suggestion {
+    /// The root's path on the server.
+    pub remote: String,
+    /// The best local path found: one the marker verified, else the first candidate.
+    pub local: Option<PathBuf>,
+    /// The root's marker reads correctly through `local`.
+    pub verified: bool,
+    /// The share locator `local` came from (`None`: the root's own path works here).
+    pub via: Option<String>,
+    /// The root's share locators, as the server's admin set them.
+    pub locators: Vec<String>,
+}
+
+fn marker_matches(dir: &Path, id: &str, read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>) -> bool {
+    read(&dir.join(RootMarker::FILE_NAME))
+        .ok()
+        .and_then(|b| RootMarker::parse(&b))
+        .is_some_and(|m| m.id == id)
+}
+
+/// Mappings worth offering for a server's roots. The candidates for each root are its own
+/// path (when it is an absolute path here: the daemon runs on this machine, or the path is a
+/// UNC share), then the local paths of its share locators (see [`crate::shares`]). The first
+/// whose marker verifies wins; otherwise the first candidate is offered unverified, for the
+/// user to mount or fix.
 pub fn suggestions(
     roots: &[StorageRoot],
     read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>,
-) -> Vec<(String, Option<PathBuf>)> {
+    windows: bool,
+    mounts: &[crate::shares::Mount],
+) -> Vec<Suggestion> {
     roots
         .iter()
         .map(|root| {
-            let here = Path::new(&root.path);
-            let local = (here.is_absolute()
-                && read(&here.join(RootMarker::FILE_NAME))
-                    .ok()
-                    .and_then(|b| RootMarker::parse(&b))
-                    .is_some_and(|m| m.id == root.id))
-            .then(|| here.to_path_buf());
-            (root.path.clone(), local)
+            let own = Path::new(&root.path);
+            let mut candidates: Vec<(PathBuf, Option<String>)> = Vec::new();
+            // The server's own kind of path, Windows or Unix, can be one here only on the
+            // same kind of OS.
+            let same_kind = RemotePath::parse(&root.path).is_some_and(|r| r.windows == windows);
+            if same_kind && own.is_absolute() {
+                candidates.push((own.to_path_buf(), None));
+            }
+            for l in &root.locators {
+                // The server checks locators; one this version can't read is skipped.
+                if let Ok(parsed) = apitorrent_types::share::ShareLocator::parse(l) {
+                    for p in crate::shares::local_paths(&parsed, windows, mounts) {
+                        candidates.push((p, Some(l.clone())));
+                    }
+                }
+            }
+            let verified = candidates
+                .iter()
+                .position(|(p, _)| marker_matches(p, &root.id, read));
+            let chosen = verified.or((!candidates.is_empty()).then_some(0));
+            let (local, via) = chosen
+                .map(|i| candidates.swap_remove(i))
+                .map_or((None, None), |(p, v)| (Some(p), v));
+            Suggestion {
+                remote: root.path.clone(),
+                local,
+                verified: verified.is_some(),
+                via,
+                locators: root.locators.clone(),
+            }
         })
         .collect()
 }
@@ -521,9 +570,55 @@ mod tests {
             root("r1", &here.display().to_string()),
             root("r2", "/nowhere/at/all"),
         ];
-        let s = suggestions(&roots, &|p| std::fs::read(p));
-        assert_eq!(s[0].1.as_deref(), Some(here.as_path()));
-        assert_eq!(s[1], ("/nowhere/at/all".to_owned(), None));
+        let s = suggestions(&roots, &|p| std::fs::read(p), cfg!(windows), &[]);
+        assert_eq!(s[0].local.as_deref(), Some(here.as_path()));
+        assert!(s[0].verified);
+        assert_eq!(s[0].via, None);
+        assert_eq!(s[1].remote, "/nowhere/at/all");
+        assert!(!s[1].verified);
+        if cfg!(windows) {
+            assert_eq!(s[1].local, None, "a Unix path isn't a path on Windows");
+        }
+    }
+
+    #[test]
+    fn suggestions_come_from_share_locators() {
+        let mut r = root("r1", "/srv/torrents");
+        r.locators = vec![r"\\nas\torrents".into(), "nfs://nas/srv/torrents".into()];
+        let mounts = crate::shares::parse_proc_mounts("nas:/srv /mnt/srv nfs4 rw 0 0");
+
+        // Windows: UNC first. Neither verifies, so the first is offered unverified.
+        let s = suggestions(std::slice::from_ref(&r), &files(&[]), true, &[]);
+        assert_eq!(s[0].local, Some(PathBuf::from(r"\\nas\torrents")));
+        assert!(!s[0].verified);
+        assert_eq!(s[0].via.as_deref(), Some(r"\\nas\torrents"));
+        assert_eq!(s[0].locators, r.locators);
+        // The one whose marker reads wins, whatever its place.
+        let s = suggestions(
+            std::slice::from_ref(&r),
+            &files(&[(PathBuf::from(r"\\nas\srv\torrents"), "r1")]),
+            true,
+            &[],
+        );
+        assert_eq!(s[0].local, Some(PathBuf::from(r"\\nas\srv\torrents")));
+        assert!(s[0].verified);
+        assert_eq!(s[0].via.as_deref(), Some("nfs://nas/srv/torrents"));
+
+        // macOS and Linux: through the mount table.
+        let s = suggestions(
+            std::slice::from_ref(&r),
+            &files(&[(PathBuf::from("/mnt/srv/torrents"), "r1")]),
+            false,
+            &mounts,
+        );
+        assert_eq!(s[0].local, Some(PathBuf::from("/mnt/srv/torrents")));
+        assert!(s[0].verified);
+        // Not mounted: nothing to offer but the locators themselves.
+        let s = suggestions(std::slice::from_ref(&r), &files(&[]), false, &[]);
+        if !cfg!(windows) {
+            assert_eq!(s[0].local, Some(PathBuf::from("/srv/torrents")));
+        }
+        assert!(!s[0].verified);
     }
 
     #[test]

@@ -15,11 +15,15 @@ import type { AuthStatus } from "./generated/AuthStatus";
 import type { CeremonyStart } from "./generated/CeremonyStart";
 import type { CreatedToken } from "./generated/CreatedToken";
 import type { CreateTokenRequest } from "./generated/CreateTokenRequest";
+import type { ApproveDeviceRequest } from "./generated/ApproveDeviceRequest";
+import type { DeviceInfo } from "./generated/DeviceInfo";
+import type { DeviceRequestInfo } from "./generated/DeviceRequestInfo";
 import type { FilePriority } from "./generated/FilePriority";
 import type { ImportDelugeRequest } from "./generated/ImportDelugeRequest";
 import type { ImportReport } from "./generated/ImportReport";
 import type { QueueMove } from "./generated/QueueMove";
 import type { Settings } from "./generated/Settings";
+import type { StorageRoot } from "./generated/StorageRoot";
 import type { TorrentLimits } from "./generated/TorrentLimits";
 import type { PasskeyInfo } from "./generated/PasskeyInfo";
 import type { ServerInfo } from "./generated/ServerInfo";
@@ -98,6 +102,10 @@ export const api = {
     request<void>("PUT", `/torrents/${enc(id)}/files/priorities`, { priorities }),
   settings: () => request<Settings>("GET", "/settings"),
   stats: () => request<SessionStats>("GET", "/stats"),
+  /** The instance's storage roots and where other computers reach them. */
+  roots: () => request<StorageRoot[]>("GET", "/roots"),
+  /** Replace a root's share locators (server admins); answers with the normalised root. */
+  setRootLocators: (id: string, locators: string[]) => request<StorageRoot>("PUT", `/roots/${enc(id)}/locators`, { locators }),
   bans: () => request<Ban[]>("GET", "/bans"),
   ban: (ip: string) => request<void>("POST", "/bans", { ip }),
   unban: (ip: string) => request<void>("DELETE", `/bans/${enc(ip)}`),
@@ -162,6 +170,15 @@ export const authApi = {
   tokens: () => request<ApiTokenInfo[]>("GET", "/auth/tokens"),
   createToken: (req: CreateTokenRequest) => request<CreatedToken>("POST", "/auth/tokens", req),
   revokeToken: (id: string) => request<void>("DELETE", `/auth/tokens/${enc(id)}`),
+
+  /** Paired devices (the desktop app); a device sees only itself. */
+  devices: () => request<DeviceInfo[]>("GET", "/auth/devices"),
+  removeDevice: (id: string) => request<void>("DELETE", `/auth/devices/${enc(id)}`),
+  /** A pairing request by the code its app shows. */
+  deviceLookup: (userCode: string) => request<DeviceRequestInfo>("POST", "/auth/devices/lookup", { userCode }),
+  /** Needs a recent sign-in, like creating a token. */
+  deviceApprove: (req: ApproveDeviceRequest) => request<void>("POST", "/auth/devices/approve", req),
+  deviceDeny: (userCode: string) => request<void>("POST", "/auth/devices/deny", { userCode }),
 
   sessions: () => request<SessionInfo[]>("GET", "/auth/sessions"),
   revokeSession: (id: string) => request<void>("DELETE", `/auth/sessions/${enc(id)}`),

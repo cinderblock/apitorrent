@@ -1,7 +1,7 @@
 // Create or edit a connection profile: a remote server (URL, API token, how its certificate
 // is trusted, path mappings) or the core running on this computer.
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   desktop,
@@ -10,9 +10,14 @@ import {
   type PathMapping,
   type ProbeView,
   type Profile,
+  type PairedDevice,
+  type PairingStarted,
+  type PairingStatus,
   type ProfileView,
+  type Suggestion,
   type Trust,
 } from "./bridge";
+import { FolderInput } from "./FolderInput";
 import { describe, splitList } from "./util";
 
 interface Props {
@@ -44,6 +49,8 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
   const [removeToken, setRemoveToken] = useState(false);
   const [trust, setTrust] = useState<Trust>(remote?.trust ?? { kind: "os" });
   const [mappings, setMappings] = useState<PathMapping[]>(remote?.mappings ?? []);
+  // An approved device pairing, saved with the profile.
+  const [pairing, setPairing] = useState<string | null>(null);
 
   // Local
   const local = initial.mode === "local" ? initial : null;
@@ -62,7 +69,7 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
     setBusy(true);
     const profile: Profile =
       initial.mode === "remote"
-        ? { id: initial.id, name: name.trim(), mode: "remote", baseUrl: baseUrl.trim(), trust, mappings }
+        ? { id: initial.id, name: name.trim(), mode: "remote", baseUrl: baseUrl.trim(), trust, mappings, device: remote?.device ?? null }
         : {
             id: initial.id,
             name: name.trim(),
@@ -72,9 +79,9 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
             dataDir: dataDir.trim() || null,
             lan,
           };
-    const tokenArg = initial.mode !== "remote" ? undefined : token.trim() ? token.trim() : removeToken ? "" : undefined;
+    const tokenArg = initial.mode !== "remote" || pairing ? undefined : token.trim() ? token.trim() : removeToken ? "" : undefined;
     try {
-      onSaved(await desktop.saveProfile(profile, tokenArg));
+      onSaved(await desktop.saveProfile(profile, tokenArg, pairing ?? undefined));
     } catch (err) {
       setError(describe(err));
     } finally {
@@ -96,8 +103,15 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
             <input value={baseUrl} required onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://torrents.example.com" />
           </label>
           <p className="hint muted">Use https://. Plain http:// works only for localhost, such as an SSH tunnel.</p>
-          <TokenField hasToken={initial.hasToken} token={token} setToken={setToken} remove={removeToken} setRemove={setRemoveToken} />
           <TrustField baseUrl={baseUrl} trust={trust} setTrust={setTrust} />
+          <SignInField
+            baseUrl={baseUrl}
+            trust={trust}
+            device={remote?.device ?? null}
+            hasToken={initial.hasToken}
+            onPaired={setPairing}
+            token={<TokenField hasToken={initial.hasToken} token={token} setToken={setToken} remove={removeToken} setRemove={setRemoveToken} />}
+          />
           <MappingsField mappings={mappings} setMappings={setMappings} connected={connected} />
         </>
       ) : (
@@ -105,7 +119,7 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
           <div className="field-row">
             <label className="field grow">
               <span>Download folder <span className="muted">(empty: Downloads\apitorrent)</span></span>
-              <input value={downloadDir} onChange={(e) => setDownloadDir(e.target.value)} placeholder="Default" />
+              <FolderInput value={downloadDir} onChange={setDownloadDir} placeholder="Default" pickerTitle="Download folder" />
             </label>
             <label className="field">
               <span>BitTorrent port</span>
@@ -120,7 +134,7 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
           </div>
           <label className="field">
             <span>Data folder <span className="muted">(databases and state; empty: the app's own folder)</span></span>
-            <input value={dataDir} onChange={(e) => setDataDir(e.target.value)} placeholder="Default" />
+            <FolderInput value={dataDir} onChange={setDataDir} placeholder="Default" pickerTitle="Data folder" />
           </label>
           <LanField lan={lan} setLan={setLan} />
         </>
@@ -138,14 +152,143 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
   );
 }
 
-function TokenField(props: { hasToken: boolean; token: string; setToken: (t: string) => void; remove: boolean; setRemove: (r: boolean) => void }) {
+/** The page's view of a pairing: what to show, from start to approval. */
+type PairView = { started: PairingStarted; status: PairingStatus["status"]; deviceName?: string };
+
+function SignInField(props: {
+  baseUrl: string;
+  trust: Trust;
+  device: PairedDevice | null;
+  hasToken: boolean;
+  onPaired: (pairingId: string | null) => void;
+  token: React.ReactNode;
+}) {
+  const { baseUrl, trust, onPaired } = props;
+  const [deviceName, setDeviceName] = useState("");
+  const [pair, setPair] = useState<PairView | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [showToken, setShowToken] = useState(props.hasToken && !props.device);
+  const live = useRef<string | null>(null);
+
+  // Poll while the request waits for approval; stop when it's decided or the editor closes.
+  useEffect(() => {
+    if (!pair || pair.status !== "pending") return;
+    const id = pair.started.pairingId;
+    const t = setTimeout(() => {
+      desktop.pairPoll(id).then(
+        (s) => {
+          if (live.current !== id) return;
+          setPair({ ...pair, status: s.status, deviceName: s.status === "approved" ? s.deviceName : undefined });
+          if (s.status === "approved") onPaired(id);
+        },
+        (e: unknown) => {
+          if (live.current !== id) return;
+          setError(describe(e));
+          setPair({ ...pair, status: "expired" });
+        },
+      );
+    }, pair.started.intervalSecs * 1000);
+    return () => clearTimeout(t);
+  }, [pair, onPaired]);
+
+  // A pairing that never got saved is dropped in the app when the editor closes.
+  useEffect(
+    () => () => {
+      if (live.current) void desktop.pairCancel(live.current);
+    },
+    [],
+  );
+
+  const notPairedYet = trust.kind === "pinned" && trust.spkiSha256 === "";
+
+  async function start() {
+    setBusy(true);
+    setError(null);
+    onPaired(null);
+    if (live.current) void desktop.pairCancel(live.current);
+    try {
+      const started = await desktop.pairStart(baseUrl.trim(), trust, deviceName.trim() || undefined);
+      live.current = started.pairingId;
+      setPair({ started, status: "pending" });
+      // Straight to the browser, where the user is signed in to the server.
+      await desktop.pairOpen(started.pairingId).catch(() => {});
+    } catch (e) {
+      setError(describe(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <fieldset className="settings-section">
-      <legend>API token</legend>
+      <legend>Signing in</legend>
       <p className="hint muted">
-        The desktop app signs in with an API token, not a passkey: passkeys belong to the server's own web address, and this window isn't it. In the server's
-        web UI, open Account → API tokens, create one (scope <strong>full</strong> to manage torrents, <strong>read</strong> to only watch), and paste it here. It's kept
-        in this computer's keychain, never in a file.
+        Pair this app with your account: the server shows a short code, you approve it in your browser (where your passkey works), and the app is listed on
+        your Account page as a device you can remove at any time. Its credential is kept in this computer's keychain, never in a file.
+      </p>
+      {props.device && !pair && (
+        <p className="hint">
+          Paired as <strong>{props.device.name}</strong>. Pair again to replace it.
+        </p>
+      )}
+      {!props.device && props.hasToken && !pair && <p className="hint">Signed in with an API token.</p>}
+      <div className="inline-edit">
+        <input
+          aria-label="Device name"
+          value={deviceName}
+          placeholder="Device name (default: this computer's)"
+          onChange={(e) => setDeviceName(e.target.value)}
+        />
+        <button type="button" disabled={busy || notPairedYet || !baseUrl.startsWith("http")} onClick={() => void start()}>
+          {pair ? "Start again" : props.device ? "Pair again" : "Pair this device"}
+        </button>
+      </div>
+      {notPairedYet && <p className="hint muted">Pair with the server's key first (above), so the app knows it's talking to your server.</p>}
+      {pair && <PairProgress pair={pair} />}
+      {error && <p className="error-text">{error}</p>}
+      {!showToken ? (
+        <button type="button" className="link" onClick={() => setShowToken(true)}>
+          Use an API token instead
+        </button>
+      ) : (
+        props.token
+      )}
+    </fieldset>
+  );
+}
+
+function PairProgress({ pair }: { pair: PairView }) {
+  const { started, status } = pair;
+  if (status === "approved") {
+    return <p className="ok-text">Approved as {pair.deviceName}. Save to keep it.</p>;
+  }
+  if (status === "denied") return <p className="error-text">The request was refused on the server.</p>;
+  if (status === "expired") return <p className="error-text">The request expired. Start again.</p>;
+  return (
+    <div className="pair-progress" role="status">
+      <p>
+        Approve this code on the server: <code className="key pair-code">{started.userCode}</code>
+      </p>
+      <p className="hint muted">
+        Your browser should have opened the server's pairing page; check that it shows the same code, then approve.{" "}
+        <button type="button" className="link" onClick={() => void desktop.pairOpen(started.pairingId)}>
+          Open it again
+        </button>{" "}
+        or enter the code under Account → Paired devices.
+        {started.bound && " The device will be bound to the key you paired with."}
+      </p>
+      <p className="muted">Waiting for approval…</p>
+    </div>
+  );
+}
+
+function TokenField(props: { hasToken: boolean; token: string; setToken: (t: string) => void; remove: boolean; setRemove: (r: boolean) => void }) {
+  return (
+    <div className="indent">
+      <p className="hint muted">
+        Or sign in with an API token: in the server's web UI, open Account → API tokens, create one (scope <strong>full</strong> to manage torrents,{" "}
+        <strong>read</strong> to only watch), and paste it here. Passkeys can't be used in this window: they belong to the server's own web address.
       </p>
       <label className="field">
         <span>{props.hasToken ? "A token is saved. Paste a new one to replace it, or leave this empty." : "Token"}</span>
@@ -164,7 +307,7 @@ function TokenField(props: { hasToken: boolean; token: string; setToken: (t: str
           Remove the saved token
         </label>
       )}
-    </fieldset>
+    </div>
   );
 }
 
@@ -302,6 +445,7 @@ function group(hex: string): string {
 function MappingsField({ mappings, setMappings, connected }: { mappings: PathMapping[]; setMappings: (m: PathMapping[]) => void; connected: boolean }) {
   const [statuses, setStatuses] = useState<MappingStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notes, setNotes] = useState<string[]>([]);
 
   const update = (i: number, m: Partial<PathMapping>) => {
     setMappings(mappings.map((old, j) => (i === j ? { ...old, ...m } : old)));
@@ -319,13 +463,20 @@ function MappingsField({ mappings, setMappings, connected }: { mappings: PathMap
 
   async function suggest() {
     setError(null);
+    setNotes([]);
     try {
       const s = await desktop.suggestions();
       const known = new Set(mappings.map((m) => m.remote));
-      const extra = s.filter((x) => !known.has(x.remote)).map((x) => ({ remote: x.remote, local: x.local ?? "" }));
-      if (extra.length === 0) setError(s.length === 0 ? "The server reports no storage roots." : "Every storage root already has a mapping.");
-      setMappings([...mappings, ...extra]);
-      setStatuses(null);
+      const fresh = s.filter((x) => !known.has(x.remote));
+      if (fresh.length === 0) {
+        setError(s.length === 0 ? "The server reports no storage roots." : "Every storage root already has a mapping.");
+        return;
+      }
+      const next = [...mappings, ...fresh.map((x) => ({ remote: x.remote, local: x.local ?? "" }))];
+      setMappings(next);
+      setNotes(fresh.map(suggestionNote).filter((n): n is string => n !== null));
+      // Show at once which of them work.
+      setStatuses(await desktop.checkMappings(next));
     } catch (err) {
       setError(describe(err));
     }
@@ -354,7 +505,13 @@ function MappingsField({ mappings, setMappings, connected }: { mappings: PathMap
                   <input aria-label="Folder on the server" value={m.remote} placeholder="/srv/torrents" onChange={(e) => update(i, { remote: e.target.value })} />
                 </td>
                 <td>
-                  <input aria-label="Folder on this computer" value={m.local} placeholder="\\nas\torrents or /mnt/torrents" onChange={(e) => update(i, { local: e.target.value })} />
+                  <FolderInput
+                    aria-label="Folder on this computer"
+                    value={m.local}
+                    placeholder="\\nas\torrents or /mnt/torrents"
+                    pickerTitle={m.remote ? `Where this computer reaches ${m.remote}` : "Folder on this computer"}
+                    onChange={(local) => update(i, { local })}
+                  />
                   {statuses?.[i] && (
                     <span className={statuses[i].verified ? "ok-text" : "error-text"}>{statuses[i].verified ? "Verified" : statuses[i].problem}</span>
                   )}
@@ -381,9 +538,28 @@ function MappingsField({ mappings, setMappings, connected }: { mappings: PathMap
         </button>
       </div>
       {!connected && <p className="hint muted">Connect with this profile to check mappings against the server.</p>}
+      {notes.length > 0 && (
+        <ul className="hint muted">
+          {notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      )}
       {error && <p className="error-text">{error}</p>}
     </fieldset>
   );
+}
+
+/** What to tell the user about a suggestion that isn't ready to use; null when it is. */
+export function suggestionNote(s: Suggestion): string | null {
+  if (s.verified) return null;
+  if (s.local !== null && s.via !== null) {
+    return `${s.remote}: the server shares it as ${s.via}, but its marker can't be read through ${s.local} yet. Check that the share is reachable and that you can sign in to it, then press Check mappings.`;
+  }
+  if (s.locators.length > 0) {
+    return `${s.remote}: the server shares it as ${s.locators.join(" or ")}. Mount that share on this computer, then suggest again, or type where it is.`;
+  }
+  return `${s.remote}: the server's admin hasn't said where it's shared (Settings → Storage roots). Type where this computer reaches it.`;
 }
 
 function LanField({ lan, setLan }: { lan: LanSettings | null; setLan: (l: LanSettings | null) => void }) {

@@ -67,7 +67,8 @@ export function AuthGate() {
   // An invitation or recovery link, signed in or not.
   if (path === "/enroll" && !status.authDisabled) return <EnrollPage status={status} onSignedIn={setStatus} />;
   if (view === "login" || view === "secondFactor") return <LoginPage status={status} onSignedIn={setStatus} />;
-  if (path === "/account") return <AccountPage status={status} onStatus={setStatus} refresh={refresh} />;
+  // `/pair` is the Account page with a device's code to approve (from the desktop app).
+  if (path === "/account" || path === "/pair") return <AccountPage status={status} onStatus={setStatus} refresh={refresh} />;
   if (path === "/plugins") return <PluginsPage status={status} onStatus={setStatus} />;
   if (path === "/rules") return <RulesPage status={status} />;
   if (path === "/spaces") return <SpacesPage status={status} onStatus={setStatus} />;

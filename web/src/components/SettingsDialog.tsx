@@ -6,6 +6,7 @@ import type { GroupSettings } from "../api/generated/GroupSettings";
 import type { Settings } from "../api/generated/Settings";
 import { formatDateTime, fromKiB, toKiB } from "../format";
 import { SeedLimitsFields } from "./SeedLimitsFields";
+import { StorageRootsSection } from "./StorageRootsSection";
 import { TlsSection } from "./TlsSection";
 import { UpdatesSection } from "./Updates";
 
@@ -228,6 +229,7 @@ export function SettingsDialog({
             </fieldset>
             <BansSection />
             <TlsSection />
+            {isAdmin && <StorageRootsSection />}
             {isAdmin && <UpdatesSection />}
             <fieldset className="settings-section">
               <legend>Library</legend>

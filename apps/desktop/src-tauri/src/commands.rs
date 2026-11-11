@@ -70,17 +70,79 @@ pub async fn desktop_state(state: State<'_, AppState>) -> CmdResult<DesktopState
     })
 }
 
+/// The device a saved profile is paired as, and its credential, if it is paired.
+fn paired_device(
+    state: &AppState,
+    id: &str,
+) -> Option<(Profile, crate::pairing::PairedDevice, String)> {
+    let profile = state.store.lock().expect("not poisoned").get(id).cloned()?;
+    let ProfileKind::Remote(r) = &profile.kind else {
+        return None;
+    };
+    let device = r.device.clone()?;
+    let credential = state.token(id).ok().flatten()?;
+    Some((profile, device, credential))
+}
+
+/// Remove a profile's device on its server, if it has one (best effort: the server may be
+/// unreachable, and the user can remove it on the Account page).
+async fn sign_out_device(state: &AppState, id: &str) {
+    if let Some((profile, device, credential)) = paired_device(state, id)
+        && let ProfileKind::Remote(r) = &profile.kind
+    {
+        crate::pairing::sign_out(&r.base_url, &r.trust, &credential, &device.id).await;
+    }
+}
+
 /// Save a profile (a new one when `id` is empty). `token`: `Some("")` removes the saved
-/// token, `Some(t)` replaces it, `None` leaves it. Saving the active profile reconnects.
+/// token, `Some(t)` replaces it, `None` leaves it. `pairing`: an approved device pairing
+/// whose credential replaces the saved one. Saving the active profile reconnects.
 #[tauri::command]
 pub async fn profile_save<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, AppState>,
     mut profile: Profile,
     token: Option<String>,
+    pairing: Option<String>,
 ) -> CmdResult<ProfileView> {
     if profile.id.is_empty() {
         profile.id = profiles::new_id();
+    }
+    // Which device the profile is paired as is the app's to say, not the page's.
+    let previous = state
+        .store
+        .lock()
+        .expect("not poisoned")
+        .get(&profile.id)
+        .and_then(|p| match &p.kind {
+            ProfileKind::Remote(r) => r.device.clone(),
+            ProfileKind::Local(_) => None,
+        });
+    let mut token = token;
+    let paired = match (&pairing, &mut profile.kind) {
+        (Some(id), ProfileKind::Remote(r)) => {
+            let (credential, device) = state.pairings.take(id, &r.base_url)?;
+            r.device = Some(device);
+            token = Some(credential);
+            true
+        }
+        (Some(_), ProfileKind::Local(_)) => {
+            return Err("only a server profile can be paired".into());
+        }
+        (None, ProfileKind::Remote(r)) => {
+            // A pasted token (or removing it) replaces the device credential.
+            r.device = if token.is_some() {
+                None
+            } else {
+                previous.clone()
+            };
+            false
+        }
+        (None, ProfileKind::Local(_)) => false,
+    };
+    if previous.is_some() && (paired || token.is_some()) {
+        // The old device credential is being replaced: remove it on the server too.
+        sign_out_device(&state, &profile.id).await;
     }
     if let Some(t) = &token {
         let t = t.trim();
@@ -124,12 +186,19 @@ pub async fn profile_delete(state: State<'_, AppState>, id: String) -> CmdResult
     if was_active {
         state::disconnect(&state).await;
     }
+    // A paired device is removed on the server too (read before the profile goes).
+    let device = paired_device(&state, &id);
     state
         .store
         .lock()
         .expect("not poisoned")
         .remove(&id)
         .map_err(|e| e.to_string())?;
+    if let Some((profile, device, credential)) = device
+        && let ProfileKind::Remote(r) = &profile.kind
+    {
+        crate::pairing::sign_out(&r.base_url, &r.trust, &credential, &device.id).await;
+    }
     state.secrets.delete(&token_key(&id)).map_err(|e| {
         format!("the profile was removed, but its token is still in the keychain: {e}")
     })
@@ -409,21 +478,20 @@ pub async fn mappings_check(
         .collect())
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Suggestion {
-    pub remote: String,
-    pub local: Option<PathBuf>,
-}
-
+/// Mappings to offer for the server's storage roots, from their share locators.
 #[tauri::command]
-pub async fn mapping_suggestions(state: State<'_, AppState>) -> CmdResult<Vec<Suggestion>> {
+pub async fn mapping_suggestions(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<mapping::Suggestion>> {
     let (profile, backend) = active_remote(&state).await?;
     let roots = fresh_roots(&state, &backend, &profile.id).await?;
-    Ok(mapping::suggestions(&roots, &read_file)
-        .into_iter()
-        .map(|(remote, local)| Suggestion { remote, local })
-        .collect())
+    // Reading the mount table (and markers on network shares) can block.
+    tokio::task::spawn_blocking(move || {
+        let mounts = crate::shares::current_mounts();
+        mapping::suggestions(&roots, &read_file, cfg!(windows), &mounts)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -532,4 +600,111 @@ pub async fn path_available(
     save_path: String,
 ) -> CmdResult<Option<String>> {
     Ok(locate(&state, &save_path, None).await.err())
+}
+
+/// Start pairing this app as a device of the server at `base_url`, trusted as `trust`
+/// (the profile being edited, saved or not). The page gets the code to show and the URL of
+/// the server's approval page; the poll secret and, later, the credential stay here.
+#[tauri::command]
+pub async fn device_pair_start(
+    state: State<'_, AppState>,
+    base_url: String,
+    trust: Trust,
+    name: Option<String>,
+) -> CmdResult<crate::pairing::PairingStarted> {
+    let name = name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(crate::pairing::default_device_name);
+    state.pairings.start(&base_url, &trust, &name).await
+}
+
+#[tauri::command]
+pub async fn device_pair_poll(
+    state: State<'_, AppState>,
+    pairing_id: String,
+) -> CmdResult<crate::pairing::PairingStatus> {
+    state.pairings.poll(&pairing_id).await
+}
+
+/// Open the server's approval page in the default browser (where the user is signed in to
+/// the server, with passkeys that work there).
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub fn device_pair_open(state: State<'_, AppState>, pairing_id: String) -> CmdResult<()> {
+    let url = state
+        .pairings
+        .approve_url(&pairing_id)
+        .ok_or("this pairing is over; start again")?;
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub fn device_pair_cancel(state: State<'_, AppState>, pairing_id: String) {
+    state.pairings.cancel(&pairing_id);
+}
+
+/// Where a folder picker opens: `start` if it is an existing absolute directory, else its
+/// nearest existing ancestor, else the OS's choice.
+pub fn picker_start(
+    start: Option<&str>,
+    is_dir: &dyn Fn(&std::path::Path) -> bool,
+) -> Option<PathBuf> {
+    let start = std::path::Path::new(start?.trim());
+    if !start.is_absolute() {
+        return None;
+    }
+    start
+        .ancestors()
+        .find(|p| is_dir(p))
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Ask for a folder with the OS's own picker. `None` when the user cancels. The dialog is
+/// modal to the window that asked.
+#[tauri::command]
+pub async fn pick_folder<R: Runtime>(
+    window: tauri::WebviewWindow<R>,
+    title: Option<String>,
+    start: Option<String>,
+) -> CmdResult<Option<String>> {
+    use tauri_plugin_dialog::DialogExt as _;
+    let mut dialog = window.dialog().file().set_parent(&window);
+    if let Some(t) = title.filter(|t| !t.trim().is_empty()) {
+        dialog = dialog.set_title(t);
+    }
+    if let Some(dir) = picker_start(start.as_deref(), &|p| p.is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    dialog.pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let Some(picked) = rx
+        .await
+        .map_err(|_| "the folder picker closed unexpectedly")?
+    else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    Ok(Some(path.display().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picker_starts_at_the_nearest_existing_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inside = tmp.path().join("a");
+        std::fs::create_dir(&inside).unwrap();
+        let missing = inside.join("not").join("yet");
+        let s = |p: &std::path::Path| picker_start(Some(&p.display().to_string()), &|p| p.is_dir());
+        assert_eq!(s(&inside), Some(inside.clone()));
+        assert_eq!(s(&missing), Some(inside));
+        assert_eq!(picker_start(Some("relative/path"), &|_| true), None);
+        assert_eq!(picker_start(Some("  "), &|_| true), None);
+        assert_eq!(picker_start(None, &|_| true), None);
+    }
 }

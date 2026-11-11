@@ -4,6 +4,7 @@ import { authApi } from "../api/client";
 import type { ApiTokenInfo } from "../api/generated/ApiTokenInfo";
 import type { AuthStatus } from "../api/generated/AuthStatus";
 import type { CreatedToken } from "../api/generated/CreatedToken";
+import type { DeviceInfo } from "../api/generated/DeviceInfo";
 import type { PasskeyInfo } from "../api/generated/PasskeyInfo";
 import type { SessionInfo } from "../api/generated/SessionInfo";
 import type { TokenScope } from "../api/generated/TokenScope";
@@ -13,6 +14,7 @@ import { Cancelled, describeError, describeUserAgent, withReauth } from "./flow"
 import { InsecureBanner } from "./LoginPage";
 import { ReauthDialog } from "./ReauthDialog";
 import { createPasskey, passkeysSupported } from "./webauthn";
+import { DevicesSection, readPairCode } from "./DevicesSection";
 import { useSpaceContext } from "../spaces/context";
 
 interface Props {
@@ -41,6 +43,13 @@ export function AccountPage({ status, onStatus, refresh }: Props) {
   const [passkeys, setPasskeys] = useState<PasskeyInfo[]>([]);
   const [tokens, setTokens] = useState<ApiTokenInfo[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [devices, setDevices] = useState<DeviceInfo[]>([]);
+  // `/pair#code=…`, from the desktop app: the code to approve. The fragment is read once
+  // and removed, so a reload doesn't look it up again.
+  const [pairCode] = useState(() => readPairCode(location.hash));
+  useEffect(() => {
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reauth, setReauth] = useState<{ resolve: () => void; reject: (e: unknown) => void } | null>(null);
@@ -49,10 +58,11 @@ export function AccountPage({ status, onStatus, refresh }: Props) {
   const load = useCallback(async () => {
     if (status.authDisabled) return;
     try {
-      const [p, t, s] = await Promise.all([authApi.passkeys(), authApi.tokens(), authApi.sessions()]);
+      const [p, t, s, d] = await Promise.all([authApi.passkeys(), authApi.tokens(), authApi.sessions(), authApi.devices()]);
       setPasskeys(p);
       setTokens(t);
       setSessions(s);
+      setDevices(d);
     } catch (e) {
       setError(describeError(e));
     }
@@ -137,6 +147,7 @@ export function AccountPage({ status, onStatus, refresh }: Props) {
         change={change}
         onCreated={setCreated}
       />
+      <DevicesSection devices={devices} busy={busy} change={change} initialCode={pairCode} />
       <SessionsSection sessions={sessions} busy={busy} change={change} />
 
       {created && <ShowToken created={created} onClose={() => setCreated(null)} />}
@@ -486,7 +497,7 @@ function TokensSection({
 function SessionsSection({ sessions, busy, change }: { sessions: SessionInfo[]; busy: boolean; change: Change }) {
   return (
     <section className="account-section">
-      <h3>Signed-in devices</h3>
+      <h3>Browser sessions</h3>
       <table className="list">
         <thead>
           <tr>

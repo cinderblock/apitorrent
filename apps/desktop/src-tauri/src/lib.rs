@@ -13,7 +13,9 @@ mod links;
 mod local;
 mod mapping;
 mod notify;
+mod pairing;
 mod profiles;
+mod shares;
 mod state;
 mod theme;
 
@@ -145,6 +147,8 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
+        // Only for `commands::pick_folder`: the page has no dialog permission of its own.
+        .plugin(tauri_plugin_dialog::init())
         .plugin(app_update::plugin())
         .manage(AppState::new(dirs(), Arc::new(profiles::Keychain)))
         .manage(app_update::AppUpdates::default())
@@ -164,6 +168,11 @@ pub fn run() {
             commands::mapping_suggestions,
             commands::path_action,
             commands::path_available,
+            commands::pick_folder,
+            commands::device_pair_start,
+            commands::device_pair_poll,
+            commands::device_pair_open,
+            commands::device_pair_cancel,
             theme::theme_set,
             app_update::app_update_check,
             app_update::app_update_install,

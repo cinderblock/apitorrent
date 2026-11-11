@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { api, ApiRequestError, fileToBase64 } from "../api/client";
+import { FolderInput, useLocalMode } from "../desktop/FolderInput";
 
 interface Props {
   /** Files dropped on the window, to add straight away. */
@@ -24,6 +25,8 @@ export function AddTorrent({ initialFiles, initialMagnet = "", onClose }: Props)
   const [savePath, setSavePath] = useState("");
   const [busy, setBusy] = useState(false);
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
+  // The server's folders are this computer's only in the desktop app's Local mode.
+  const localMode = useLocalMode();
 
   useEffect(() => {
     // An in-page modal dialog, not a browser prompt: it never blocks the page.
@@ -101,7 +104,13 @@ export function AddTorrent({ initialFiles, initialMagnet = "", onClose }: Props)
           </label>
           <label className="field grow">
             <span>Save to</span>
-            <input value={savePath} onChange={(e) => setSavePath(e.target.value)} placeholder="the default download folder" />
+            <FolderInput
+              value={savePath}
+              onChange={setSavePath}
+              placeholder="the default download folder"
+              pickerTitle="Save to"
+              browse={localMode}
+            />
           </label>
         </div>
         <label className="check">

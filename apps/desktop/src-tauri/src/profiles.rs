@@ -44,6 +44,10 @@ pub struct RemoteProfile {
     /// Remote prefix → local path, longest prefix first when translating.
     #[serde(default)]
     pub mappings: Vec<PathMapping>,
+    /// The device this app is paired as, when the keychain holds a device credential
+    /// rather than a pasted API token. Set by the app, never taken from the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<crate::pairing::PairedDevice>,
 }
 
 /// The core, running inside the app.
@@ -421,6 +425,7 @@ mod tests {
                     remote: "/srv/torrents".into(),
                     local: PathBuf::from(LOCAL),
                 }],
+                device: None,
             }),
         }
     }
@@ -498,6 +503,27 @@ mod tests {
             self.name = n.into();
             self
         }
+    }
+
+    #[test]
+    fn a_paired_device_is_saved_without_its_credential() {
+        let mut p = remote("a");
+        // Files from before pairing have no `device`, and an unpaired profile writes none.
+        assert!(serde_json::to_value(&p).unwrap().get("device").is_none());
+        let ProfileKind::Remote(r) = &mut p.kind else {
+            unreachable!()
+        };
+        r.device = Some(crate::pairing::PairedDevice {
+            id: "d1".into(),
+            name: "Laptop".into(),
+        });
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(
+            json["device"],
+            serde_json::json!({ "id": "d1", "name": "Laptop" })
+        );
+        assert!(!json.to_string().contains("apd_"));
+        assert_eq!(serde_json::from_value::<Profile>(json).unwrap(), p);
     }
 
     #[test]

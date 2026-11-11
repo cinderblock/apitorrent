@@ -121,3 +121,33 @@
   max-width: 100%;
   font-family: var(--mono);
 }
+
+/* A folder field with the OS picker beside it. */
+.folder-input {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.folder-input input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.folder-input button {
+  flex: none;
+}
+
+/* A device pairing waiting for approval. */
+.pair-progress {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.pair-code {
+  font-size: 1.4em;
+  letter-spacing: 0.08em;
+}

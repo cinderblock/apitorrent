@@ -6,8 +6,10 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import { api } from "../api/client";
 import { setTransport } from "../api/transport";
 import { desktop, type AppUpdateView, type SyncEvent } from "./bridge";
+import { parseLocators } from "../components/StorageRootsSection";
 import { toBatch } from "./links";
 import { currentNotices } from "./notices";
+import { suggestionNote } from "./ProfileEditor";
 import { apiPath, DesktopSocket, desktopTransport } from "./transport";
 import { splitList } from "./util";
 
@@ -159,5 +161,31 @@ describe("app updates", () => {
       ["app_update_check", true],
       ["app_update_install", undefined],
     ]);
+  });
+});
+
+describe("the folder picker", () => {
+  test("asks the app, and passes a cancel through as null", async () => {
+    const calls = recordIpc(({ args }) => (args.start === "C:\\Downloads" ? "D:\\Torrents" : null));
+    expect(await desktop.pickFolder("Download folder", "C:\\Downloads")).toBe("D:\\Torrents");
+    expect(await desktop.pickFolder("Data folder")).toBeNull();
+    expect(calls).toEqual([
+      { cmd: "pick_folder", args: { title: "Download folder", start: "C:\\Downloads" } },
+      { cmd: "pick_folder", args: { title: "Data folder", start: null } },
+    ]);
+  });
+});
+
+describe("mapping suggestions", () => {
+  const base = { remote: "/srv/t", local: null, verified: false, via: null, locators: [] };
+  test("say what's missing, or nothing when verified", () => {
+    expect(suggestionNote({ ...base, local: "Z:\t", verified: true })).toBeNull();
+    expect(suggestionNote({ ...base, local: "\\\\nas\\t", via: "smb://nas/t", locators: ["smb://nas/t"] })).toContain("can't be read through \\\\nas\\t");
+    expect(suggestionNote({ ...base, locators: ["nfs://nas/srv/t"] })).toContain("Mount that share");
+    expect(suggestionNote(base)).toContain("Settings → Storage roots");
+  });
+
+  test("locators are edited one per line", () => {
+    expect(parseLocators(" \\\\nas\\a,b \r\n\n smb://nas/t \n")).toEqual(["\\\\nas\\a,b", "smb://nas/t"]);
   });
 });
