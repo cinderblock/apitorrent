@@ -27,6 +27,10 @@ Seen once on 2026-11-10 at about 4:30 PM PST (00:30Z), in GitHub Actions run
 `Custom { kind: ConnectionReset, error: Reset }`, so the test's join at line 53 panicked.
 The other 10 uTP socket tests passed, and the same commit passed on Windows and macOS.
 
+Reproduces readily on Linux: on sentinel (24 threads) at `4a17deb`, 6 of 20 runs of
+`cargo test -p apitorrent-utp --test socket transfer_through_a_lossy_reordering_proxy`
+failed with the same reset (2026-11-10). `rbuild` makes that loop cheap.
+
 Why it matters: unlike a timing flake, a reset while data crosses a lossy, reordering
 link could be a real protocol bug (a state the socket treats as fatal that it should
 recover from). To start: run the test in a loop on Linux with the proxy's seed logged,
