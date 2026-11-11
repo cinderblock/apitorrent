@@ -128,7 +128,8 @@ pub(crate) fn restart_if_installed(u: Option<&Updater>) -> Option<ExitCode> {
 }
 
 /// `apitorrentd update [--check]`.
-pub(crate) async fn run_cli(args: &UpdateArgs, data_dir: PathBuf) -> ExitCode {
+/// `managed`: `--no-update-check`, so a package manager installs updates, not this.
+pub(crate) async fn run_cli(args: &UpdateArgs, data_dir: PathBuf, managed: bool) -> ExitCode {
     let u = match UpdaterConfig::for_this_binary(data_dir).and_then(Updater::new) {
         Ok(u) => u,
         Err(e) => {
@@ -163,6 +164,12 @@ pub(crate) async fn run_cli(args: &UpdateArgs, data_dir: PathBuf) -> ExitCode {
     );
     if args.check {
         return ExitCode::SUCCESS;
+    }
+    if managed {
+        eprintln!(
+            "Can't install it: updates are off here (--no-update-check); update apitorrent              the way it was installed."
+        );
+        return ExitCode::FAILURE;
     }
     if let Some(reason) = &status.installs_disabled_reason {
         eprintln!("Can't install it: {reason}.");

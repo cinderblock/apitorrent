@@ -211,6 +211,12 @@ struct Args {
     )]
     space_hosts: Vec<String>,
 
+    /// For installs a package manager keeps up to date: no daily check for new releases,
+    /// no update endpoints and no update UI. `apitorrentd update --check` still reports;
+    /// `apitorrentd update` refuses to install.
+    #[arg(long, env = "APITORRENT_NO_UPDATE_CHECK", global = true)]
+    no_update_check: bool,
+
     /// Don't run plugins. Installed plugins stay installed, and the plugin endpoints answer
     /// that plugins are turned off.
     #[arg(long, env = "APITORRENT_NO_PLUGINS")]
@@ -319,10 +325,15 @@ async fn main() -> ExitCode {
         };
     }
     if let Some(Command::Update(u)) = &args.command {
-        return update::run_cli(u, data_dir).await;
+        return update::run_cli(u, data_dir, args.no_update_check).await;
     }
     tracing::info!(data_dir = %data_dir.display(), download_dir = %download_dir.display(), "starting");
-    let updater = update::updater(data_dir.clone());
+    let updater = if args.no_update_check {
+        tracing::info!("update checks are off (--no-update-check)");
+        None
+    } else {
+        update::updater(data_dir.clone())
+    };
     let _daily_update_check = updater
         .as_ref()
         .map(apitorrent_update::Updater::spawn_daily);
@@ -537,5 +548,23 @@ async fn main() -> ExitCode {
             tracing::error!(error = %e, "API server failed");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Args, Command};
+
+    #[test]
+    fn no_update_check_is_a_flag_for_the_daemon_and_the_update_command() {
+        let a = Args::try_parse_from(["apitorrentd", "--no-update-check"]).unwrap();
+        assert!(a.no_update_check);
+        let a = Args::try_parse_from(["apitorrentd", "update", "--no-update-check"]).unwrap();
+        assert!(a.no_update_check);
+        assert!(matches!(a.command, Some(Command::Update(_))));
+        let a = Args::try_parse_from(["apitorrentd"]).unwrap();
+        assert!(!a.no_update_check);
     }
 }
