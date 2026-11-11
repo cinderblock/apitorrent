@@ -19,18 +19,6 @@ so a stuck request sits for five minutes before any error. To start: run the GUI
 `RUST_LOG=reqwest=debug,hyper_util=debug`, and probe `api_request` in a loop; consider a
 shorter timeout for UI calls either way.
 
-## Engine test `default_links_are_encrypted_utp` fails under load
-
-Seen once on 2026-11-09 at about 6:20 PM PST (02:20Z), in a full `cargo test -p
-apitorrent-engine` run while other builds were compiling:
-`crates/apitorrent-engine/tests/loopback.rs:1430` (`assert_eq!(views, Some(((true, true),
-(true, true))))`). It passed alone three times and in two more full runs of the loopback
-suite. Most likely the uTP connect timed out under CPU load and the link fell back to TCP.
-
-Why it matters: a flaky test hides real failures in CI. To start: log the link the
-leecher ended up with when the assertion fails, and consider waiting for the uTP attempt
-(or retrying the link check) instead of taking the first connection.
-
 ## Space storage roots aren't storage roots for the desktop app
 
 Found 2026-11-10 while adding share locators (branch `t3/365da07f`). `GET /api/v1/roots`

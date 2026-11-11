@@ -115,10 +115,11 @@ impl Dialer {
     /// Open the transport alone.
     async fn open(&self, addr: SocketAddr, utp: bool) -> Result<BoxIo, String> {
         if utp {
+            // The socket gives up on its own, after `SessionConfig::utp_connect_timeout`.
             let socket = self.utp.as_ref().ok_or("uTP is off")?;
-            let stream = tokio::time::timeout(CONNECT_TIMEOUT, socket.connect(addr))
+            let stream = socket
+                .connect(addr)
                 .await
-                .map_err(|_| "connect timed out".to_owned())?
                 .map_err(|e| format!("connect failed: {e}"))?;
             Ok(Box::new(stream))
         } else {
@@ -191,7 +192,11 @@ impl Dialer {
         for &utp in self.order(addr, hint) {
             match self.handshake_over(addr, ours, utp).await {
                 Ok(done) => return Ok(done),
-                Err(e) => errors.push(format!("{}: {e}", if utp { "uTP" } else { "TCP" })),
+                Err(e) => {
+                    let transport = if utp { "uTP" } else { "TCP" };
+                    tracing::debug!(%addr, transport, error = %e, "dial attempt failed");
+                    errors.push(format!("{transport}: {e}"));
+                }
             }
         }
         Err(errors.join("; "))

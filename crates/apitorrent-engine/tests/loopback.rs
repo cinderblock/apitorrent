@@ -1376,6 +1376,18 @@ async fn link_between(
     leech_config: SessionConfig,
     patience: Duration,
 ) -> Option<((bool, bool), (bool, bool))> {
+    // These tests check which link is chosen, not how fast it is made. Under load, the
+    // default 5 s uTP connect timed out and the leecher fell back to TCP (seen as a
+    // flake, with "uTP: connect failed: the connection timed out" in the log). So when
+    // the seeder has uTP to answer, the leecher waits for it as long as the test does.
+    let leech_config = if seed_config.utp {
+        SessionConfig {
+            utp_connect_timeout: patience,
+            ..leech_config
+        }
+    } else {
+        leech_config
+    };
     let fx = fixture(Version::V1);
     let seed_dir = tempfile::tempdir().unwrap();
     let leech_dir = tempfile::tempdir().unwrap();

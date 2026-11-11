@@ -59,6 +59,10 @@ pub struct SessionConfig {
     /// uTP backs off when it sees queues building, so it keeps torrent traffic from
     /// slowing the rest of the network.
     pub prefer_utp: bool,
+    /// How long an outgoing uTP connection keeps retrying its SYN before the dialer falls
+    /// back to TCP. The default, 5 s, is three tries with uTP's 1 s initial timeout
+    /// doubling.
+    pub utp_connect_timeout: std::time::Duration,
     /// Message stream encryption for peer connections, both directions.
     pub encryption: apitorrent_mse::Policy,
 }
@@ -83,6 +87,7 @@ impl Default for SessionConfig {
             dht: None,
             utp: true,
             prefer_utp: true,
+            utp_connect_timeout: std::time::Duration::from_secs(5),
             encryption: apitorrent_mse::Policy::default(),
         }
     }
@@ -575,7 +580,7 @@ async fn bind_peer_port(
 ) -> io::Result<(TcpListener, Option<apitorrent_utp::UtpSocket>)> {
     const ATTEMPTS: usize = 20;
     let utp_config = apitorrent_utp::Config {
-        connect_timeout: UTP_CONNECT_TIMEOUT,
+        connect_timeout: config.utp_connect_timeout,
         ..apitorrent_utp::Config::default()
     };
     let mut attempt = 0;
@@ -598,10 +603,6 @@ async fn bind_peer_port(
         }
     }
 }
-
-/// How long an outgoing uTP connection keeps retrying its SYN before we fall back to TCP.
-/// With uTP's 1 s initial timeout doubling, that is three tries.
-const UTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn utp_accept_loop(socket: apitorrent_utp::UtpSocket, shared: Arc<Shared>) {
     loop {
