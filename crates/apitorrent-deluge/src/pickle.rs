@@ -7,17 +7,20 @@
 //!
 //! Protocols 0–5 are read, but only the opcodes Python emits for plain data, classes and
 //! their instances. Anything else is an error, as is any input that would need more than
-//! [`MAX_ITEMS`] values, [`MAX_COPIED_BYTES`] bytes of copied strings, or nesting deeper
-//! than [`MAX_DEPTH`]: the input is not trusted. `DUP` and the memo copy values, so a short
+//! [`MAX_MEMORY`] bytes of values and strings, or nesting deeper than [`MAX_DEPTH`]: the
+//! input is not trusted. `DUP` and the memo copy values, so a short
 //! pickle could otherwise double its size with every pair of opcodes.
 
 use std::collections::HashMap;
 
-/// The most values a pickle may build, to bound memory on hostile input.
-pub const MAX_ITEMS: usize = 10_000_000;
+/// The most memory a pickle may build, in bytes, to bound hostile input. Values are
+/// counted at [`VALUE_COST`] each, plus the strings that `DUP` and the memo copy. A
+/// Deluge state of tens of thousands of torrents fits well inside it.
+pub const MAX_MEMORY: usize = 384 * 1024 * 1024;
 
-/// The most string and byte data that `DUP` and the memo may copy, in bytes.
-pub const MAX_COPIED_BYTES: usize = 256 * 1024 * 1024;
+/// What one value is counted as: its own size, doubled for the allocations it may own (a
+/// boxed class, a vector's spare capacity).
+const VALUE_COST: usize = 2 * std::mem::size_of::<Value>();
 
 /// The deepest nesting of containers a pickle may build. Deluge's state is a few levels
 /// deep; the limit keeps dropping or printing a value from exhausting the stack.
@@ -183,18 +186,19 @@ impl Slot {
     }
 }
 
-/// The values and copied bytes built so far, against the limits.
+/// The memory built so far, against the limit.
 struct Budget {
-    items: usize,
-    bytes: usize,
-    max_items: usize,
+    used: usize,
+    max: usize,
 }
 
 impl Budget {
     fn charge(&mut self, items: usize, bytes: usize) -> Result<(), PickleError> {
-        self.items = self.items.saturating_add(items);
-        self.bytes = self.bytes.saturating_add(bytes);
-        if self.items > self.max_items || self.bytes > MAX_COPIED_BYTES {
+        self.used = self
+            .used
+            .saturating_add(items.saturating_mul(VALUE_COST))
+            .saturating_add(bytes);
+        if self.used > self.max {
             return Err(PickleError::TooLarge);
         }
         Ok(())
@@ -237,19 +241,15 @@ fn nest(depth: u32) -> Result<u32, PickleError> {
 
 /// Read a pickle.
 pub fn load(data: &[u8]) -> Result<Value, PickleError> {
-    load_limited(data, MAX_ITEMS)
+    load_limited(data, MAX_MEMORY)
 }
 
-/// [`load`] with a smaller value limit, so tests of the limit run quickly.
-fn load_limited(data: &[u8], max_items: usize) -> Result<Value, PickleError> {
+/// [`load`] with a smaller memory limit, so tests of the limit run quickly.
+fn load_limited(data: &[u8], max: usize) -> Result<Value, PickleError> {
     let mut r = Reader { data, pos: 0 };
     let mut stack: Vec<Slot> = Vec::new();
     let mut memo: HashMap<u64, (Value, u32)> = HashMap::new();
-    let mut budget = Budget {
-        items: 0,
-        bytes: 0,
-        max_items,
-    };
+    let mut budget = Budget { used: 0, max };
 
     loop {
         budget.charge(1, 0)?;
@@ -695,7 +695,7 @@ mod tests {
         }
         p.push(b'.');
         assert!(matches!(
-            load_limited(&p, 100_000),
+            load_limited(&p, 8 << 20),
             Err(PickleError::TooLarge | PickleError::TooDeep)
         ));
         // The same through the memo: PUT, then GET it twice and append.
@@ -704,10 +704,14 @@ mod tests {
             p.extend_from_slice(b"q\x00h\x00a");
         }
         p.push(b'.');
-        assert!(load_limited(&p, 100_000).is_err());
+        assert!(load_limited(&p, 8 << 20).is_err());
         // The input the fuzzer found (out of memory at 2 GB before the fix).
         let found = b"((l2222ra\xff\xff\xffRa222ra\xff\xff\xffRaaa2222aa2222ra2(l2222ra22222aa2222ra2(l2222r\x002222aaaa2222aaa22aa2222aa2222ra2(l2222ra22222aa2222ra2(l2222r\x002222aaaa2222aaa2222aa222";
-        assert!(load_limited(found, 100_000).is_err());
+        assert!(load_limited(found, 8 << 20).is_err());
+        // A second one: NEWOBJ_EX objects copied by DUP, over 2 GB under AddressSanitizer
+        // when only the number of values was limited.
+        let found = b")]\x89)\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89])a\x922\x92222\x8f\x89\x9222\x92\x92\x92222\x8f\x89\x9222\x92\x922\x9222\x8f\x89\x922\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89])a\x922\x92222\x8f\x89\x9222\x92\x92\x92222\x8f\x89\x9222\x92\x922\x9222\x8f\x89\x922\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89\x9222\x8f\x89\x9222\x9222.\x922\xc8";
+        assert!(load_limited(found, 8 << 20).is_err());
     }
 
     #[test]
