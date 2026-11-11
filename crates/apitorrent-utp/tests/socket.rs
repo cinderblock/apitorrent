@@ -464,3 +464,92 @@ async fn dropping_streams_closes_them_gracefully() {
         .unwrap();
     assert_eq!(digest(&got), digest(&data(300_000, 9)));
 }
+
+/// A relay that forwards everything, except that once armed it drops the server's ACKs
+/// (`State` packets) until the client retransmits a data or FIN packet.
+struct AckHoldingProxy {
+    addr: SocketAddr,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AckHoldingProxy {
+    async fn start(server: SocketAddr) -> Self {
+        use std::sync::atomic::Ordering;
+        let sock = Arc::new(UdpSocket::bind(localhost()).await.unwrap());
+        let addr = sock.local_addr().unwrap();
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = armed.clone();
+        tokio::spawn(async move {
+            let mut client: Option<SocketAddr> = None;
+            let mut sent = std::collections::HashSet::new();
+            let mut buf = vec![0u8; 65_536];
+            loop {
+                let Ok((n, from)) = sock.recv_from(&mut buf).await else {
+                    continue;
+                };
+                let Ok(p) = Packet::decode(&buf[..n]) else {
+                    continue;
+                };
+                let to = if from == server {
+                    if flag.load(Ordering::SeqCst) && p.header.ty == PacketType::State {
+                        continue;
+                    }
+                    match client {
+                        Some(c) => c,
+                        None => continue,
+                    }
+                } else {
+                    client = Some(from);
+                    if flag.load(Ordering::SeqCst)
+                        && matches!(p.header.ty, PacketType::Data | PacketType::Fin)
+                        && !sent.insert(p.header.seq_nr)
+                    {
+                        flag.store(false, Ordering::SeqCst); // a retransmission: let ACKs through
+                    }
+                    server
+                };
+                let _ = sock.send_to(&buf[..n], to).await;
+            }
+        });
+        Self { addr, armed }
+    }
+}
+
+/// The server has closed its side and read the client's last data and FIN, but its ACKs
+/// for them were lost. Dropping the stream must not forget the connection at once: the
+/// client's retransmission would get a reset, and the client's shutdown would fail
+/// although every byte was delivered. (Found as a reset in
+/// `transfer_through_a_lossy_reordering_proxy` on Linux CI.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dropped_stream_lingers_for_lost_final_acks() {
+    let a = UtpSocket::bind_with_config(localhost(), fast())
+        .await
+        .unwrap();
+    let b = UtpSocket::bind_with_config(localhost(), fast())
+        .await
+        .unwrap();
+    let proxy = AckHoldingProxy::start(b.local_addr()).await;
+    let (mut client, mut server) = pair(&a, &b, proxy.addr).await;
+    let run = async {
+        // The server finishes sending first, and the client sees its end of stream.
+        server.shutdown().await.unwrap();
+        let mut rest = Vec::new();
+        client.read_to_end(&mut rest).await.unwrap();
+        assert!(rest.is_empty());
+        // From here, the server's ACKs are lost until the client retransmits.
+        proxy.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let writer = tokio::spawn(async move {
+            client.write_all(b"last words").await?;
+            client.shutdown().await
+        });
+        let mut got = Vec::new();
+        server.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"last words");
+        drop(server);
+        writer.await.unwrap()
+    };
+    tokio::time::timeout(Duration::from_secs(20), run)
+        .await
+        .expect("close took too long")
+        .expect("the client's shutdown failed");
+}

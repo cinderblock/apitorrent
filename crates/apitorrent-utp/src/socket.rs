@@ -15,7 +15,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Config;
-use crate::conn::{Connection, Stats};
+use crate::conn::{Connection, State, Stats};
 use crate::packet::{self, HEADER_LEN, Header, Packet, PacketType, looks_like_utp};
 
 /// Datagrams queued between the receive path and the driver. When the driver falls this
@@ -570,7 +570,13 @@ impl Driver {
             }
         }
 
-        let release = s.conn.can_release() || (s.dropped && s.conn.is_write_closed());
+        // A dropped stream whose FIN is acknowledged is forgotten at once while the peer is
+        // still sending (nobody will read it; the peer gets a reset). Once the peer's FIN
+        // has arrived too, the connection is closed cleanly and lingers instead: our final
+        // ACKs may have been lost, and its retransmissions must be answered with an ACK,
+        // not a reset that fails its shutdown.
+        let release = s.conn.can_release()
+            || (s.dropped && s.conn.is_write_closed() && s.conn.state() != State::Closed);
         let timeout = s.conn.poll_timeout();
         drop(s);
         if release {

@@ -19,23 +19,6 @@ so a stuck request sits for five minutes before any error. To start: run the GUI
 `RUST_LOG=reqwest=debug,hyper_util=debug`, and probe `api_request` in a loop; consider a
 shorter timeout for UI calls either way.
 
-## uTP test `transfer_through_a_lossy_reordering_proxy` reset once on Linux CI
-
-Seen once on 2026-11-10 at about 4:30 PM PST (00:30Z), in GitHub Actions run
-[42915843916](https://github.com/cinderblock/apitorrent/actions/runs/42915843916), job
-"Rust (ubuntu-latest)": `crates/apitorrent-utp/tests/socket.rs:49` unwrapped
-`Custom { kind: ConnectionReset, error: Reset }`, so the test's join at line 53 panicked.
-The other 10 uTP socket tests passed, and the same commit passed on Windows and macOS.
-
-Reproduces readily on Linux: on sentinel (24 threads) at `4a17deb`, 6 of 20 runs of
-`cargo test -p apitorrent-utp --test socket transfer_through_a_lossy_reordering_proxy`
-failed with the same reset (2026-11-10). `rbuild` makes that loop cheap.
-
-Why it matters: unlike a timing flake, a reset while data crosses a lossy, reordering
-link could be a real protocol bug (a state the socket treats as fatal that it should
-recover from). To start: run the test in a loop on Linux with the proxy's seed logged,
-and find which side sends the reset and in what state.
-
 ## Engine test `default_links_are_encrypted_utp` fails under load
 
 Seen once on 2026-11-09 at about 6:20 PM PST (02:20Z), in a full `cargo test -p
