@@ -60,13 +60,20 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
   the sync WebSocket through a Tauri channel, so Rust does the TLS (with the profile's
   trust setting) and adds the API token, which JavaScript never sees. The web app has one
   seam for this, `web/src/api/transport.ts`.
-- **Remote mode signs in with a scoped API token, not a passkey.** A passkey's relying
-  party must be the page's own host, and the app's page is `tauri.localhost`. Loading the
-  daemon's origin instead would put TLS in the webview's hands (so pinned keys and private
-  CAs couldn't work), would need IPC for a remote origin, and still fails on macOS
-  (WKWebView allows WebAuthn only for an app's signed Associated Domains, which can't name
-  every user's server) and Linux (WebKitGTK has no WebAuthn). The token is made on the
-  daemon's Account page and kept in the OS keychain (`keyring`).
+- **Remote mode signs in as a paired device (or with a scoped API token), not a
+  passkey.** A passkey's relying party must be the page's own host, and the app's page is
+  `tauri.localhost`. Loading the daemon's origin instead would put TLS in the webview's
+  hands (so pinned keys and private CAs couldn't work), would need IPC for a remote
+  origin, and still fails on macOS (WKWebView allows WebAuthn only for an app's signed
+  Associated Domains, which can't name every user's server) and Linux (WebKitGTK has no
+  WebAuthn). So the app pairs (see "Device pairing"): the approval happens in the user's
+  own browser, on the daemon's origin, where passkeys work. The credential (or a pasted
+  API token) is kept in the OS keychain (`keyring`); the page never sees it, nor the poll
+  secret (`pairing.rs`).
+- **Native dialogs come from Rust.** The folder picker (`tauri-plugin-dialog`) is reached
+  only through the app's own `pick_folder` command; the page has no plugin permissions.
+  It is offered for local paths only: Local mode's folders, path mappings, and the Add
+  dialog's folder in Local mode (where the server's paths are this computer's).
 - **Local mode** runs the core in the app process and talks to it through
   `apitorrent_server::Embedded`: requests go straight through the router, the sync socket
   over an in-memory HTTP connection, and nothing listens on a port. Such requests carry a
@@ -386,9 +393,32 @@ from the torrent database.
   non-loopback address or with trusted proxies, and requests carrying proxy headers
   (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`) don't get the free pass, since a local
   proxy would make remote clients look local.
-- **Device pairing** (planned): the desktop thin client gets a device credential. It is a
-  bearer token bound to the pinned key, and can be revoked per device. Until then the
-  desktop app uses an ordinary API token, pasted once and kept in the OS keychain.
+- **Device pairing** (`apitorrent-auth/src/devices.rs`), for the desktop thin client,
+  shaped like OAuth's device authorization grant (RFC 8628):
+  - The app asks without signing in (`POST /auth/devices/requests`, rate-limited per
+    address like sign-in, at most 256 pending, each for ten minutes, in memory). It sends
+    its name, its platform and, with pinned trust, the SPKI SHA-256 it pinned. It gets a
+    poll secret (256 bits, never shown) and a user code (eight base32 characters,
+    `ABCD-EFGH`; case, `-` and `0`/`1`/`8` look-alikes don't matter).
+  - The app shows the code and opens `<server>/pair#code=…` in the default browser. A
+    signed-in browser session looks the code up (wrong codes count against the address
+    like wrong passwords), sees the device's name, platform and address with a warning to
+    approve only a code its own app shows, picks `full` or `read`, and approves (recent
+    authentication, as for creating a token) or refuses. Typing the code on the Account
+    page works the same way.
+  - The app polls (`POST /auth/devices/poll`) and receives `apd_` + 256 bits once; only
+    its SHA-256 is stored (`devices` in `auth.db`). It works like an API token of the
+    approver: its scope, the approver's space, no credential management. A device may
+    list and remove only itself (the app signs out on the server when its connection is
+    removed or re-paired); the Account page lists every device with its last use and
+    address, and removes any. Removal closes its sync sockets.
+  - **Bound to the pinned key**: when the daemon serves TLS itself, a request whose pin
+    isn't the key it serves is refused (something answered in between), and a matching
+    pin binds the device: its credential works only while the daemon serves that key. A
+    re-keyed server needs its devices paired again, as their pins do anyway. With OS or
+    private-CA trust, or behind a TLS proxy (where the daemon can't see the key the app
+    saw), a device is unbound but otherwise the same.
+  - Pasted API tokens keep working in the app.
 - **Roles**: the instance's role (`admin`, `user` or `viewer`) is stored per user, and the
   first user is the admin. An `admin` is a **server admin**: every space, its members,
   creating spaces, instance settings, bans and plugins. Everything else is decided by a
@@ -815,7 +845,7 @@ hashes, never disk names.
 ## Remote file access (thin client)
 
 - Each storage root on the daemon has an optional set of **share locators**: a UNC path
-  (`\\nas\torrents`), `smb://`, `nfs://` or `sftp://` URLs, or a plain mounted path.
+  (`\\nas\torrents`), `smb://` or `nfs://` URLs.
 - Each client profile holds **path mappings**: remote prefix → local path, with
   suggestions from the share locators.
 - **Verification**: the daemon writes a marker file (`.apitorrent-root`) containing the
@@ -831,8 +861,18 @@ above it, or one inside it; every root it relates to must have its marker at the
 local place. The app re-checks the mapping on every action, not just when it was saved,
 since shares get unmounted and remounted. Server-supplied paths with `.` or `..` parts, or
 with names that mean something else locally (`a:b` on Windows), are refused, and "open
-file" refuses programs and scripts (use "show in folder"). Share locators aren't built
-yet; suggestions offer each root's own path, filled in when it already works here.
+file" refuses programs and scripts (use "show in folder").
+
+Share locators (`apitorrent_types::share`) are set by a server admin in Settings → Storage
+roots (`PUT /api/v1/roots/{id}/locators`), checked and normalised (credentials, queries,
+`.`/`..` and unknown schemes refused; at most 8 per root), kept in the instance database
+by root id, and listed by `GET /roots`. The desktop app (`shares.rs`) turns each into
+local candidates: on Windows the UNC path (an `smb://` URL rewritten as one; NFS exports
+through the Client for NFS's UNC form); on macOS and Linux the mount of that share found
+in the mount table (`/proc/self/mounts`, or `mount`), plus GNOME's GVFS folder. The root's
+own path comes first when it is a path on this kind of OS. The first candidate whose marker
+verifies is suggested; otherwise the first one is, unverified, with a note to mount it.
+Only the instance's download directory is a storage root so far (see `ISSUES.md`).
 
 ## Automation
 

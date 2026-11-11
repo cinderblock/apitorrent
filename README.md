@@ -275,6 +275,10 @@ once used.
   the passkey.
 - **API tokens** for scripts are made on the Account page, read-only or full, and sent
   as `Authorization: Bearer <token>`.
+- **Paired devices**: the desktop app pairs instead of taking a token. It shows a short
+  code and opens the server's `/pair` page in your browser, where you approve it (or enter
+  the code under Account → Paired devices). Each device is listed there and can be removed
+  on its own.
 
 ### Inviting people
 
@@ -422,15 +426,20 @@ a new release exists but never install it. See `release/README.md`.
 
 The desktop app keeps a list of **connections**, each one of two kinds:
 
-- **A server**: a thin client to a daemon (a seedbox, a NAS). It signs in with an **API
-  token**, not a passkey: passkeys belong to the server's own web address, and the app's
-  window isn't it. Make a token on the server's Account page and paste it in; it's kept
-  in the system keychain. The server's certificate is trusted in one of three ways, and
-  never skipped:
+- **A server**: a thin client to a daemon (a seedbox, a NAS). The server's certificate is
+  trusted in one of three ways, and never skipped:
   - it's from a public CA, or one this computer already trusts;
   - it's from your own CA (import its certificate into the connection);
   - **pairing**: enter the code the server shows (the SHA-256 of its public key), and the
     app pins that key.
+
+  Then **pair this device**: the app shows a short code and opens the server's pairing
+  page in your browser, where you're signed in with your passkey; check the code and
+  approve. The app is then a device on your Account page, removable on its own, and with
+  a pinned key it works only while the server keeps that key. Passkeys can't sign in the
+  app's own window (they belong to the server's web address), which is why it pairs. An
+  **API token** pasted into the connection still works instead. Either way the credential
+  is kept in the system keychain.
 - **This computer**: the engine runs inside the app. It can also serve the web UI to your
   network, with the same rules as the daemon (sign-in required; plain HTTP only behind a
   trusted proxy or if you accept the risk).
@@ -439,6 +448,11 @@ The desktop app keeps a list of **connections**, each one of two kinds:
 folder on the server (`/srv/torrents`) to where this computer sees it (`\\nas\torrents`,
 `/mnt/torrents`). A mapping is used only after the app reads the server's
 `.apitorrent-root` marker through it, so "Show in folder" never opens the wrong place.
+"Suggest from the server" fills them in from the **share locators** a server admin sets in
+Settings → Storage roots (`\\nas\torrents`, `smb://nas/torrents`,
+`nfs://nas/srv/torrents`): on Windows the share is opened by its UNC path, and on macOS and
+Linux the app finds where it is mounted. Folders on this computer (mappings, and the
+folders of "This computer" connections) can be picked with the system's folder picker.
 
 Closing the window keeps apitorrent in the tray (downloads go on, and a notification says
 when one finishes); quit from the tray menu. Clicking a `magnet:` link or opening a

@@ -166,10 +166,8 @@ Times are US Pacific (UTC alongside).
     all three afterwards.
 - **No end-to-end test against a TLS daemon**: the daemon's built-in TLS is being built in
   parallel. The client is tested against rustls servers on 127.0.0.1 instead.
-- No native folder picker (paths are typed); `tauri-plugin-dialog` would add one.
-- Share locators (UNC/smb/nfs hints per root) aren't in the daemon yet; suggestions use
-  the root's own path.
-- Device credentials bound to the pinned key (architecture "Device pairing").
+- ~~No native folder picker~~, ~~share locators~~, ~~device credentials~~: built
+  2026-11-10, see the follow-ups section below.
 
 ## Open questions for the user
 
@@ -248,14 +246,51 @@ The three follow-ups above that need no installer run:
 
 ## Progress log
 
-- [ ] Plan section (this)
-- [ ] 1 Folder picker
-- [ ] 2 Share locators: core + API + types, settings UI, desktop suggestions
-- [ ] 3 Device pairing: auth crate, server routes + binding, Account page and `/pair`,
-  desktop flow
-- [ ] Docs: architecture, README
-- [ ] All checks (fmt, clippy, tests, desktop tests, bun typecheck/test/build)
+Times are US Pacific (UTC alongside).
+
+- [x] Plan section (`097c1ef`)
+- [x] 1 Folder picker: `pick_folder` command (+ `picker_start` unit test), `FolderInput`
+  (+ `useLocalMode`) in Local folders, mapping rows and the Add dialog (Local mode only);
+  bun test for the bridge call
+- [x] 2 Share locators: `apitorrent_types::share` (parser, normaliser, tests), core
+  storage + `Core::set_root_locators`, `PUT /roots/{id}/locators` (server test),
+  Settings → Storage roots, `shares.rs` (mount tables, GVFS, UNC) and new
+  `mapping::suggestions` (tests), profile editor notes
+- [x] 3 Device pairing: written (auth `devices.rs` + migration 4 + unit test, server
+  routes + bearer dispatch + integration test, Account page `DevicesSection` and `/pair`,
+  desktop `pairing.rs` + commands + editor `SignInField`)
+- [x] Docs: architecture (desktop, device pairing, remote file access), README, ISSUES.md
+  (space storage roots aren't roots)
+- [x] All checks pass (2026-11-10 evening PST): `cargo fmt --check`, workspace clippy
+  `-D warnings`, `cargo test --locked` (742 passed), desktop + client tests, bun
+  typecheck / test (59) / build.
+- [x] Commits: `229e5f2` share locators (daemon), `b01aec6` device pairing (auth +
+  server), `d3205f2` desktop and web UI for all three, then docs. The client commit holds
+  all three features because their hunks interleave in the same files.
+
+## Not done / follow-ups
+
+- **The GUI wasn't launched** (not allowed in the foreground). The new desktop pieces are
+  tested as units (`pairing.rs`, `shares.rs`, `mapping::suggestions`, `picker_start`,
+  profile JSON) and through mocked IPC in bun; the web pages typecheck and build. Not
+  exercised for real: the native folder dialog, opening `/pair` in the browser, and a
+  full pair-approve-poll-save round trip in the app.
+- **Key binding over real TLS is tested in the auth unit test only** (served key given
+  directly). The server integration test runs without TLS (unbound path). A test with
+  `TlsServer` on loopback and a pinned `apitorrent-client` would cover the wiring
+  (`TlsCtx::served_key` in `authn.rs` and `device_request`).
+- Space storage roots aren't roots (logged in `ISSUES.md`).
+- Devices aren't shown on the Users page (admins see tokens and sessions per user there,
+  if they do; check before adding).
 
 ## Findings / gotchas
 
-*(none yet)*
+- **The Bash tool rewrites backslashes in heredocs** (`\\` → `\`, `\t` → a tab), so
+  Python edit scripts and test strings with UNC paths came out wrong several times. Write
+  edit scripts with the Write tool into the scratchpad and run them; use the Edit tool for
+  strings with backslashes.
+- **Python on this machine defaults to cp1252**: `open(p, 'w')` with a `→` in the text
+  raised mid-write and left `ProfileEditor.tsx` empty (recovered from HEAD plus the
+  edits). Always pass `encoding="utf-8"`.
+- The slot limiter is busy with several other sessions; builds wait 5 to 15 minutes for
+  slots. This worktree's build dir starts empty.

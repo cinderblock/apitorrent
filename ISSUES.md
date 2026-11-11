@@ -47,3 +47,14 @@ suite. Most likely the uTP connect timed out under CPU load and the link fell ba
 Why it matters: a flaky test hides real failures in CI. To start: log the link the
 leecher ended up with when the assertion fails, and consider waiting for the uTP attempt
 (or retrying the link check) instead of taking the first connection.
+
+## Space storage roots aren't storage roots for the desktop app
+
+Found 2026-11-10 while adding share locators (branch `t3/365da07f`). `GET /api/v1/roots`
+lists only the instance's download directory (`apitorrent-core/src/roots.rs`, built once in
+`Core::start`). A space's own `settings.storage_roots` (`apitorrent-types/src/spaces.rs`)
+get no `.apitorrent-root` marker, no root id and no share locators, so the desktop app
+can't verify a path mapping for a torrent saved there and "Show in folder" stays
+unavailable for it. Why it matters: with spaces that keep their downloads elsewhere, the
+thin client can't open their files. A fix makes every space storage root a root (id and
+marker when the space settings change, listed per the request's space).
