@@ -617,6 +617,52 @@ mod tests {
         assert_eq!(std::fs::read(&to).unwrap(), b"hello");
     }
 
+    /// A directory for a reflink test: on the cloning volume CI mounts when
+    /// `APITORRENT_REFLINK_DIR` is set (then a clone must work), otherwise in the system
+    /// temp directory, where it may not.
+    fn reflink_scratch() -> (tempfile::TempDir, bool) {
+        match std::env::var_os("APITORRENT_REFLINK_DIR") {
+            Some(d) => (tempfile::tempdir_in(d).unwrap(), true),
+            None => (tempfile::tempdir().unwrap(), false),
+        }
+    }
+
+    /// A partial match is cloned where the volume can (Btrfs, XFS, APFS, `ReFS`), and the
+    /// clone is a private file: writing it leaves the source alone.
+    #[test]
+    fn partial_matches_are_reflinked_where_the_volume_clones() {
+        let (dir, clones) = reflink_scratch();
+        let bytes = data(1 << 20, 7);
+        let from = dir.path().join("a.bin");
+        std::fs::write(&from, &bytes).unwrap();
+        let to = dir.path().join("sub").join("b.bin");
+        // No copy fallback, so `None` means the clone failed.
+        let how = materialize(&from, &to, false, false);
+        if clones {
+            assert_eq!(how, Some(Linked::Reflink), "the volume should clone");
+        }
+        let Some(how) = how else {
+            assert!(!to.exists());
+            return;
+        };
+        assert_eq!(how, Linked::Reflink);
+        assert!(!how.shared());
+        assert_eq!(std::fs::read(&to).unwrap(), bytes);
+        let mut f = std::fs::OpenOptions::new().write(true).open(&to).unwrap();
+        std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(4096)).unwrap();
+        std::io::Write::write_all(&mut f, &[0xee; 4096]).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+        assert_eq!(
+            std::fs::read(&from).unwrap(),
+            bytes,
+            "the source is untouched"
+        );
+        let mut changed = bytes.clone();
+        changed[4096..8192].fill(0xee);
+        assert_eq!(std::fs::read(&to).unwrap(), changed);
+    }
+
     #[test]
     fn unregistered_messages() {
         assert!(is_unregistered("Unregistered torrent"));

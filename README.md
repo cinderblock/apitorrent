@@ -67,6 +67,11 @@ You need Rust (stable) and Bun. CI (`.github/workflows/ci.yml`) runs the same ch
 Linux, Windows and macOS; `release.yml` builds the release binaries and installers from a
 version tag into a draft release.
 
+The reflink tests (`cargo test -p apitorrent-core -p apitorrent-engine --lib reflink`) only
+prove cloning on a volume that clones. Set `APITORRENT_REFLINK_DIR` to a directory on
+Btrfs, XFS, APFS or ReFS, and they fail unless a clone succeeds there. CI's reflink job
+does this on loop-mounted Btrfs and XFS.
+
 ```sh
 bun install                            # plugin SDK and first-party plugins (root workspace)
 cargo test                             # Rust tests, all but the desktop app (the plugin

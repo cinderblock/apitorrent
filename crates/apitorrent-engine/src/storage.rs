@@ -833,19 +833,45 @@ mod tests {
     /// bytes are skipped, and different bytes first give this torrent its own copy.
     #[test]
     fn linked_files_are_copy_on_write() {
+        let other = tempfile::tempdir().unwrap();
+        let mine = tempfile::tempdir().unwrap();
+        copy_on_write_case(other.path(), mine.path());
+    }
+
+    /// The same on the cloning volume CI mounts (`APITORRENT_REFLINK_DIR`, Btrfs or XFS),
+    /// where the private copy is made by a reflink. Without the variable it runs in the
+    /// system temp directory, which may only copy.
+    #[test]
+    fn unsharing_a_linked_file_reflinks_where_the_volume_clones() {
+        let root = match std::env::var_os("APITORRENT_REFLINK_DIR") {
+            Some(d) => {
+                let root = tempfile::tempdir_in(d).unwrap();
+                let probe = root.path().join("probe");
+                std::fs::write(&probe, b"probe").unwrap();
+                reflink_copy::reflink(&probe, root.path().join("probe-clone"))
+                    .expect("APITORRENT_REFLINK_DIR should be on a volume that clones");
+                root
+            }
+            None => tempfile::tempdir().unwrap(),
+        };
+        let (other, mine) = (root.path().join("other"), root.path().join("mine"));
+        std::fs::create_dir(&other).unwrap();
+        std::fs::create_dir(&mine).unwrap();
+        copy_on_write_case(&other, &mine);
+    }
+
+    fn copy_on_write_case(other: &Path, mine: &Path) {
         let bytes = TorrentBuilder::new("x.bin", Version::V1)
             .piece_length(16 * 1024)
             .file(FileSource::from_bytes(&[], vec![5; 40_000]))
             .build()
             .unwrap();
         let t = Torrent::from_bytes(&bytes).unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let mine = tempfile::tempdir().unwrap();
-        let original = other.path().join("x.bin");
+        let original = other.join("x.bin");
         std::fs::write(&original, vec![5u8; 40_000]).unwrap();
-        std::fs::hard_link(&original, mine.path().join("x.bin")).unwrap();
+        std::fs::hard_link(&original, mine.join("x.bin")).unwrap();
         let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
-        let s = FileStorage::new(&paths(mine.path()), Layout::from_info(&t.info), &rel, None);
+        let s = FileStorage::new(&paths(mine), Layout::from_info(&t.info), &rel, None);
         s.set_linked(&[0]);
 
         s.write(0, &[5; 16 * 1024]).unwrap();
@@ -856,7 +882,7 @@ mod tests {
         assert_eq!(s.linked(), [false]);
         let mut expected = vec![5u8; 40_000];
         expected[16 * 1024..32 * 1024].fill(9);
-        assert_eq!(std::fs::read(mine.path().join("x.bin")).unwrap(), expected);
+        assert_eq!(std::fs::read(mine.join("x.bin")).unwrap(), expected);
         assert_eq!(
             std::fs::read(&original).unwrap(),
             vec![5u8; 40_000],

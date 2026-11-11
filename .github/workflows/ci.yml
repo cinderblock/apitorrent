@@ -161,6 +161,52 @@ jobs:
       - run: cargo test --locked -p apitorrent-server --test acme_pebble -- --ignored
       - run: cargo test --locked -p apitorrentd --test acme_dns01 -- --ignored
 
+  # The content library places partial matches, and the engine unshares hard-linked files,
+  # with copy-on-write clones. The runners' ext4 can't clone, so the main job only covers
+  # the copy fallback. Here the reflink tests run on loop-mounted Btrfs and XFS, found
+  # through APITORRENT_REFLINK_DIR, where a clone must succeed.
+  reflink:
+    name: Reflinks on Btrfs and XFS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Loop-mounted Btrfs and XFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends btrfs-progs xfsprogs
+          truncate -s 1G "$RUNNER_TEMP/btrfs.img" "$RUNNER_TEMP/xfs.img"
+          mkfs.btrfs -q "$RUNNER_TEMP/btrfs.img"
+          mkfs.xfs -q -m reflink=1 "$RUNNER_TEMP/xfs.img"
+          for fs in btrfs xfs; do
+            sudo mkdir -p "/mnt/$fs"
+            sudo mount -o loop "$RUNNER_TEMP/$fs.img" "/mnt/$fs"
+            sudo chown "$(id -u):$(id -g)" "/mnt/$fs"
+          done
+          findmnt -t btrfs,xfs
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: reflink
+      - run: cargo test --locked -p apitorrent-core -p apitorrent-engine --lib --no-run
+      - name: Reflink tests on each filesystem
+        run: |
+          for fs in btrfs xfs; do
+            echo "::group::$fs"
+            APITORRENT_REFLINK_DIR="/mnt/$fs" \
+              cargo test --locked -p apitorrent-core -p apitorrent-engine --lib reflink \
+              | tee "$RUNNER_TEMP/$fs.log"
+            echo "::endgroup::"
+            # A renamed test would otherwise drop out of the filter silently.
+            ran=$(grep -c '^test .*reflink.* \.\.\. ok$' "$RUNNER_TEMP/$fs.log" || true)
+            if [ "$ran" -lt 2 ]; then
+              echo "::error::expected at least 2 reflink tests on $fs, $ran passed"
+              exit 1
+            fi
+          done
+
   fuzz:
     name: Fuzz (60 s per target)
     runs-on: ubuntu-latest
