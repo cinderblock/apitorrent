@@ -1087,7 +1087,10 @@ mod tests {
             let how = s.adopt(0, &original, mode).unwrap();
             assert_eq!(how == Adopted::HardLink, hard_link);
             assert_eq!(s.linked(), [hard_link]);
-            assert_eq!(std::fs::read(mine.path().join("x.bin")).unwrap(), vec![5u8; 40_000]);
+            assert_eq!(
+                std::fs::read(mine.path().join("x.bin")).unwrap(),
+                vec![5u8; 40_000]
+            );
             s.write(0, &[9; 16 * 1024]).unwrap();
             s.sync().unwrap();
             assert_eq!(

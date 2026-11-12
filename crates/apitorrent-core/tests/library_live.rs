@@ -317,7 +317,10 @@ async fn a_bookend_piece_is_built_from_disk_and_peers() {
     let reuse = detail.files[0].reused.clone().expect("recorded");
     assert_eq!(reuse.source_id, s1);
     assert_eq!(reuse.method, ReuseMethod::HardLink);
-    assert_eq!(reuse.bytes, 147_456, "four whole pieces and the bookend's block");
+    assert_eq!(
+        reuse.bytes, 147_456,
+        "four whole pieces and the bookend's block"
+    );
     assert!(detail.files[1].reused.is_none());
     assert_eq!(
         std::fs::read(cfg.download_dir.join("e1.mkv")).unwrap(),
@@ -365,9 +368,18 @@ async fn removing_a_torrent_mid_share_is_safe() {
     assert!(s.pieces_have >= had);
     assert!(s.pieces_have < s.pieces_total, "nothing left to share from");
     let detail = core.detail(&k(&b)).await.unwrap();
-    assert!(detail.files[0].reused.as_ref().is_some_and(|r| r.source_id == a));
+    assert!(
+        detail.files[0]
+            .reused
+            .as_ref()
+            .is_some_and(|r| r.source_id == a)
+    );
     core.remove(&k(&b), true).await.unwrap();
-    assert_eq!(core.session_stats().library_bytes, 0, "records go with the torrent");
+    assert_eq!(
+        core.session_stats().library_bytes,
+        0,
+        "records go with the torrent"
+    );
     core.shutdown().await.unwrap();
 }
 

@@ -304,6 +304,8 @@ struct State {
     /// Something changed that may make new pairs.
     changed: bool,
     torrents_seen: usize,
+    /// Piece events were missed: every pair's file is scanned again.
+    lagged: bool,
 }
 
 impl State {
@@ -345,7 +347,10 @@ impl Core {
             tokio::select! {
                 ev = events.recv() => match ev {
                     Ok(e) => self.note(&mut st, e),
-                    Err(RecvError::Lagged(_)) => st.changed = true,
+                    Err(RecvError::Lagged(_)) => {
+                        st.changed = true;
+                        st.lagged = true;
+                    }
                     Err(RecvError::Closed) => return,
                 },
                 _ = tick.tick() => {}
@@ -354,7 +359,10 @@ impl Core {
             loop {
                 match events.try_recv() {
                     Ok(e) => self.note(&mut st, e),
-                    Err(TryRecvError::Lagged(_)) => st.changed = true,
+                    Err(TryRecvError::Lagged(_)) => {
+                        st.changed = true;
+                        st.lagged = true;
+                    }
                     Err(_) => break,
                 }
             }
@@ -510,7 +518,9 @@ impl Core {
             })
             .collect();
         let sources = self
-            .library_sources(None, |t| t.info.files.iter().any(|f| lengths.contains(&f.length)))
+            .library_sources(None, |t| {
+                t.info.files.iter().any(|f| lengths.contains(&f.length))
+            })
             .await;
         st.known = sources
             .iter()
@@ -559,7 +569,9 @@ impl Core {
                     .copied()
                     .filter(|&(si, _)| sources[si].id != b.id)
                     .collect();
-                cands.sort_by_key(|&(si, fi)| sources[si].torrent.info.files[fi].path.last() != name);
+                cands.sort_by_key(|&(si, fi)| {
+                    sources[si].torrent.info.files[fi].path.last() != name
+                });
                 let need = FileRef {
                     id: b.id.clone(),
                     file: fb,
@@ -617,6 +629,16 @@ impl Core {
         // Pairs whose torrents are gone, finished or no longer want the file.
         st.pairs
             .retain(|p| keep.contains(&(p.need.clone(), p.src.clone())));
+        // Verdicts about torrents that are gone.
+        let here = |(need, src): &(FileRef, FileRef)| {
+            st.known.contains_key(&need.id) && st.known.contains_key(&src.id)
+        };
+        st.rejected.retain(here);
+        st.adopt_tried.retain(here);
+        if std::mem::take(&mut st.lagged) {
+            st.rescan
+                .extend(st.pairs.iter().map(|p| (p.need.clone(), p.src.clone())));
+        }
         st.queue.retain(|j| needy.contains_key(&j.need));
         st.queued.retain(|(id, _)| needy.contains_key(id));
         for (need, src, trust, same_name, path, fp) in adoptions {
@@ -1068,7 +1090,11 @@ mod tests {
         assert_eq!(planned, [3]);
         let job = &st.queue[0];
         assert_eq!(job.reads.len(), 1);
-        assert_eq!(job.reads[0].1, 38 * K as u64, "read from x at its own offset");
+        assert_eq!(
+            job.reads[0].1,
+            38 * K as u64,
+            "read from x at its own offset"
+        );
         // Once the source has the rest, every piece of the needing file is covered except
         // the one shared with the intro, which needs the intro too.
         for p in 0..4 {

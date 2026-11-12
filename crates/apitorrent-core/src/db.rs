@@ -758,9 +758,9 @@ impl Database {
 
     /// Every file reuse record. Malformed rows are skipped.
     pub fn reuse(&self) -> rusqlite::Result<Vec<ReuseRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT torrent, file, source, source_name, method, bytes FROM file_reuse",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT torrent, file, source, source_name, method, bytes FROM file_reuse")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
