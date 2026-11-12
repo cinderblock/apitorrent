@@ -15,6 +15,8 @@ files, and take torrents over a few at a time. Asked for on 2026-11-12:
    with filters in both the GUI and the CLI. Two Deluge instances, each its own space.
 6. Client identity spoofing (user agent, peer id) for trackers that only allow known
    clients, set automatically by the import.
+7. Tracker passkeys: detect the passkey in tracker URLs and change it on every torrent at
+   once (for when the user rolls their token). Asked the same day.
 
 ## Environment / context
 
@@ -84,7 +86,13 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
 6. [ ] Take-over: per torrent and in bulk, through the RPC client; guard against two
        owners (main thread, after 2).
 7. [ ] Import sets identity rules (after 3).
-8. [ ] Docs (`docs/architecture.md` Deluge section, README), plan wrap-up.
+8. [ ] Tracker passkeys (main thread): find them in announce URLs (a long hex/base62 path
+       segment such as `/<32 hex>/announce`, or query keys like `passkey`, `authkey`,
+       `torrent_pass`, `pid`), group by tracker host and passkey, and replace one passkey
+       with another on every matching torrent in the space in one action (API, CLI-free,
+       web UI under Trackers). Passkeys are secrets: masked in the UI and never logged.
+       Builds on the existing per-torrent `PUT /torrents/{id}/trackers`.
+9. [ ] Docs (`docs/architecture.md` Deluge section, README), plan wrap-up.
 
 ## Findings / gotchas
 
