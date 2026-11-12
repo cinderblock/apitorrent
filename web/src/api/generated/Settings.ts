@@ -35,4 +35,14 @@ encryption: EncryptionPolicy,
  * When finished torrents stop seeding, unless their group or the torrent itself says
  * otherwise.
  */
-seedLimits: SeedLimits, };
+seedLimits: SeedLimits, 
+/**
+ * The port peers connect to (TCP, and UDP for uTP). Picked at random from a high
+ * range on the first start and kept; 0 picks a new one on the next start. Applies on
+ * restart. The daemon's `--peer-listen` (or a desktop profile's port) overrides it.
+ */
+peerPort: number, 
+/**
+ * The DHT's UDP port, chosen and kept like `peer_port`. `--dht-port` overrides it.
+ */
+dhtPort: number, };

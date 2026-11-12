@@ -166,6 +166,14 @@ licence notices intact.
 | Limits | global, per-torrent and per-peer-class rate limits, connection limits, scheduling |
 | Later | I2P, BEP 21 (partial seeds), super-seeding, share mode |
 
+**Ports.** The peer port (TCP, and UDP for uTP) and the DHT's UDP port are picked at random
+from 20000–48999 on the first start, checked free, and stored in the settings
+(`peerPort`, `dhtPort`), so a port forward keeps working and another client on the same
+machine, which most likely holds 6881, is never in the way (`apitorrent_core::ports`). A
+stored port that is taken at start is replaced, with a warning. `--peer-listen`,
+`--dht-port` and a desktop profile's port override them and aren't stored; a change in
+Settings applies on restart.
+
 ### Engine API
 
 The core talks to the engine through a Rust API: commands (`add`, `pause`,

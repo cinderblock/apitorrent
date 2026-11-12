@@ -21,9 +21,13 @@ use tokio::sync::oneshot;
 
 use crate::profiles::{LanSettings, LocalProfile};
 
-/// The DHT's UDP port is the peer port plus one, like the daemon's defaults (6881, 6882).
+/// The DHT's UDP port is the peer port plus one. A peer port of 0 (automatic) leaves the
+/// DHT's automatic too: both are picked once and kept (`apitorrent_core::ports`).
 fn dht_port(peer_port: u16) -> u16 {
-    peer_port.checked_add(1).unwrap_or(peer_port - 1)
+    match peer_port {
+        0 => 0,
+        p => p.checked_add(1).unwrap_or(p - 1),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,25 +120,30 @@ impl LocalNode {
         });
 
         let peer = profile.peer_port;
+        let mut session = SessionConfig {
+            listen: SocketAddr::from(([0, 0, 0, 0], peer)),
+            lsd: Some(apitorrent_engine::lsd::LsdConfig::default()),
+            dht: Some(apitorrent_dht::DhtConfig {
+                bind_v4: Some(SocketAddr::from(([0, 0, 0, 0], dht_port(peer)))),
+                bind_v6: Some(SocketAddr::from((
+                    std::net::Ipv6Addr::UNSPECIFIED,
+                    dht_port(peer),
+                ))),
+                ..apitorrent_dht::DhtConfig::default()
+            }),
+            utp: true,
+            prefer_utp: true,
+            encryption: apitorrent_mse::Policy::Enabled(apitorrent_mse::Preference::Rc4),
+            ..SessionConfig::default()
+        };
+        apitorrent_core::ports::resolve(&data_dir, &mut session).map_err(|e| {
+            housekeeping.abort();
+            format!("couldn't choose the peer port: {e}")
+        })?;
         let core = Core::start(CoreConfig {
             data_dir: data_dir.clone(),
             download_dir,
-            session: SessionConfig {
-                listen: SocketAddr::from(([0, 0, 0, 0], peer)),
-                lsd: Some(apitorrent_engine::lsd::LsdConfig::default()),
-                dht: Some(apitorrent_dht::DhtConfig {
-                    bind_v4: Some(SocketAddr::from(([0, 0, 0, 0], dht_port(peer)))),
-                    bind_v6: Some(SocketAddr::from((
-                        std::net::Ipv6Addr::UNSPECIFIED,
-                        dht_port(peer),
-                    ))),
-                    ..apitorrent_dht::DhtConfig::default()
-                }),
-                utp: true,
-                prefer_utp: true,
-                encryption: apitorrent_mse::Policy::Enabled(apitorrent_mse::Preference::Rc4),
-                ..SessionConfig::default()
-            },
+            session,
         })
         .await
         .map_err(|e| {

@@ -103,8 +103,10 @@ struct Args {
     #[arg(long, env = "APITORRENT_API", default_value = DEFAULT_API)]
     api: SocketAddr,
 
-    /// Address for incoming BitTorrent connections.
-    #[arg(long, env = "APITORRENT_PEER_LISTEN", default_value = "0.0.0.0:6881")]
+    /// Address for incoming BitTorrent connections. Port 0 (the default) uses the port in
+    /// the settings, which is picked at random from a high range on the first start and
+    /// then kept, so it can't clash with another client's usual 6881.
+    #[arg(long, env = "APITORRENT_PEER_LISTEN", default_value = "0.0.0.0:0")]
     peer_listen: SocketAddr,
 
     /// An IP blocklist to load (P2P, DAT or CIDR lines).
@@ -120,8 +122,9 @@ struct Args {
     no_dht: bool,
 
     /// The UDP port for the DHT. It is separate from the peer port, whose UDP side is for
-    /// uTP; peers learn it from our PORT messages.
-    #[arg(long, env = "APITORRENT_DHT_PORT", default_value_t = 6882)]
+    /// uTP; peers learn it from our PORT messages. 0 (the default) picks one and keeps it,
+    /// like the peer port.
+    #[arg(long, env = "APITORRENT_DHT_PORT", default_value_t = 0)]
     dht_port: u16,
 
     /// Turn off uTP (BitTorrent over UDP on the peer port). Peers then connect over TCP only.
@@ -423,26 +426,31 @@ async fn main() -> ExitCode {
         });
     }
 
+    let mut session = SessionConfig {
+        listen: args.peer_listen,
+        memory_limit: args.memory_limit_mib.saturating_mul(1024 * 1024),
+        lsd: (!args.no_lsd).then(apitorrent_engine::lsd::LsdConfig::default),
+        dht: (!args.no_dht).then(|| apitorrent_dht::DhtConfig {
+            bind_v4: Some(SocketAddr::from(([0, 0, 0, 0], args.dht_port))),
+            bind_v6: Some(SocketAddr::from((
+                std::net::Ipv6Addr::UNSPECIFIED,
+                args.dht_port,
+            ))),
+            ..apitorrent_dht::DhtConfig::default()
+        }),
+        utp: !args.no_utp,
+        prefer_utp: !args.prefer_tcp,
+        encryption: args.encryption.into(),
+        ..SessionConfig::default()
+    };
+    if let Err(e) = apitorrent_core::ports::resolve(&data_dir, &mut session) {
+        tracing::error!(error = %e, "could not choose the peer and DHT ports");
+        return ExitCode::FAILURE;
+    }
     let core = match Core::start(CoreConfig {
         data_dir: data_dir.clone(),
         download_dir,
-        session: SessionConfig {
-            listen: args.peer_listen,
-            memory_limit: args.memory_limit_mib.saturating_mul(1024 * 1024),
-            lsd: (!args.no_lsd).then(apitorrent_engine::lsd::LsdConfig::default),
-            dht: (!args.no_dht).then(|| apitorrent_dht::DhtConfig {
-                bind_v4: Some(SocketAddr::from(([0, 0, 0, 0], args.dht_port))),
-                bind_v6: Some(SocketAddr::from((
-                    std::net::Ipv6Addr::UNSPECIFIED,
-                    args.dht_port,
-                ))),
-                ..apitorrent_dht::DhtConfig::default()
-            }),
-            utp: !args.no_utp,
-            prefer_utp: !args.prefer_tcp,
-            encryption: args.encryption.into(),
-            ..SessionConfig::default()
-        },
+        session,
     })
     .await
     {

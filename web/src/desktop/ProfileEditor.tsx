@@ -34,7 +34,7 @@ export function newRemote(): ProfileView {
 }
 
 export function newLocal(): ProfileView {
-  return { id: "", name: "This computer", mode: "local", dataDir: null, downloadDir: null, peerPort: 6881, lan: null, hasToken: false };
+  return { id: "", name: "This computer", mode: "local", dataDir: null, downloadDir: null, peerPort: 0, lan: null, hasToken: false };
 }
 
 export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) {
@@ -54,7 +54,7 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
 
   // Local
   const local = initial.mode === "local" ? initial : null;
-  const [peerPort, setPeerPort] = useState(local?.peerPort ?? 6881);
+  const [peerPort, setPeerPort] = useState(local?.peerPort ?? 0);
   const [downloadDir, setDownloadDir] = useState(local?.downloadDir ?? "");
   const [dataDir, setDataDir] = useState(local?.dataDir ?? "");
   const [lan, setLan] = useState<LanSettings | null>(local?.lan ?? null);
@@ -122,13 +122,14 @@ export function ProfileEditor({ initial, connected, onSaved, onCancel }: Props) 
               <FolderInput value={downloadDir} onChange={setDownloadDir} placeholder="Default" pickerTitle="Download folder" />
             </label>
             <label className="field">
-              <span>BitTorrent port</span>
+              <span>BitTorrent port <span className="muted">(empty: picked once, then kept)</span></span>
               <input
                 type="number"
                 min={1}
                 max={65534}
-                value={peerPort}
-                onChange={(e) => setPeerPort(Math.min(65534, Math.max(1, Math.floor(Number(e.target.value) || 6881))))}
+                placeholder="Automatic"
+                value={peerPort || ""}
+                onChange={(e) => setPeerPort(Math.min(65534, Math.max(0, Math.floor(Number(e.target.value) || 0))))}
               />
             </label>
           </div>

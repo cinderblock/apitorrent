@@ -370,6 +370,14 @@ pub struct Settings {
     /// otherwise.
     #[serde(default)]
     pub seed_limits: SeedLimits,
+    /// The port peers connect to (TCP, and UDP for uTP). Picked at random from a high
+    /// range on the first start and kept; 0 picks a new one on the next start. Applies on
+    /// restart. The daemon's `--peer-listen` (or a desktop profile's port) overrides it.
+    #[serde(default)]
+    pub peer_port: u16,
+    /// The DHT's UDP port, chosen and kept like `peer_port`. `--dht-port` overrides it.
+    #[serde(default)]
+    pub dht_port: u16,
 }
 
 /// Message stream encryption (MSE) for peer connections. It hides BitTorrent traffic from

@@ -22,6 +22,12 @@ pub fn defaults(session: &SessionConfig) -> Settings {
         library: apitorrent_types::LibrarySettings::default(),
         encryption: encryption_setting(session.encryption),
         seed_limits: apitorrent_types::SeedLimits::default(),
+        peer_port: session.listen.port(),
+        dht_port: session
+            .dht
+            .as_ref()
+            .and_then(|d| d.bind_v4.or(d.bind_v6))
+            .map_or(0, |a| a.port()),
     }
 }
 
@@ -63,6 +69,9 @@ pub fn validate(s: &Settings) -> Result<(), String> {
             .any(|l| !ratio_ok(l))
     {
         return Err("a seed ratio must be a number, 0 or more".into());
+    }
+    if s.peer_port != 0 && s.peer_port == s.dht_port {
+        return Err("the peer port and the DHT port must differ".into());
     }
     let mut names = HashSet::new();
     let mut labels = HashSet::new();

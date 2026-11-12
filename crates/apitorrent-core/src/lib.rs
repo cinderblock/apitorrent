@@ -15,6 +15,7 @@ pub mod import;
 pub mod library;
 mod library_index;
 pub mod plugin_api;
+pub mod ports;
 mod roots;
 pub mod seeding;
 pub mod settings;

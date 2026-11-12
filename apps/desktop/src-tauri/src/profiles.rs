@@ -60,7 +60,7 @@ pub struct LocalProfile {
     /// The default save path. Defaults to `<Downloads>/apitorrent`.
     #[serde(default)]
     pub download_dir: Option<PathBuf>,
-    /// The BitTorrent port (TCP and uTP).
+    /// The BitTorrent port (TCP and uTP). 0 picks one on the first start and keeps it.
     #[serde(default = "default_peer_port")]
     pub peer_port: u16,
     /// Also serve the web UI and API on the network, like the daemon.
@@ -68,8 +68,9 @@ pub struct LocalProfile {
     pub lan: Option<LanSettings>,
 }
 
+/// 0: picked at random on the first start, then kept (`apitorrent_core::ports`).
 fn default_peer_port() -> u16 {
-    6881
+    0
 }
 
 /// Serving the web UI and API beyond this machine. The daemon's rules apply: sign-in is

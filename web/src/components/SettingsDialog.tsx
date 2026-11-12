@@ -67,7 +67,21 @@ function BansSection() {
 }
 
 /** A number input that edits a non-negative integer; empty means 0. */
-function NumberField({ label, value, onChange, hint }: { label: string; value: number; onChange: (v: number) => void; hint?: string }) {
+function NumberField({
+  label,
+  value,
+  onChange,
+  hint,
+  max,
+  placeholder = "0",
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  hint?: string;
+  max?: number;
+  placeholder?: string;
+}) {
   return (
     <label className="field">
       <span>
@@ -79,9 +93,10 @@ function NumberField({ label, value, onChange, hint }: { label: string; value: n
         min={0}
         step={1}
         inputMode="numeric"
+        max={max}
         value={value === 0 ? "" : value}
-        placeholder="0"
-        onChange={(e) => onChange(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+        placeholder={placeholder}
+        onChange={(e) => onChange(Math.min(max ?? Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(Number(e.target.value) || 0))))}
       />
     </label>
   );
@@ -173,6 +188,17 @@ export function SettingsDialog({
                 Encryption hides BitTorrent traffic from network inspection and ISP throttling. It doesn&apos;t verify who the peer is, so it won&apos;t stop
                 someone in the middle; your data is safe either way, since every piece is checked against the torrent&apos;s hashes. Requiring it shuts out
                 peers that can&apos;t encrypt. Open connections keep theirs.
+              </p>
+            </fieldset>
+            <fieldset className="settings-section">
+              <legend>Ports</legend>
+              <div className="settings-grid">
+                <NumberField label="Peer port" hint="TCP and uTP" max={65535} placeholder="Automatic" value={settings.peerPort} onChange={(v) => update({ peerPort: v })} />
+                <NumberField label="DHT port" hint="UDP" max={65535} placeholder="Automatic" value={settings.dhtPort} onChange={(v) => update({ dhtPort: v })} />
+              </div>
+              <p className="hint muted">
+                Picked at random on the first start and kept, so they don&apos;t clash with another client&apos;s usual 6881. Changes apply on the next
+                restart; leave one empty to pick a new one then. A port given on the daemon&apos;s command line takes precedence.
               </p>
             </fieldset>
             <fieldset className="settings-section">
