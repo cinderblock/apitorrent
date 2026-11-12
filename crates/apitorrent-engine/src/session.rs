@@ -93,6 +93,9 @@ impl Default for SessionConfig {
     }
 }
 
+/// How many piece events a slow receiver may fall behind by.
+const PIECE_EVENTS: usize = 4096;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AddError {
     #[error("the torrent is already in the session")]
@@ -130,6 +133,8 @@ pub(crate) struct Shared {
     /// Wire info-hashes of torrents that aren't private: the ones LSD and DHT may announce
     /// and find peers for.
     public: Mutex<HashSet<Sha1Hash>>,
+    /// Every piece a torrent verifies (see [`Session::piece_events`]).
+    pub(crate) pieces: tokio::sync::broadcast::Sender<crate::torrent::PieceEvent>,
 }
 
 /// The session's memory budget for piece data. Torrents reserve and release whole pieces;
@@ -303,6 +308,7 @@ impl Session {
             next_key: AtomicU64::new(1),
             torrents: Mutex::new(HashMap::new()),
             skeys: Mutex::new(apitorrent_mse::SkeyTable::new()),
+            pieces: tokio::sync::broadcast::channel(PIECE_EVENTS).0,
         });
         tokio::spawn(accept_loop(listener, shared.clone()));
         let utp_addr = utp.as_ref().map(apitorrent_utp::UtpSocket::local_addr);
@@ -326,6 +332,13 @@ impl Session {
 
     pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+
+    /// Every piece any torrent verifies from now on: downloaded, offered, or found in an
+    /// adopted file. A receiver that falls behind gets `Lagged` and should look at the
+    /// torrents' bitfields instead.
+    pub fn piece_events(&self) -> tokio::sync::broadcast::Receiver<crate::torrent::PieceEvent> {
+        self.shared.pieces.subscribe()
     }
 
     /// The uTP socket's address, when uTP is on.

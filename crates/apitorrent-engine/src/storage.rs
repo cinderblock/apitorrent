@@ -91,9 +91,36 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
         ))
     }
 
+    /// Replace file `file` in the save directory with another file's bytes (the content
+    /// library): a hard link when `how` allows one, else a copy-on-write clone, else a copy
+    /// when allowed. Whatever the file held is discarded, so the caller must know none of
+    /// it is verified. A hard-linked file is copy-on-write from then on.
+    fn adopt(&self, file: usize, from: &Path, how: AdoptMode) -> io::Result<Adopted> {
+        let _ = (file, from, how);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Delete the torrent's held area and part store, and its files in the save directory
     /// too when `save_files` is set.
     fn delete(&self, save_files: bool) -> io::Result<()>;
+}
+
+/// What [`Storage::adopt`] may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AdoptMode {
+    /// A hard link is allowed: the bytes are believed identical, so sharing the file is
+    /// right. Otherwise the file is cloned or copied, since it will change.
+    pub hard_link: bool,
+    /// A plain copy is allowed where neither a link nor a clone works.
+    pub allow_copy: bool,
+}
+
+/// How [`Storage::adopt`] put a file in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Adopted {
+    HardLink,
+    Reflink,
+    Copy,
 }
 
 /// Where a torrent's files go.
@@ -559,6 +586,57 @@ impl Storage for FileStorage {
         result
     }
 
+    fn adopt(&self, file: usize, from: &Path, how: AdoptMode) -> io::Result<Adopted> {
+        let placement = self.files[file]
+            .placement
+            .write()
+            .expect("placement lock poisoned");
+        if *placement != Placement::Save || self.layout.files()[file].pad {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "only a file in the save directory can be adopted",
+            ));
+        }
+        let _one_writer = self.files[file]
+            .unshare
+            .lock()
+            .expect("unshare lock poisoned");
+        let path = &self.save_paths[file];
+        self.close(file);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        // Make it beside the target, then rename over it, so a half-made file never sits
+        // at the path.
+        let tmp = path.with_extension("apitorrent-adopt");
+        let _ = std::fs::remove_file(&tmp);
+        let done = if how.hard_link && std::fs::hard_link(from, &tmp).is_ok() {
+            Adopted::HardLink
+        } else if reflink_copy::reflink(from, &tmp).is_ok() {
+            Adopted::Reflink
+        } else if how.allow_copy {
+            if let Err(e) = std::fs::copy(from, &tmp) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(e);
+            }
+            Adopted::Copy
+        } else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "neither a link nor a clone works here, and copies are off",
+            ));
+        };
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        self.files[file]
+            .linked
+            .store(done == Adopted::HardLink, Ordering::Release);
+        drop(placement);
+        Ok(done)
+    }
+
     fn delete(&self, save_files: bool) -> io::Result<()> {
         let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
         let mut first_error = None;
@@ -981,6 +1059,55 @@ mod tests {
         assert_eq!(s.linked(), [true]);
         s.read(0, &mut buf).unwrap();
         assert_eq!(buf, [6; 16], "reads open the new file");
+    }
+
+    /// Adopting replaces whatever the file held. A hard-linked adoption is copy-on-write
+    /// afterwards; without a link it is a private file.
+    #[test]
+    fn adopting_a_file_links_or_copies_it() {
+        let bytes = TorrentBuilder::new("x.bin", Version::V1)
+            .piece_length(16 * 1024)
+            .file(FileSource::from_bytes(&[], vec![5; 40_000]))
+            .build()
+            .unwrap();
+        let t = Torrent::from_bytes(&bytes).unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let original = other.path().join("source.bin");
+        std::fs::write(&original, vec![5u8; 40_000]).unwrap();
+        let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
+        for hard_link in [true, false] {
+            let mine = tempfile::tempdir().unwrap();
+            // A sparse leftover with nothing verified in it.
+            std::fs::write(mine.path().join("x.bin"), vec![0u8; 100]).unwrap();
+            let s = FileStorage::new(&paths(mine.path()), Layout::from_info(&t.info), &rel, None);
+            let mode = AdoptMode {
+                hard_link,
+                allow_copy: true,
+            };
+            let how = s.adopt(0, &original, mode).unwrap();
+            assert_eq!(how == Adopted::HardLink, hard_link);
+            assert_eq!(s.linked(), [hard_link]);
+            assert_eq!(std::fs::read(mine.path().join("x.bin")).unwrap(), vec![5u8; 40_000]);
+            s.write(0, &[9; 16 * 1024]).unwrap();
+            s.sync().unwrap();
+            assert_eq!(
+                std::fs::read(&original).unwrap(),
+                vec![5u8; 40_000],
+                "the source never changes"
+            );
+        }
+        let mine = tempfile::tempdir().unwrap();
+        let s = FileStorage::new(
+            &paths(mine.path()),
+            Layout::from_info(&t.info),
+            &rel,
+            Some(&[Placement::Parts]),
+        );
+        let mode = AdoptMode {
+            hard_link: true,
+            allow_copy: true,
+        };
+        assert!(s.adopt(0, &original, mode).is_err(), "not in the save path");
     }
 
     #[test]

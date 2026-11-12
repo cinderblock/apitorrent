@@ -522,6 +522,33 @@ impl Picker {
         self.partial.len()
     }
 
+    /// Whether `piece` has been started and isn't verified yet.
+    pub fn in_progress(&self, piece: u32) -> bool {
+        self.partial.contains_key(&piece)
+    }
+
+    /// Start a wanted piece with some of its blocks already in hand (read from a file the
+    /// content library supplied, say): only the rest is requested. Being in progress, it
+    /// is finished before new pieces are started. Returns whether every block is in, so
+    /// the piece can be verified straight away. Does nothing (and returns `false`) for a
+    /// piece that is had, unwanted or already in progress.
+    pub fn prefill(&mut self, piece: u32, blocks: &[u32]) -> bool {
+        if !self.is_wanted(piece) || self.partial.contains_key(&piece) {
+            return false;
+        }
+        self.start_piece(piece);
+        let part = self.partial.get_mut(&piece).expect("just started");
+        for &b in blocks {
+            if let Some(slot) = part.blocks.get_mut(b as usize)
+                && *slot != Block::Received
+            {
+                *slot = Block::Received;
+                part.received += 1;
+            }
+        }
+        part.received as usize == part.blocks.len()
+    }
+
     // ----- ordering internals -----------------------------------------------------------
 
     fn in_order_set(&self, piece: u32) -> bool {
@@ -719,6 +746,31 @@ mod tests {
         let second = p.pick(2, &Bitfield::full(4), 1, usize::MAX);
         assert_eq!(second[0].piece, piece);
         assert_ne!(second[0].offset, first[0].offset);
+    }
+
+    /// A prefilled piece asks only for the blocks it lacks, and goes before new pieces.
+    #[test]
+    fn prefilled_pieces_request_only_missing_blocks() {
+        let mut p = picker(4);
+        assert!(!p.prefill(2, &[0]), "two blocks a piece, one prefilled");
+        assert!(p.in_progress(2));
+        assert!(!p.prefill(2, &[1]), "already in progress");
+        p.check_invariants();
+        let blocks = p.pick(1, &Bitfield::full(4), 4, 0);
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert_eq!((blocks[0].piece, blocks[0].offset), (2, BLOCK_LEN));
+        assert!(matches!(
+            p.block_received(1, &blocks[0]),
+            Received::New {
+                piece_complete: true,
+                ..
+            }
+        ));
+        p.piece_verified(2, true);
+        assert!(!p.prefill(2, &[0]), "had");
+        // Every block in hand: ready to verify at once.
+        assert!(p.prefill(3, &[0, 1]));
+        p.check_invariants();
     }
 
     /// With no room for new pieces, only pieces in progress are picked, and once those are

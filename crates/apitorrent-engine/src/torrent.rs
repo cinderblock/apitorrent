@@ -26,7 +26,7 @@ use crate::peer::{self, PeerCmd, PeerEvent};
 use crate::picker::{PeerKey, Picker, Received};
 use crate::reputation::Reputation;
 use crate::session::Shared;
-use crate::storage::{FileStorage, Placement, Storage, StoragePaths};
+use crate::storage::{AdoptMode, Adopted, FileStorage, Placement, Storage, StoragePaths};
 use crate::verify::{PieceHashes, Verdict};
 use crate::webseed::{self, WebSeedEvent, WebSeedTorrent};
 
@@ -72,6 +72,9 @@ const OUR_UT_METADATA: u8 = 1;
 const OUR_UT_PEX: u8 = 2;
 /// Most outstanding block reads we'll do for one peer.
 const MAX_PEER_UPLOAD_QUEUE: u32 = 256;
+/// Most bookend pieces started from disk and not yet finished, per torrent. Each holds a
+/// piece buffer until peers send the rest.
+const MAX_PREFILLED: usize = 4;
 
 /// What the outside world sees of a torrent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +195,60 @@ pub struct PeerInfo {
     pub entry: EntryKey,
 }
 
+/// A piece a torrent verified and wrote, from [`crate::Session::piece_events`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PieceEvent {
+    pub torrent: InfoHashes,
+    pub piece: u32,
+    pub origin: PieceOrigin,
+}
+
+/// Where a verified piece's bytes came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PieceOrigin {
+    /// From peers or web seeds.
+    Downloaded,
+    /// A bookend: `from_disk` of its bytes were read from files the content library
+    /// supplied (see [`TorrentHandle::set_reused`]), the rest downloaded.
+    Bookend { from_disk: u32 },
+    /// Handed over by [`TorrentHandle::offer_piece`].
+    Offered,
+    /// Found on re-hashing a file put in place by [`TorrentHandle::adopt_file`].
+    Adopted,
+}
+
+/// The answer to [`TorrentHandle::offer_piece`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Offered {
+    /// It verified and was written: the torrent has the piece now.
+    Taken,
+    /// It doesn't match this torrent's hash.
+    Mismatch,
+    /// Not needed: had, not wanted, already in progress, the wrong size, or the torrent
+    /// isn't running (checking, or gone).
+    NotNeeded,
+    /// It verified, but writing it failed.
+    Failed(String),
+}
+
+/// Why [`TorrentHandle::adopt_file`] didn't replace a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdoptRefused {
+    /// The torrent has (or is downloading) a piece touching the file, so the file holds
+    /// verified bytes; or the file isn't wanted; or the torrent is still checking.
+    InUse,
+    /// The link, clone or copy failed.
+    Io(String),
+}
+
+/// What [`TorrentHandle::adopt_file`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adoption {
+    pub how: Adopted,
+    /// Pieces touching the file that verified afterwards and weren't had before.
+    pub gained: Vec<u32>,
+}
+
 /// What happens to a file that is deselected after some of it was downloaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum UnwantedPolicy {
@@ -241,6 +298,9 @@ pub struct AddTorrent {
     /// Files that are hard links to another torrent's copy (the content library). Writes
     /// that would change them give this torrent its own copy first.
     pub linked: Vec<usize>,
+    /// Files whose bytes on disk came from the content library (see
+    /// [`TorrentHandle::set_reused`]).
+    pub reused: Vec<usize>,
 }
 
 impl AddTorrent {
@@ -264,6 +324,7 @@ impl AddTorrent {
             group: None,
             file_paths: None,
             linked: Vec::new(),
+            reused: Vec::new(),
         }
     }
 
@@ -300,6 +361,14 @@ pub(crate) enum Command {
     ResumeEntry(EntryKey),
     /// Delete the held copies of these files.
     ReleaseHeld(Vec<usize>),
+    OfferPiece(u32, Vec<u8>, oneshot::Sender<Offered>),
+    AdoptFile(
+        usize,
+        PathBuf,
+        AdoptMode,
+        oneshot::Sender<Result<Adoption, AdoptRefused>>,
+    ),
+    SetReused(Vec<usize>),
     Pause,
     Resume,
     Shutdown(oneshot::Sender<Bitfield>),
@@ -334,6 +403,23 @@ pub(crate) enum ActorMsg {
     Moved {
         files: Vec<usize>,
         result: Result<(), String>,
+    },
+    /// An offered piece was hashed (and written, if it verified).
+    OfferWritten {
+        piece: u32,
+        result: Result<Verdict, String>,
+        reply: oneshot::Sender<Offered>,
+    },
+    /// A file was adopted (or not), and the pieces touching it re-hashed.
+    FileAdopted {
+        file: usize,
+        result: Result<(Adopted, Vec<u32>), String>,
+        reply: oneshot::Sender<Result<Adoption, AdoptRefused>>,
+    },
+    /// A bookend piece's blocks were read from the library's files.
+    Prefilled {
+        piece: u32,
+        result: Result<Vec<(u32, Vec<u8>)>, String>,
     },
 }
 
@@ -519,6 +605,47 @@ impl TorrentHandle {
             .tx
             .send(ActorMsg::Command(Command::ReleaseHeld(files)))
             .await;
+    }
+
+    /// Offer a piece's bytes from elsewhere (another torrent with the same file). They are
+    /// verified against this torrent's hash and written through its storage like a
+    /// downloaded piece, so nothing unverified is ever written.
+    pub async fn offer_piece(&self, piece: u32, data: Vec<u8>) -> Offered {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(ActorMsg::Command(Command::OfferPiece(piece, data, tx)))
+            .await
+            .is_err()
+        {
+            return Offered::NotNeeded;
+        }
+        rx.await.unwrap_or(Offered::NotNeeded)
+    }
+
+    /// Replace file `file` with another file's bytes (see [`Storage::adopt`]), then
+    /// re-hash the pieces touching it. Refused while any of those pieces is had or in
+    /// progress: the file may hold verified bytes, or a write may be on its way.
+    pub async fn adopt_file(
+        &self,
+        file: usize,
+        from: PathBuf,
+        mode: AdoptMode,
+    ) -> Result<Adoption, AdoptRefused> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(ActorMsg::Command(Command::AdoptFile(file, from, mode, tx)))
+            .await
+            .map_err(|_| AdoptRefused::InUse)?;
+        rx.await.unwrap_or(Err(AdoptRefused::InUse))
+    }
+
+    /// Mark files whose bytes came from the content library. A piece straddling one of
+    /// them and a file still to download (a bookend) takes the blocks lying wholly in the
+    /// library's file from disk, and only the rest is downloaded. If the piece then fails,
+    /// it is downloaded again entirely from peers.
+    pub async fn set_reused(&self, files: Vec<usize>) {
+        self.command(Command::SetReused(files)).await;
     }
 
     /// Delete the torrent's held copies and part store, and its downloaded files too when
@@ -758,6 +885,21 @@ pub(crate) struct TorrentActor {
     webseed_rx: mpsc::Receiver<WebSeedEvent>,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
+    /// Pieces handed over by `offer_piece`, being hashed and written.
+    offered: HashSet<u32>,
+    /// Pieces held back while a file they touch is being adopted.
+    adopting: HashSet<u32>,
+    /// Files whose bytes came from the content library.
+    reused: Vec<bool>,
+    /// Bookend pieces (see [`TorrentHandle::set_reused`]) and their blocks lying wholly in
+    /// reused files.
+    bookends: Vec<(u32, Vec<u32>)>,
+    /// Bookend pieces whose blocks are being read from disk.
+    prefilling: HashSet<u32>,
+    /// Bookend pieces started with blocks from disk, and how many bytes those were.
+    prefilled: HashMap<u32, u32>,
+    /// Bookend pieces that failed once: downloaded whole from now on.
+    no_prefill: HashSet<u32>,
 }
 
 impl TorrentActor {
@@ -878,7 +1020,23 @@ impl TorrentActor {
             webseed_tx,
             webseed_rx,
             finished: false,
+            offered: HashSet::new(),
+            adopting: HashSet::new(),
+            reused: {
+                let mut r = vec![false; info.files.len()];
+                for &f in &params.reused {
+                    if let Some(x) = r.get_mut(f) {
+                        *x = true;
+                    }
+                }
+                r
+            },
+            bookends: Vec::new(),
+            prefilling: HashSet::new(),
+            prefilled: HashMap::new(),
+            no_prefill: HashSet::new(),
         };
+        actor.bookends = actor.find_bookends();
         actor.add_candidates(params.peers, None);
         match params.have {
             Some(have) => {
@@ -965,7 +1123,12 @@ impl TorrentActor {
             return;
         };
         for piece in 0..self.layout.piece_count() {
-            picker.set_held(piece, !self.hashes.can_verify(piece));
+            picker.set_held(
+                piece,
+                !self.hashes.can_verify(piece)
+                    || self.offered.contains(&piece)
+                    || self.adopting.contains(&piece),
+            );
         }
     }
 
@@ -1544,6 +1707,19 @@ impl TorrentActor {
                 Command::Trackers(key, reply) => {
                     let _ = reply.send(self.tracker_status(key));
                 }
+                Command::OfferPiece(piece, data, reply) => self.offer_piece(piece, data, reply),
+                Command::AdoptFile(file, from, mode, reply) => {
+                    self.adopt_file(file, from, mode, reply);
+                }
+                Command::SetReused(files) => {
+                    for f in files {
+                        if let Some(r) = self.reused.get_mut(f) {
+                            *r = true;
+                        }
+                    }
+                    self.bookends = self.find_bookends();
+                    self.plan_prefills();
+                }
                 Command::Peers(reply) => {
                     let _ = reply.send(self.peer_infos());
                 }
@@ -1572,6 +1748,17 @@ impl TorrentActor {
             } => self.on_block_read(peer, block, result),
             ActorMsg::Announced { entry, job, result } => self.on_announced(entry, &job, result),
             ActorMsg::Moved { files, result } => self.on_moved(&files, result),
+            ActorMsg::OfferWritten {
+                piece,
+                result,
+                reply,
+            } => self.on_offer_written(piece, result, reply),
+            ActorMsg::FileAdopted {
+                file,
+                result,
+                reply,
+            } => self.on_file_adopted(file, result, reply),
+            ActorMsg::Prefilled { piece, result } => self.on_prefilled(piece, result),
         }
     }
 
@@ -2533,12 +2720,22 @@ impl TorrentActor {
         result: Result<Verdict, String>,
         digests: Option<&[Sha1Hash]>,
     ) {
+        let prefilled = self.prefilled.remove(&piece);
         if self.picker.is_none() {
             return;
         }
         // Disk errors say nothing about the peers.
         if let Ok(verdict) = &result {
-            self.judge_piece(piece, *verdict == Verdict::Valid, digests);
+            let valid = *verdict == Verdict::Valid;
+            if prefilled.is_some() && !valid {
+                // The library's bytes may be the ones that differ, so nobody is blamed, and
+                // the piece is downloaded whole next time.
+                tracing::debug!(piece, "a bookend piece failed; downloading it whole");
+                self.block_from.remove(&piece);
+                self.no_prefill.insert(piece);
+            } else {
+                self.judge_piece(piece, valid, digests);
+            }
             if *verdict == Verdict::Valid {
                 self.webseed_pieces.remove(&piece);
             } else {
@@ -2553,27 +2750,14 @@ impl TorrentActor {
         };
         match result {
             Ok(Verdict::Valid) => {
+                // An offered copy may have landed first.
+                let fresh = !picker.have().get(piece);
                 picker.piece_verified(piece, true);
-                for peer in self.peers.values_mut() {
-                    if peer.has.get(piece) || peer.is_seed {
-                        peer.wanted = peer.wanted.saturating_sub(1);
-                    } else {
-                        peer.send(Message::Have(piece));
-                    }
-                }
-                let keys: Vec<PeerKey> = self.peers.keys().copied().collect();
-                for key in keys {
-                    self.update_interest(key);
-                }
-                if !self.finished && self.picker.as_ref().is_some_and(Picker::is_finished) {
-                    self.finished = true;
-                    let _ = self.storage.sync();
-                    tracing::info!(torrent = %self.info_hashes.id_string(), "download complete");
-                    let now = Instant::now();
-                    for e in &mut self.entries {
-                        e.announcer.completed(now);
-                    }
-                    self.announce();
+                if fresh {
+                    let origin = prefilled.map_or(PieceOrigin::Downloaded, |from_disk| {
+                        PieceOrigin::Bookend { from_disk }
+                    });
+                    self.piece_gained(piece, origin);
                 }
             }
             Ok(Verdict::Invalid | Verdict::Unknown) => {
@@ -2590,6 +2774,360 @@ impl TorrentActor {
         self.sync_memory();
         self.fill_all();
         self.publish_stats();
+    }
+
+    /// Tell peers and the session about a piece just had, and note when the download
+    /// finishes.
+    fn piece_gained(&mut self, piece: u32, origin: PieceOrigin) {
+        for peer in self.peers.values_mut() {
+            if peer.has.get(piece) || peer.is_seed {
+                peer.wanted = peer.wanted.saturating_sub(1);
+            } else {
+                peer.send(Message::Have(piece));
+            }
+        }
+        let keys: Vec<PeerKey> = self.peers.keys().copied().collect();
+        for key in keys {
+            self.update_interest(key);
+        }
+        let _ = self.shared.pieces.send(PieceEvent {
+            torrent: self.info_hashes,
+            piece,
+            origin,
+        });
+        if !self.finished && self.picker.as_ref().is_some_and(Picker::is_finished) {
+            self.finished = true;
+            let _ = self.storage.sync();
+            tracing::info!(torrent = %self.info_hashes.id_string(), "download complete");
+            let now = Instant::now();
+            for e in &mut self.entries {
+                e.announcer.completed(now);
+            }
+            self.announce();
+        }
+    }
+
+    // ----- the content library ------------------------------------------------------------
+
+    /// Whether `piece` is being handled outside the picker (offered, adopted or prefilled).
+    fn busy_elsewhere(&self, piece: u32) -> bool {
+        self.offered.contains(&piece)
+            || self.adopting.contains(&piece)
+            || self.prefilling.contains(&piece)
+    }
+
+    fn offer_piece(&mut self, piece: u32, data: Vec<u8>, reply: oneshot::Sender<Offered>) {
+        let needed = self.error.is_none()
+            && piece < self.layout.piece_count()
+            && data.len() == self.layout.piece_size(piece) as usize
+            && self.hashes.can_verify(piece)
+            && !self.busy_elsewhere(piece)
+            && self
+                .picker
+                .as_ref()
+                .is_some_and(|p| p.is_wanted(piece) && !p.in_progress(piece));
+        if !needed {
+            let _ = reply.send(Offered::NotNeeded);
+            return;
+        }
+        self.offered.insert(piece);
+        if let Some(picker) = self.picker.as_mut() {
+            picker.set_held(piece, true);
+        }
+        let hashes = self.hashes.clone();
+        let storage = self.storage.clone();
+        let offset = self.layout.piece_offset(piece);
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let verdict = hashes.verify(piece, &data);
+            let result = if verdict == Verdict::Valid {
+                storage
+                    .write(offset, &data)
+                    .map(|()| verdict)
+                    .map_err(|e| format!("write failed: {e}"))
+            } else {
+                Ok(verdict)
+            };
+            let _ = tx.blocking_send(ActorMsg::OfferWritten {
+                piece,
+                result,
+                reply,
+            });
+        });
+    }
+
+    fn on_offer_written(
+        &mut self,
+        piece: u32,
+        result: Result<Verdict, String>,
+        reply: oneshot::Sender<Offered>,
+    ) {
+        self.offered.remove(&piece);
+        let held = !self.hashes.can_verify(piece) || self.adopting.contains(&piece);
+        let Some(picker) = self.picker.as_mut() else {
+            let _ = reply.send(Offered::NotNeeded);
+            return;
+        };
+        picker.set_held(piece, held);
+        let answer = match result {
+            Ok(Verdict::Valid) => {
+                if !picker.have().get(piece) {
+                    picker.mark_have(piece);
+                    self.piece_gained(piece, PieceOrigin::Offered);
+                    self.publish_stats();
+                }
+                Offered::Taken
+            }
+            Ok(_) => Offered::Mismatch,
+            Err(e) => {
+                tracing::error!(piece, error = %e, "disk error");
+                self.fail(e.clone());
+                Offered::Failed(e)
+            }
+        };
+        let _ = reply.send(answer);
+    }
+
+    fn adopt_file(
+        &mut self,
+        file: usize,
+        from: PathBuf,
+        mode: AdoptMode,
+        reply: oneshot::Sender<Result<Adoption, AdoptRefused>>,
+    ) {
+        let files = self.layout.files();
+        let wanted = self
+            .file_priorities
+            .as_ref()
+            .is_none_or(|p| p.get(file).copied().unwrap_or(1) > 0);
+        let usable = self.error.is_none()
+            && file < files.len()
+            && !files[file].pad
+            && files[file].length > 0
+            && wanted
+            && !self.moving.contains(&file)
+            && self.storage.placements().get(file) == Some(&Placement::Save);
+        let pieces: Vec<u32> = if usable {
+            self.layout.file_pieces(file).collect()
+        } else {
+            Vec::new()
+        };
+        let untouched = usable
+            && self.picker.as_ref().is_some_and(|picker| {
+                pieces.iter().all(|&p| {
+                    !picker.have().get(p) && !picker.in_progress(p) && !self.busy_elsewhere(p)
+                })
+            });
+        if !untouched {
+            let _ = reply.send(Err(AdoptRefused::InUse));
+            return;
+        }
+        let picker = self.picker.as_mut().expect("checked above");
+        for &p in &pieces {
+            self.adopting.insert(p);
+            picker.set_held(p, true);
+        }
+        let storage = self.storage.clone();
+        let hashes = self.hashes.clone();
+        let layout = self.layout.clone();
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let result = storage
+                .adopt(file, &from, mode)
+                .map_err(|e| e.to_string())
+                .map(|how| {
+                    (
+                        how,
+                        verify_pieces(storage.as_ref(), &hashes, &layout, &pieces),
+                    )
+                });
+            let _ = tx.blocking_send(ActorMsg::FileAdopted {
+                file,
+                result,
+                reply,
+            });
+        });
+    }
+
+    fn on_file_adopted(
+        &mut self,
+        file: usize,
+        result: Result<(Adopted, Vec<u32>), String>,
+        reply: oneshot::Sender<Result<Adoption, AdoptRefused>>,
+    ) {
+        let pieces: Vec<u32> = self.layout.file_pieces(file).collect();
+        for p in &pieces {
+            self.adopting.remove(p);
+        }
+        let holds: Vec<(u32, bool)> = pieces
+            .iter()
+            .map(|&p| (p, !self.hashes.can_verify(p) || self.offered.contains(&p)))
+            .collect();
+        let Some(picker) = self.picker.as_mut() else {
+            let _ = reply.send(Err(AdoptRefused::InUse));
+            return;
+        };
+        for (p, held) in holds {
+            picker.set_held(p, held);
+        }
+        let answer = match result {
+            Ok((how, valid)) => {
+                let mut gained = Vec::new();
+                for p in valid {
+                    let picker = self.picker.as_mut().expect("running");
+                    if !picker.have().get(p) {
+                        picker.mark_have(p);
+                        gained.push(p);
+                        self.piece_gained(p, PieceOrigin::Adopted);
+                    }
+                }
+                if let Some(r) = self.reused.get_mut(file) {
+                    *r = true;
+                }
+                self.bookends = self.find_bookends();
+                tracing::info!(
+                    torrent = %self.info_hashes.id_string(),
+                    file,
+                    ?how,
+                    pieces = gained.len(),
+                    "adopted a file from the library"
+                );
+                self.publish_stats();
+                Ok(Adoption { how, gained })
+            }
+            Err(e) => Err(AdoptRefused::Io(e)),
+        };
+        let _ = reply.send(answer);
+    }
+
+    /// Bookend pieces: pieces touching a reused file and some file that isn't, with the
+    /// blocks lying wholly in reused files (or pads).
+    fn find_bookends(&self) -> Vec<(u32, Vec<u32>)> {
+        let files = self.layout.files();
+        let trusted = |f: usize| files[f].pad || files[f].length == 0 || self.reused[f];
+        let mut pieces: Vec<u32> = (0..files.len())
+            .filter(|&f| self.reused[f] && !files[f].pad)
+            .flat_map(|f| self.layout.file_pieces(f))
+            .collect();
+        pieces.sort_unstable();
+        pieces.dedup();
+        let mut out = Vec::new();
+        for piece in pieces {
+            let size = self.layout.piece_size(piece) as usize;
+            let segments = self.layout.segments(self.layout.piece_offset(piece), size);
+            if segments.iter().all(|s| trusted(s.file)) {
+                continue;
+            }
+            let blocks: Vec<u32> = (0..self.layout.blocks_in_piece(piece))
+                .filter(|&b| {
+                    let start = (b * BLOCK_LEN) as usize;
+                    let end = start + self.layout.block_size(piece, b) as usize;
+                    segments
+                        .iter()
+                        .filter(|s| s.buf_offset < end && s.buf_offset + s.len > start)
+                        .all(|s| trusted(s.file))
+                })
+                .collect();
+            if !blocks.is_empty() {
+                out.push((piece, blocks));
+            }
+        }
+        out
+    }
+
+    /// Start reading bookend pieces' library blocks, a few at a time, for pieces some peer
+    /// (or web seed) can supply the rest of.
+    fn plan_prefills(&mut self) {
+        if self.bookends.is_empty() || !self.running() {
+            return;
+        }
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let open = self.prefilled.len() + self.prefilling.len();
+        let mut room = MAX_PREFILLED.saturating_sub(open);
+        let mut memory = self.shared.memory.available();
+        let mut picks = Vec::new();
+        for (piece, blocks) in &self.bookends {
+            if room == 0 {
+                break;
+            }
+            let p = *piece;
+            if !picker.is_wanted(p)
+                || picker.in_progress(p)
+                || !self.hashes.can_verify(p)
+                || self.no_prefill.contains(&p)
+                || self.busy_elsewhere(p)
+                || (picker.availability(p) == 0 && self.webseeds.is_empty())
+            {
+                continue;
+            }
+            let size = u64::from(self.layout.piece_size(p));
+            if memory < size {
+                break;
+            }
+            memory -= size;
+            room -= 1;
+            picks.push((p, blocks.clone()));
+        }
+        for (piece, blocks) in picks {
+            self.prefilling.insert(piece);
+            let storage = self.storage.clone();
+            let layout = self.layout.clone();
+            let tx = self.tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let base = layout.piece_offset(piece);
+                let result = blocks
+                    .into_iter()
+                    .map(|b| {
+                        let mut buf = vec![0u8; layout.block_size(piece, b) as usize];
+                        storage
+                            .read(base + u64::from(b * BLOCK_LEN), &mut buf)
+                            .map(|()| (b, buf))
+                    })
+                    .collect::<std::io::Result<Vec<_>>>()
+                    .map_err(|e| e.to_string());
+                let _ = tx.blocking_send(ActorMsg::Prefilled { piece, result });
+            });
+        }
+    }
+
+    fn on_prefilled(&mut self, piece: u32, result: Result<Vec<(u32, Vec<u8>)>, String>) {
+        self.prefilling.remove(&piece);
+        let blocks = match result {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!(piece, error = %e, "could not read a bookend's library bytes");
+                self.no_prefill.insert(piece);
+                return;
+            }
+        };
+        if self.offered.contains(&piece) || self.adopting.contains(&piece) {
+            return;
+        }
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        let indices: Vec<u32> = blocks.iter().map(|(b, _)| *b).collect();
+        if !picker.is_wanted(piece) || picker.in_progress(piece) {
+            return;
+        }
+        let complete = picker.prefill(piece, &indices);
+        let mut buf = vec![0u8; self.layout.piece_size(piece) as usize];
+        let mut bytes = 0u32;
+        for (b, data) in blocks {
+            let at = (b * BLOCK_LEN) as usize;
+            buf[at..at + data.len()].copy_from_slice(&data);
+            bytes += u32::try_from(data.len()).expect("a block fits u32");
+        }
+        self.prefilled.insert(piece, bytes);
+        if complete {
+            self.verify_and_write(piece, buf, false);
+        } else {
+            self.buffers.insert(piece, buf);
+        }
+        self.sync_memory();
+        self.fill_all();
     }
 
     // ----- uploading ----------------------------------------------------------------------
@@ -2762,6 +3300,7 @@ impl TorrentActor {
         }
         // Another torrent may have banned an address, or freed memory.
         self.drop_blocked_peers();
+        self.plan_prefills();
         self.fill_all();
         self.announce();
         self.connect_more();
@@ -2990,6 +3529,25 @@ fn validate_resume(storage: &dyn Storage, layout: &Layout, mut have: Bitfield) -
 }
 
 /// Hash whatever is already on disk and return the pieces that verify.
+/// The pieces among `pieces` that read back and verify.
+fn verify_pieces(
+    storage: &dyn Storage,
+    hashes: &PieceHashes,
+    layout: &Layout,
+    pieces: &[u32],
+) -> Vec<u32> {
+    let mut buf = Vec::new();
+    pieces
+        .iter()
+        .copied()
+        .filter(|&p| {
+            buf.resize(layout.piece_size(p) as usize, 0);
+            storage.read(layout.piece_offset(p), &mut buf).is_ok()
+                && hashes.verify(p, &buf) == Verdict::Valid
+        })
+        .collect()
+}
+
 fn check_existing(storage: &dyn Storage, hashes: &PieceHashes, layout: &Layout) -> Bitfield {
     let mut have = Bitfield::new(layout.piece_count());
     let sizes = storage.file_sizes();
