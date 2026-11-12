@@ -267,6 +267,19 @@ export function SettingsDialog({
               <p className="hint muted">
                 Reads files that came from v1 torrents once, slowly, so a later v2 torrent of the same file is found without reading it again.
               </p>
+              <div className="settings-grid">
+                <NumberField
+                  label="Share between running torrents"
+                  hint="KiB/s, 0 is off"
+                  value={toKiB(settings.library.shareRate)}
+                  onChange={(v) => update({ library: { ...settings.library, shareRate: fromKiB(v) } })}
+                />
+              </div>
+              <p className="hint muted">
+                A file one torrent finishes is linked into others still waiting for it, and torrents downloading the same file at once share each piece as
+                it arrives, so it is downloaded once. Every piece is checked against the receiving torrent&apos;s own hashes first. The status bar shows how
+                much the library has saved.
+              </p>
               <label className="check">
                 <input
                   type="checkbox"

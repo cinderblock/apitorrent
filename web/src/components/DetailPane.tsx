@@ -8,6 +8,7 @@ import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import type { UnwantedPolicy } from "../api/generated/UnwantedPolicy";
 import { describeError } from "../auth/flow";
 import { PathActions } from "../desktop/PathActions";
+import { describeReuse } from "../library";
 import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, STATE_LABEL, toKiB } from "../format";
 import { describeSeedLimits, formatSeedingTime, SeedLimitsFields } from "./SeedLimitsFields";
 import { badUrls, duplicateUrls, fromDrafts, moveTier, newTier, sameTiers, toDrafts, type TierDraft } from "./trackerTiers";
@@ -484,6 +485,7 @@ function FilesTab({ summary, detail, refetch, readOnly }: { summary: TorrentSumm
               <td className="cell-path">
                 {f.path}
                 {f.placement === "save" && <PathActions savePath={summary.savePath} file={f.path} />}
+                {f.reused && <div className="file-reuse muted">{describeReuse(f.reused, f.length)}</div>}
               </td>
               <td className="end">{formatBytes(f.length)}</td>
               <td>{formatPercent(f.progress)}</td>
@@ -562,6 +564,9 @@ export function DetailPane({ summary, onClose, readOnly = false }: { summary: To
             <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings)</span>} />
             <Row label="Queue" value={`Position ${summary.queuePosition + 1}`} />
             {summary.supersededBy && <Row label="Superseded" value={<SupersededBy id={summary.supersededBy} />} />}
+            {detail && detail.libraryBytes > 0 && (
+              <Row label="From the library" value={`${formatBytes(detail.libraryBytes)} reused from other torrents, not downloaded (see Files)`} />
+            )}
             {detail && <Row label="File names" value={detail.naming === "native" ? "Native" : "Portable"} />}
             {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} readOnly={readOnly} />} />}
             {detail && <Row label="Seeding limits" value={<SeedLimitsEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />} />}

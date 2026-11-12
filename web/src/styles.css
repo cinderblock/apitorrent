@@ -628,6 +628,11 @@ code {
   overflow-wrap: anywhere;
 }
 
+.file-reuse {
+  font-size: 0.85em;
+  margin-top: 2px;
+}
+
 .files-bar {
   display: flex;
   flex-wrap: wrap;
