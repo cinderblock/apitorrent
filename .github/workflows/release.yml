@@ -169,7 +169,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if [ "$HAS_SIGNING_KEY" = true ]; then
-            bunx "$TAURI_CLI" build --ci --config '{"bundle":{"createUpdaterArtifacts":true}}'
+            # The bundler checks the updater's public key when it makes updater bundles,
+            # and tauri.conf.json leaves it empty (the app sets it at runtime): give it the
+            # committed one.
+            pubkey="$(tr -d '\r\n' < ../../../release/update-signing.pub)"
+            config="{\"bundle\":{\"createUpdaterArtifacts\":true},\"plugins\":{\"updater\":{\"pubkey\":\"$pubkey\"}}}"
+            bunx "$TAURI_CLI" build --ci --config "$config"
           else
             echo "::notice::No TAURI_SIGNING_PRIVATE_KEY secret: building without updater bundles"
             bunx "$TAURI_CLI" build --ci
