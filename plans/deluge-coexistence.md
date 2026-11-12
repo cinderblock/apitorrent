@@ -76,11 +76,15 @@ files, and take torrents over a few at a time. Asked for on 2026-11-12:
 
 Work is split three ways; integration of 2 and 3 into the import happens last.
 
-1. [ ] Peer/DHT port auto-pick and persist (main thread).
+1. [x] Peer/DHT port auto-pick and persist (main thread). `ee4af6d`. Desktop app not
+       compile-checked yet (`cargo check -p apitorrent-desktop`).
 2. [ ] Deluge daemon RPC client in `apitorrent-deluge` (delegate, worktree).
 3. [ ] Client identity: engine, tracker, settings, UI (delegate, worktree).
-4. [ ] Dedupe policy: `origin` per torrent, imported files report-only, finish-triggered
-       pass, default `on` (main thread).
+4. [x] Dedupe policy (main thread), `e54a3fc`: an `imported` table (migration 14:
+       space, torrent, source config dir, imported_at, taken_over_at) written by both
+       import paths; automatic passes hold imported copies (`heldBytes/heldFiles`),
+       "Deduplicate now" merges them; imported copies preferred as keeper; default `on`;
+       a swarm going Downloading → Seeding wakes a pass.
 5. [ ] Import filters: planner, CLI flags, API (preview + import), GUI wizard with space
        choice/creation (main thread).
 6. [ ] Take-over: per torrent and in bulk, through the RPC client; guard against two
@@ -104,7 +108,9 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
 
 ## Progress log
 
-- [x] 2026-11-12: plan written.
+- [x] 2026-11-12: plan written. Delegates started for steps 2 (Deluge RPC) and 3
+      (identity), each in its own worktree.
+- [x] Step 1 ports, step 4 dedupe committed on master.
 
 ## Open questions for the user
 
