@@ -53,7 +53,11 @@ async fn admins_manage_library_folders_and_dedupe() {
     }
     let resp = send(
         &app,
-        Req::new("POST", &format!("/api/v1/library/folders/{}/scan", folder.id)).bearer(&admin),
+        Req::new(
+            "POST",
+            format!("/api/v1/library/folders/{}/scan", folder.id),
+        )
+        .bearer(&admin),
     )
     .await;
     assert_eq!(resp.status, StatusCode::NO_CONTENT);
@@ -64,7 +68,11 @@ async fn admins_manage_library_folders_and_dedupe() {
     .await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND);
 
-    let resp = send(&app, Req::new("POST", "/api/v1/library/dedupe").bearer(&admin)).await;
+    let resp = send(
+        &app,
+        Req::new("POST", "/api/v1/library/dedupe").bearer(&admin),
+    )
+    .await;
     assert_eq!(resp.status, StatusCode::ACCEPTED);
 
     // A space's admin isn't a server admin: the library is the instance's.
@@ -102,7 +110,7 @@ async fn admins_manage_library_folders_and_dedupe() {
     assert_eq!(resp.status, StatusCode::FORBIDDEN);
     let resp = send(
         &app,
-        Req::new("DELETE", &format!("/api/v1/library/folders/{}", folder.id))
+        Req::new("DELETE", format!("/api/v1/library/folders/{}", folder.id))
             .browser()
             .cookie(&cookie),
     )
@@ -111,13 +119,13 @@ async fn admins_manage_library_folders_and_dedupe() {
 
     let resp = send(
         &app,
-        Req::new("DELETE", &format!("/api/v1/library/folders/{}", folder.id)).bearer(&admin),
+        Req::new("DELETE", format!("/api/v1/library/folders/{}", folder.id)).bearer(&admin),
     )
     .await;
     assert_eq!(resp.status, StatusCode::NO_CONTENT);
     let resp = send(
         &app,
-        Req::new("DELETE", &format!("/api/v1/library/folders/{}", folder.id)).bearer(&admin),
+        Req::new("DELETE", format!("/api/v1/library/folders/{}", folder.id)).bearer(&admin),
     )
     .await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND);
@@ -127,7 +135,11 @@ async fn admins_manage_library_folders_and_dedupe() {
     let mut settings = core.settings();
     settings.library.dedupe = DedupeMode::Off;
     core.set_settings(settings).await.unwrap();
-    let resp = send(&app, Req::new("POST", "/api/v1/library/dedupe").bearer(&admin)).await;
+    let resp = send(
+        &app,
+        Req::new("POST", "/api/v1/library/dedupe").bearer(&admin),
+    )
+    .await;
     assert_eq!(resp.status, StatusCode::BAD_REQUEST);
     core.shutdown().await.unwrap();
 }
