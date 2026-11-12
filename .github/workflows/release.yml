@@ -100,19 +100,22 @@ jobs:
         shell: bash
         run: |
           name="apitorrentd-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
+          # The archive's folder is staged apart from dist/: on Linux and macOS the bare
+          # executable below has the folder's name exactly, and would land inside it.
+          mkdir -p "stage/$name" dist
           exe=apitorrentd; [ "${{ runner.os }}" = Windows ] && exe=apitorrentd.exe
-          cp "target/${{ matrix.target }}/release/$exe" LICENSE README.md "dist/$name/"
+          cp "target/${{ matrix.target }}/release/$exe" LICENSE README.md "stage/$name/"
           # The bare executable too: what `apitorrentd update` downloads (see the manifest).
           bare="$name"; [ "${{ runner.os }}" = Windows ] && bare="$name.exe"
           cp "target/${{ matrix.target }}/release/$exe" "dist/$bare"
+          test -f "dist/$bare"
           echo "bare=dist/$bare" >> "$GITHUB_OUTPUT"
-          cd dist
+          cd stage
           if [ "${{ matrix.archive }}" = zip ]; then
-            7z a "$name.zip" "$name" > /dev/null
+            7z a "../dist/$name.zip" "$name" > /dev/null
             echo "file=dist/$name.zip" >> "$GITHUB_OUTPUT"
           else
-            tar czf "$name.tar.gz" "$name"
+            tar czf "../dist/$name.tar.gz" "$name"
             echo "file=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
