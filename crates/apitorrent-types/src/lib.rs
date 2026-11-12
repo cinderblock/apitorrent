@@ -12,6 +12,7 @@ use ts_rs::TS;
 
 pub mod auth;
 pub mod automation;
+pub mod library;
 pub mod plugins;
 pub mod share;
 pub mod spaces;
@@ -367,6 +368,12 @@ pub struct LibrarySettings {
     /// Remove a torrent whose files another torrent has fully taken over (a season pack
     /// replacing single episodes) once its tracker says it is unregistered. Its files stay.
     pub retire_superseded: bool,
+    /// Merge identical files that torrents downloaded separately into hard links (see
+    /// [`library::DedupeMode`]). Reads at no more than `fingerprint_rate`.
+    pub dedupe: library::DedupeMode,
+    /// How often library folders are walked again for new, changed and removed files, in
+    /// hours. 0 means only when asked.
+    pub folder_rescan_hours: u32,
 }
 
 impl Default for LibrarySettings {
@@ -377,6 +384,8 @@ impl Default for LibrarySettings {
             partial_reuse: true,
             fingerprint_rate: 16 * 1024 * 1024,
             retire_superseded: true,
+            dedupe: library::DedupeMode::Report,
+            folder_rescan_hours: 6,
         }
     }
 }

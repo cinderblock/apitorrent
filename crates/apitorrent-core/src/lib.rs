@@ -7,10 +7,13 @@
 pub mod adapters;
 pub mod automation;
 pub mod db;
+pub mod dedupe;
 pub mod deluge_import;
 pub mod fingerprint;
+pub mod folders;
 pub mod import;
 pub mod library;
+mod library_index;
 pub mod plugin_api;
 mod roots;
 pub mod seeding;
@@ -265,6 +268,8 @@ struct Inner {
     automation: automation::Automation,
     /// Tracker adapters for pack switchover (see `adapters`).
     adapters: adapters::AdapterState,
+    /// Retroactive dedupe and library folders (see `library_index`).
+    library: library_index::LibraryState,
 }
 
 pub(crate) const SETTINGS_KEY: &str = "settings";
@@ -339,6 +344,7 @@ impl Core {
                 roots: RwLock::new(vec![root]),
                 automation,
                 adapters: adapters::AdapterState::default(),
+                library: library_index::LibraryState::default(),
             }),
         };
         core.apply_session_settings();
@@ -357,6 +363,7 @@ impl Core {
         tokio::spawn(core.clone().background());
         tokio::spawn(core.clone().fingerprinter());
         tokio::spawn(core.clone().automation_loop());
+        core.start_library().await;
         Ok(core)
     }
 
@@ -718,14 +725,27 @@ impl Core {
                 t.info.files.iter().any(|f| lengths.contains(&f.length))
             })
             .await;
-        if sources.is_empty() {
+        // Files in library folders are candidates too (see `folders`).
+        let folder_files = self
+            .folder_candidates(lengths.iter().copied().collect())
+            .await;
+        if sources.is_empty() && folder_files.is_empty() {
             return Vec::new();
         }
         let targets = Self::disk_paths(torrent, save_path, naming);
         let (new, prios) = (torrent.clone(), priorities.to_vec());
         let (linked, superseded) = tokio::task::spawn_blocking(move || {
-            let matches =
+            let mut matches =
                 library::find_matches(&new, &targets, &prios, &sources, lib.partial_reuse);
+            let taken: std::collections::HashSet<usize> = matches.iter().map(|m| m.file).collect();
+            matches.extend(folders::find_matches(
+                &new,
+                &targets,
+                &prios,
+                &folder_files,
+                lib.partial_reuse,
+                &taken,
+            ));
             let mut done = Vec::new();
             let mut shared = Vec::new();
             for m in &matches {
@@ -2341,6 +2361,14 @@ impl Core {
         };
         let primary = self.is_primary(key);
         let mine = Self::entry_paths(&entry);
+        if !delete_files {
+            // Files left behind under a library folder stay reusable (see `folders`).
+            let complete = self
+                .complete_files(key, &entry.handle, &entry.torrent, &entry.placed)
+                .await;
+            self.keep_as_folder_files(&entry.torrent, &mine, &complete)
+                .await;
+        }
         // Paths another entry of the torrent also uses (two spaces saving to one folder)
         // are never deleted.
         let shared: std::collections::HashSet<PathBuf> = {

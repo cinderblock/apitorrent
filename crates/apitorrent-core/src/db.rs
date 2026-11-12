@@ -8,6 +8,9 @@ use apitorrent_types::spaces::{Space, SpaceId, SpaceSettings};
 
 use crate::Key;
 
+mod library;
+pub use library::{FolderFile, FolderRow};
+
 /// Each entry upgrades the schema by one version. Never edit a released migration; add a
 /// new one.
 const MIGRATIONS: &[&str] = &[
@@ -175,6 +178,29 @@ const MIGRATIONS: &[&str] = &[
     // 11: each entry's own tracker list, once edited (JSON tiers; NULL = the .torrent's).
     "
     ALTER TABLE torrents ADD COLUMN trackers TEXT;
+    ",
+    // 12: library folders (files outside torrents that new torrents may reuse) and what
+    // their last walk found; see `db::library`. A file's root and SHA-256 are NULL until it
+    // is fingerprinted, and cleared when its size or time changes.
+    "
+    CREATE TABLE library_folders (
+        id           INTEGER PRIMARY KEY,
+        path         TEXT NOT NULL UNIQUE,
+        added_at     INTEGER NOT NULL,
+        last_scan_at INTEGER,
+        error        TEXT
+    );
+    CREATE TABLE library_files (
+        folder_id   INTEGER NOT NULL REFERENCES library_folders(id) ON DELETE CASCADE,
+        path        TEXT NOT NULL,
+        size        INTEGER NOT NULL,
+        mtime_ns    INTEGER NOT NULL,
+        pieces_root BLOB,
+        sha256      BLOB,
+        PRIMARY KEY (folder_id, path)
+    );
+    CREATE INDEX library_files_by_size ON library_files(size);
+    CREATE INDEX library_files_by_root ON library_files(pieces_root);
     ",
 ];
 

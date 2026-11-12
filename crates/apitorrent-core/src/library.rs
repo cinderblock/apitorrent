@@ -103,7 +103,7 @@ impl Linked {
 
 /// What checking a candidate's pieces found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Fit {
+pub(crate) enum Fit {
     /// Every checked piece passed.
     Full,
     /// Some passed: `passed` of `checked`.
@@ -229,7 +229,7 @@ pub fn find_matches(
 /// Check up to [`SAMPLES`] pieces of the new torrent that lie wholly inside its file `i`
 /// (at `offset`, `length` bytes), reading them from the candidate, spread evenly from the
 /// first such piece to the last.
-fn check_pieces(
+pub(crate) fn check_pieces(
     hashes: &PieceHashes,
     layout: &Layout,
     offset: u64,
