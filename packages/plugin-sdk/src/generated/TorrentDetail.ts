@@ -29,4 +29,9 @@ seedingSecs: number,
  * The limits were reached and acted on. A torrent resumed by hand afterwards seeds on
  * until its own limits change.
  */
-seedLimitReached: boolean, };
+seedLimitReached: boolean, 
+/**
+ * Bytes of this torrent's files the content library supplied, so they weren't
+ * downloaded (the sum of the files' `reused` bytes).
+ */
+libraryBytes: number, };

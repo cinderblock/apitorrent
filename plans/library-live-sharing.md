@@ -109,7 +109,18 @@ concurrently. Don't implement them; keep shared-struct changes additive.
   Settings > Library share rate. Test: `web/src/library.test.ts`.
 - [x] Docs: architecture "Live sharing between running torrents" and bookends; README;
   bootstrap plan gaps ticked.
-- [ ] Full checks (fmt, clippy, full test run, web checks) ← current
+- [x] Full checks, 2026-11-11 evening PST: `cargo fmt --check` clean; `cargo clippy
+  --workspace --all-targets --locked -D warnings` clean; `cargo test --locked
+  --no-fail-fast` 770 passed, 0 failed; web typecheck, `bun test` (64 pass) and build;
+  plugin SDK and plugins typecheck and tests (33 pass).
+
+## Left for later
+
+- Migration 12 may collide with the gaps 3/4 agent's migration; renumber on merge.
+- Bookend "different version" marking and supersession from live adoption (see Findings).
+- Pair discovery asks each candidate torrent's actor for its bitfield every 2 to 15 s
+  while something downloads; fine at today's scale, worth an index if many torrents share
+  file lengths.
 
 ## Open questions for the user
 
