@@ -288,6 +288,11 @@ async fn library_folder_files_are_reused_and_never_modified() {
     wait_for(&core, &id1, TorrentState::Seeding).await;
     assert_eq!(core.store().get(&k(&id1)).unwrap().downloaded, 0);
     assert_eq!(std::fs::read(dl.join("film.mkv")).unwrap(), film);
+    let reuse = core.detail(&k(&id1)).await.unwrap().files[0]
+        .reused
+        .clone()
+        .expect("recorded");
+    assert_eq!(reuse.source_name, "library folder file Film (2019).mkv");
 
     // Fingerprinted (here, or by the background task the walk woke), a v2 torrent finds
     // it by root.

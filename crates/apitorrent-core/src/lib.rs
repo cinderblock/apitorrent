@@ -774,10 +774,16 @@ impl Core {
                         }
                         reused.push(share::PendingReuse {
                             file: m.file,
-                            source_name: sources
-                                .iter()
-                                .find(|s| s.id == m.source_id)
-                                .map_or_else(String::new, |s| s.torrent.info.name.clone()),
+                            // A library folder's file has no torrent name: show its file
+                            // name (not its path, which is the server's business).
+                            source_name: sources.iter().find(|s| s.id == m.source_id).map_or_else(
+                                || {
+                                    m.from.file_name().map_or_else(String::new, |n| {
+                                        format!("library folder file {}", n.to_string_lossy())
+                                    })
+                                },
+                                |s| s.torrent.info.name.clone(),
+                            ),
                             source_id: m.source_id.clone(),
                             how,
                         });
