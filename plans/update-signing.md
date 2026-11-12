@@ -177,9 +177,21 @@ Times US Pacific.
   and its password are the repo's Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and
   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The public key, `release/update-signing.pub`
   (key ID 4EAD1BDC7E95B474), is committed
-- [ ] Not tested end to end: a real release run in Actions (the remote exists now; no tag yet), the desktop
-  install on a real installer, and the daemon's restart under systemd / re-exec (the
-  pieces are unit-tested; the full loop needs a published release)
+- [x] A real release run in Actions: `v0.1.2`, 2026-11-12 12:10 AM PST (08:10Z), run
+  43178391333, every job green. The draft holds 18 files, each with a `.sig`, plus
+  `latest.json` and `apitorrentd-manifest.json`, both signed. Checked by hand: the Windows
+  daemon's SHA-256 matches the manifest; the manifest, `latest.json` and that binary
+  verify against `release/update-signing.pub` (key ID 4EAD1BDC7E95B474, prehashed `ED`,
+  trusted comment too), and a one-bit change fails.
+  - `v0.1.0` failed: the bundler decodes `plugins.updater.pubkey`, empty in
+    `tauri.conf.json` ("Missing comment in public key"). Fixed in `dc68522`: the workflow
+    passes the committed key with `--config`.
+  - `v0.1.1` failed at the draft job: on Linux and macOS the bare daemon executable has
+    the archive folder's exact name and was copied into it. Fixed in `d0ab53a`. Both tags
+    stay, with no release; the version moved on rather than moving a pushed tag.
+- [ ] Not tested end to end: installing an update. That needs two *published* releases
+  (programs only look at published ones): the desktop install from a real installer, and
+  the daemon's swap and restart under systemd / re-exec. Publishing is the user's call.
 
 ## Follow-ups (not done)
 

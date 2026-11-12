@@ -135,9 +135,12 @@ engine core stays in the main thread, because its pieces interlock.
 - **Content library gaps** (below), started 2026-11-11 in two worktree agents: gaps 1, 2,
   5 and 6 (plan `plans/library-live-sharing.md`) and gaps 3 and 4 (plan
   `plans/library-dedupe-index.md`).
-- **Main thread:** merging those and the dependency upgrade, then a first draft release
-  (`v0.1.0`) to test the release and update pipeline end to end. The three UI calls from
-  the review are done (`90f242b`).
+- **Main thread:** both library agents and the dependency upgrade are merged (2026-11-11);
+  Dependabot PRs #1–#5 closed. The three UI calls from the review are done (`90f242b`).
+  The first draft release is `v0.1.2` (2026-11-12; `v0.1.0` and `v0.1.1` failed in the
+  release workflow and were fixed, see `plans/update-signing.md`). It waits for the user
+  to check and publish it; installing an update can only be tested between two published
+  releases.
 - **Waiting on the user:** the Deluge import, after more features.
 - **Dropped by the user:** testing against a real Sonarr or Radarr.
 - **Optional:** a Raspberry Pi images source plugin.
