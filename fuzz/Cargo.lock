@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "apitorrent-bencode"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "apitorrent-deluge"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apitorrent-bencode",
  "serde_json",
@@ -20,7 +20,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-dht"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apitorrent-bencode",
  "futures-util",
@@ -48,7 +48,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-metainfo"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apitorrent-bencode",
  "data-encoding",
@@ -61,7 +61,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-tracker"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-metainfo",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-wire"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-metainfo",

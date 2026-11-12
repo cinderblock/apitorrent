@@ -1,6 +1,6 @@
 {
   "name": "@apitorrent/plugin-sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Types, a test harness and a build helper for apitorrent plugins",
   "license": "MIT",
   "type": "module",
