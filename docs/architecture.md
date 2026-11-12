@@ -750,6 +750,71 @@ still references it.
   still found by length (and name) and then checked by hashing at the new torrent's
   alignment, which costs one read of the candidate file.
 
+### Retroactive dedupe
+
+Matching at add time can't help with copies that already exist: two torrents of the same
+file from different trackers, downloaded before either knew of the other. A background
+pass (`apitorrent-core`'s `dedupe` and `library_index` modules) merges them.
+
+- **Setting**: `library.dedupe` is `off`, `report` (the default) or `on`. A pass runs a
+  few minutes after start and then hourly, skipped while a torrent is checking. "Report"
+  finds and counts, changing nothing, so users see the savings first. "On" merges. A
+  server admin's **Deduplicate now** (`POST /library/dedupe`) merges in both modes; with
+  `off` it is refused.
+- **Finding copies**: the complete files of every torrent's primary entry, 64 KiB and up,
+  of torrents not being checked. Only sizes held by two or more separate files (by file
+  identity: volume and file index, so existing hard links count once) are hashed; their
+  full SHA-256 comes from the fingerprint store, or is computed in the same rate-limited
+  idle read (`library.fingerprint_rate`) and stored there. Copies are grouped by size,
+  hash and volume.
+- **What is merged**: in each group the copy with the most links already is kept (then
+  the first path). Another copy is replaced only when every one of its links is a file the
+  library knows: a copy also linked from elsewhere (another space's placement, a user's
+  own link) would stay on disk anyway, so it is reported as not mergeable and left alone.
+  Library-folder files are never part of dedupe.
+- **The swap**, per copy: both files are read again in full and compared byte for byte,
+  the copy's SHA-256 is checked against the planned one, and both must still have the
+  size and modification time they were hashed at. Then, with the copy's torrent holding
+  the file (`TorrentHandle::replace_file`: every engine read and write of it waits), the
+  size and time are checked once more, the keeper is hard-linked (or, where hard links
+  fail, cloned) to `<name>.apitorrent-dedupe` beside the copy, the torrent is checked not
+  to have started a check, the keeper's files are marked linked, and the link is renamed
+  over the copy. A rename replaces the name atomically, so the path always names a valid
+  file; any failure removes the temporary link and leaves the original. A temporary link
+  a crash leaves behind is removed by the next swap. Both sides are marked linked, so the
+  engine's copy-on-write keeps either torrent from changing the other's file.
+- **Spaces**: dedupe is server-wide data plumbing, like matching. Its numbers
+  (`GET /library`: sets found, bytes and files mergeable, not mergeable, still to read,
+  and bytes and files freed over the instance's life) are aggregates for server admins;
+  no file names leave the server through them.
+
+### Library folders (files outside torrents)
+
+A server admin adds **library folders** (`POST /library/folders`, Settings → Library): an
+existing media folder, say, or where removed torrents' files were left. Their files become
+candidates when a torrent is added, after the torrents' own files.
+
+- **Index**: `apitorrent.db` migration 12, `library_folders` and `library_files` (path,
+  size, modification time, and the v2 root and SHA-256 once fingerprinted). A walk is
+  rate-limited (a short pause every 200 entries), doesn't follow symbolic links, skips
+  apitorrent's own temporary files, and records new, changed and removed files; a changed
+  file loses its fingerprint. Walks run when a folder is added, every
+  `library.folder_rescan_hours` (default 6; 0 means only by hand), and on
+  `POST /library/folders/{id}/scan`. Fingerprints are computed lazily in idle time at the
+  fingerprint rate, paused while a torrent is checking.
+- **Matching** (`folders::find_matches`): for each file no torrent matched, by `pieces
+  root` with no I/O when the folder file's fingerprint is current (same size and time
+  now), otherwise by length, same name first, then up to 8 sampled pieces at the new
+  torrent's alignment, as for torrents' files. A stale fingerprint is never trusted. Folder
+  files are looked up in the database by size at add time, not held in memory.
+- **Read-only sources**: a full match is hard-linked into the torrent's save path (the
+  engine treats the link as copy-on-write), a partial one cloned or copied. apitorrent
+  never writes, renames or deletes a folder file; removing a folder forgets its index
+  only, and removing a torrent with its files deletes only the torrent's own link.
+- **Kept files**: removing a torrent with "keep files" records its complete files that lie
+  under a library folder at once, with the v2 root (from a v2 torrent) and the fingerprint
+  carried over, so the next torrent of the same file can match it with no I/O and no walk.
+
 ### Unwanted files and the part store
 
 A torrent's save directory only ever holds files the user wants. Deselecting a file

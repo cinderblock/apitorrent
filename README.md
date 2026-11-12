@@ -48,7 +48,10 @@ Most of this is built.
   the single episodes you have; they keep seeding until their tracker drops them, then
   retire on their own. A tracker-adapter plugin can tell what "dropped" means on its
   tracker, and fetch the pack that replaced a deleted single. Shared files are
-  copy-on-write, so one torrent never changes another's data.
+  copy-on-write, so one torrent never changes another's data. Library folders (a media
+  folder you already have) are candidates too, read but never changed, and identical
+  files that were downloaded separately can be merged into links later to free the space
+  (reported first; merged only when you turn it on or ask).
 - **Automation.** Plugins watch sources such as feeds and Ubuntu releases and offer what
   they find. Rules decide what to fetch (the latest N, with a label, a folder and only the
   files you want) and what to retire, keep a stable "latest" path, and signed channels push

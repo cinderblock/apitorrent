@@ -66,20 +66,48 @@ Content-library gaps 3 and 4 from `plans/apitorrent-bootstrap.md` ("Content libr
 
 - Rust's `std::fs::File::open` on Windows shares read/write/delete, and `fs::rename` uses
   POSIX-semantics replace, so renaming a fresh hard link over a file the engine has open
-  works. The engine's own `write_linked` already relies on this.
+  works. The engine's own `write_linked` already relies on this. `replace_file` still
+  closes the engine's handle before and after, so later reads open the new file.
 - A hard link shares the inode's mtime, so after a swap the replaced path's stamp is the
-  keeper's; its fingerprint is rewritten with the keeper's stamp.
+  keeper's; its fingerprint is rewritten with that stamp.
+- The engine's writes to a file not marked linked don't take the per-file unshare lock,
+  but every read and write takes the placement lock for reading, so `replace_file` takes
+  the placement lock for writing (then the unshare lock: the order `write_linked` uses).
+- The slow full-file comparison runs *outside* the engine lock (inside, it would stall
+  seeding that file); the swap re-checks size and time inside it. The engine never writes
+  a complete file, so what's left is an outside writer that keeps both size and time,
+  which no comparison can rule out anyway.
+- Test race: adding a folder wakes the walker, which wakes the hasher, so a test calling
+  `hash_folders_now` may find the file already done (`left: 0, right: 1`). Tests assert
+  the folder's `hashed_files` instead.
+- `routes::Failure` has a private field: outside `routes.rs` use `Failure::from(e)`
+  (`E0423 cannot initialize a tuple struct which contains private fields`).
+- A 202 with no body breaks the web client's `request()` (it parses JSON for anything but
+  204), so "rescan" answers 204.
+- The build directory is shared (`~/.cargo/build/…`), not `target/` in the worktree. A
+  cold engine test build took 4m41s through srmctl.
 
 ## Progress log
 
-- [ ] 1. Engine
-- [ ] 2. Types
-- [ ] 3. Dedupe module
-- [ ] 4. Folders module
-- [ ] 5. DB
-- [ ] 6. Core wiring
-- [ ] 7. Server + web
-- [ ] 8. Docs + checks
+- [x] 1. Engine: `fileid`, `replace_file`, `mark_linked` (`0468d78`)
+- [x] 2. Types: `library` module, `LibrarySettings.dedupe` / `folder_rescan_hours`
+- [x] 3. Dedupe module: plan, verify, `link_over`, crash tests
+- [x] 4. Folders module: walk, diff, matching
+- [x] 5. DB migration 12 (`db/library.rs`)
+- [x] 6. Core wiring (`library_index.rs`), keep-files retention, folder candidates in
+  `link_from_library` (2–6 in `5e28d54`)
+- [x] 7. Server routes, web UI, tests (`2088dce`)
+- [x] 8. Docs: architecture, README, bootstrap plan ticks
+- [x] Full checks 2026-11-11 (US Pacific): fmt, clippy `-D warnings`, `cargo test --locked --no-fail-fast` (0 failures), web typecheck, `bun test` (67 pass), build
+
+## Not done (and why)
+
+- Dedupe only merges files of torrents' primary entries. Other spaces' placed copies are
+  usually hard links already; where they are copies (another volume) they can't be linked.
+- Library-folder files are never deduplicated (against each other or torrents): they are
+  read-only by design.
+- The reflink fallback in a swap is used only where hard links fail, and isn't tested on
+  its own beyond `reflink-copy` (CI's reflink volume covers the other reflink paths).
 
 ## Things not to do
 

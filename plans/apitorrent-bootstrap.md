@@ -147,10 +147,15 @@ engine core stays in the main thread, because its pieces interlock.
      same file at once both download all of it.
   2. Sharing between in-progress torrents: verified pieces of a partial file aren't
      offered to another torrent with the same file.
-  3. Retroactive dedupe: identical files that were downloaded separately are never
-     merged into hard links later, so the space isn't reclaimed.
-  4. Files outside torrents (a media folder, the files of a torrent that was removed)
-     aren't candidates. That needs a scan-and-fingerprint index of chosen folders.
+  3. ✅ Retroactive dedupe: identical files that were downloaded separately are never
+     merged into hard links later, so the space isn't reclaimed. *Built 2026-11-11
+     (`plans/library-dedupe-index.md`): off / report only (default) / on, "Deduplicate
+     now", verified atomic swaps.*
+  4. ✅ Files outside torrents (a media folder, the files of a torrent that was removed)
+     aren't candidates. That needs a scan-and-fingerprint index of chosen folders. *Built
+     2026-11-11 (`plans/library-dedupe-index.md`): library folders, walked and
+     fingerprinted in idle time; a removed torrent's kept files under one stay
+     candidates.*
   5. Bookend mixing (`docs/architecture.md`, "Going further"): a boundary piece is
      downloaded whole from peers instead of taking the library's part of it. Costs at
      most two pieces per file.
