@@ -141,26 +141,22 @@ engine core stays in the main thread, because its pieces interlock.
 - **Waiting on the user:** the Deluge import, after more features.
 - **Dropped by the user:** testing against a real Sonarr or Radarr.
 - **Optional:** a Raspberry Pi images source plugin.
-- **Content library gaps (found 2026-11-11, not started).** Matching runs only once, when a
+- **Content library gaps (found 2026-11-11).** Matching runs only once, when a
   torrent is added, and only against complete files of torrents the daemon has. Missing:
-  1. Re-matching when a source file completes later. Today two torrents downloading the
-     same file at once both download all of it.
-  2. Sharing between in-progress torrents: verified pieces of a partial file aren't
-     offered to another torrent with the same file.
-  3. ✅ Retroactive dedupe: identical files that were downloaded separately are never
-     merged into hard links later, so the space isn't reclaimed. *Built 2026-11-11
-     (`plans/library-dedupe-index.md`): off / report only (default) / on, "Deduplicate
-     now", verified atomic swaps.*
-  4. ✅ Files outside torrents (a media folder, the files of a torrent that was removed)
-     aren't candidates. That needs a scan-and-fingerprint index of chosen folders. *Built
-     2026-11-11 (`plans/library-dedupe-index.md`): library folders, walked and
-     fingerprinted in idle time; a removed torrent's kept files under one stay
-     candidates.*
-  5. Bookend mixing (`docs/architecture.md`, "Going further"): a boundary piece is
-     downloaded whole from peers instead of taking the library's part of it. Costs at
-     most two pieces per file.
-  6. Visibility: the UI shows only "Superseded by". It should show per file "reused from
-     <torrent> (hard link/clone/copy)" and the bytes saved.
+  1. ~~Re-matching when a source file completes later.~~ Done: the file is adopted (linked)
+     into the waiting torrent. Plan: `plans/library-live-sharing.md`
+  2. ~~Sharing between in-progress torrents.~~ Done: verified pieces fill the same bytes
+     of other torrents, across alignments. Plan: `plans/library-live-sharing.md`
+  3. ~~Retroactive dedupe.~~ Done: off / report only (default) / on, "Deduplicate now",
+     verified atomic swaps. Plan: `plans/library-dedupe-index.md`
+  4. ~~Files outside torrents.~~ Done: library folders, walked and fingerprinted in idle
+     time; a removed torrent's kept files under one stay candidates. Plan:
+     `plans/library-dedupe-index.md`
+  5. ~~Bookend mixing~~ Done: blocks wholly inside the library's file come from disk.
+     Plan: `plans/library-live-sharing.md`
+  6. ~~Visibility~~ Done: per-file source and method, bytes saved per torrent and in
+     total. Plan: `plans/library-live-sharing.md`
+  Merged 2026-11-11. The two branches both added DB migration 12; `file_reuse` became 13.
 
 ## Findings / gotchas
 
@@ -589,6 +585,9 @@ them, restarts, and reports. On this machine (release build, NVMe):
   tagged `MatchedBy::{Root, Fingerprint, Pieces, Name}`. Core test
   `fingerprints_let_v2_torrents_reuse_v1_files`
 - [x] Content library: tracker-adapter hook (`crates/apitorrent-core/src/adapters.rs`, plugin ecosystem)
+- [x] Content library gaps 1, 2, 5, 6 (2026-11-11): live sharing between running torrents,
+  bookend pieces, per-file provenance (`crates/apitorrent-core/src/share.rs`,
+  `plans/library-live-sharing.md`)
 - [x] Reflinks tested on filesystems that clone: the CI job "Reflinks on Btrfs and XFS"
   (loop-mounted) passed its first run on 2026-11-10. See `plans/net-fixes.md`
 - [x] M9 (part): Deluge importer. `apitorrent-deluge` reads `state/*.torrent`,

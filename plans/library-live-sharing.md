@@ -54,7 +54,7 @@ concurrently. Don't implement them; keep shared-struct changes additive.
   `library.share_rate` bytes/s (default 64 MiB/s; 0 turns live sharing off). Bookend reads
   are limited by the engine's memory budget (prefill only when a new piece would fit).
 - **Provenance is per torrent id and file** (the swarm's files, whatever spaces hold it), in
-  a new table `file_reuse` (migration 12). Rows go when the torrent's last entry goes.
+  a new table `file_reuse` (migration 13 after the merge; 12 on the branch). Rows go when the torrent's last entry goes.
 
 ## Plan / steps
 
@@ -77,14 +77,39 @@ concurrently. Don't implement them; keep shared-struct changes additive.
   first ("in progress, most complete first").
 - Migration numbering: the gaps 3/4 agent may also add migration 12. Whoever merges second
   renumbers.
+- **Bookend race.** Prefilling only on the actor's tick let peers start the boundary piece
+  first, so it was downloaded whole. Bookend pieces are now *held* in the picker (like v2
+  pieces waiting for their layer) until their library blocks are in, and the core sends
+  `set_reused` right after spawning, before the check ends. With that, the bookend test's
+  download is exact: episode 2 plus 2,544 bytes, not plus a whole 32 KiB piece.
+- **Provenance race.** A bookend piece can verify before the background refresh records
+  the add-time match (`settle_reuse`), so `record_bookend` also looks at the pending
+  matches.
+- **Random piece order delays sharing.** A needing piece is offered only once *every*
+  source piece under it is had, and sources download rarest-first in random order. A
+  64 KiB needing piece over five 16 KiB source pieces typically becomes coverable only
+  past half of the source's progress. The test rate-limits its seeder (192 KiB/s for
+  2 MiB) so sharing visibly starts while the source is still downloading.
+- First run of `a_file_finished_later_is_linked_into_a_waiting_torrent` failed with
+  `left: 0, right: 9` on `pieces_have`: the file appears (rename) before the re-hash
+  finishes and before the 1 s summary refresh. The test now waits for the piece count.
+- Not built, deliberately: the "mark the candidate as a different version" half of the
+  architecture doc's bookend design (copy-on-write already protects the source), and
+  supersession from live adoption (a pack still supersedes singles only at add time).
 
 ## Progress log
 
-- [ ] Engine primitives
-- [ ] Core live sharing
-- [ ] Provenance (DB, API)
-- [ ] Web UI
-- [ ] Tests, docs, full checks
+- [x] Engine primitives (`6b04d10`): `offer_piece`, `adopt_file`, `set_reused` + bookend
+  prefill and holds, `Session::piece_events`. Tests: `picker::prefilled_pieces_request_only_missing_blocks`,
+  `storage::adopting_a_file_links_or_copies_it`.
+- [x] Core live sharing and provenance (`b383af6`): `share.rs`, migration 12 (13 on master), API types.
+  Tests: `share::tests::pieces_map_across_alignments`, `db::reuse_records_add_up`, and
+  `tests/library_live.rs` (five end-to-end tests).
+- [x] Web UI (`8b930c2`): Files tab provenance, General tab total, status bar total,
+  Settings > Library share rate. Test: `web/src/library.test.ts`.
+- [x] Docs: architecture "Live sharing between running torrents" and bookends; README;
+  bootstrap plan gaps ticked.
+- [ ] Full checks (fmt, clippy, full test run, web checks) ← current
 
 ## Open questions for the user
 

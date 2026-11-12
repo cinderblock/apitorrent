@@ -705,7 +705,8 @@ far less machinery, and each torrent's directory is a real, complete set of file
 
 ### Matching (the "pack" case)
 
-When a torrent is added, before it starts:
+When a torrent is added, before it starts (and later, while it runs: see "Live sharing
+between running torrents" below):
 
 1. **v2 or hybrid torrents**: an exact match on `(length, pieces root)`. No I/O is needed to
    trust it.
@@ -723,12 +724,15 @@ still references it.
 
 ### Going further than file-level matching
 
-- **Bookends.** A v1 piece that straddles file X (which we have) and a neighbour Y is
-  verified the moment both are available from *any* source. If Y has to be downloaded,
-  X's part of the piece comes from the library copy, Y's part from peers, and the whole
-  piece is hashed in the staging area. If it fails, the piece is downloaded again entirely
-  from peers. Only if that clean copy disagrees with the library bytes in X's range is the
-  candidate marked as a different version.
+- **Bookends.** Built. A v1 piece that straddles file X (which came from the library) and
+  a neighbour Y that has to be downloaded is held back from peers until X's part is read
+  from disk: every 16 KiB block lying wholly inside X is filled from the library copy,
+  only the rest is requested from peers, and the whole piece is hashed in the piece
+  buffer as usual. If it fails, nobody is blamed and the piece is downloaded again
+  entirely from peers. At most four such pieces per torrent wait for peers at once, and
+  only when the memory budget has room. (Not built: marking the candidate as a different
+  version when the clean copy disagrees in X's range. The engine's copy-on-write already
+  keeps the other torrent's X intact.)
 - **Piece-level reuse.** Built. Every piece that verifies is genuinely the torrent's data,
   even when the file as a whole doesn't match (a repack that changed one region, say).
   Matching reads up to 8 pieces spread across a same-length candidate. All passing is a
@@ -814,6 +818,45 @@ candidates when a torrent is added, after the torrents' own files.
 - **Kept files**: removing a torrent with "keep files" records its complete files that lie
   under a library folder at once, with the v2 root (from a v2 torrent) and the fingerprint
   carried over, so the next torrent of the same file can match it with no I/O and no walk.
+
+### Live sharing between running torrents
+
+Matching at add time only sees complete files. The core's `share` module keeps going
+while torrents run, driven by the engine's stream of verified pieces
+(`Session::piece_events`):
+
+- **Re-matching.** When a file a torrent still needs is complete in another torrent (it
+  finished downloading there, or the torrent was added with the file already on disk),
+  and the needing torrent has no piece touching that file yet, the file is **adopted**:
+  hard-linked for a full match (same root, a current fingerprint, or every sampled piece
+  passing), cloned or copied for a partial one. The engine swaps the file in under its
+  storage locks and re-hashes just the pieces touching it
+  (`TorrentHandle::adopt_file`). A file with any piece had or in progress is never
+  replaced, so verified data is never clobbered and no in-flight write is lost.
+- **Piece sharing.** Two torrents whose files are believed to hold the same bytes form a
+  *pair*: the same length and `pieces root` (from the torrents or a fingerprint) is
+  trusted; for v1, the same length is a candidate (same-named first, at most eight per
+  file), confirmed by the first piece that verifies and dropped if that piece fails. A
+  confirmed pair that fails four pieces is dropped too (a repack). Whenever a source
+  verifies a piece, each piece of the needing torrent whose bytes are now all verified in
+  sources is read from the sources' files and offered to it
+  (`TorrentHandle::offer_piece`). The needing torrent hashes it against its own piece
+  hash and writes it through its normal storage path, so linked files stay
+  copy-on-write. Piece sizes and alignments may differ: pieces map through byte ranges of
+  the files, and a needing piece that spans several files needs a pair for each. Two
+  torrents downloading the same file at once therefore download it once between them.
+- **Bounds.** One piece is read at a time, off the async runtime, at no more than
+  `library.shareRate` bytes per second (default 64 MiB/s; 0 turns live sharing off).
+  Looking for new pairs costs a round trip to each candidate torrent's actor, so it runs
+  at most every 2 s while pieces arrive and every 15 s otherwise. Every step looks
+  torrents up by id again, so removing either torrent mid-way only drops its work.
+
+**Provenance.** Each file records where the library supplied its bytes from: the source
+torrent (id and name), the method (hard link, clone, copy, piece sharing) and the bytes
+verified without downloading, including bookend blocks. It is stored per torrent id and
+file (`file_reuse`, migration 13), goes when the torrent's last entry is removed, and is shown in the
+Files tab ("Reused from Show S01 (hard link), all of it"), as the torrent's total in its
+details, and as the instance's total in the status bar.
 
 ### Unwanted files and the part store
 
