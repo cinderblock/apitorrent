@@ -8,6 +8,7 @@ import { ApiRequestError, api, updateApi } from "../api/client";
 import type { UpdateSettings } from "../api/generated/UpdateSettings";
 import type { UpdateStatus } from "../api/generated/UpdateStatus";
 import { formatDateTime, formatUtc } from "../format";
+import { Markdown } from "../markdown";
 
 // One shared copy of the status, so the toolbar and Settings agree.
 let current: UpdateStatus | null = null;
@@ -103,7 +104,7 @@ function UpdateDetails({ status }: { status: UpdateStatus }) {
           Release notes
         </a>
       </p>
-      {latest.notes && <pre className="update-notes">{latest.notes}</pre>}
+      {latest.notes && <Markdown className="update-notes" text={latest.notes} />}
       {status.installsEnabled ? (
         <button type="button" className="primary" disabled={busy !== null} onClick={() => void install()}>
           {busy === "install" ? "Downloading and verifying…" : busy === "restart" ? "Restarting…" : "Install and restart"}

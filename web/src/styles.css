@@ -1043,9 +1043,76 @@ button.wide {
   padding: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: 13px;
+}
+
+.update-notes > :first-child {
+  margin-top: 0;
+}
+
+.update-notes > :last-child {
+  margin-bottom: 0;
+}
+
+.update-notes :is(h3, h4, h5, h6) {
+  margin: 12px 0 4px;
+  font-size: 14px;
+}
+
+.update-notes :is(p, ul, ol, pre) {
+  margin: 4px 0;
+}
+
+.update-notes :is(ul, ol) {
+  padding-left: 20px;
+}
+
+.update-notes pre {
+  padding: 6px;
+  overflow: auto;
+  background: var(--bg);
+  border-radius: 4px;
+}
+
+/* A visible label beside a control in a row of buttons (the Users page's role). */
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The phone toolbar's "More" menu (ToolbarMore.tsx). */
+.toolbar-more {
+  position: relative;
+}
+
+.toolbar-more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 11rem;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 25%);
+}
+
+.toolbar-more-menu > button {
+  text-align: left;
+}
+
+.toolbar-more-theme {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
 }
 
 .account-button {

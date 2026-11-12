@@ -96,14 +96,19 @@ rule), Import, Remove (turns red with "delete files"), update dialog, space swit
 page as server admin and as a space admin, Account, Users. No console errors or page errors
 in any shot.
 
-Not changed (judgement calls, for the user):
+Judgement calls, settled 2026-11-11 (the user said to go ahead):
 
-- On phones the toolbar takes three rows (filters/brand/space/Add; Settings/Rules/Plugins/
-  theme; Update/account) before the search box. A menu would save ~80 px but is a bigger
-  design change.
-- Release notes show as raw Markdown in a `<pre>` in the update dialog.
-- The Users page role select has no visible label (deliberate in `0d49fe3`; it has an
-  aria-label).
+- On phones the toolbar took three rows. Settings, Rules, Plugins and the theme picker now
+  sit in a "⋯" (More) menu (`web/src/components/ToolbarMore.tsx`), so it takes two.
+- Release notes in the update dialog are rendered from Markdown by `web/src/markdown.tsx`,
+  which builds React elements only (no HTML strings) and follows only http(s) links.
+  Tests: `web/src/markdown.test.tsx`.
+- The Users page role select has a visible "Server role" label again, in an inline
+  label that keeps the row aligned.
+- Checked with `shoot.py` (copied to this session's scratchpad, plus a `main-more`
+  scene): no sideways scroll, clipping, wrapping or console errors at phone, desk and
+  wide sizes. The first try opened the menu off the left edge (anchored right); it is
+  anchored left now.
 
 ## Gotchas
 

@@ -12,6 +12,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
 import { ThemePicker } from "./components/ThemePicker";
+import { ToolbarMore } from "./components/ToolbarMore";
 import { TorrentTable } from "./components/TorrentTable";
 import { UpdateButton } from "./components/Updates";
 import { DesktopMenu } from "./desktop/DesktopGate";
@@ -215,18 +216,27 @@ export function App({ status: auth }: { status: AuthStatus }) {
           </>
         )}
         {!mayWrite && <span className="badge">Read only</span>}
-        <button type="button" onClick={() => setSettingsOpen(true)}>
+        <button type="button" className="wide-only" onClick={() => setSettingsOpen(true)}>
           Settings
         </button>
-        <button type="button" onClick={() => navigate("/rules")}>
+        <button type="button" className="wide-only" onClick={() => navigate("/rules")}>
           Rules
         </button>
         {spaceAdmin && (
-          <button type="button" onClick={() => navigate("/plugins")}>
+          <button type="button" className="wide-only" onClick={() => navigate("/plugins")}>
             Plugins
           </button>
         )}
-        <ThemePicker />
+        <span className="wide-only">
+          <ThemePicker />
+        </span>
+        <ToolbarMore
+          items={[
+            { label: "Settings", onSelect: () => setSettingsOpen(true) },
+            { label: "Rules", onSelect: () => navigate("/rules") },
+            ...(spaceAdmin ? [{ label: "Plugins", onSelect: () => navigate("/plugins") }] : []),
+          ]}
+        />
         <UpdateButton isAdmin={serverAdmin} />
         {/* Search, rates, status and account: the group takes the row's spare width, right
             aligned. The search box gives up its width first; when the row is too narrow even
