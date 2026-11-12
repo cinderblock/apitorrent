@@ -144,7 +144,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "apitorrent-auth"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-types",
  "argon2",
@@ -167,7 +167,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-bencode"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proptest",
  "thiserror 2.0.21",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-tls",
  "data-encoding",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-client",
@@ -229,7 +229,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-deluge"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-metainfo",
@@ -240,7 +240,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-auth",
  "apitorrent-client",
@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-dht"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-bencode",
  "futures-util",
@@ -294,7 +294,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-dht",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-metainfo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-bencode",
  "data-encoding",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-mse"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-metainfo",
  "crypto-bigint",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-plugin-api"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-types",
  "serde",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-plugins"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-plugin-api",
  "apitorrent-tls",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-auth",
  "apitorrent-core",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-tls"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "data-encoding",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-tracker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-metainfo",
@@ -482,7 +482,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-update"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-types",
  "axum",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-utp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proptest",
  "rand 0.9.5",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-webui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "brotli",
  "flate2",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrent-wire"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-metainfo",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "apitorrentd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "apitorrent-auth",
  "apitorrent-core",
