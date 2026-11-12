@@ -11,4 +11,9 @@ peerPort: number,
 /**
  * Nodes in the DHT's routing tables, or null when the DHT is off.
  */
-dhtNodes: number | null, };
+dhtNodes: number | null, 
+/**
+ * Bytes the content library supplied across the torrents here, so they weren't
+ * downloaded.
+ */
+libraryBytes: number, };

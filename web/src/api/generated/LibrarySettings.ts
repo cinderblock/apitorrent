@@ -38,4 +38,11 @@ dedupe: DedupeMode,
  * How often library folders are walked again for new, changed and removed files, in
  * hours. 0 means only when asked.
  */
-folderRescanHours: number, };
+folderRescanHours: number, 
+/**
+ * Share data between torrents while they run: a file completing in one is linked
+ * into others still waiting for it, and pieces one verifies fill the same pieces of
+ * others with the same file. At most this many bytes per second are read for it; 0
+ * turns it off.
+ */
+shareRate: number, };

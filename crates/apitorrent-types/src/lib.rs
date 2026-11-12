@@ -105,6 +105,40 @@ pub struct TorrentFile {
     /// Fraction of the file's pieces downloaded, 0 to 1.
     pub progress: f64,
     pub placement: FilePlacement,
+    /// Where the file's bytes came from, when the content library supplied some of them
+    /// instead of peers. Daemons from before this don't send it.
+    #[serde(default)]
+    pub reused: Option<FileReuse>,
+}
+
+/// How much of a file the content library supplied, and from where.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FileReuse {
+    /// The torrent the bytes came from. It may have been removed since.
+    pub source_id: TorrentId,
+    /// Its name, as it was then.
+    pub source_name: String,
+    pub method: ReuseMethod,
+    /// Bytes of the file that were verified without being downloaded.
+    #[ts(type = "number")]
+    pub bytes: u64,
+}
+
+/// How the content library supplied a file's bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ReuseMethod {
+    /// A hard link: both torrents share one file on disk.
+    HardLink,
+    /// A copy-on-write clone (Btrfs, XFS, APFS, `ReFS`): a private file sharing extents.
+    Clone,
+    /// A plain copy (another volume).
+    Copy,
+    /// Piece by piece, from a torrent with the same file that was still downloading too.
+    PieceSharing,
 }
 
 /// Where a file's data is kept.
@@ -180,6 +214,11 @@ pub struct TorrentDetail {
     /// The limits were reached and acted on. A torrent resumed by hand afterwards seeds on
     /// until its own limits change.
     pub seed_limit_reached: bool,
+    /// Bytes of this torrent's files the content library supplied, so they weren't
+    /// downloaded (the sum of the files' `reused` bytes).
+    #[ts(type = "number")]
+    #[serde(default)]
+    pub library_bytes: u64,
 }
 
 /// A connected peer.
@@ -234,6 +273,11 @@ pub struct SessionStats {
     pub peer_port: u16,
     /// Nodes in the DHT's routing tables, or null when the DHT is off.
     pub dht_nodes: Option<u32>,
+    /// Bytes the content library supplied across the torrents here, so they weren't
+    /// downloaded.
+    #[ts(type = "number")]
+    #[serde(default)]
+    pub library_bytes: u64,
 }
 
 /// A torrent's own limits. 0 or null means no limit of its own.
@@ -374,6 +418,12 @@ pub struct LibrarySettings {
     /// How often library folders are walked again for new, changed and removed files, in
     /// hours. 0 means only when asked.
     pub folder_rescan_hours: u32,
+    /// Share data between torrents while they run: a file completing in one is linked
+    /// into others still waiting for it, and pieces one verifies fill the same pieces of
+    /// others with the same file. At most this many bytes per second are read for it; 0
+    /// turns it off.
+    #[ts(type = "number")]
+    pub share_rate: u64,
 }
 
 impl Default for LibrarySettings {
@@ -386,6 +436,7 @@ impl Default for LibrarySettings {
             retire_superseded: true,
             dedupe: library::DedupeMode::Report,
             folder_rescan_hours: 6,
+            share_rate: 64 * 1024 * 1024,
         }
     }
 }

@@ -894,6 +894,8 @@ pub(crate) struct TorrentActor {
     /// Bookend pieces (see [`TorrentHandle::set_reused`]) and their blocks lying wholly in
     /// reused files.
     bookends: Vec<(u32, Vec<u32>)>,
+    /// The pieces of `bookends`.
+    bookend_pieces: HashSet<u32>,
     /// Bookend pieces whose blocks are being read from disk.
     prefilling: HashSet<u32>,
     /// Bookend pieces started with blocks from disk, and how many bytes those were.
@@ -1032,11 +1034,12 @@ impl TorrentActor {
                 r
             },
             bookends: Vec::new(),
+            bookend_pieces: HashSet::new(),
             prefilling: HashSet::new(),
             prefilled: HashMap::new(),
             no_prefill: HashSet::new(),
         };
-        actor.bookends = actor.find_bookends();
+        actor.set_bookends();
         actor.add_candidates(params.peers, None);
         match params.have {
             Some(have) => {
@@ -1119,16 +1122,30 @@ impl TorrentActor {
     /// Hold back pieces that can't be verified yet (their piece layer hasn't arrived), and
     /// release the ones that now can.
     fn apply_holds(&mut self) {
+        let held: Vec<bool> = (0..self.layout.piece_count())
+            .map(|p| self.held(p))
+            .collect();
         let Some(picker) = self.picker.as_mut() else {
             return;
         };
-        for piece in 0..self.layout.piece_count() {
-            picker.set_held(
-                piece,
-                !self.hashes.can_verify(piece)
-                    || self.offered.contains(&piece)
-                    || self.adopting.contains(&piece),
-            );
+        for (piece, held) in (0..).zip(held) {
+            picker.set_held(piece, held);
+        }
+    }
+
+    /// Whether the picker must leave `piece` alone: its hash isn't here yet, it is being
+    /// offered or adopted, or it is a bookend waiting for its library blocks.
+    fn held(&self, piece: u32) -> bool {
+        !self.hashes.can_verify(piece)
+            || self.offered.contains(&piece)
+            || self.adopting.contains(&piece)
+            || (self.bookend_pieces.contains(&piece) && !self.no_prefill.contains(&piece))
+    }
+
+    fn refresh_hold(&mut self, piece: u32) {
+        let held = self.held(piece);
+        if let Some(picker) = self.picker.as_mut() {
+            picker.set_held(piece, held);
         }
     }
 
@@ -1717,7 +1734,7 @@ impl TorrentActor {
                             *r = true;
                         }
                     }
-                    self.bookends = self.find_bookends();
+                    self.set_bookends();
                     self.plan_prefills();
                 }
                 Command::Peers(reply) => {
@@ -2733,6 +2750,7 @@ impl TorrentActor {
                 tracing::debug!(piece, "a bookend piece failed; downloading it whole");
                 self.block_from.remove(&piece);
                 self.no_prefill.insert(piece);
+                self.refresh_hold(piece);
             } else {
                 self.judge_piece(piece, valid, digests);
             }
@@ -2863,12 +2881,11 @@ impl TorrentActor {
         reply: oneshot::Sender<Offered>,
     ) {
         self.offered.remove(&piece);
-        let held = !self.hashes.can_verify(piece) || self.adopting.contains(&piece);
+        self.refresh_hold(piece);
         let Some(picker) = self.picker.as_mut() else {
             let _ = reply.send(Offered::NotNeeded);
             return;
         };
-        picker.set_held(piece, held);
         let answer = match result {
             Ok(Verdict::Valid) => {
                 if !picker.have().get(piece) {
@@ -2956,19 +2973,13 @@ impl TorrentActor {
         reply: oneshot::Sender<Result<Adoption, AdoptRefused>>,
     ) {
         let pieces: Vec<u32> = self.layout.file_pieces(file).collect();
-        for p in &pieces {
-            self.adopting.remove(p);
+        for &p in &pieces {
+            self.adopting.remove(&p);
+            self.refresh_hold(p);
         }
-        let holds: Vec<(u32, bool)> = pieces
-            .iter()
-            .map(|&p| (p, !self.hashes.can_verify(p) || self.offered.contains(&p)))
-            .collect();
-        let Some(picker) = self.picker.as_mut() else {
+        if self.picker.is_none() {
             let _ = reply.send(Err(AdoptRefused::InUse));
             return;
-        };
-        for (p, held) in holds {
-            picker.set_held(p, held);
         }
         let answer = match result {
             Ok((how, valid)) => {
@@ -2984,7 +2995,7 @@ impl TorrentActor {
                 if let Some(r) = self.reused.get_mut(file) {
                     *r = true;
                 }
-                self.bookends = self.find_bookends();
+                self.set_bookends();
                 tracing::info!(
                     torrent = %self.info_hashes.id_string(),
                     file,
@@ -2998,6 +3009,14 @@ impl TorrentActor {
             Err(e) => Err(AdoptRefused::Io(e)),
         };
         let _ = reply.send(answer);
+    }
+
+    /// Work out the bookend pieces again (the reused files changed), and hold them back
+    /// from peers until their library blocks are read.
+    fn set_bookends(&mut self) {
+        self.bookends = self.find_bookends();
+        self.bookend_pieces = self.bookends.iter().map(|(p, _)| *p).collect();
+        self.apply_holds();
     }
 
     /// Bookend pieces: pieces touching a reused file and some file that isn't, with the
@@ -3099,6 +3118,7 @@ impl TorrentActor {
             Err(e) => {
                 tracing::debug!(piece, error = %e, "could not read a bookend's library bytes");
                 self.no_prefill.insert(piece);
+                self.refresh_hold(piece);
                 return;
             }
         };

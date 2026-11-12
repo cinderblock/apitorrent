@@ -202,7 +202,33 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX library_files_by_size ON library_files(size);
     CREATE INDEX library_files_by_root ON library_files(pieces_root);
     ",
+    // 13: where the content library supplied a file's bytes from (see `share`), per
+    // torrent id (the swarm's files, whatever spaces hold it). `method`: 0 hard link,
+    // 1 clone, 2 copy, 3 piece sharing.
+    "
+    CREATE TABLE file_reuse (
+        torrent     TEXT NOT NULL,
+        file        INTEGER NOT NULL,
+        source      TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        method      INTEGER NOT NULL,
+        bytes       INTEGER NOT NULL,
+        PRIMARY KEY (torrent, file)
+    );
+    ",
 ];
+
+/// Where the content library supplied one file's bytes from (see `share`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReuseRow {
+    pub torrent: String,
+    pub file: usize,
+    pub source: String,
+    pub source_name: String,
+    /// 0 hard link, 1 clone, 2 copy, 3 piece sharing.
+    pub method: u8,
+    pub bytes: u64,
+}
 
 /// A torrent as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,6 +732,67 @@ impl Database {
         Ok(())
     }
 
+    // ----- file reuse -----------------------------------------------------------------
+
+    /// Record reused bytes of a file. A file already recorded keeps its source and method
+    /// and adds the bytes (a bookend after a link, say).
+    pub fn add_reuse(&mut self, rows: &[ReuseRow]) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
+        for r in rows {
+            tx.execute(
+                "INSERT INTO file_reuse (torrent, file, source, source_name, method, bytes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(torrent, file) DO UPDATE SET bytes = bytes + excluded.bytes",
+                params![
+                    r.torrent,
+                    i64::try_from(r.file).unwrap_or(i64::MAX),
+                    r.source,
+                    r.source_name,
+                    r.method,
+                    i64::try_from(r.bytes).unwrap_or(i64::MAX),
+                ],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// Every file reuse record. Malformed rows are skipped.
+    pub fn reuse(&self) -> rusqlite::Result<Vec<ReuseRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT torrent, file, source, source_name, method, bytes FROM file_reuse",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })?;
+        Ok(rows
+            .filter_map(Result::ok)
+            .filter_map(|(torrent, file, source, source_name, method, bytes)| {
+                Some(ReuseRow {
+                    torrent,
+                    file: usize::try_from(file).ok()?,
+                    source,
+                    source_name,
+                    method: u8::try_from(method).ok()?,
+                    bytes: u64::try_from(bytes).ok()?,
+                })
+            })
+            .collect())
+    }
+
+    /// Forget a torrent's reuse records (when its last entry is removed).
+    pub fn delete_reuse(&self, torrent: &str) -> rusqlite::Result<()> {
+        self.conn
+            .execute("DELETE FROM file_reuse WHERE torrent = ?1", [torrent])?;
+        Ok(())
+    }
+
     /// Every stored fingerprint. Malformed rows are skipped.
     pub fn fingerprints(&self) -> rusqlite::Result<Vec<(String, crate::fingerprint::Fingerprint)>> {
         let mut stmt = self
@@ -960,6 +1047,30 @@ mod tests {
         assert!(db.seed_states().unwrap().is_empty(), "seeding rows cascade");
         assert!(db.contains(&Key::new(1, "a")).unwrap());
         assert!(db.delete_space(tv).unwrap());
+    }
+
+    /// Reuse records add up per file, keep their first source and method, and go with
+    /// their torrent.
+    #[test]
+    fn reuse_records_add_up() {
+        let mut db = Database::open_in_memory().unwrap();
+        let row = |torrent: &str, file, method, bytes| ReuseRow {
+            torrent: torrent.into(),
+            file,
+            source: "src".into(),
+            source_name: "Source".into(),
+            method,
+            bytes,
+        };
+        db.add_reuse(&[row("a", 0, 0, 100), row("a", 1, 3, 5), row("b", 0, 1, 7)])
+            .unwrap();
+        db.add_reuse(&[row("a", 0, 3, 20)]).unwrap();
+        let mut rows = db.reuse().unwrap();
+        rows.sort_by(|x, y| (&x.torrent, x.file).cmp(&(&y.torrent, y.file)));
+        assert_eq!(rows[0], row("a", 0, 0, 120), "a bookend after a hard link");
+        assert_eq!(rows.len(), 3);
+        db.delete_reuse("a").unwrap();
+        assert_eq!(db.reuse().unwrap(), [row("b", 0, 1, 7)]);
     }
 
     /// A database from before spaces: everything lands in `default`, seeding rows and all.

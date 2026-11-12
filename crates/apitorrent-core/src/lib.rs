@@ -18,6 +18,7 @@ pub mod plugin_api;
 mod roots;
 pub mod seeding;
 pub mod settings;
+mod share;
 pub mod spaces;
 pub mod store;
 
@@ -270,6 +271,8 @@ struct Inner {
     adapters: adapters::AdapterState,
     /// Retroactive dedupe and library folders (see `library_index`).
     library: library_index::LibraryState,
+    /// Where the content library supplied files' bytes from (see `share`).
+    reuse: share::ReuseBook,
 }
 
 pub(crate) const SETTINGS_KEY: &str = "settings";
@@ -345,6 +348,7 @@ impl Core {
                 automation,
                 adapters: adapters::AdapterState::default(),
                 library: library_index::LibraryState::default(),
+                reuse: share::ReuseBook::default(),
             }),
         };
         core.apply_session_settings();
@@ -359,9 +363,14 @@ impl Core {
                 .extend(rows),
             Err(e) => tracing::warn!(error = %e, "could not load seeding state"),
         }
+        match core.db(|db| db.reuse()).await {
+            Ok(rows) => core.inner.reuse.load(rows),
+            Err(e) => tracing::warn!(error = %e, "could not load file reuse records"),
+        }
         core.apply_queue().await;
         tokio::spawn(core.clone().background());
         tokio::spawn(core.clone().fingerprinter());
+        tokio::spawn(core.clone().sharer());
         tokio::spawn(core.clone().automation_loop());
         core.start_library().await;
         Ok(core)
@@ -734,7 +743,7 @@ impl Core {
         }
         let targets = Self::disk_paths(torrent, save_path, naming);
         let (new, prios) = (torrent.clone(), priorities.to_vec());
-        let (linked, superseded) = tokio::task::spawn_blocking(move || {
+        let linked = tokio::task::spawn_blocking(move || {
             let mut matches =
                 library::find_matches(&new, &targets, &prios, &sources, lib.partial_reuse);
             let taken: std::collections::HashSet<usize> = matches.iter().map(|m| m.file).collect();
@@ -748,6 +757,7 @@ impl Core {
             ));
             let mut done = Vec::new();
             let mut shared = Vec::new();
+            let mut reused = Vec::new();
             for m in &matches {
                 match library::materialize(&m.from, &targets[m.file], m.full, lib.allow_copy) {
                     Some(how) => {
@@ -762,6 +772,15 @@ impl Core {
                         if how.shared() {
                             shared.push(m.file);
                         }
+                        reused.push(share::PendingReuse {
+                            file: m.file,
+                            source_name: sources
+                                .iter()
+                                .find(|s| s.id == m.source_id)
+                                .map_or_else(String::new, |s| s.torrent.info.name.clone()),
+                            source_id: m.source_id.clone(),
+                            how,
+                        });
                         done.push(m.clone());
                     }
                     None => {
@@ -769,10 +788,13 @@ impl Core {
                     }
                 }
             }
-            (shared, library::supersede_candidates(&done, &sources))
+            (shared, library::supersede_candidates(&done, &sources), reused)
         })
         .await
         .unwrap_or_default();
+        let (linked, superseded, reused) = linked;
+        // Recorded once the check says how much of each file held (see `settle_reuse`).
+        self.inner.reuse.set_pending(&key.id, reused);
         if !superseded.is_empty() {
             self.inner
                 .supersede_pending
@@ -2150,6 +2172,13 @@ impl Core {
             self.db(move |db| db.remove_torrent(&k)).await?;
             return Err(e);
         }
+        // Before the check ends, so bookend pieces are held back from peers from the start.
+        let reused = self.inner.reuse.pending_files(&key.id);
+        if !reused.is_empty()
+            && let Ok(handle) = self.handle(&key)
+        {
+            handle.set_reused(reused).await;
+        }
         tracing::info!(torrent = %key, "torrent added");
         // Only the new torrent changed. A full queue pass and refresh walk every torrent,
         // which made adding the n-th torrent cost O(n); both run every second anyway.
@@ -2386,6 +2415,11 @@ impl Core {
                 .lock()
                 .expect("swarms lock poisoned")
                 .remove(&key.id);
+            self.inner.reuse.forget(&key.id);
+            let id = key.id.clone();
+            if let Err(e) = self.db(move |db| db.delete_reuse(&id)).await {
+                tracing::warn!(torrent = %key, error = %e, "could not delete file reuse records");
+            }
             if let Err(e) = entry.handle.delete_data(delete_files).await {
                 tracing::warn!(torrent = %key, error = %e, "could not delete all of the torrent's data");
             }
@@ -2667,6 +2701,7 @@ impl Core {
                 effective_seed_limits: self.settings().seed_limits,
                 seeding_secs: 0,
                 seed_limit_reached: false,
+                library_bytes: 0,
             });
         }
         let (torrent, handle, prios, unwanted_policy, limits, naming, trackers) = {
@@ -2695,6 +2730,8 @@ impl Core {
             .await
             .unwrap_or_else(|| Bitfield::new(summary.pieces_total));
         let layout = Layout::from_info(&torrent.info);
+        let reuse = self.inner.reuse.of(&key.id);
+        let library_bytes = reuse.values().map(|r| r.bytes).sum();
         let files = torrent
             .info
             .files
@@ -2720,6 +2757,7 @@ impl Core {
                         Some(Placement::Parts) => FilePlacement::Parts,
                         _ => FilePlacement::Save,
                     },
+                    reused: reuse.get(&i).cloned(),
                 }
             })
             .collect();
@@ -2742,6 +2780,7 @@ impl Core {
             effective_seed_limits,
             seeding_secs: seed.seed_ms / 1000,
             seed_limit_reached: seed.reached,
+            library_bytes,
             summary,
             files,
             trackers,
@@ -2897,6 +2936,7 @@ impl Core {
                 let n = d.ipv4.map_or(0, |t| t.nodes) + d.ipv6.map_or(0, |t| t.nodes);
                 u32::try_from(n).unwrap_or(u32::MAX)
             }),
+            library_bytes: self.inner.reuse.total(),
         }
     }
 
@@ -3015,6 +3055,7 @@ impl Core {
                     // Torrents that finish move from the download limit to the seed limit.
                     self.apply_queue().await;
                     self.settle_supersedes().await;
+                    self.settle_reuse().await;
                     self.apply_seed_limits().await;
                     self.place_secondaries().await;
                     self.refresh();
@@ -3046,6 +3087,7 @@ impl Core {
             p.fetch = None;
         }
         self.save_resume().await?;
+        self.flush_reuse().await;
         let handles: Vec<TorrentHandle> = self
             .inner
             .swarms

@@ -281,6 +281,34 @@ pub(crate) fn check_pieces(
     }
 }
 
+/// What sampling a candidate for one file found (see [`sample_fit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleFit {
+    /// Every checked piece passed.
+    Full,
+    /// Some passed.
+    Partial,
+    /// None passed, or the candidate can't be read.
+    Different,
+    /// No piece could be checked (the file holds no whole piece).
+    Unknown,
+}
+
+/// Check a candidate for file `file` of `new` the way [`find_matches`] does: up to
+/// [`SAMPLES`] pieces lying wholly inside the file, read from `candidate` at `new`'s
+/// alignment. Reads the disk: call it off the async runtime.
+pub fn sample_fit(new: &Torrent, file: usize, candidate: &Path) -> SampleFit {
+    let layout = Layout::from_info(&new.info);
+    let hashes = PieceHashes::new(new);
+    let f = &new.info.files[file];
+    match check_pieces(&hashes, &layout, f.offset, f.length, file, candidate) {
+        Fit::Full => SampleFit::Full,
+        Fit::Partial { .. } => SampleFit::Partial,
+        Fit::Different => SampleFit::Different,
+        Fit::Unknown => SampleFit::Unknown,
+    }
+}
+
 fn read_at(f: &mut std::fs::File, at: u64, buf: &mut [u8]) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom};
     f.seek(SeekFrom::Start(at))?;
