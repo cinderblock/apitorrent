@@ -461,6 +461,23 @@ impl TorrentHandle {
             .collect()
     }
 
+    /// Mark files as shared with another torrent's copy (see [`Self::linked`]): writes that
+    /// would change them give this torrent a private copy first.
+    pub fn mark_linked(&self, files: &[usize]) {
+        self.storage.mark_linked(files);
+    }
+
+    /// Replace file `file` on disk with no other I/O on it running (see
+    /// `Storage::replace_file`). On success it is marked linked. Blocking: call it off the
+    /// async runtime.
+    pub fn replace_file(
+        &self,
+        file: usize,
+        swap: &mut dyn FnMut(&std::path::Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        self.storage.replace_file(file, swap)
+    }
+
     /// Change one entry's own limits.
     pub async fn set_limits(&self, entry: EntryKey, limits: TorrentLimits) {
         self.command(Command::SetLimits(entry, limits)).await;

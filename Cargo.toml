@@ -57,7 +57,7 @@ sha2 = "0.10"
 socket2 = "0.6"
 thiserror = "2"
 reflink-copy = "0.1"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Ioctl"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 data-encoding = "2"
 proptest = "1"
 rand = "0.9"

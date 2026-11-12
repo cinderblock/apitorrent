@@ -71,6 +71,26 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
         Vec::new()
     }
 
+    /// Mark files as shared with another torrent's copy, so writes that would change them
+    /// break the link first. Storage that doesn't share files ignores it.
+    fn mark_linked(&self, _files: &[usize]) {}
+
+    /// Replace file `file` in the save directory while no other I/O on it can run: `swap`
+    /// gets its path and does the replacing (the content library's dedupe renames a hard
+    /// link over it). The file is closed before and after, so later reads open the new
+    /// file. On success the file is marked linked. Fails without calling `swap` when the
+    /// file isn't in the save directory.
+    fn replace_file(
+        &self,
+        _file: usize,
+        _swap: &mut dyn FnMut(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this storage can't replace files",
+        ))
+    }
+
     /// Delete the torrent's held area and part store, and its files in the save directory
     /// too when `save_files` is set.
     fn delete(&self, save_files: bool) -> io::Result<()>;
@@ -506,6 +526,39 @@ impl Storage for FileStorage {
             .collect()
     }
 
+    fn mark_linked(&self, files: &[usize]) {
+        self.set_linked(files);
+    }
+
+    fn replace_file(
+        &self,
+        file: usize,
+        swap: &mut dyn FnMut(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let slot = self
+            .files
+            .get(file)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such file"))?;
+        // Every read and write of the file holds the placement lock for reading, so holding
+        // it for writing keeps them all out; the unshare lock keeps out a write that is
+        // breaking a link.
+        let placement = slot.placement.write().expect("placement lock poisoned");
+        if *placement != Placement::Save {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the file isn't in the save directory",
+            ));
+        }
+        let _one_writer = slot.unshare.lock().expect("unshare lock poisoned");
+        self.close(file);
+        let result = swap(&self.save_paths[file]);
+        self.close(file);
+        if result.is_ok() {
+            slot.linked.store(true, Ordering::Release);
+        }
+        result
+    }
+
     fn delete(&self, save_files: bool) -> io::Result<()> {
         let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
         let mut first_error = None;
@@ -888,6 +941,46 @@ mod tests {
             vec![5u8; 40_000],
             "the other torrent's file is untouched"
         );
+    }
+
+    /// Replacing an open file: the swap runs on the closed file, later reads see the new
+    /// file, success marks it linked, and a failed swap leaves it as it was.
+    #[test]
+    fn replacing_a_file_closes_it_and_marks_it_linked() {
+        let bytes = TorrentBuilder::new("x.bin", Version::V1)
+            .piece_length(16 * 1024)
+            .file(FileSource::from_bytes(&[], vec![5; 40_000]))
+            .build()
+            .unwrap();
+        let t = Torrent::from_bytes(&bytes).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let rel: Vec<Vec<String>> = t.info.files.iter().map(|f| f.path.clone()).collect();
+        let s = FileStorage::new(&paths(dir.path()), Layout::from_info(&t.info), &rel, None);
+        let path = dir.path().join("x.bin");
+        std::fs::write(&path, vec![5u8; 40_000]).unwrap();
+        let other = dir.path().join("keeper.bin");
+        std::fs::write(&other, vec![6u8; 40_000]).unwrap();
+        let mut buf = [0u8; 16];
+        s.read(0, &mut buf).unwrap();
+        assert_eq!(buf, [5; 16]);
+
+        let err = s
+            .replace_file(0, &mut |_| Err(io::Error::other("injected")))
+            .unwrap_err();
+        assert_eq!(err.to_string(), "injected");
+        assert_eq!(s.linked(), [false], "a failed swap marks nothing");
+        s.read(0, &mut buf).unwrap();
+        assert_eq!(buf, [5; 16]);
+
+        s.replace_file(0, &mut |p| {
+            let tmp = p.with_extension("tmp");
+            std::fs::hard_link(&other, &tmp)?;
+            std::fs::rename(&tmp, p)
+        })
+        .unwrap();
+        assert_eq!(s.linked(), [true]);
+        s.read(0, &mut buf).unwrap();
+        assert_eq!(buf, [6; 16], "reads open the new file");
     }
 
     #[test]
