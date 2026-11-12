@@ -20,6 +20,7 @@ use crate::announce::{Announcer, Job, TrackerStatus};
 use crate::ban::BanReason;
 use crate::bitfield::Bitfield;
 use crate::hashreq::LayerShape;
+use crate::identity::ActiveIdentity;
 use crate::layout::{BLOCK_LEN, Layout};
 use crate::limits::{Slot, Throttle, TorrentLimits};
 use crate::peer::{self, PeerCmd, PeerEvent};
@@ -902,6 +903,11 @@ pub(crate) struct TorrentActor {
     prefilled: HashMap<u32, u32>,
     /// Bookend pieces that failed once: downloaded whole from now on.
     no_prefill: HashSet<u32>,
+    /// The client this torrent presents as (see [`crate::identity`]): its peer id in
+    /// announces and handshakes, its user agent and `v`.
+    identity: ActiveIdentity,
+    /// The generation of the session's identity rules `identity` was chosen under.
+    identity_gen: u64,
 }
 
 impl TorrentActor {
@@ -979,6 +985,12 @@ impl TorrentActor {
                 entries.push(Entry::new(e, &torrent, &keys, &shared));
             }
         }
+        let (identity, identity_gen) = ActiveIdentity::resolve(
+            &shared,
+            entries
+                .iter()
+                .flat_map(|e| e.urls.iter().map(String::as_str)),
+        );
         let mut actor = TorrentActor {
             info_hashes,
             short_hash: info_hashes.primary_short(),
@@ -1038,6 +1050,8 @@ impl TorrentActor {
             prefilling: HashSet::new(),
             prefilled: HashMap::new(),
             no_prefill: HashSet::new(),
+            identity,
+            identity_gen,
         };
         actor.set_bookends();
         actor.add_candidates(params.peers, None);
@@ -1656,6 +1670,7 @@ impl TorrentActor {
                     if self.entry(params.key).is_none() {
                         let entry = Entry::new(params, &self.torrent, &self.keys, &self.shared);
                         self.entries.push(entry);
+                        self.refresh_identity(true);
                         self.announce();
                         self.connect_more();
                         self.publish_stats();
@@ -1664,6 +1679,7 @@ impl TorrentActor {
                 Command::RemoveEntry(key) => {
                     self.pause_entry(key);
                     self.entries.retain(|e| e.key != key);
+                    self.refresh_identity(true);
                     // Its trackers may now be the next entry's to announce to.
                     self.announce();
                     self.connect_more();
@@ -1707,6 +1723,7 @@ impl TorrentActor {
                     for job in stops.unwrap_or_default() {
                         self.spawn_announce(key, job, false);
                     }
+                    self.refresh_identity(true);
                     self.announce();
                 }
                 Command::ReleaseHeld(files) => {
@@ -1781,7 +1798,43 @@ impl TorrentActor {
 
     // ----- trackers -----------------------------------------------------------------------
 
+    /// Choose the identity again if the session's rules changed (or `force`, when the
+    /// torrent's trackers did). On a change, trackers that heard the old identity's
+    /// `started` are told `stopped` under it, so the next announce starts afresh with the
+    /// new peer id. Open connections keep the peer id they were made with.
+    fn refresh_identity(&mut self, force: bool) {
+        if !force && self.shared.identity_gen() == self.identity_gen {
+            return;
+        }
+        let (fresh, generation) = ActiveIdentity::resolve(
+            &self.shared,
+            self.entries
+                .iter()
+                .flat_map(|e| e.urls.iter().map(String::as_str)),
+        );
+        self.identity_gen = generation;
+        if fresh.profile == self.identity.profile {
+            return;
+        }
+        tracing::info!(
+            torrent = %self.short_hash,
+            from = %self.identity.describe(),
+            to = %fresh.describe(),
+            "client identity changed"
+        );
+        let now = Instant::now();
+        let mut stops = Vec::new();
+        for e in &mut self.entries {
+            stops.extend(e.announcer.stop(now).into_iter().map(|j| (e.key, j)));
+        }
+        for (key, job) in stops {
+            self.spawn_announce(key, job, false);
+        }
+        self.identity = fresh;
+    }
+
     fn announce(&mut self) {
+        self.refresh_identity(false);
         if self.error.is_some() || self.picker.is_none() {
             return;
         }
@@ -1833,17 +1886,21 @@ impl TorrentActor {
         let (uploaded, downloaded) = self
             .entry(key)
             .map_or((0, 0), |e| (e.uploaded, e.downloaded));
+        let id = &self.identity;
         let req = apitorrent_tracker::AnnounceRequest {
             info_hash: job.info_hash,
-            peer_id: self.shared.peer_id,
+            peer_id: id.peer_id,
             port: self.shared.listen_port(),
             uploaded,
             downloaded,
             left: self.bytes_left(),
             event: job.event,
-            num_want: Some(if self.finished { 0 } else { 50 }),
-            key: self.shared.announce_key,
+            num_want: Some(id.num_want(job.event, self.finished)),
+            key: id.key,
             tracker_id: job.tracker_id.clone(),
+            style: id.announce_style(),
+            user_agent: id.user_agent(),
+            crypto: announce_crypto(self.shared.dialer.encryption()),
         };
         let client = self.shared.tracker.clone();
         let tx = self.tx.clone();
@@ -2090,7 +2147,7 @@ impl TorrentActor {
     fn our_handshake(&self) -> Handshake {
         peer::our_handshake(
             self.short_hash,
-            self.shared.peer_id,
+            self.identity.peer_id,
             self.info_hashes.get_v2().is_some(),
             self.shared.dht.is_some(),
         )
@@ -2250,7 +2307,7 @@ impl TorrentActor {
         }
         if reserved.extension_protocol() {
             let mut ext = ExtensionHandshake {
-                client: Some(self.shared.config.client_name.clone()),
+                client: Some(self.identity.client_name(&self.shared.config.client_name)),
                 request_queue: Some(MAX_PEER_UPLOAD_QUEUE),
                 metadata_size: Some(self.torrent.info.raw().len() as u64),
                 upload_only: have.is_full(),
@@ -3469,6 +3526,19 @@ impl TorrentActor {
 /// How many new pieces a torrent may start, given the session's free memory and the
 /// torrent's own limit. A torrent with nothing in progress may always start one, so no
 /// torrent starves while others hold the budget.
+/// Our encryption policy, as an announce reports it.
+pub(crate) fn announce_crypto(
+    policy: apitorrent_mse::Policy,
+) -> apitorrent_tracker::AnnounceCrypto {
+    use apitorrent_mse::Policy;
+    use apitorrent_tracker::AnnounceCrypto;
+    match policy {
+        Policy::Disabled => AnnounceCrypto::Disabled,
+        Policy::Enabled(_) => AnnounceCrypto::Enabled,
+        Policy::Required => AnnounceCrypto::Required,
+    }
+}
+
 fn new_piece_room(
     layout: &Layout,
     in_progress: usize,

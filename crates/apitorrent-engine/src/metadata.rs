@@ -19,6 +19,7 @@ use apitorrent_tracker::{AnnounceEvent, AnnounceRequest};
 use apitorrent_wire::Message;
 use apitorrent_wire::extended::{ExtensionHandshake, METADATA_PIECE_LEN, MetadataMessage, names};
 
+use crate::identity::ActiveIdentity;
 use crate::limits::Throttle;
 use crate::peer::{self, PeerCmd, PeerEvent};
 use crate::picker::PeerKey;
@@ -108,6 +109,8 @@ struct FetchPeer {
 struct Fetcher {
     hashes: InfoHashes,
     shared: Arc<Shared>,
+    /// Chosen from the magnet link's trackers, as a torrent's would be.
+    identity: ActiveIdentity,
     throttle: Arc<Throttle>,
     trackers: Vec<String>,
     events: mpsc::Receiver<(PeerKey, PeerEvent)>,
@@ -141,8 +144,10 @@ pub(crate) fn start(
         None,
         crate::limits::TorrentLimits::default(),
     ));
+    let (identity, _) = ActiveIdentity::resolve(&shared, trackers.iter().map(String::as_str));
     let mut f = Fetcher {
         hashes,
+        identity,
         shared,
         throttle,
         trackers,
@@ -242,7 +247,7 @@ impl Fetcher {
         for url in self.trackers.clone() {
             let req = AnnounceRequest {
                 info_hash: self.wire_hash(),
-                peer_id: self.shared.peer_id,
+                peer_id: self.identity.peer_id,
                 port: self.shared.listen_port(),
                 uploaded: 0,
                 downloaded: 0,
@@ -250,9 +255,12 @@ impl Fetcher {
                 // leecher, so the tracker returns seeds.
                 left: 1,
                 event: AnnounceEvent::Started,
-                num_want: Some(50),
-                key: self.shared.announce_key,
+                num_want: Some(self.identity.num_want(AnnounceEvent::Started, false)),
+                key: self.identity.key,
                 tracker_id: None,
+                style: self.identity.announce_style(),
+                user_agent: self.identity.user_agent(),
+                crypto: crate::torrent::announce_crypto(self.shared.dialer.encryption()),
             };
             let tracker = self.shared.tracker.clone();
             let out = out.clone();
@@ -288,7 +296,7 @@ impl Fetcher {
             );
             let ours = peer::our_handshake(
                 self.wire_hash(),
-                self.shared.peer_id,
+                self.identity.peer_id,
                 self.hashes.get_v2().is_some(),
                 self.shared.dht.is_some(),
             );
@@ -319,7 +327,7 @@ impl Fetcher {
                     return None;
                 }
                 let mut ext = ExtensionHandshake {
-                    client: Some(self.shared.config.client_name.clone()),
+                    client: Some(self.identity.client_name(&self.shared.config.client_name)),
                     listen_port: Some(self.shared.listen_port()),
                     ..Default::default()
                 };

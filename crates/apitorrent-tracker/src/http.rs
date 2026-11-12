@@ -17,7 +17,8 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_encode};
 
 use crate::error::TrackerError;
 use crate::types::{
-    AnnounceRequest, AnnounceResponse, MAX_PEERS, MAX_SCRAPE_HASHES, ScrapeResponse, ScrapeStats,
+    AnnounceCrypto, AnnounceRequest, AnnounceResponse, AnnounceStyle, MAX_PEERS, MAX_SCRAPE_HASHES,
+    ScrapeResponse, ScrapeStats,
 };
 
 /// Everything except the RFC 3986 unreserved characters is escaped, so binary info-hashes
@@ -51,11 +52,102 @@ fn start_query(base: &str) -> String {
     out
 }
 
-/// The announce URL for `req`: the tracker's URL with the BEP 3 parameters appended.
+/// libtorrent's `escape_string`: alphanumerics and `-_!.~*()` stay, everything else is
+/// `%xx` in lower-case hex.
+fn encode_libtorrent(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 3);
+    for &b in bytes {
+        if b.is_ascii_alphanumeric() || b"-_!.~*()".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(b >> 4)]));
+            out.push(char::from(HEX[usize::from(b & 0xF)]));
+        }
+    }
+    out
+}
+
+/// The announce URL for `req`: the tracker's URL with the BEP 3 parameters appended, in
+/// the order and escaping of [`AnnounceRequest::style`].
 ///
-/// We ask for compact peers (`compact=1`) and no peer ids (`no_peer_id=1`). Trackers that
-/// ignore this and send the list-of-dictionaries form are still understood.
+/// We ask for compact peers (`compact=1`) and, except in Transmission's style, no peer ids
+/// (`no_peer_id=1`). Trackers that ignore this and send the list-of-dictionaries form are
+/// still understood.
 pub fn announce_url(base: &str, req: &AnnounceRequest) -> String {
+    match req.style {
+        AnnounceStyle::Apitorrent => apitorrent_announce_url(base, req),
+        AnnounceStyle::Libtorrent => libtorrent_announce_url(base, req),
+        AnnounceStyle::Transmission => transmission_announce_url(base, req),
+    }
+}
+
+/// libtorrent 2.0's announce (`http_tracker_connection.cpp`, `start()`). It sends
+/// `numwant=200` unless told otherwise, and always `corrupt` and `redundant` (we have
+/// neither to report). Not copied: `ipv4`/`ipv6`, which libtorrent adds for private
+/// torrents when it listens on a public address, and `ip`, which is only sent when set.
+fn libtorrent_announce_url(base: &str, req: &AnnounceRequest) -> String {
+    let mut url = start_query(base);
+    let _ = write!(
+        url,
+        "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&corrupt=0&key={:08X}",
+        encode_libtorrent(req.info_hash.as_bytes()),
+        encode_libtorrent(&req.peer_id.0),
+        req.port,
+        req.uploaded,
+        req.downloaded,
+        req.left,
+        req.key,
+    );
+    if let Some(event) = req.event.http_name() {
+        let _ = write!(url, "&event={event}");
+    }
+    let _ = write!(
+        url,
+        "&numwant={}&compact=1&no_peer_id=1",
+        req.num_want.unwrap_or(200)
+    );
+    if req.crypto != AnnounceCrypto::Disabled {
+        url.push_str("&supportcrypto=1");
+    }
+    url.push_str("&redundant=0");
+    if let Some(id) = &req.tracker_id {
+        let _ = write!(url, "&trackerid={}", encode_libtorrent(id.as_bytes()));
+    }
+    url
+}
+
+/// Transmission 4's announce (`announcer-http.cc`, `announce_url_new`). It sends
+/// `numwant=80`, and `corrupt` only when it isn't 0 (ours always is). Not copied:
+/// Transmission announces twice, once over IPv4 and once over IPv6.
+fn transmission_announce_url(base: &str, req: &AnnounceRequest) -> String {
+    let mut url = start_query(base);
+    let _ = write!(
+        url,
+        "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&numwant={}&key={:08X}&compact=1&supportcrypto=1",
+        encode_bytes(req.info_hash.as_bytes()),
+        encode_bytes(&req.peer_id.0),
+        req.port,
+        req.uploaded,
+        req.downloaded,
+        req.left,
+        req.num_want.unwrap_or(80),
+        req.key,
+    );
+    if req.crypto == AnnounceCrypto::Required {
+        url.push_str("&requirecrypto=1");
+    }
+    if let Some(event) = req.event.http_name() {
+        let _ = write!(url, "&event={event}");
+    }
+    if let Some(id) = &req.tracker_id {
+        let _ = write!(url, "&trackerid={}", encode_bytes(id.as_bytes()));
+    }
+    url
+}
+
+fn apitorrent_announce_url(base: &str, req: &AnnounceRequest) -> String {
     let mut url = start_query(base);
     // Writing to a String cannot fail.
     let _ = write!(
@@ -285,7 +377,56 @@ mod tests {
             num_want: Some(50),
             key: 0xDEAD_BEEF,
             tracker_id: Some("id &=x".into()),
+            style: AnnounceStyle::Apitorrent,
+            user_agent: None,
+            crypto: AnnounceCrypto::Enabled,
         }
+    }
+
+    #[test]
+    fn libtorrent_style_matches_its_order_and_escaping() {
+        let mut req = request();
+        req.style = AnnounceStyle::Libtorrent;
+        req.peer_id = PeerId(*b"-DE211s-aZ9-_.!~*()0");
+        req.info_hash = Sha1Hash(*b"\x00\xab(*)~ abcdefghijklm");
+        req.num_want = None;
+        let url = announce_url("https://t.example/pk/announce", &req);
+        assert_eq!(
+            url,
+            "https://t.example/pk/announce?info_hash=%00%ab(*)~%20abcdefghijklm\
+             &peer_id=-DE211s-aZ9-_.!~*()0&port=6881&uploaded=1&downloaded=2&left=3\
+             &corrupt=0&key=DEADBEEF&event=started&numwant=200&compact=1&no_peer_id=1\
+             &supportcrypto=1&redundant=0&trackerid=id%20%26%3dx"
+        );
+        req.crypto = AnnounceCrypto::Disabled;
+        req.event = AnnounceEvent::None;
+        req.num_want = Some(0);
+        let url = announce_url("https://t.example/announce?pk=1", &req);
+        assert!(url.contains("&key=DEADBEEF&numwant=0&compact=1&no_peer_id=1&redundant=0"));
+        assert!(url.starts_with("https://t.example/announce?pk=1&info_hash="));
+    }
+
+    #[test]
+    fn transmission_style_matches_its_order_and_escaping() {
+        let mut req = request();
+        req.style = AnnounceStyle::Transmission;
+        req.peer_id = PeerId(*b"-TR4060-abcdefghij01");
+        req.info_hash = Sha1Hash(*b"\x00\xab(*)~ abcdefghijklm");
+        req.num_want = None;
+        req.crypto = AnnounceCrypto::Required;
+        let url = announce_url("http://t.example/announce", &req);
+        assert_eq!(
+            url,
+            "http://t.example/announce?info_hash=%00%AB%28%2A%29~%20abcdefghijklm\
+             &peer_id=-TR4060-abcdefghij01&port=6881&uploaded=1&downloaded=2&left=3\
+             &numwant=80&key=DEADBEEF&compact=1&supportcrypto=1&requirecrypto=1\
+             &event=started&trackerid=id%20%26%3Dx"
+        );
+        req.crypto = AnnounceCrypto::Enabled;
+        req.event = AnnounceEvent::None;
+        req.tracker_id = None;
+        let url = announce_url("http://t.example/announce", &req);
+        assert!(url.ends_with("&compact=1&supportcrypto=1"), "{url}");
     }
 
     #[test]

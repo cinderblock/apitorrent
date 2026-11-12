@@ -177,7 +177,9 @@ impl TrackerClient {
         let (parsed, scheme) = parse_url(url)?;
         let result = match scheme {
             Scheme::Http => {
-                let (status, body) = self.http_get(&http::announce_url(url, req)).await?;
+                let (status, body) = self
+                    .http_get(&http::announce_url(url, req), req.user_agent.as_deref())
+                    .await?;
                 interpret(status, &body, http::parse_announce)
             }
             Scheme::Udp => {
@@ -205,11 +207,24 @@ impl TrackerClient {
         url: &str,
         hashes: &[Sha1Hash],
     ) -> Result<ScrapeResponse, TrackerError> {
+        self.scrape_as(url, hashes, None).await
+    }
+
+    /// [`TrackerClient::scrape`], with this `User-Agent` on an HTTP scrape in place of the
+    /// configured one.
+    pub async fn scrape_as(
+        &self,
+        url: &str,
+        hashes: &[Sha1Hash],
+        user_agent: Option<&str>,
+    ) -> Result<ScrapeResponse, TrackerError> {
         http::check_scrape_hashes(hashes)?;
         let (parsed, scheme) = parse_url(url)?;
         match scheme {
             Scheme::Http => {
-                let (status, body) = self.http_get(&http::scrape_url(url, hashes)?).await?;
+                let (status, body) = self
+                    .http_get(&http::scrape_url(url, hashes)?, user_agent)
+                    .await?;
                 interpret(status, &body, |b| http::parse_scrape(b, hashes))
             }
             Scheme::Udp => {
@@ -224,10 +239,22 @@ impl TrackerClient {
         }
     }
 
-    /// GET `url` and read the body, up to the size limit.
-    async fn http_get(&self, url: &str) -> Result<(StatusCode, Vec<u8>), TrackerError> {
+    /// GET `url` and read the body, up to the size limit. `user_agent` replaces the
+    /// configured one for this request.
+    async fn http_get(
+        &self,
+        url: &str,
+        user_agent: Option<&str>,
+    ) -> Result<(StatusCode, Vec<u8>), TrackerError> {
         let limit = self.inner.config.max_response_size;
-        let mut resp = self.inner.http.get(url).send().await?;
+        let mut request = self.inner.http.get(url);
+        if let Some(agent) = user_agent {
+            let value = reqwest::header::HeaderValue::from_str(agent).map_err(|_| {
+                TrackerError::InvalidRequest("the user agent is not a valid header")
+            })?;
+            request = request.header(reqwest::header::USER_AGENT, value);
+        }
+        let mut resp = request.send().await?;
         let status = resp.status();
         if resp
             .content_length()

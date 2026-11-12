@@ -69,6 +69,42 @@ pub struct AnnounceRequest {
     pub key: u32,
     /// The `tracker id` from this tracker's previous response, if it sent one.
     pub tracker_id: Option<String>,
+    /// Which client's query string an HTTP announce copies. UDP announces are the same
+    /// for every client.
+    pub style: AnnounceStyle,
+    /// The `User-Agent` of an HTTP announce, in place of the client's default.
+    pub user_agent: Option<String>,
+    /// Our encryption policy, which the libtorrent and Transmission styles report
+    /// (`supportcrypto`, `requirecrypto`).
+    pub crypto: AnnounceCrypto,
+}
+
+/// The shape of an HTTP announce's query string: which parameters, in which order, and
+/// how bytes are escaped. Trackers that only allow some clients can compare it with what
+/// those clients send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AnnounceStyle {
+    /// apitorrent's own.
+    #[default]
+    Apitorrent,
+    /// libtorrent 2.0 (Deluge, qBittorrent), from `http_tracker_connection.cpp`:
+    /// `info_hash, peer_id, port, uploaded, downloaded, left, corrupt, key, [event],
+    /// numwant, compact, no_peer_id, [supportcrypto], redundant, [trackerid]`, bytes
+    /// escaped with lower-case hex and `-_.!~*()` left as they are.
+    Libtorrent,
+    /// Transmission 4, from `announcer-http.cc`: `info_hash, peer_id, port, uploaded,
+    /// downloaded, left, numwant, key, compact, supportcrypto, [requirecrypto], [corrupt],
+    /// [event], [trackerid]`, bytes escaped with upper-case hex and only `-_.~` left.
+    Transmission,
+}
+
+/// Our encryption policy, as an announce reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AnnounceCrypto {
+    Disabled,
+    #[default]
+    Enabled,
+    Required,
 }
 
 /// A successful announce.
