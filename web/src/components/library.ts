@@ -19,6 +19,12 @@ export function dedupeFinding(s: DedupeStatus): string {
   return `${plural(s.reclaimableFiles, "identical copy", "identical copies")} in ${plural(s.groups, "set")}: merging them ${verb} ${formatBytes(s.reclaimableBytes)}.`;
 }
 
+/** Copies of imported torrents that only "Deduplicate now" merges, in a line; null if none. */
+export function dedupeHeld(s: DedupeStatus): string | null {
+  if (s.heldFiles === 0) return null;
+  return `${plural(s.heldFiles, "copy", "copies")} (${formatBytes(s.heldBytes)}) ${s.heldFiles === 1 ? "belongs" : "belong"} to torrents imported from another client, which may still be running them, so ${s.heldFiles === 1 ? "it is" : "they are"} only merged when you press Deduplicate now.`;
+}
+
 /** What dedupe has freed over the instance's life. */
 export function dedupeSaved(s: DedupeStatus): string | null {
   if (s.reclaimedFiles === 0) return null;

@@ -99,7 +99,7 @@ async fn separately_downloaded_copies_are_merged_and_both_still_seed() {
     let core = Core::start(cfg.clone()).await.unwrap();
     assert_eq!(
         core.settings().library.dedupe,
-        DedupeMode::Report,
+        DedupeMode::On,
         "the default"
     );
     let movie = data(300_000, 1);

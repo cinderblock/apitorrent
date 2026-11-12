@@ -320,14 +320,15 @@ export function SettingsDialog({
                   value={settings.library.dedupe}
                   onChange={(e) => update({ library: { ...settings.library, dedupe: e.target.value as Settings["library"]["dedupe"] } })}
                 >
-                  <option value="report">Report only: show the space it would free</option>
                   <option value="on">On: replace the extra copies with links to one</option>
+                  <option value="report">Report only: show the space it would free</option>
                   <option value="off">Off</option>
                 </select>
               </label>
               <p className="hint muted">
                 Copies on one drive with the same bytes become hard links to a single file, so each torrent keeps its own path and the space is freed. A
-                file is only replaced after it is read again and found identical, and a torrent that later changes its copy gets a private one first.
+                file is only replaced after it is read again and found identical, and a torrent that later changes its copy gets a private one first. A torrent
+                is checked soon after it finishes. Files of torrents imported from another client are only reported until you press Deduplicate now.
               </p>
               <div className="settings-grid">
                 <NumberField

@@ -51,9 +51,9 @@ Most of this is built.
   same time share too: two downloading the same file download it once, and a file one
   finishes is linked into another still waiting for it. Each file shows where its bytes
   came from. Library folders (a media folder you already have) are candidates too, read
-  but never changed, and identical files that were downloaded separately can be merged
-  into links later to free the space (reported first; merged only when you turn it on or
-  ask). Shared files are copy-on-write, so one torrent never changes another's data.
+  but never changed, and identical files that were downloaded separately are merged
+  into links to free the space, soon after a torrent finishes. Files of imported torrents
+  are only reported until you say to merge them. Shared files are copy-on-write, so one torrent never changes another's data.
 - **Automation.** Plugins watch sources such as feeds and Ubuntu releases and offer what
   they find. Rules decide what to fetch (the latest N, with a label, a folder and only the
   files you want) and what to retire, keep a stable "latest" path, and signed channels push

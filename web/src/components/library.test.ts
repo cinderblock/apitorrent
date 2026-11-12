@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { DedupeStatus } from "../api/generated/DedupeStatus";
 import type { LibraryFolder } from "../api/generated/LibraryFolder";
-import { dedupeFinding, dedupeSaved, folderPathProblem, folderProgress } from "./library";
+import { dedupeFinding, dedupeHeld, dedupeSaved, folderPathProblem, folderProgress } from "./library";
 
 const MiB = 1024 * 1024;
 
@@ -12,6 +12,8 @@ const status = (patch: Partial<DedupeStatus> = {}): DedupeStatus => ({
   lastPassAt: 1,
   reclaimableBytes: 0,
   reclaimableFiles: 0,
+  heldBytes: 0,
+  heldFiles: 0,
   groups: 0,
   unmergeableFiles: 0,
   pendingHashBytes: 0,
@@ -44,6 +46,13 @@ describe("dedupe status", () => {
     expect(dedupeFinding(found)).toContain("2 identical copies in 1 set");
     expect(dedupeFinding(found)).toContain("would free");
     expect(dedupeFinding({ ...found, mode: "on" })).toContain("will free");
+  });
+
+  test("imported torrents' copies wait for the button", () => {
+    expect(dedupeHeld(status())).toBeNull();
+    const held = dedupeHeld(status({ heldFiles: 2, heldBytes: 2 * MiB }));
+    expect(held).toContain("2 copies");
+    expect(held).toContain("Deduplicate now");
   });
 
   test("totals only once something was merged", () => {

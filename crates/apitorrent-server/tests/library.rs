@@ -26,7 +26,7 @@ async fn admins_manage_library_folders_and_dedupe() {
     let st: LibraryStatus = send(&app, Req::get("/api/v1/library").bearer(&admin))
         .await
         .typed();
-    assert_eq!(st.dedupe.mode, DedupeMode::Report);
+    assert_eq!(st.dedupe.mode, DedupeMode::On);
     assert!(st.folders.is_empty());
 
     let media = root.path().join("media");

@@ -15,10 +15,10 @@ pub enum DedupeMode {
     /// No pass runs.
     Off,
     /// Find them and report the space that merging them would free, but change nothing.
-    /// The default, so the savings are seen before anything is merged.
-    #[default]
     Report,
-    /// Merge them into hard links (or clones) of one copy.
+    /// Merge them into hard links (or clones) of one copy. The default. Files of torrents
+    /// imported from another client are only reported, until an admin's "Deduplicate now".
+    #[default]
     On,
 }
 
@@ -39,6 +39,13 @@ pub struct DedupeStatus {
     /// Files that would be replaced by links.
     #[ts(type = "number")]
     pub reclaimable_files: u64,
+    /// The part of `reclaimable_*` waiting for an admin: files of torrents imported from
+    /// another client, which only "Deduplicate now" replaces (that client may still be
+    /// running them).
+    #[ts(type = "number")]
+    pub held_bytes: u64,
+    #[ts(type = "number")]
+    pub held_files: u64,
     /// Sets of identical files found (each holding at least two separate copies).
     #[ts(type = "number")]
     pub groups: u64,

@@ -768,19 +768,26 @@ Matching at add time can't help with copies that already exist: two torrents of 
 file from different trackers, downloaded before either knew of the other. A background
 pass (`apitorrent-core`'s `dedupe` and `library_index` modules) merges them.
 
-- **Setting**: `library.dedupe` is `off`, `report` (the default) or `on`. A pass runs a
-  few minutes after start and then hourly, skipped while a torrent is checking. "Report"
-  finds and counts, changing nothing, so users see the savings first. "On" merges. A
-  server admin's **Deduplicate now** (`POST /library/dedupe`) merges in both modes; with
-  `off` it is refused.
+- **Setting**: `library.dedupe` is `off`, `report` or `on` (the default). A pass runs a
+  few minutes after start, then hourly, and soon after any torrent seen downloading
+  finishes, so a new torrent's duplicates go at once; passes are skipped while a torrent
+  is checking. "Report" finds and counts, changing nothing. "On" merges. A server admin's
+  **Deduplicate now** (`POST /library/dedupe`) merges in both modes; with `off` it is
+  refused.
+- **Imported torrents are the admin's call.** Files of torrents imported from another
+  client (the `imported` table, see "Deluge migration") are never replaced by a
+  background pass: that client may still be running them. They are reported as held
+  (`heldBytes`, `heldFiles`), and only **Deduplicate now** replaces them. Where a group
+  has one, an imported copy is the one kept, so new copies can still be merged into it
+  automatically. If the list of imported torrents can't be read, the pass only reports.
 - **Finding copies**: the complete files of every torrent's primary entry, 64 KiB and up,
   of torrents not being checked. Only sizes held by two or more separate files (by file
   identity: volume and file index, so existing hard links count once) are hashed; their
   full SHA-256 comes from the fingerprint store, or is computed in the same rate-limited
   idle read (`library.fingerprint_rate`) and stored there. Copies are grouped by size,
   hash and volume.
-- **What is merged**: in each group the copy with the most links already is kept (then
-  the first path). Another copy is replaced only when every one of its links is a file the
+- **What is merged**: in each group an imported copy is kept if there is one, then the copy
+  with the most links already, then the first path. Another copy is replaced only when every one of its links is a file the
   library knows: a copy also linked from elsewhere (another space's placement, a user's
   own link) would stay on disk anyway, so it is reported as not mergeable and left alone.
   Library-folder files are never part of dedupe.

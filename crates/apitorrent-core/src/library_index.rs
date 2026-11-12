@@ -44,6 +44,19 @@ pub(crate) struct LibraryState {
     wake_scan: Notify,
     wake_hash: Notify,
     wake_dedupe: Notify,
+    /// Swarms seen downloading, so that one finishing wakes a dedupe pass.
+    downloading: Mutex<HashSet<String>>,
+}
+
+/// What a dedupe pass may merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    /// Nothing: find and report only.
+    Report,
+    /// Everything but files of imported torrents (the background pass in "on" mode).
+    Automatic,
+    /// Everything (an admin's "Deduplicate now").
+    All,
 }
 
 /// A complete torrent file a dedupe pass looks at.
@@ -113,7 +126,12 @@ impl Core {
             if lib.dedupe == DedupeMode::Off || self.any_checking() {
                 continue;
             }
-            self.dedupe_pass(lib.dedupe == DedupeMode::On).await;
+            let pass = if lib.dedupe == DedupeMode::On {
+                Pass::Automatic
+            } else {
+                Pass::Report
+            };
+            self.dedupe_pass(pass).await;
         }
     }
 
@@ -141,6 +159,40 @@ impl Core {
 
     // ---------------------------------------------------------------- dedupe
 
+    /// Wake a dedupe pass when a swarm seen downloading has finished, so a new torrent's
+    /// duplicates are merged soon after it completes rather than at the next hourly pass.
+    /// Swarms already complete at start don't count. Called on every refresh tick.
+    pub(crate) fn notice_finished(&self) {
+        let states: Vec<(String, EngineState)> = self
+            .inner
+            .swarms
+            .lock()
+            .expect("swarms lock poisoned")
+            .iter()
+            .map(|(id, s)| (id.clone(), s.handle.stats().state))
+            .collect();
+        let mut downloading = self
+            .lib()
+            .downloading
+            .lock()
+            .expect("library lock poisoned");
+        let mut finished = false;
+        let live: HashSet<&str> = states.iter().map(|(id, _)| id.as_str()).collect();
+        downloading.retain(|id| live.contains(id.as_str()));
+        for (id, state) in states {
+            match state {
+                EngineState::Downloading => {
+                    downloading.insert(id);
+                }
+                EngineState::Seeding => finished |= downloading.remove(&id),
+                _ => {}
+            }
+        }
+        if finished && self.settings().library.dedupe == DedupeMode::On {
+            self.lib().wake_dedupe.notify_one();
+        }
+    }
+
     /// Dedupe now: a full pass that merges what it finds, even in "report only" (an
     /// admin's explicit action). Waits for it; returns what it did. Refused while dedupe
     /// is off, and while another pass runs.
@@ -155,13 +207,13 @@ impl Core {
                 "a dedupe pass is already running".into(),
             ));
         }
-        Ok(self.dedupe_pass(true).await)
+        Ok(self.dedupe_pass(Pass::All).await)
     }
 
     /// A report-only pass now: find identical copies and the space merging them would free,
     /// changing nothing. Waits for it. While another pass runs, returns the last status.
     pub async fn dedupe_report(&self) -> DedupeStatus {
-        self.dedupe_pass(false).await
+        self.dedupe_pass(Pass::Report).await
     }
 
     /// Start [`Self::dedupe_now`] in the background.
@@ -176,7 +228,7 @@ impl Core {
         }
         let core = self.clone();
         tokio::spawn(async move {
-            core.dedupe_pass(true).await;
+            core.dedupe_pass(Pass::All).await;
         });
         Ok(())
     }
@@ -195,8 +247,8 @@ impl Core {
     }
 
     /// One pass: find identical copies (fingerprinting same-size files as needed), report
-    /// them, and with `apply` merge them.
-    async fn dedupe_pass(&self, apply: bool) -> DedupeStatus {
+    /// them, and merge what `pass` allows.
+    async fn dedupe_pass(&self, pass: Pass) -> DedupeStatus {
         if self
             .lib()
             .running
@@ -205,12 +257,14 @@ impl Core {
         {
             return self.dedupe_status();
         }
-        let result = self.dedupe_pass_inner(apply).await;
+        let result = self.dedupe_pass_inner(pass).await;
         {
             let mut s = self.lib().status.lock().expect("library lock poisoned");
             s.groups = result.groups;
             s.reclaimable_bytes = result.reclaimable_bytes;
             s.reclaimable_files = result.reclaimable_files;
+            s.held_bytes = result.held_bytes;
+            s.held_files = result.held_files;
             s.unmergeable_files = result.unmergeable_files;
             s.pending_hash_bytes = result.pending_hash_bytes;
             s.skipped_files = result.skipped_files;
@@ -287,8 +341,23 @@ impl Core {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn dedupe_pass_inner(&self, apply: bool) -> DedupeStatus {
+    async fn dedupe_pass_inner(&self, pass: Pass) -> DedupeStatus {
         let mut status = DedupeStatus::default();
+        // Torrents imported from another client, which may still be running them: their
+        // files are only replaced when an admin asks.
+        let (imported, pass) = match self.db(|db| db.imported()).await {
+            Ok(rows) => (
+                rows.into_iter()
+                    .map(|r| r.key.id)
+                    .collect::<HashSet<String>>(),
+                pass,
+            ),
+            // Without the list nothing is known to be safe to replace: report only.
+            Err(e) => {
+                tracing::warn!(error = %e, "dedupe: could not read imported torrents; reporting only");
+                (HashSet::new(), Pass::Report)
+            }
+        };
         let files = self.dedupe_files().await;
         // Identity and stamp of each, off the runtime.
         let looked: Vec<Option<(FileIdentity, (u64, i64))>> = {
@@ -369,12 +438,14 @@ impl Core {
                 })
             })
             .collect();
-        let plan = dedupe::plan(&copies);
+        let plan = dedupe::plan(&copies, &|c| imported.contains(&c.owner.0));
         status.groups = plan.groups;
         status.reclaimable_bytes = plan.reclaimable_bytes;
         status.reclaimable_files = plan.reclaimable_files;
+        status.held_bytes = plan.held_bytes;
+        status.held_files = plan.held_files;
         status.unmergeable_files = plan.unmergeable_files;
-        if !apply {
+        if pass == Pass::Report {
             return status;
         }
 
@@ -387,7 +458,10 @@ impl Core {
                 status.skipped_files += m.targets.iter().map(|t| t.len() as u64).sum::<u64>();
                 continue;
             };
-            for target in &m.targets {
+            for (target, &protected) in m.targets.iter().zip(&m.protected) {
+                if protected && pass != Pass::All {
+                    continue;
+                }
                 let mut all = true;
                 let mut how_all = Vec::new();
                 for &ti in target {
@@ -423,6 +497,10 @@ impl Core {
                 if all && !how_all.is_empty() {
                     status.reclaimed_bytes += m.size;
                     status.reclaimable_bytes = status.reclaimable_bytes.saturating_sub(m.size);
+                    if protected {
+                        status.held_bytes = status.held_bytes.saturating_sub(m.size);
+                        status.held_files = status.held_files.saturating_sub(how_all.len() as u64);
+                    }
                 }
             }
         }

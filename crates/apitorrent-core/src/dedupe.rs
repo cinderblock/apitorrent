@@ -59,6 +59,9 @@ pub struct Merge {
     pub keeper: Vec<usize>,
     /// The copies replaced by links to the keeper, each a list of its paths.
     pub targets: Vec<Vec<usize>>,
+    /// For each target: it is protected (a file of an imported torrent), so only an
+    /// explicit "Deduplicate now" replaces it, never an automatic pass.
+    pub protected: Vec<bool>,
 }
 
 /// What [`plan`] found.
@@ -72,13 +75,21 @@ pub struct Plan {
     /// Separate copies that can't be merged: alone on their volume, or with a link
     /// outside the files the pass knows.
     pub unmergeable_files: u64,
+    /// The part of `reclaimable_*` that only an explicit "Deduplicate now" frees: copies
+    /// that are protected.
+    pub held_bytes: u64,
+    pub held_files: u64,
 }
 
 /// Group identical copies and choose what to merge. A copy is replaced only when every one
 /// of its links is a path the pass knows: otherwise a link elsewhere (another space's copy,
-/// a user's own link) keeps it alive, and replacing ours frees nothing. The keeper is the
-/// copy with the most links already, then the one whose first path sorts first.
-pub fn plan(copies: &[Copy]) -> Plan {
+/// a user's own link) keeps it alive, and replacing ours frees nothing.
+///
+/// `protected` says which copies an automatic pass must leave alone (files of torrents
+/// imported from another client, which may still be running them). The keeper is a
+/// protected copy when there is one, so that the others can still be merged into it; then
+/// the copy with the most links already; then the one whose first path sorts first.
+pub fn plan(copies: &[Copy], protected: &dyn Fn(&Copy) -> bool) -> Plan {
     // (size, hash) → volume → file → paths.
     type ByFile = BTreeMap<u128, Vec<usize>>;
     let mut sets: BTreeMap<(u64, [u8; 32]), BTreeMap<u64, ByFile>> = BTreeMap::new();
@@ -108,18 +119,27 @@ pub fn plan(copies: &[Copy]) -> Plan {
                 paths.sort_by(|&a, &b| copies[a].path.cmp(&copies[b].path));
             }
             let links = |paths: &[usize]| paths.iter().map(|&i| copies[i].id.links).max();
+            let guarded = |paths: &[usize]| paths.iter().any(|&i| protected(&copies[i]));
             files.sort_by(|a, b| {
-                links(b)
-                    .cmp(&links(a))
+                guarded(b)
+                    .cmp(&guarded(a))
+                    .then_with(|| links(b).cmp(&links(a)))
                     .then_with(|| copies[a[0]].path.cmp(&copies[b[0]].path))
             });
             let keeper = files.remove(0);
             let mut targets = Vec::new();
+            let mut held = Vec::new();
             for paths in files {
                 let known = paths.len() as u64;
                 if links(&paths).is_some_and(|l| l == known) {
                     out.reclaimable_bytes += size;
                     out.reclaimable_files += known;
+                    let g = guarded(&paths);
+                    if g {
+                        out.held_bytes += size;
+                        out.held_files += known;
+                    }
+                    held.push(g);
                     targets.push(paths);
                 } else {
                     out.unmergeable_files += known;
@@ -131,6 +151,7 @@ pub fn plan(copies: &[Copy]) -> Plan {
                     sha256,
                     keeper,
                     targets,
+                    protected: held,
                 });
             }
         }
@@ -350,7 +371,7 @@ mod tests {
             copy(&d, "t4", 9),
             copy(&e, "t5", 7),
         ];
-        let p = plan(&copies);
+        let p = plan(&copies, &|_| false);
         assert_eq!(p.groups, 1, "d is alone with its hash");
         assert_eq!(p.merges.len(), 1);
         let m = &p.merges[0];
@@ -359,6 +380,36 @@ mod tests {
         assert_eq!(m.targets, vec![vec![1]]);
         assert_eq!((p.reclaimable_bytes, p.reclaimable_files), (100, 1));
         assert_eq!(p.unmergeable_files, 1, "e");
+        assert_eq!(m.protected, vec![false]);
+        assert_eq!((p.held_bytes, p.held_files), (0, 0));
+    }
+
+    #[test]
+    #[allow(clippy::many_single_char_names)]
+    fn protected_copies_are_kept_or_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b, c) = (
+            dir.path().join("a"),
+            dir.path().join("b"),
+            dir.path().join("c"),
+        );
+        for p in [&a, &b, &c] {
+            write(p, &[1; 100]);
+        }
+        let copies = vec![
+            copy(&a, "new", 7),
+            copy(&b, "imported1", 7),
+            copy(&c, "imported2", 7),
+        ];
+        let p = plan(&copies, &|c| c.owner.0.starts_with("imported"));
+        let m = &p.merges[0];
+        // A protected copy is the keeper, so the new one can be merged into it.
+        assert_eq!(m.keeper, vec![1]);
+        // The other protected copy sorts next, then the new one.
+        assert_eq!(m.targets, vec![vec![2], vec![0]]);
+        assert_eq!(m.protected, vec![true, false]);
+        assert_eq!((p.reclaimable_bytes, p.reclaimable_files), (200, 2));
+        assert_eq!((p.held_bytes, p.held_files), (100, 1));
     }
 
     #[test]

@@ -321,11 +321,23 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
     out
 }
 
-/// Store a plan's torrents for the daemon to start on its next start. Returns how many
-/// were written; one that fails is skipped with its reason.
-pub fn write(db: &mut Database, plan: &Plan) -> (usize, Vec<ImportSkip>) {
+/// Store a plan's torrents for the daemon to start on its next start, each recorded as
+/// imported from `source` (Deluge's config directory). Returns how many were written; one
+/// that fails is skipped with its reason.
+pub fn write(db: &mut Database, plan: &Plan, source: &str) -> (usize, Vec<ImportSkip>) {
     let mut written = 0;
     let mut failed = Vec::new();
+    let imported = |db: &Database, row: &TorrentRow| {
+        let r = crate::db::ImportedRow {
+            key: Key::new(row.space, row.id.clone()),
+            source: source.to_owned(),
+            imported_at: now_ms(),
+            taken_over_at: None,
+        };
+        if let Err(e) = db.set_imported(&r) {
+            tracing::warn!(torrent = %row.name, error = %e, "could not record it as imported");
+        }
+    };
     for t in &plan.torrents {
         match db.insert_torrent(&t.row) {
             Ok(()) => {
@@ -333,6 +345,7 @@ pub fn write(db: &mut Database, plan: &Plan) -> (usize, Vec<ImportSkip>) {
                 if let Err(e) = db.save_seed_states(&[(key, t.seed)]) {
                     tracing::warn!(torrent = %t.name, error = %e, "could not store seeding time");
                 }
+                imported(db, &t.row);
                 written += 1;
             }
             Err(e) => failed.push(ImportSkip {
@@ -343,7 +356,10 @@ pub fn write(db: &mut Database, plan: &Plan) -> (usize, Vec<ImportSkip>) {
     }
     for m in &plan.magnets {
         match db.insert_torrent(&m.row) {
-            Ok(()) => written += 1,
+            Ok(()) => {
+                imported(db, &m.row);
+                written += 1;
+            }
             Err(e) => failed.push(ImportSkip {
                 name: m.name.clone(),
                 reason: e.to_string(),
@@ -765,7 +781,7 @@ pub fn run_offline(
     let plan = plan(&state, &target);
     let (written, failed) = match (&mut db, req.dry_run) {
         (Some(db), false) => {
-            let (n, failed) = write(db, &plan);
+            let (n, failed) = write(db, &plan, &req.config_dir.to_string_lossy());
             (Some(n), failed)
         }
         _ => (None, Vec::new()),

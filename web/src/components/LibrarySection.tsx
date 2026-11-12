@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { ApiRequestError, libraryApi } from "../api/client";
 import type { LibraryStatus } from "../api/generated/LibraryStatus";
 import { formatDateTime } from "../format";
-import { dedupeFinding, dedupeSaved, folderPathProblem, folderProgress } from "./library";
+import { dedupeFinding, dedupeHeld, dedupeSaved, folderPathProblem, folderProgress } from "./library";
 
 function message(e: unknown): string {
   return e instanceof ApiRequestError ? e.message : String(e);
@@ -64,6 +64,7 @@ export function LibraryStatusSection({ dedupeOff }: { dedupeOff: boolean }) {
           </p>
         )}
         {saved && <p className="ok-text">{saved}</p>}
+        {status && dedupeHeld(status.dedupe) && <p className="banner-info">{dedupeHeld(status.dedupe)}</p>}
         {status && status.dedupe.unmergeableFiles > 0 && (
           <p className="hint muted">
             {status.dedupe.unmergeableFiles} more identical {status.dedupe.unmergeableFiles === 1 ? "copy is" : "copies are"} on another drive, or linked from

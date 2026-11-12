@@ -1131,6 +1131,20 @@ impl Core {
         pending.retain(|id, _| torrents.contains_key(id));
     }
 
+    /// Remember that a torrent came from another client (whose config directory is
+    /// `source`), so dedupe leaves its files to an admin. Logged, not fatal, on failure.
+    async fn record_imported(&self, key: Key, source: &str) {
+        let row = db::ImportedRow {
+            key,
+            source: source.to_owned(),
+            imported_at: now_ms(),
+            taken_over_at: None,
+        };
+        if let Err(e) = self.db(move |db| db.set_imported(&row)).await {
+            tracing::warn!(error = %e, "could not record an imported torrent");
+        }
+    }
+
     /// Bring in a Deluge installation's torrents into a space: files where Deluge left them,
     /// progress from its resume data (validated against the files on disk, so nothing is
     /// rehashed), labels, queue order, per-torrent limits and all-time totals. Torrents the
@@ -1220,7 +1234,11 @@ impl Core {
                 )
                 .await;
             match added {
-                Ok(_) => report.imported.push(m.name),
+                Ok(id) => {
+                    self.record_imported(Key::new(space, id), &req.config_dir)
+                        .await;
+                    report.imported.push(m.name);
+                }
                 Err(e) => report.skipped.push(ImportSkip {
                     name: m.name,
                     reason: e.to_string(),
@@ -1283,6 +1301,7 @@ impl Core {
                         .insert(key.clone(), t.seed);
                     let (k, seed) = (key.clone(), t.seed);
                     let _ = self.db(move |db| db.save_seed_states(&[(k, seed)])).await;
+                    self.record_imported(key.clone(), &req.config_dir).await;
                     report.imported.push(t.name);
                 }
                 Err(e) => {
@@ -3065,6 +3084,7 @@ impl Core {
                     self.settle_reuse().await;
                     self.apply_seed_limits().await;
                     self.place_secondaries().await;
+                    self.notice_finished();
                     self.refresh();
                 }
                 _ = save.tick() => {

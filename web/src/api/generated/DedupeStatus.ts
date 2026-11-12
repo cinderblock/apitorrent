@@ -22,6 +22,12 @@ reclaimableBytes: number,
  */
 reclaimableFiles: number, 
 /**
+ * The part of `reclaimable_*` waiting for an admin: files of torrents imported from
+ * another client, which only "Deduplicate now" replaces (that client may still be
+ * running them).
+ */
+heldBytes: number, heldFiles: number, 
+/**
  * Sets of identical files found (each holding at least two separate copies).
  */
 groups: number, 

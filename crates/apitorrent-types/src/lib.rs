@@ -442,7 +442,7 @@ impl Default for LibrarySettings {
             partial_reuse: true,
             fingerprint_rate: 16 * 1024 * 1024,
             retire_superseded: true,
-            dedupe: library::DedupeMode::Report,
+            dedupe: library::DedupeMode::On,
             folder_rescan_hours: 6,
             share_rate: 64 * 1024 * 1024,
         }

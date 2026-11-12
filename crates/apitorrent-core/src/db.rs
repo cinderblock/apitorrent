@@ -216,7 +216,31 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (torrent, file)
     );
     ",
+    // 14: torrents imported from another client (see `deluge_import`). `source` is the
+    // client's config directory; `taken_over_at` is NULL while the other client still
+    // runs the torrent, and set once apitorrent has taken it over.
+    "
+    CREATE TABLE imported (
+        space_id      INTEGER NOT NULL,
+        torrent       TEXT NOT NULL,
+        source        TEXT NOT NULL,
+        imported_at   INTEGER NOT NULL,
+        taken_over_at INTEGER,
+        PRIMARY KEY (space_id, torrent)
+    );
+    ",
 ];
+
+/// A torrent imported from another client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedRow {
+    pub key: Key,
+    /// The other client's config directory.
+    pub source: String,
+    pub imported_at: i64,
+    /// When apitorrent took it over; `None` while the other client still runs it.
+    pub taken_over_at: Option<i64>,
+}
 
 /// Where the content library supplied one file's bytes from (see `share`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -618,7 +642,56 @@ impl Database {
             "DELETE FROM superseded WHERE space_id = ?1 AND (torrent = ?2 OR by_torrent = ?2)",
             params![key.space, key.id],
         )?;
+        self.conn.execute(
+            "DELETE FROM imported WHERE space_id = ?1 AND torrent = ?2",
+            params![key.space, key.id],
+        )?;
         Ok(())
+    }
+
+    // ----- imported torrents ------------------------------------------------------------
+
+    /// Record a torrent as imported from another client (replacing an older record).
+    pub fn set_imported(&self, row: &ImportedRow) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO imported (space_id, torrent, source, imported_at, taken_over_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(space_id, torrent) DO UPDATE SET source = excluded.source,
+                 imported_at = excluded.imported_at, taken_over_at = excluded.taken_over_at",
+            params![
+                row.key.space,
+                row.key.id,
+                row.source,
+                row.imported_at,
+                row.taken_over_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Mark an imported torrent as taken over by apitorrent at `at`.
+    pub fn set_taken_over(&self, key: &Key, at: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE imported SET taken_over_at = ?3 WHERE space_id = ?1 AND torrent = ?2",
+            params![key.space, key.id, at],
+        )?;
+        Ok(())
+    }
+
+    /// Every imported torrent.
+    pub fn imported(&self) -> rusqlite::Result<Vec<ImportedRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT space_id, torrent, source, imported_at, taken_over_at FROM imported",
+        )?;
+        stmt.query_map([], |r| {
+            Ok(ImportedRow {
+                key: Key::new(r.get(0)?, r.get::<_, String>(1)?),
+                source: r.get(2)?,
+                imported_at: r.get(3)?,
+                taken_over_at: r.get(4)?,
+            })
+        })?
+        .collect()
     }
 
     /// Record that `by` (in the same space) holds every file of `torrent`.
@@ -945,6 +1018,25 @@ mod tests {
             file_paths: None,
             trackers: None,
         }
+    }
+
+    #[test]
+    fn imported_torrents_are_recorded_taken_over_and_forgotten() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_torrent(&row("a")).unwrap();
+        let a = Key::new(1, "a");
+        db.set_imported(&ImportedRow {
+            key: a.clone(),
+            source: "/home/u/.config/deluge".into(),
+            imported_at: 5,
+            taken_over_at: None,
+        })
+        .unwrap();
+        assert_eq!(db.imported().unwrap()[0].taken_over_at, None);
+        db.set_taken_over(&a, 9).unwrap();
+        assert_eq!(db.imported().unwrap()[0].taken_over_at, Some(9));
+        db.remove_torrent(&a).unwrap();
+        assert!(db.imported().unwrap().is_empty());
     }
 
     #[test]
