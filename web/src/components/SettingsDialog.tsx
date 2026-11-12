@@ -5,6 +5,7 @@ import type { Ban } from "../api/generated/Ban";
 import type { GroupSettings } from "../api/generated/GroupSettings";
 import type { Settings } from "../api/generated/Settings";
 import { formatDateTime, fromKiB, toKiB } from "../format";
+import { LibraryStatusSection } from "./LibrarySection";
 import { SeedLimitsFields } from "./SeedLimitsFields";
 import { StorageRootsSection } from "./StorageRootsSection";
 import { TlsSection } from "./TlsSection";
@@ -274,6 +275,30 @@ export function SettingsDialog({
                 />
                 Remove torrents a pack has replaced once their tracker drops them (their files stay)
               </label>
+              <label className="field">
+                <span>Merge identical files that torrents downloaded separately</span>
+                <select
+                  value={settings.library.dedupe}
+                  onChange={(e) => update({ library: { ...settings.library, dedupe: e.target.value as Settings["library"]["dedupe"] } })}
+                >
+                  <option value="report">Report only: show the space it would free</option>
+                  <option value="on">On: replace the extra copies with links to one</option>
+                  <option value="off">Off</option>
+                </select>
+              </label>
+              <p className="hint muted">
+                Copies on one drive with the same bytes become hard links to a single file, so each torrent keeps its own path and the space is freed. A
+                file is only replaced after it is read again and found identical, and a torrent that later changes its copy gets a private one first.
+              </p>
+              <div className="settings-grid">
+                <NumberField
+                  label="Look through library folders again every"
+                  hint="hours, 0 is only by hand"
+                  value={settings.library.folderRescanHours}
+                  onChange={(v) => update({ library: { ...settings.library, folderRescanHours: v } })}
+                />
+              </div>
+              {isAdmin && <LibraryStatusSection dedupeOff={settings.library.dedupe === "off"} />}
             </fieldset>
             <fieldset className="settings-section">
               <legend>File names</legend>

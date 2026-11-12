@@ -23,6 +23,7 @@ mod authn;
 mod automation_routes;
 mod embed;
 mod guard;
+mod library_routes;
 mod plugin_credentials;
 mod plugin_listener;
 mod plugin_routes;
@@ -253,6 +254,17 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/import/deluge", post(routes::import_deluge))
         .route("/bans", get(routes::bans).post(routes::ban))
         .route("/bans/{ip}", delete(routes::unban))
+        .route("/library", get(library_routes::status))
+        .route("/library/dedupe", post(library_routes::dedupe))
+        .route("/library/folders", post(library_routes::add_folder))
+        .route(
+            "/library/folders/{id}",
+            delete(library_routes::remove_folder),
+        )
+        .route(
+            "/library/folders/{id}/scan",
+            post(library_routes::rescan_folder),
+        )
         // CONNECT: the WebSocket over HTTP/2 (RFC 8441).
         .route("/sync", get(sync::handler).connect(sync::handler))
         .route("/tls", get(tls::status))

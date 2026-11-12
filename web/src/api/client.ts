@@ -5,6 +5,9 @@
 import type { AddPasskeyFinishRequest } from "./generated/AddPasskeyFinishRequest";
 import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
 import type { Ban } from "./generated/Ban";
+import type { DedupeStatus } from "./generated/DedupeStatus";
+import type { LibraryFolder } from "./generated/LibraryFolder";
+import type { LibraryStatus } from "./generated/LibraryStatus";
 import type { SeedLimits } from "./generated/SeedLimits";
 import type { TlsStatus } from "./generated/TlsStatus";
 import type { SessionStats } from "./generated/SessionStats";
@@ -125,6 +128,16 @@ export const api = {
   /** Delete held copies of deselected files; all of them when `files` is omitted. */
   releaseHeld: (id: string, files?: number[]) =>
     request<void>("POST", `/torrents/${enc(id)}/held/release`, { files: files ?? null }),
+};
+
+/** `/api/v1/library`: dedupe and library folders (server admins only). */
+export const libraryApi = {
+  status: () => request<LibraryStatus>("GET", "/library"),
+  /** Start a pass that merges identical copies now, even in report-only mode. */
+  dedupe: () => request<DedupeStatus>("POST", "/library/dedupe"),
+  addFolder: (path: string) => request<LibraryFolder>("POST", "/library/folders", { path }),
+  removeFolder: (id: number) => request<void>("DELETE", `/library/folders/${id}`),
+  rescanFolder: (id: number) => request<void>("POST", `/library/folders/${id}/scan`),
 };
 
 /** `/api/v1/system/update`: the daemon's own updates (admins only). */
