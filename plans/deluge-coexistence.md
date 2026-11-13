@@ -127,7 +127,7 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
        with another on every matching torrent in the space in one action (API, CLI-free,
        web UI under Trackers). Passkeys are secrets: masked in the UI and never logged.
        Builds on the existing per-torrent `PUT /torrents/{id}/trackers`.
-9. [ ] Docs (`docs/architecture.md` Deluge section, README), plan wrap-up.
+9. [x] Docs (`docs/architecture.md` Deluge section, README), plan wrap-up, 2026-11-13.
 
 ## Findings / gotchas
 
@@ -278,7 +278,20 @@ so the tracker doesn't count a ghost peer. Torrents with no rule keep the sessio
       target; fuzzed clean for 10 minutes on sentinel) and merged to master. Next: step 6
       take-over.
 - [x] 2026-11-13: step 6 (take-over) committed.
-- [x] 2026-11-13: identity branch merged (`2652b80`); step 7 committed. Next: step 9.
+- [x] 2026-11-13: identity branch merged (`2652b80`); step 7 committed (`ff4f793`).
+- [x] 2026-11-13: step 9, docs pass. Everything asked for is built. Not yet tried by
+      hand: the wizard, the Settings sections and a take-over against a real running
+      Deluge (see "Still to verify by hand").
+
+## Still to verify by hand
+
+These need a browser and a real Deluge, which the automated tests don't cover:
+
+1. The import wizard against one of the real Deluge config dirs (preview, filters,
+   ticks, a new space).
+2. A take-over with Deluge running: Deluge's copy shows Paused, apitorrent's starts.
+3. A private tracker accepting the Deluge identity after import.
+4. Deluge 2's `.parts` files after an import (see Findings).
 
 ## Open questions for the user
 

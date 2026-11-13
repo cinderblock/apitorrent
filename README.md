@@ -64,7 +64,10 @@ Most of this is built.
   own files and its own tracker statistics.
 - **Moving from Deluge.** Import a Deluge config directory: torrents keep their files,
   progress, labels, queue order, limits and totals, with no rehash and no re-download.
-  Two Deluge instances can become two spaces.
+  A wizard previews and filters what to bring over. Deluge can keep running while you
+  move a few at a time: a torrent is paused in Deluge (through its daemon) before it
+  starts here, and private trackers keep seeing Deluge. Two Deluge instances can become
+  two spaces.
 - **Client identity per tracker.** For trackers that only accept clients on their list,
   a torrent can announce as Deluge, qBittorrent or Transmission (peer id, user agent and
   announce format), chosen by tracker host. Many private trackers forbid this: check the
@@ -249,7 +252,8 @@ always did until a server admin adds another (Settings, Spaces…).
   `torrent_pass`, `pid`), with the hosts and how many torrents use each. After rolling
   one at the tracker, enter the new one there and every torrent that used the old one
   gets it. Passkeys are shown masked and kept out of the logs.
-- **One network identity**: a single peer port, DHT node and peer id for every space.
+- **One network identity**: a single peer port, DHT node and peer id for every space
+  (a client identity rule gives the torrents on its trackers a peer id of their own).
 - `--space-host torrents-tv.example.com=tv` puts requests for a host name in a space.
 
 ### Importing Deluge into a space
