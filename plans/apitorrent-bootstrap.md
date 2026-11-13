@@ -137,11 +137,13 @@ engine core stays in the main thread, because its pieces interlock.
   `plans/library-dedupe-index.md`).
 - **Main thread:** both library agents and the dependency upgrade are merged (2026-11-11);
   Dependabot PRs #1–#5 closed. The three UI calls from the review are done (`90f242b`).
-  The first draft release is `v0.1.2` (2026-11-12; `v0.1.0` and `v0.1.1` failed in the
-  release workflow and were fixed, see `plans/update-signing.md`). It waits for the user
-  to check and publish it; installing an update can only be tested between two published
-  releases.
-- **Waiting on the user:** the Deluge import, after more features.
+  Releases `v0.1.2` and `v0.1.3` are published (2026-11-12 and 2026-11-13; see
+  `plans/update-signing.md`), and the daemon's self-update was tested end to end between
+  them on Windows, Linux and systemd. Dependabot #6–#8 folded into `e4a3086` (rand 0.10);
+  Rust 1.100's new clippy lints fixed in `0809fb2`.
+- **Deluge import:** the user said go (2026-11-13). Already under way in another thread,
+  "Run Alongside Deluge During Migration", plan `plans/deluge-coexistence.md`; this
+  thread doesn't duplicate it.
 - **Dropped by the user:** testing against a real Sonarr or Radarr.
 - **Optional:** a Raspberry Pi images source plugin.
 - **Content library gaps (found 2026-11-11).** Matching runs only once, when a

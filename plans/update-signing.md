@@ -187,11 +187,27 @@ Times US Pacific.
     `tauri.conf.json` ("Missing comment in public key"). Fixed in `dc68522`: the workflow
     passes the committed key with `--config`.
   - `v0.1.1` failed at the draft job: on Linux and macOS the bare daemon executable has
-    the archive folder's exact name and was copied into it. Fixed in `d0ab53a`. Both tags
-    stay, with no release; the version moved on rather than moving a pushed tag.
-- [ ] Not tested end to end: installing an update. That needs two *published* releases
-  (programs only look at published ones): the desktop install from a real installer, and
-  the daemon's swap and restart under systemd / re-exec. Publishing is the user's call.
+    the archive folder's exact name and was copied into it. Fixed in `d0ab53a`. The
+    version moved on rather than moving a pushed tag; the user later approved deleting
+    both tags (2026-11-12).
+- [x] Published `v0.1.2` (2026-11-12 1:41 PM PST, 21:41Z) and `v0.1.3` (2026-11-13
+  10:59 AM PST, 18:59Z), both on the user's say-so. `v0.1.3` built first time (run
+  43485678004).
+- [x] Daemon updates tested end to end, 0.1.2 → 0.1.3 with the published binaries
+  (2026-11-13 ~11 AM PST), all on loopback with `--insecure-no-auth-loopback`:
+  - Windows, `apitorrentd update`: swapped in place, `.old` kept until the next start; the
+    new exe's SHA-256 matches the manifest.
+  - Windows, running daemon, `POST /system/update/install`: back as 0.1.3 within 2 s
+    (re-exec spawns the new exe), the old binary removed on start, one process left.
+  - Linux (WSL Ubuntu), CLI: same result. Running daemon: `exec` in place, same PID.
+  - Linux under systemd (`systemd-run --user -p Restart=on-failure`): exits 75, systemd
+    restarts it (`NRestarts=1`), new PID, 0.1.3.
+- [x] Desktop update manifest for 0.1.3: `latest.json` lists every platform; its
+  signatures equal the `.sig` files, and `latest.json`, the Windows setup `.exe` and the
+  AppImage verify against the committed key.
+- [ ] Not run: the desktop app installing an update from inside the app. It needs a GUI
+  session in the foreground; best done by the user installing 0.1.2 and letting it offer
+  0.1.3 (now superseded by whatever is latest).
 
 ## Follow-ups (not done)
 
