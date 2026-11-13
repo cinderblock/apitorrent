@@ -6,7 +6,7 @@
 use std::fmt;
 use std::net::IpAddr;
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 
 /// The length of a node ID or info-hash in bytes.
 pub const ID_LEN: usize = 20;

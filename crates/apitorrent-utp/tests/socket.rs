@@ -8,7 +8,7 @@ use std::time::Duration;
 use apitorrent_utp::packet::{self, Header, Packet, PacketType};
 use apitorrent_utp::{Config, Transport, UtpSocket, UtpStream};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;

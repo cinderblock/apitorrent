@@ -21,7 +21,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 use tracing::{debug, trace};
 
 use crate::id::{NodeId, is_exempt};
@@ -343,7 +343,7 @@ impl Node {
     pub fn new(mut cfg: NodeConfig, saved: Option<&PersistedState>, now: Instant) -> Self {
         let mut rng = match cfg.rng_seed {
             Some(seed) => StdRng::seed_from_u64(seed),
-            None => StdRng::from_os_rng(),
+            None => rand::make_rng::<StdRng>(),
         };
         if cfg
             .version

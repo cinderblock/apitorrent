@@ -60,7 +60,7 @@ reflink-copy = "0.1"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 data-encoding = "2"
 proptest = "1"
-rand = "0.9"
+rand = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "fs"] }
 tracing = "0.1"
 # Transport: MSE crypto. crypto-bigint gives a constant-time, fixed-width modpow.

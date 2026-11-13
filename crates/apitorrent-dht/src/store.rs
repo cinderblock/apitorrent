@@ -143,7 +143,7 @@ impl PeerStore {
             .iter()
             .filter(|(a, s)| a.is_ipv6() == v6 && s.expires > now && !(noseed && s.seed))
             .map(|(a, _)| *a)
-            .choose_multiple(rng, max)
+            .sample(rng, max)
     }
 
     /// The BEP 33 bloom filters (seeds, downloaders) for `info_hash`, or `None` if we store

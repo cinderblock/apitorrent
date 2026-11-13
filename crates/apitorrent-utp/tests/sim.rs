@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use apitorrent_utp::packet::{Packet, PacketType};
 use apitorrent_utp::{Config, ConnError, Connection, State};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 #[derive(Debug, Clone, Copy)]
 struct Link {

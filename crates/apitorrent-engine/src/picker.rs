@@ -83,7 +83,7 @@ pub enum Received {
     Unwanted,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Picker {
     layout: Layout,
     have: Bitfield,
@@ -947,7 +947,7 @@ mod tests {
 
     #[test]
     fn ordering_survives_random_churn() {
-        use rand::Rng;
+        use rand::RngExt;
         let n = 64;
         let mut p = picker(n);
         let mut rng = StdRng::seed_from_u64(99);
