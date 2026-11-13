@@ -960,6 +960,64 @@ code {
   }
 }
 
+.identity-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 6px 12px;
+  align-items: end;
+}
+
+.identity-fields .field {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.identity-fields input,
+.identity-fields select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.identity-preview {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+}
+
+.identity-preview code {
+  overflow-wrap: anywhere;
+}
+
+.identity-rules-title {
+  margin: 14px 0 6px;
+  font-size: 13px;
+}
+
+.identity-rule {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+
+.identity-rule > .field {
+  margin-bottom: 6px;
+}
+
+.identity-rule > .field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.identity-rule-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.identity-problems {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 /* Sign-in, setup and account */
 
 .auth-page {

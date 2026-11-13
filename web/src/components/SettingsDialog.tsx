@@ -5,6 +5,8 @@ import type { Ban } from "../api/generated/Ban";
 import type { GroupSettings } from "../api/generated/GroupSettings";
 import type { Settings } from "../api/generated/Settings";
 import { formatDateTime, fromKiB, toKiB } from "../format";
+import { ClientIdentitySection } from "./ClientIdentitySection";
+import { identityProblems } from "./clientIdentity";
 import { LibraryStatusSection } from "./LibrarySection";
 import { SeedLimitsFields } from "./SeedLimitsFields";
 import { StorageRootsSection } from "./StorageRootsSection";
@@ -123,10 +125,19 @@ export function SettingsDialog({
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!settings) return;
+    const problems = identityProblems(settings.identity);
+    if (problems.length > 0) {
+      setError(`Client identity: ${problems[0]}`);
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await api.saveSettings({ ...settings, groups: settings.groups.map((g) => ({ ...g, name: g.name.trim() })) });
+      await api.saveSettings({
+        ...settings,
+        groups: settings.groups.map((g) => ({ ...g, name: g.name.trim() })),
+        identity: { ...settings.identity, rules: settings.identity.rules.map((r) => ({ ...r, host: r.host.trim() })) },
+      });
       onClose();
     } catch (err) {
       setError(err instanceof ApiRequestError ? err.message : String(err));
@@ -228,6 +239,7 @@ export function SettingsDialog({
               </p>
               <SeedLimitsFields idPrefix="seed" value={settings.seedLimits} onChange={(seedLimits) => update({ seedLimits })} />
             </fieldset>
+            <ClientIdentitySection value={settings.identity} onChange={(identity) => update({ identity })} />
             <BansSection />
             <TlsSection />
             {isAdmin && <StorageRootsSection />}
