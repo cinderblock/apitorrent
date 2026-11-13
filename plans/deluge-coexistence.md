@@ -76,8 +76,8 @@ files, and take torrents over a few at a time. Asked for on 2026-11-12:
 
 Work is split three ways; integration of 2 and 3 into the import happens last.
 
-1. [x] Peer/DHT port auto-pick and persist (main thread). `ee4af6d`. Desktop app not
-       compile-checked yet (`cargo check -p apitorrent-desktop`).
+1. [x] Peer/DHT port auto-pick and persist (main thread). `ee4af6d`. Desktop app
+       compile-checked 2026-11-13 (`cargo check -p apitorrent-desktop`, clean).
 2. [ ] Deluge daemon RPC client in `apitorrent-deluge` (delegate, worktree).
 3. [ ] Client identity: engine, tracker, settings, UI (delegate, worktree).
 4. [x] Dedupe policy (main thread), `e54a3fc`: an `imported` table (migration 14:
