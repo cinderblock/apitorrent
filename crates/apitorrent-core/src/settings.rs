@@ -2,10 +2,16 @@
 //! to, and which torrents the queue lets run.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use apitorrent_engine::SessionConfig;
+use apitorrent_engine::identity::{
+    ClientProfile, HostPattern, IdentityError, IdentityRule, IdentityRules,
+};
 use apitorrent_engine::limits::GroupLimits;
-use apitorrent_types::{GroupSettings, QueueSettings, Settings};
+use apitorrent_types::{
+    ClientIdentity, GroupSettings, IdentitySettings, QueueSettings, Settings, TrackerIdentityRule,
+};
 
 /// The settings a fresh instance starts with, taken from the session configuration (the
 /// daemon's command line). Stored settings replace them after the first change.
@@ -22,7 +28,72 @@ pub fn defaults(session: &SessionConfig) -> Settings {
         library: apitorrent_types::LibrarySettings::default(),
         encryption: encryption_setting(session.encryption),
         seed_limits: apitorrent_types::SeedLimits::default(),
+        identity: IdentitySettings::default(),
     }
+}
+
+/// The engine's profile for an identity; `None` is apitorrent itself.
+pub fn client_profile(id: &ClientIdentity) -> Result<Option<Arc<ClientProfile>>, IdentityError> {
+    let profile = match id {
+        ClientIdentity::Apitorrent => return Ok(None),
+        ClientIdentity::Deluge {
+            version,
+            libtorrent,
+        } => ClientProfile::deluge(version, libtorrent)?,
+        ClientIdentity::QBittorrent { version } => ClientProfile::qbittorrent(version)?,
+        ClientIdentity::Transmission { version } => ClientProfile::transmission(version)?,
+        ClientIdentity::Custom {
+            peer_id_prefix,
+            user_agent,
+            client_name,
+        } => ClientProfile::custom(peer_id_prefix, user_agent, client_name)?,
+    };
+    Ok(Some(Arc::new(profile)))
+}
+
+/// The engine's rules for the identity settings. Fails on a bad version, prefix or host,
+/// or two rules for the same host.
+pub fn identity_rules(s: &IdentitySettings) -> Result<IdentityRules, String> {
+    let default = client_profile(&s.default).map_err(|e| format!("default identity: {e}"))?;
+    let mut rules: Vec<IdentityRule> = Vec::with_capacity(s.rules.len());
+    for r in &s.rules {
+        let host = HostPattern::parse(&r.host).map_err(|e| e.to_string())?;
+        if rules.iter().any(|x| x.host == host) {
+            return Err(format!("two identity rules are for {host}"));
+        }
+        let profile = client_profile(&r.identity).map_err(|e| format!("{host}: {e}"))?;
+        rules.push(IdentityRule { host, profile });
+    }
+    Ok(IdentityRules { default, rules })
+}
+
+/// Add a rule giving `identity` to each of `hosts` that no rule covers yet (an exact rule
+/// for it, or a `*.domain` rule that matches it). Returns the hosts that got one, in order.
+/// Bad host names are skipped.
+pub fn ensure_tracker_identities(
+    s: &mut IdentitySettings,
+    hosts: &[String],
+    identity: &ClientIdentity,
+) -> Vec<String> {
+    let mut added = Vec::new();
+    for host in hosts {
+        let Ok(pattern) = HostPattern::parse(host) else {
+            continue;
+        };
+        let name = pattern.to_string();
+        let covered = s
+            .rules
+            .iter()
+            .any(|r| HostPattern::parse(&r.host).is_ok_and(|p| p == pattern || p.matches(&name)));
+        if !covered {
+            s.rules.push(TrackerIdentityRule {
+                host: name.clone(),
+                identity: identity.clone(),
+            });
+            added.push(name);
+        }
+    }
+    added
 }
 
 /// The engine's policy for an encryption setting.
@@ -64,6 +135,7 @@ pub fn validate(s: &Settings) -> Result<(), String> {
     {
         return Err("a seed ratio must be a number, 0 or more".into());
     }
+    identity_rules(&s.identity)?;
     let mut names = HashSet::new();
     let mut labels = HashSet::new();
     for g in &s.groups {
@@ -231,6 +303,105 @@ mod tests {
         let mut got: Vec<&str> = active.iter().map(String::as_str).collect();
         got.sort_unstable();
         assert_eq!(got, ["d1", "s0"]);
+    }
+
+    #[test]
+    fn identity_settings_become_engine_rules() {
+        let mut s = defaults(&SessionConfig::default());
+        assert_eq!(
+            identity_rules(&s.identity).unwrap(),
+            IdentityRules::default()
+        );
+        s.identity.rules.push(TrackerIdentityRule {
+            host: "Tracker.Example.org".into(),
+            identity: ClientIdentity::deluge_default(),
+        });
+        s.identity.rules.push(TrackerIdentityRule {
+            host: "*.other.example".into(),
+            identity: ClientIdentity::Transmission {
+                version: "4.0.6".into(),
+            },
+        });
+        assert!(validate(&s).is_ok());
+        let rules = identity_rules(&s.identity).unwrap();
+        let p = rules
+            .resolve(["https://tracker.example.org/pk/announce"])
+            .unwrap();
+        assert_eq!(p.peer_id_prefix, b"-DE211s-");
+        assert_eq!(p.user_agent, "Deluge/2.1.1 libtorrent/2.0.10.0");
+        let t = rules.resolve(["udp://a.other.example:6969"]).unwrap();
+        assert_eq!(t.peer_id_prefix, b"-TR4060-");
+        assert!(rules.resolve(["udp://open.example:1"]).is_none());
+
+        // Bad rules are refused with a reason.
+        let mut bad = s.clone();
+        bad.identity.rules.push(TrackerIdentityRule {
+            host: "tracker.example.org.".into(),
+            identity: ClientIdentity::Apitorrent,
+        });
+        assert!(validate(&bad).unwrap_err().contains("two identity rules"));
+        let mut bad = s.clone();
+        bad.identity.default = ClientIdentity::QBittorrent {
+            version: "four".into(),
+        };
+        assert!(validate(&bad).unwrap_err().contains("default identity"));
+        let mut bad = s.clone();
+        bad.identity.rules[0].host = "http://x/".into();
+        assert!(validate(&bad).is_err());
+    }
+
+    #[test]
+    fn ensuring_rules_leaves_covered_hosts_alone() {
+        let mut s = IdentitySettings::default();
+        s.rules.push(TrackerIdentityRule {
+            host: "*.covered.example".into(),
+            identity: ClientIdentity::Apitorrent,
+        });
+        let hosts = [
+            "T.Example.org".to_owned(),
+            "t.example.org".to_owned(),
+            "x.covered.example".to_owned(),
+            "not a host".to_owned(),
+            "u.example.org".to_owned(),
+        ];
+        let deluge = ClientIdentity::deluge_default();
+        let added = ensure_tracker_identities(&mut s, &hosts, &deluge);
+        assert_eq!(added, ["t.example.org", "u.example.org"]);
+        assert_eq!(s.rules.len(), 3);
+        assert_eq!(s.rules[1].identity, deluge);
+        // A second import adds nothing.
+        assert!(ensure_tracker_identities(&mut s, &hosts, &deluge).is_empty());
+    }
+
+    #[test]
+    fn settings_round_trip_through_json() {
+        let mut s = defaults(&SessionConfig::default());
+        s.identity.default = ClientIdentity::QBittorrent {
+            version: "4.6.5".into(),
+        };
+        s.identity.rules.push(TrackerIdentityRule {
+            host: "t.example".into(),
+            identity: ClientIdentity::Custom {
+                peer_id_prefix: "-XX1000-".into(),
+                user_agent: "X/1.0".into(),
+                client_name: "X 1.0".into(),
+            },
+        });
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains(r#""default":{"client":"qBittorrent","version":"4.6.5"}"#),
+            "{json}"
+        );
+        assert!(json.contains(r#""peerIdPrefix":"-XX1000-""#), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+
+        // Settings stored before identities existed still load, as apitorrent.
+        let mut old: serde_json::Value =
+            serde_json::to_value(defaults(&SessionConfig::default())).unwrap();
+        old.as_object_mut().unwrap().remove("identity");
+        let loaded: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded.identity, IdentitySettings::default());
     }
 
     #[test]

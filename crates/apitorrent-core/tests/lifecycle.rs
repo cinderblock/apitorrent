@@ -1071,3 +1071,72 @@ async fn deluge_import() {
 fn k(id: &str) -> Key {
     Key::new(DEFAULT_SPACE, id)
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tracker_identity_rules_are_added_once_and_kept() {
+    use apitorrent_types::{ClientIdentity, TrackerIdentityRule};
+
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let core = Core::start(cfg.clone()).await.unwrap();
+    assert_eq!(core.settings().identity.default, ClientIdentity::Apitorrent);
+
+    // A rule the user made wins over the import's.
+    let mut settings = core.settings();
+    settings.identity.rules.push(TrackerIdentityRule {
+        host: "*.mine.example".into(),
+        identity: ClientIdentity::Apitorrent,
+    });
+    core.set_settings(settings).await.unwrap();
+
+    let deluge = ClientIdentity::deluge_default();
+    assert!(
+        core.ensure_tracker_identity("Tracker.Example.org", deluge.clone())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !core
+            .ensure_tracker_identity("tracker.example.org", deluge.clone())
+            .await
+            .unwrap(),
+        "already has one"
+    );
+    let added = core
+        .ensure_tracker_identities(
+            &["t.mine.example".into(), "other.example".into()],
+            deluge.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(added, ["other.example"]);
+
+    // A bad identity is refused, and nothing changes.
+    let bad = ClientIdentity::QBittorrent {
+        version: "x".into(),
+    };
+    assert!(matches!(
+        core.ensure_tracker_identity("new.example", bad).await,
+        Err(CoreError::InvalidRequest(_))
+    ));
+
+    let hosts: Vec<String> = core
+        .settings()
+        .identity
+        .rules
+        .iter()
+        .map(|r| r.host.clone())
+        .collect();
+    assert_eq!(
+        hosts,
+        ["*.mine.example", "tracker.example.org", "other.example"]
+    );
+
+    // They are stored.
+    core.shutdown().await.unwrap();
+    drop(core);
+    let core = Core::start(cfg).await.unwrap();
+    assert_eq!(core.settings().identity.rules.len(), 3);
+    assert_eq!(core.settings().identity.rules[1].identity, deluge);
+    core.shutdown().await.unwrap();
+}
