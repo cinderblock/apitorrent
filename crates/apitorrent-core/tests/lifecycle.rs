@@ -1107,6 +1107,118 @@ async fn deluge_import() {
     core.shutdown().await.unwrap();
 }
 
+/// An imported torrent runs here only once Deluge's copy is stopped: while Deluge's daemon
+/// answers but can't be made to pause it, the import adds it paused and resuming it is
+/// refused; once no daemon answers, resuming takes it over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deluge_take_over() {
+    use apitorrent_bencode::OwnedValue;
+
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let deluge = root.path().join("deluge");
+    let state = deluge.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let save = root.path().join("torrents");
+    let data: Vec<u8> = (0..40_000u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let bytes = TorrentBuilder::new("single", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&["single.bin"], data.clone()))
+        .build()
+        .unwrap();
+    let t = apitorrent_metainfo::Torrent::from_bytes(&bytes).unwrap();
+    let id = t.info.info_hashes().get_v1().unwrap().to_hex();
+    std::fs::write(state.join(format!("{id}.torrent")), &bytes).unwrap();
+    std::fs::create_dir_all(save.join("single")).unwrap();
+    std::fs::write(save.join("single").join("single.bin"), &data).unwrap();
+    let resume = OwnedValue::dict()
+        .insert("save_path", save.to_string_lossy().as_ref())
+        .insert(
+            "pieces",
+            vec![1u8; usize::try_from(t.info.piece_count()).unwrap()],
+        )
+        .to_bytes();
+    std::fs::write(
+        state.join("torrents.fastresume"),
+        OwnedValue::dict().insert(id.as_str(), resume).to_bytes(),
+    )
+    .unwrap();
+
+    // A "daemon" that takes connections but never speaks TLS: running, and not pausable.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let daemon = tokio::spawn(async move {
+        loop {
+            let _ = listener.accept().await;
+        }
+    });
+    std::fs::write(
+        deluge.join("core.conf"),
+        format!(r#"{{"file": 1, "format": 1}}{{"daemon_port": {port}}}"#),
+    )
+    .unwrap();
+    std::fs::write(deluge.join("auth"), "localclient:secret:10\n").unwrap();
+    std::fs::create_dir_all(deluge.join("ssl")).unwrap();
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../apitorrent-deluge/tests/fixtures/ssl/a-daemon.cert"
+        ),
+        deluge.join("ssl").join("daemon.cert"),
+    )
+    .unwrap();
+
+    let core = Core::start(cfg).await.unwrap();
+    let report = core
+        .import_deluge(
+            DEFAULT_SPACE,
+            apitorrent_types::ImportDelugeRequest {
+                config_dir: deluge.to_string_lossy().into_owned(),
+                path_map: Vec::new(),
+                import_settings: false,
+                paused: false,
+                filter: apitorrent_types::DelugeImportFilter::default(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.imported, ["single"], "{report:?}");
+    assert!(
+        report.warnings.iter().any(|w| w.contains("imported paused")),
+        "{report:?}"
+    );
+    wait_for(&core, &id, TorrentState::Paused).await;
+    let waiting = core.imports_not_taken_over(DEFAULT_SPACE).await.unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].torrents, 1);
+
+    let refused = core.resume(&k(&id)).await;
+    assert!(
+        matches!(refused, Err(apitorrent_core::CoreError::OtherOwner(_))),
+        "{refused:?}"
+    );
+    assert_eq!(
+        core.store().get(&k(&id)).unwrap().state,
+        TorrentState::Paused
+    );
+
+    // Deluge stops; now it's ours.
+    daemon.abort();
+    let _ = daemon.await;
+    let r = core.take_over(DEFAULT_SPACE, &[]).await.unwrap();
+    assert_eq!(r.taken_over, 1, "{r:?}");
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    assert!(
+        core.imports_not_taken_over(DEFAULT_SPACE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    core.shutdown().await.unwrap();
+}
+
 /// A torrent in the default space.
 #[allow(dead_code)]
 fn k(id: &str) -> Key {

@@ -1179,6 +1179,20 @@ recheck. That is the onboarding path for existing Deluge users.
   as the target space would see them (already there, outside its storage roots,
   unreadable), with the labels and tracker hosts to filter by and a slug suggested from
   the config directory's name.
+- **One owner at a time** (`apitorrent_core::takeover`). The `imported` table records each
+  imported torrent's source config directory, Deluge's id for it (`source_id`, when a v2
+  or hybrid torrent's id differs), and `taken_over_at`, NULL while Deluge may still run
+  it. Nothing with `taken_over_at` NULL runs here: the import pauses in Deluge the
+  torrents it would start (`deluge_import::take_over_running`) or, if Deluge is running
+  but won't stop them, imports everything paused with a warning; `Core::resume` of a
+  waiting torrent pauses it in Deluge first and refuses (`other_owner`, 409) if it can't;
+  `POST …/import/deluge/take-over` does a whole space, one daemon call per source
+  (`GET …/import/deluge/waiting` lists them). Pausing goes through
+  `apitorrent_deluge::rpc` (port, pinned `ssl/daemon.cert`, `localclient` password from
+  the config dir, read each time) and waits up to 30 s for Deluge to report the
+  torrents stopped. A refused connection, or a config directory without its certificate
+  or auth file, means no daemon is there and the torrent is taken over at once. The
+  offline CLI import does the same before writing its rows.
 - **With the daemon stopped.** The command writes the rows into `apitorrent.db`; they
   start on the daemon's next start. One planner (`apitorrent_core::deluge_import`) serves
   both ways in.

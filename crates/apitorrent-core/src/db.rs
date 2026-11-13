@@ -229,6 +229,11 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (space_id, torrent)
     );
     ",
+    // 15: the other client's own id for an imported torrent, when it isn't apitorrent's
+    // (Deluge names a hybrid or v2 torrent by its v1 info-hash). NULL: the same.
+    "
+    ALTER TABLE imported ADD COLUMN source_id TEXT;
+    ",
 ];
 
 /// A torrent imported from another client.
@@ -240,6 +245,26 @@ pub struct ImportedRow {
     pub imported_at: i64,
     /// When apitorrent took it over; `None` while the other client still runs it.
     pub taken_over_at: Option<i64>,
+    /// The other client's id for it, when that isn't `key.id`.
+    pub source_id: Option<String>,
+}
+
+impl ImportedRow {
+    /// The id to ask the other client about.
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        self.source_id.as_deref().unwrap_or(&self.key.id)
+    }
+}
+
+fn imported_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ImportedRow> {
+    Ok(ImportedRow {
+        key: Key::new(r.get(0)?, r.get::<_, String>(1)?),
+        source: r.get(2)?,
+        imported_at: r.get(3)?,
+        taken_over_at: r.get(4)?,
+        source_id: r.get(5)?,
+    })
 }
 
 /// Where the content library supplied one file's bytes from (see `share`).
@@ -654,16 +679,19 @@ impl Database {
     /// Record a torrent as imported from another client (replacing an older record).
     pub fn set_imported(&self, row: &ImportedRow) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO imported (space_id, torrent, source, imported_at, taken_over_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO imported
+                 (space_id, torrent, source, imported_at, taken_over_at, source_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(space_id, torrent) DO UPDATE SET source = excluded.source,
-                 imported_at = excluded.imported_at, taken_over_at = excluded.taken_over_at",
+                 imported_at = excluded.imported_at, taken_over_at = excluded.taken_over_at,
+                 source_id = excluded.source_id",
             params![
                 row.key.space,
                 row.key.id,
                 row.source,
                 row.imported_at,
-                row.taken_over_at
+                row.taken_over_at,
+                row.source_id
             ],
         )?;
         Ok(())
@@ -681,17 +709,22 @@ impl Database {
     /// Every imported torrent.
     pub fn imported(&self) -> rusqlite::Result<Vec<ImportedRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT space_id, torrent, source, imported_at, taken_over_at FROM imported",
+            "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id
+             FROM imported",
         )?;
-        stmt.query_map([], |r| {
-            Ok(ImportedRow {
-                key: Key::new(r.get(0)?, r.get::<_, String>(1)?),
-                source: r.get(2)?,
-                imported_at: r.get(3)?,
-                taken_over_at: r.get(4)?,
-            })
-        })?
-        .collect()
+        stmt.query_map([], imported_row)?.collect()
+    }
+
+    /// One imported torrent's record, if it was imported.
+    pub fn imported_one(&self, key: &Key) -> rusqlite::Result<Option<ImportedRow>> {
+        self.conn
+            .query_row(
+                "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id
+                 FROM imported WHERE space_id = ?1 AND torrent = ?2",
+                params![key.space, key.id],
+                imported_row,
+            )
+            .optional()
     }
 
     /// Record that `by` (in the same space) holds every file of `torrent`.
@@ -1030,6 +1063,7 @@ mod tests {
             source: "/home/u/.config/deluge".into(),
             imported_at: 5,
             taken_over_at: None,
+            source_id: None,
         })
         .unwrap();
         assert_eq!(db.imported().unwrap()[0].taken_over_at, None);

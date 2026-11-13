@@ -8,6 +8,7 @@ import { formatDateTime, fromKiB, toKiB } from "../format";
 import { LibraryStatusSection } from "./LibrarySection";
 import { SeedLimitsFields } from "./SeedLimitsFields";
 import { StorageRootsSection } from "./StorageRootsSection";
+import { DelugeTakeOverSection } from "./DelugeTakeOverSection";
 import { TrackerPasskeysSection } from "./TrackerPasskeysSection";
 import { TlsSection } from "./TlsSection";
 import { UpdatesSection } from "./Updates";
@@ -406,6 +407,7 @@ export function SettingsDialog({
             </fieldset>
           </fieldset>
         )}
+        {spaceAdmin && <DelugeTakeOverSection />}
         {spaceAdmin && <TrackerPasskeysSection />}
         {error && <p className="error-text">{error}</p>}
         <div className="actions">

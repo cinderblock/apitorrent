@@ -23,6 +23,7 @@ pub mod settings;
 mod share;
 pub mod spaces;
 pub mod store;
+pub mod takeover;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
@@ -115,6 +116,9 @@ pub enum CoreError {
     Unsupported(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// The client it was imported from still runs it, and couldn't be made to stop.
+    #[error("{0}")]
+    OtherOwner(String),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("I/O error: {0}")]
@@ -130,6 +134,7 @@ impl CoreError {
             CoreError::NotFound => "not_found",
             CoreError::Unsupported(_) => "unsupported",
             CoreError::InvalidRequest(_) => "invalid_request",
+            CoreError::OtherOwner(_) => "other_owner",
             CoreError::Database(_) | CoreError::Io(_) => "internal",
         }
     }
@@ -1213,13 +1218,7 @@ impl Core {
 
     /// Remember that a torrent came from another client (whose config directory is
     /// `source`), so dedupe leaves its files to an admin. Logged, not fatal, on failure.
-    async fn record_imported(&self, key: Key, source: &str) {
-        let row = db::ImportedRow {
-            key,
-            source: source.to_owned(),
-            imported_at: now_ms(),
-            taken_over_at: None,
-        };
+    async fn record_imported(&self, row: db::ImportedRow) {
         if let Err(e) = self.db(move |db| db.set_imported(&row)).await {
             tracing::warn!(error = %e, "could not record an imported torrent");
         }
@@ -1375,9 +1374,17 @@ impl Core {
             ratio_per_torrent: space != DEFAULT_SPACE && req.import_settings,
             first_position: self.next_queue_position(space),
         };
-        let plan = deluge_import::plan(&state, &target);
+        let mut plan = deluge_import::plan(&state, &target);
+        let mut warnings = state.warnings.clone();
+        // Nothing starts here while Deluge still runs it.
+        let taken_over_at = deluge_import::take_over_running(
+            &mut plan,
+            Path::new(&req.config_dir),
+            &mut warnings,
+        )
+        .await;
         let mut report = ImportReport {
-            warnings: state.warnings.clone(),
+            warnings,
             skipped: plan.skipped.clone(),
             not_selected,
             ..ImportReport::default()
@@ -1404,8 +1411,15 @@ impl Core {
                 .await;
             match added {
                 Ok(id) => {
-                    self.record_imported(Key::new(space, id), &req.config_dir)
-                        .await;
+                    let mut row = m.row.clone();
+                    row.id = id;
+                    self.record_imported(deluge_import::imported_row(
+                        &row,
+                        &m.deluge_id,
+                        &req.config_dir,
+                        taken_over_at,
+                    ))
+                    .await;
                     report.imported.push(m.name);
                 }
                 Err(e) => report.skipped.push(ImportSkip {
@@ -1470,7 +1484,13 @@ impl Core {
                         .insert(key.clone(), t.seed);
                     let (k, seed) = (key.clone(), t.seed);
                     let _ = self.db(move |db| db.save_seed_states(&[(k, seed)])).await;
-                    self.record_imported(key.clone(), &req.config_dir).await;
+                    self.record_imported(deluge_import::imported_row(
+                        &t.row,
+                        &t.deluge_id,
+                        &req.config_dir,
+                        taken_over_at,
+                    ))
+                    .await;
                     report.imported.push(t.name);
                 }
                 Err(e) => {
@@ -2404,6 +2424,100 @@ impl Core {
             .is_some_and(|s| s.primary == key.space)
     }
 
+    /// Before an imported torrent runs here, make sure the client it came from has stopped
+    /// it (see `takeover`). Torrents that weren't imported, or were taken over already,
+    /// pass straight through.
+    async fn ensure_taken_over(&self, key: &Key) -> Result<(), CoreError> {
+        let k = key.clone();
+        let Some(row) = self.db(move |db| db.imported_one(&k)).await? else {
+            return Ok(());
+        };
+        if row.taken_over_at.is_some() {
+            return Ok(());
+        }
+        takeover::pause_in_deluge(Path::new(&row.source), &[row.source_id().to_owned()])
+            .await
+            .map_err(CoreError::OtherOwner)?;
+        let k = key.clone();
+        self.db(move |db| db.set_taken_over(&k, now_ms())).await?;
+        Ok(())
+    }
+
+    /// The space's imported torrents that the client they came from may still run, by
+    /// that client's config directory.
+    pub async fn imports_not_taken_over(
+        &self,
+        space: SpaceId,
+    ) -> Result<Vec<apitorrent_types::ImportSource>, CoreError> {
+        let rows = self.db(|db| db.imported()).await?;
+        let mut by_source: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        for r in rows
+            .iter()
+            .filter(|r| r.key.space == space && r.taken_over_at.is_none())
+        {
+            *by_source.entry(r.source.clone()).or_default() += 1;
+        }
+        Ok(by_source
+            .into_iter()
+            .map(|(config_dir, torrents)| apitorrent_types::ImportSource {
+                config_dir,
+                torrents,
+            })
+            .collect())
+    }
+
+    /// Take over the space's imported torrents still waiting (all of them, or those in
+    /// `ids`): pause them in the client they came from, one call per config directory,
+    /// then resume them here.
+    pub async fn take_over(
+        &self,
+        space: SpaceId,
+        ids: &[String],
+    ) -> Result<apitorrent_types::TakeOverReport, CoreError> {
+        let rows = self.db(|db| db.imported()).await?;
+        let mut groups: std::collections::BTreeMap<String, Vec<db::ImportedRow>> =
+            std::collections::BTreeMap::new();
+        for r in rows.into_iter().filter(|r| {
+            r.key.space == space
+                && r.taken_over_at.is_none()
+                && (ids.is_empty() || ids.contains(&r.key.id))
+        }) {
+            groups.entry(r.source.clone()).or_default().push(r);
+        }
+        let name = |key: &Key| {
+            self.inner
+                .torrents
+                .read()
+                .expect("torrents lock poisoned")
+                .get(key)
+                .map_or_else(|| key.id.clone(), |e| e.torrent.info.name.clone())
+        };
+        let mut report = apitorrent_types::TakeOverReport::default();
+        for (source, rows) in groups {
+            let deluge_ids: Vec<String> = rows.iter().map(|r| r.source_id().to_owned()).collect();
+            if let Err(e) = takeover::pause_in_deluge(Path::new(&source), &deluge_ids).await {
+                report.skipped.extend(rows.iter().map(|r| apitorrent_types::ImportSkip {
+                    name: name(&r.key),
+                    reason: e.clone(),
+                }));
+                continue;
+            }
+            let at = now_ms();
+            for r in rows {
+                let k = r.key.clone();
+                self.db(move |db| db.set_taken_over(&k, at)).await?;
+                match self.resume(&r.key).await {
+                    Ok(()) => report.taken_over += 1,
+                    Err(e) => report.skipped.push(apitorrent_types::ImportSkip {
+                        name: name(&r.key),
+                        reason: e.to_string(),
+                    }),
+                }
+            }
+        }
+        Ok(report)
+    }
+
     pub async fn pause(&self, key: &Key) -> Result<(), CoreError> {
         self.set_paused(key, true).await
     }
@@ -2413,6 +2527,9 @@ impl Core {
     }
 
     async fn set_paused(&self, key: &Key, paused: bool) -> Result<(), CoreError> {
+        if !paused {
+            self.ensure_taken_over(key).await?;
+        }
         let is_pending = {
             let mut pending = self.inner.pending.write().expect("pending lock poisoned");
             match pending.get_mut(key) {

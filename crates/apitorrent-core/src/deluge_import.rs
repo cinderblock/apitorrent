@@ -53,6 +53,9 @@ pub struct Target<'a> {
 #[derive(Debug, Clone)]
 pub struct PlannedTorrent {
     pub name: String,
+    /// Deluge's id for it (its v1 info-hash, lowercase hex), which a hybrid or v2
+    /// torrent's apitorrent id isn't.
+    pub deluge_id: String,
     pub torrent: Arc<Torrent>,
     pub row: TorrentRow,
     pub have: Option<Bitfield>,
@@ -68,6 +71,7 @@ pub struct PlannedTorrent {
 #[derive(Debug, Clone)]
 pub struct PlannedMagnet {
     pub name: String,
+    pub deluge_id: String,
     pub uri: String,
     pub row: TorrentRow,
 }
@@ -436,6 +440,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
                 position += 1;
                 out.magnets.push(PlannedMagnet {
                     name,
+                    deluge_id: d.id.to_ascii_lowercase(),
                     uri: uri.clone(),
                     row,
                 });
@@ -521,6 +526,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             .then(|| seed_limits(d.stop_at_ratio));
         out.torrents.push(PlannedTorrent {
             name,
+            deluge_id: d.id.to_ascii_lowercase(),
             torrent,
             row,
             have,
@@ -539,18 +545,19 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
 }
 
 /// Store a plan's torrents for the daemon to start on its next start, each recorded as
-/// imported from `source` (Deluge's config directory). Returns how many were written; one
-/// that fails is skipped with its reason.
-pub fn write(db: &mut Database, plan: &Plan, source: &str) -> (usize, Vec<ImportSkip>) {
+/// imported from `source` (Deluge's config directory). Those that start running were taken
+/// over at `taken_over_at` (see [`take_over_running`]); paused ones wait to be. Returns how
+/// many were written; one that fails is skipped with its reason.
+pub fn write(
+    db: &mut Database,
+    plan: &Plan,
+    source: &str,
+    taken_over_at: Option<i64>,
+) -> (usize, Vec<ImportSkip>) {
     let mut written = 0;
     let mut failed = Vec::new();
-    let imported = |db: &Database, row: &TorrentRow| {
-        let r = crate::db::ImportedRow {
-            key: Key::new(row.space, row.id.clone()),
-            source: source.to_owned(),
-            imported_at: now_ms(),
-            taken_over_at: None,
-        };
+    let imported = |db: &Database, row: &TorrentRow, deluge_id: &str| {
+        let r = imported_row(row, deluge_id, source, taken_over_at);
         if let Err(e) = db.set_imported(&r) {
             tracing::warn!(torrent = %row.name, error = %e, "could not record it as imported");
         }
@@ -562,7 +569,7 @@ pub fn write(db: &mut Database, plan: &Plan, source: &str) -> (usize, Vec<Import
                 if let Err(e) = db.save_seed_states(&[(key, t.seed)]) {
                     tracing::warn!(torrent = %t.name, error = %e, "could not store seeding time");
                 }
-                imported(db, &t.row);
+                imported(db, &t.row, &t.deluge_id);
                 written += 1;
             }
             Err(e) => failed.push(ImportSkip {
@@ -574,7 +581,7 @@ pub fn write(db: &mut Database, plan: &Plan, source: &str) -> (usize, Vec<Import
     for m in &plan.magnets {
         match db.insert_torrent(&m.row) {
             Ok(()) => {
-                imported(db, &m.row);
+                imported(db, &m.row, &m.deluge_id);
                 written += 1;
             }
             Err(e) => failed.push(ImportSkip {
@@ -584,6 +591,82 @@ pub fn write(db: &mut Database, plan: &Plan, source: &str) -> (usize, Vec<Import
         }
     }
     (written, failed)
+}
+
+/// The record of one imported torrent: taken over at `taken_over_at` if it starts running,
+/// waiting to be if it is added paused.
+pub fn imported_row(
+    row: &TorrentRow,
+    deluge_id: &str,
+    source: &str,
+    taken_over_at: Option<i64>,
+) -> crate::db::ImportedRow {
+    crate::db::ImportedRow {
+        key: Key::new(row.space, row.id.clone()),
+        source: source.to_owned(),
+        imported_at: now_ms(),
+        taken_over_at: if row.paused { None } else { taken_over_at },
+        source_id: (deluge_id != row.id).then(|| deluge_id.to_owned()),
+    }
+}
+
+/// Deluge's ids of the plan's torrents that would start running here.
+#[must_use]
+pub fn running_ids(plan: &Plan) -> Vec<String> {
+    plan.torrents
+        .iter()
+        .filter(|t| !t.row.paused)
+        .map(|t| t.deluge_id.clone())
+        .chain(
+            plan.magnets
+                .iter()
+                .filter(|m| !m.row.paused)
+                .map(|m| m.deluge_id.clone()),
+        )
+        .collect()
+}
+
+/// Before an import starts any torrent here, pause Deluge's copies (see `takeover`).
+/// Returns when they were taken over (`None` when nothing starts). If Deluge runs but can't
+/// be made to stop them, everything is imported paused instead, with a warning.
+pub async fn take_over_running(
+    plan: &mut Plan,
+    config_dir: &Path,
+    warnings: &mut Vec<String>,
+) -> Option<i64> {
+    let running = running_ids(plan);
+    if running.is_empty() {
+        return None;
+    }
+    match crate::takeover::pause_in_deluge(config_dir, &running).await {
+        Ok(_) => Some(now_ms()),
+        Err(e) => {
+            for t in &mut plan.torrents {
+                t.row.paused = true;
+            }
+            for m in &mut plan.magnets {
+                m.row.paused = true;
+            }
+            warnings.push(format!(
+                "{e}. Everything was imported paused; resuming a torrent here tries again to \
+                 pause it in Deluge first."
+            ));
+            None
+        }
+    }
+}
+
+/// Run a future to completion from synchronous code, inside a multi-threaded runtime or
+/// outside any.
+fn block_on<F: std::future::Future>(f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => tokio::task::block_in_place(|| h.block_on(f)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime for the Deluge daemon call")
+            .block_on(f),
+    }
 }
 
 fn rate(bytes_per_sec: Option<u64>) -> String {
@@ -1009,13 +1092,20 @@ pub fn run_offline(
     };
     let mut state = state;
     let not_selected = select(&mut state, &req.filter, &req.map, &download_dir);
-    let plan = plan(&state, &target);
-    let (written, failed) = match (&mut db, req.dry_run) {
-        (Some(db), false) => {
-            let (n, failed) = write(db, &plan, &req.config_dir.to_string_lossy());
-            (Some(n), failed)
+    let mut plan = plan(&state, &target);
+    let (written, failed) = if let (Some(db), false) = (&mut db, req.dry_run) {
+        let taken_over_at = block_on(take_over_running(&mut plan, &req.config_dir, &mut warnings));
+        let (n, failed) = write(db, &plan, &req.config_dir.to_string_lossy(), taken_over_at);
+        (Some(n), failed)
+    } else {
+        let n = running_ids(&plan).len();
+        if n > 0 {
+            warnings.push(format!(
+                "{n} torrent(s) would start running: the import first pauses them in \
+                 Deluge, if its daemon is running"
+            ));
         }
-        _ => (None, Vec::new()),
+        (None, Vec::new())
     };
     state.warnings.extend(warnings);
     Ok(report(

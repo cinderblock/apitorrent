@@ -966,3 +966,33 @@ pub struct ReplacePasskeyReport {
     /// Torrents left as they were, and why (still fetching metadata, say).
     pub skipped: Vec<ImportSkip>,
 }
+
+/// `GET /api/v1/import/deluge/waiting`: imported torrents the client they came from may
+/// still run, from one of its config directories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImportSource {
+    pub config_dir: String,
+    pub torrents: u32,
+}
+
+/// `POST /api/v1/import/deluge/take-over`: pause these imported torrents in Deluge and run
+/// them here. No ids: every one still waiting in the space.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TakeOverRequest {
+    #[serde(default)]
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TakeOverReport {
+    /// Torrents now running here, paused in Deluge.
+    pub taken_over: u32,
+    /// Torrents left as they were, and why (Deluge couldn't be reached, say).
+    pub skipped: Vec<ImportSkip>,
+}

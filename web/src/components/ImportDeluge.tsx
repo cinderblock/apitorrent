@@ -211,8 +211,9 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
       ) : !preview ? (
         <form onSubmit={look}>
           <p className="hint muted">
-            Torrents keep their files where Deluge left them, with their progress, labels, queue order and totals. Nothing is downloaded again and nothing in
-            Deluge is changed. Stop Deluge first, so its state files are complete. Each Deluge installation can go into a space of its own.
+            Torrents keep their files where Deluge left them, with their progress, labels, queue order and totals. Nothing is downloaded again. Deluge can keep
+            running: a torrent starts here only once it is paused in Deluge (the import does that for the ones it starts, through Deluge&apos;s daemon), so only one
+            client runs it at a time. Each Deluge installation can go into a space of its own.
           </p>
           <label className="field">
             <span>Deluge config directory, on the machine running apitorrent</span>
@@ -390,7 +391,7 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
           </label>
           <label className="check">
             <input type="checkbox" checked={paused} onChange={(e) => setPaused(e.target.checked)} />
-            Add them paused (resume them when you&apos;ve checked the paths)
+            Add them paused, and leave them running in Deluge (resuming one here takes it over then)
           </label>
           {newSpaceProblem && <p className="error-text">{newSpaceProblem}</p>}
           {error && <p className="error-text">{error}</p>}

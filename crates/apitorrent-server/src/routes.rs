@@ -42,7 +42,7 @@ impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let status = match &self.0 {
             CoreError::InvalidTorrent(_) | CoreError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            CoreError::Duplicate => StatusCode::CONFLICT,
+            CoreError::Duplicate | CoreError::OtherOwner(_) => StatusCode::CONFLICT,
             CoreError::NotFound => StatusCode::NOT_FOUND,
             CoreError::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
             CoreError::Database(_) | CoreError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -294,6 +294,32 @@ pub(crate) async fn preview_deluge(
     }
     match s.core.preview_deluge(here.id(), req).await {
         Ok(p) => Json(p).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
+/// Imported torrents the client they came from may still run (the space's admins).
+pub(crate) async fn deluge_waiting(State(s): State<AppState>, here: Here) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.imports_not_taken_over(here.id()).await {
+        Ok(w) => Json(w).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
+/// Pause imported torrents in Deluge and run them here (the space's admins).
+pub(crate) async fn take_over(
+    State(s): State<AppState>,
+    here: Here,
+    Json(req): Json<apitorrent_types::TakeOverRequest>,
+) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.take_over(here.id(), &req.ids).await {
+        Ok(r) => Json(r).into_response(),
         Err(e) => Failure(e).into_response(),
     }
 }

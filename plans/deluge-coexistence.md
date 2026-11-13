@@ -100,8 +100,14 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
          with roots = the outermost save paths; `requestIn(slug, …)` in `api/client.ts`
          sends the import to another space's API. Logic in `components/delugeImport.ts`
          (tested). The GUI sends the ticked ids as `filter.ids`.
-6. [ ] Take-over: per torrent and in bulk, through the RPC client; guard against two
-       owners (main thread, after 2).
+6. [x] Take-over (main thread), 2026-11-13. `apitorrent_core::takeover::pause_in_deluge`;
+       migration 15 adds `imported.source_id`; the import takes over what it starts (or
+       imports all paused with a warning); `Core::resume` refuses with `other_owner` (409)
+       while Deluge runs it; `GET /import/deluge/waiting`, `POST /import/deluge/take-over`;
+       Settings → Still with Deluge. No recheck on take-over: Deluge's pieces only grow,
+       so the imported bitfield is a subset of what's on disk and stays safe. Tested with
+       a fake daemon that accepts but won't speak TLS (refused) and a closed port
+       (taken over); not yet against a real running Deluge.
 7. [ ] Import sets identity rules (after 3).
 8. [x] Tracker passkeys (main thread). Detector in `apitorrent-tracker/src/passkey.rs`,
        grouping/replace in `apitorrent-core/src/passkeys.rs`, routes
@@ -222,6 +228,8 @@ cargo-fuzz 0.13.2 is installed on sentinel in `~/.cargo/bin`, alongside the nigh
 - [x] 2026-11-13 12:48 PM PST (20:48Z): step 2 committed (`d34438b` client, `acb7bcd` fuzz
       target; fuzzed clean for 10 minutes on sentinel) and merged to master. Next: step 6
       take-over.
+- [x] 2026-11-13: step 6 (take-over) committed. Next: step 7 once the identity branch
+      lands, then step 9 docs.
 
 ## Open questions for the user
 

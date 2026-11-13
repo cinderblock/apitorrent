@@ -275,6 +275,13 @@ wizard: it lists the installation's torrents, with the same filters and a tick b
 then imports the ticked ones into a space you choose, or into a new one it creates
 (server admins), with the outermost save paths as its storage roots.
 
+Deluge can keep running while you move over. A torrent runs in only one client at a time:
+apitorrent starts an imported torrent only after pausing it in Deluge, through Deluge's
+daemon, using the port, certificate and `localclient` password from the config directory
+(read each time, never stored). If no daemon answers there, it just starts. The import
+does this for the torrents it starts; ones imported paused wait, and resuming one takes
+it over then. Settings → Still with Deluge takes over everything still waiting at once.
+
 ## Signing in
 
 Everything except the sign-in pages needs an account. On first start, with no users yet,
