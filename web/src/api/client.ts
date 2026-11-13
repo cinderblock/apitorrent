@@ -27,6 +27,9 @@ import type { DelugePreviewRequest } from "./generated/DelugePreviewRequest";
 import type { ImportDelugeRequest } from "./generated/ImportDelugeRequest";
 import type { ImportReport } from "./generated/ImportReport";
 import type { QueueMove } from "./generated/QueueMove";
+import type { ReplacePasskeyReport } from "./generated/ReplacePasskeyReport";
+import type { ReplacePasskeyRequest } from "./generated/ReplacePasskeyRequest";
+import type { TrackerPasskey } from "./generated/TrackerPasskey";
 import type { Settings } from "./generated/Settings";
 import type { StorageRoot } from "./generated/StorageRoot";
 import type { TorrentLimits } from "./generated/TorrentLimits";
@@ -125,6 +128,10 @@ export const api = {
   unban: (ip: string) => request<void>("DELETE", `/bans/${enc(ip)}`),
   /** Import into the page's space, or the space `slug`. */
   importDeluge: (req: ImportDelugeRequest, slug: string | null = null) => requestIn<ImportReport>(slug, "POST", "/import/deluge", req),
+  /** The space's tracker passkeys, masked (the space's admins). */
+  trackerPasskeys: () => request<TrackerPasskey[]>("GET", "/tracker-passkeys"),
+  /** Change one passkey on every torrent in the space that uses it. */
+  replaceTrackerPasskey: (req: ReplacePasskeyRequest) => request<ReplacePasskeyReport>("POST", "/tracker-passkeys/replace", req),
   /** What a Deluge installation holds, as the space `slug` (or the page's) would import it. */
   previewDeluge: (req: DelugePreviewRequest, slug: string | null = null) => requestIn<DelugePreview>(slug, "POST", "/import/deluge/preview", req),
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),

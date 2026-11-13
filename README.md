@@ -240,6 +240,11 @@ always did until a server admin adds another (Settings, Spaces…).
   space brought in is never reported to another space's trackers. A space's users edit
   its tracker list in the details' Trackers tab (add, remove and reorder tiers); a
   tracker two spaces list is announced to once.
+- **Tracker passkeys.** Settings → Tracker passkeys lists the passkeys private trackers
+  put in this space's announce URLs (`/<passkey>/announce`, `?passkey=…`, `authkey`,
+  `torrent_pass`, `pid`), with the hosts and how many torrents use each. After rolling
+  one at the tracker, enter the new one there and every torrent that used the old one
+  gets it. Passkeys are shown masked and kept out of the logs.
 - **One network identity**: a single peer port, DHT node and peer id for every space.
 - `--space-host torrents-tv.example.com=tv` puts requests for a host name in a space.
 

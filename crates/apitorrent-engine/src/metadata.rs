@@ -261,7 +261,11 @@ impl Fetcher {
                     Ok(resp) => {
                         let _ = out.send(resp.peers);
                     }
-                    Err(e) => tracing::debug!(%url, error = %e, "metadata announce failed"),
+                    Err(e) => tracing::debug!(
+                        url = %apitorrent_tracker::passkey::redact(&url),
+                        error = %e,
+                        "metadata announce failed"
+                    ),
                 }
             });
         }

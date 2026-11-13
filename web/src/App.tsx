@@ -348,6 +348,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
       {settingsOpen && (
         <SettingsDialog
           isAdmin={serverAdmin}
+          spaceAdmin={spaceAdmin}
           onClose={() => setSettingsOpen(false)}
           onImport={
             spaceAdmin

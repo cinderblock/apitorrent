@@ -1274,6 +1274,19 @@ drawing from its space's and group's buckets), pause state and transfer counts.
   id, schedule, an announce under way), so a tracker that stays never sees `stopped` and
   `started` again; a started tier whose trackers are all gone is told `stopped`. A
   magnet still fetching its metadata can't be edited yet.
+- **Tracker passkeys** (`GET /tracker-passkeys`, `POST /tracker-passkeys/replace
+  {id, newPasskey}`, the space's admins; Settings → Tracker passkeys).
+  `apitorrent_tracker::passkey::find` locates the token in an announce URL without
+  re-serialising it: a query value under `passkey`, `authkey`, `torrent_pass`, `pid` and
+  the like (8+ token characters), else a path segment of 16+ letters and digits with
+  both kinds. Passkeys are grouped across the space's entries (one passkey may serve
+  several hosts) and named by a hash prefix (`apitorrent_core::passkeys::id`); the API
+  never returns one, only its first and last four characters. A replace checks the new
+  one has the shape the old one's place needs, then rewrites only those characters on
+  each entry through the same path as an edit, dropping a URL that becomes a repeat.
+  Magnets still fetching metadata are listed as skipped. Logs never carry a passkey:
+  the engine's announce logs go through `passkey::redact`, and tracker network errors
+  drop reqwest's URL (`without_url`).
 - **Internal transfers are never reported.** Data one entry's peers brought in reaches
   the others through the files (below), not the wire, so no other entry's tracker ever
   hears of it as downloaded or uploaded.

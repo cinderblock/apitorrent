@@ -13,6 +13,7 @@ pub mod fingerprint;
 pub mod folders;
 pub mod import;
 pub mod library;
+pub mod passkeys;
 mod library_index;
 pub mod plugin_api;
 pub mod ports;
@@ -602,6 +603,85 @@ impl Core {
         handle.set_trackers(key.engine(), tiers).await;
         self.refresh();
         Ok(())
+    }
+
+    /// The tracker passkeys in the space's announce URLs (see [`passkeys`]).
+    #[must_use]
+    pub fn tracker_passkeys(&self, space: SpaceId) -> Vec<apitorrent_types::TrackerPasskey> {
+        let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+        passkeys::list(
+            torrents
+                .iter()
+                .filter(|(k, _)| k.space == space)
+                .map(|(_, e)| e.trackers.as_slice()),
+        )
+    }
+
+    /// Put a new passkey in place of the passkey `req.id` on every torrent in the space
+    /// that uses it. Neither passkey is logged or put in an error.
+    pub async fn replace_tracker_passkey(
+        &self,
+        space: SpaceId,
+        req: apitorrent_types::ReplacePasskeyRequest,
+    ) -> Result<apitorrent_types::ReplacePasskeyReport, CoreError> {
+        let new = req.new_passkey.trim();
+        let mut old = None;
+        let using: Vec<(Key, String, Vec<Vec<String>>)> = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            torrents
+                .iter()
+                .filter(|(k, _)| k.space == space)
+                .filter_map(|(k, e)| {
+                    let key = passkeys::key_of(&e.trackers, &req.id)?;
+                    old.get_or_insert_with(|| key.to_owned());
+                    Some((k.clone(), e.torrent.info.name.clone(), e.trackers.clone()))
+                })
+                .collect()
+        };
+        let Some(old) = old else {
+            return Err(CoreError::NotFound);
+        };
+        for (_, _, tiers) in &using {
+            if let Some(why) = passkeys::unacceptable(tiers, &old, new) {
+                return Err(CoreError::InvalidRequest(why.into()));
+            }
+        }
+        let mut report = apitorrent_types::ReplacePasskeyReport::default();
+        // Magnets still fetching their metadata keep the magnet's trackers until then.
+        report.skipped.extend(
+            self.inner
+                .pending
+                .read()
+                .expect("pending lock poisoned")
+                .iter()
+                .filter(|(k, p)| {
+                    k.space == space
+                        && passkeys::key_of(std::slice::from_ref(&p.magnet.trackers), &req.id)
+                            .is_some()
+                })
+                .map(|(k, p)| apitorrent_types::ImportSkip {
+                    name: p.magnet.display_name.clone().unwrap_or_else(|| k.id.clone()),
+                    reason: "still fetching its metadata; change it once that arrives".into(),
+                }),
+        );
+        for (key, name, tiers) in using {
+            match self
+                .set_trackers(&key, passkeys::replaced(&tiers, &old, new))
+                .await
+            {
+                Ok(()) => report.changed += 1,
+                Err(e) => report.skipped.push(apitorrent_types::ImportSkip {
+                    name,
+                    reason: apitorrent_tracker::passkey::redact_text(&e.to_string()).into_owned(),
+                }),
+            }
+        }
+        tracing::info!(
+            changed = report.changed,
+            skipped = report.skipped.len(),
+            "replaced a tracker passkey"
+        );
+        Ok(report)
     }
 
     /// Change a torrent's label, which also picks its group.

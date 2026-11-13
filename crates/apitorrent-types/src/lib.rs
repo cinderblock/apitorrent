@@ -930,3 +930,39 @@ mod tests {
         );
     }
 }
+
+/// `GET /api/v1/tracker-passkeys`: one tracker passkey found in the space's announce URLs. The
+/// passkey itself is never sent; `id` names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TrackerPasskey {
+    /// Names this passkey in a replace request (a hash of it, not the passkey).
+    pub id: String,
+    /// Its first and last four characters, to tell it from another.
+    pub masked: String,
+    /// The tracker hosts it is used with, sorted.
+    pub hosts: Vec<String>,
+    /// How many of the space's torrents use it.
+    pub torrents: u32,
+}
+
+/// `POST /api/v1/tracker-passkeys/replace`: put `new_passkey` in place of the passkey `id` in
+/// every announce URL of the space's torrents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ReplacePasskeyRequest {
+    pub id: String,
+    pub new_passkey: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ReplacePasskeyReport {
+    /// Torrents whose trackers now carry the new passkey.
+    pub changed: u32,
+    /// Torrents left as they were, and why (still fetching metadata, say).
+    pub skipped: Vec<ImportSkip>,
+}

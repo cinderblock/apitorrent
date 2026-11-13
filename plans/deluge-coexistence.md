@@ -100,7 +100,12 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
 6. [ ] Take-over: per torrent and in bulk, through the RPC client; guard against two
        owners (main thread, after 2).
 7. [ ] Import sets identity rules (after 3).
-8. [ ] Tracker passkeys (main thread): find them in announce URLs (a long hex/base62 path
+8. [x] Tracker passkeys (main thread). Detector in `apitorrent-tracker/src/passkey.rs`,
+       grouping/replace in `apitorrent-core/src/passkeys.rs`, routes
+       `/tracker-passkeys` (named so to stay clear of the WebAuthn `/auth/passkeys`), web
+       `TrackerPasskeysSection.tsx` in Settings (space admins). Engine announce logs and
+       tracker network errors no longer carry URLs with passkeys. Not done: the details'
+       Trackers tab still shows full URLs (it is the editor for them). Original note: find them in announce URLs (a long hex/base62 path
        segment such as `/<32 hex>/announce`, or query keys like `passkey`, `authkey`,
        `torrent_pass`, `pid`), group by tracker host and passkey, and replace one passkey
        with another on every matching torrent in the space in one action (API, CLI-free,
@@ -123,6 +128,7 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
 - [x] Step 1 ports, step 4 dedupe committed on master.
 - [x] 2026-11-13: step 5 committed (local build slots were full, so clippy and tests ran
       on sentinel with `rbuild`). Next: step 6 take-over once the RPC delegate lands.
+- [x] 2026-11-13: step 8 (tracker passkeys) committed.
 
 ## Open questions for the user
 

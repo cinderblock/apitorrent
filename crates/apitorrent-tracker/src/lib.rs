@@ -21,6 +21,7 @@
 
 mod client;
 mod error;
+pub mod passkey;
 pub mod http;
 mod tls;
 mod types;

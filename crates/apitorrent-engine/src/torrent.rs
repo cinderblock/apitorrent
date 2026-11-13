@@ -1894,7 +1894,11 @@ impl TorrentActor {
         };
         match result {
             Ok(resp) => {
-                tracing::debug!(url = %job.url, peers = resp.peers.len(), "announced");
+                tracing::debug!(
+                    url = %apitorrent_tracker::passkey::redact(&job.url),
+                    peers = resp.peers.len(),
+                    "announced"
+                );
                 entry.announcer.on_success(job, &resp, now);
                 // A stopped entry's late answer brings no peers.
                 if !entry.paused {
@@ -1903,7 +1907,11 @@ impl TorrentActor {
                 }
             }
             Err(e) => {
-                tracing::debug!(url = %job.url, error = %e, "announce failed");
+                tracing::debug!(
+                    url = %apitorrent_tracker::passkey::redact(&job.url),
+                    error = %apitorrent_tracker::passkey::redact_text(&e),
+                    "announce failed"
+                );
                 entry.announcer.on_failure(job, &e, now);
             }
         }

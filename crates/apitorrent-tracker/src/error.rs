@@ -64,7 +64,9 @@ impl From<reqwest::Error> for TrackerError {
         if e.is_timeout() {
             Self::Timeout
         } else {
-            Self::network(e)
+            // reqwest quotes the whole URL, passkey and all; the caller knows which URL it
+            // asked for.
+            Self::network(e.without_url())
         }
     }
 }

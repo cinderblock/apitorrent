@@ -8,6 +8,7 @@ import { formatDateTime, fromKiB, toKiB } from "../format";
 import { LibraryStatusSection } from "./LibrarySection";
 import { SeedLimitsFields } from "./SeedLimitsFields";
 import { StorageRootsSection } from "./StorageRootsSection";
+import { TrackerPasskeysSection } from "./TrackerPasskeysSection";
 import { TlsSection } from "./TlsSection";
 import { UpdatesSection } from "./Updates";
 
@@ -106,6 +107,7 @@ const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, upload
 
 export function SettingsDialog({
   isAdmin,
+  spaceAdmin,
   onClose,
   onImport,
   onSpaces,
@@ -113,6 +115,8 @@ export function SettingsDialog({
 }: {
   /** Server admins change these settings; everyone else reads them. */
   isAdmin: boolean;
+  /** Administers this space: its tracker passkeys. */
+  spaceAdmin: boolean;
   onClose: () => void;
   /** Open the Deluge import; for this space's admins. */
   onImport?: () => void;
@@ -402,6 +406,7 @@ export function SettingsDialog({
             </fieldset>
           </fieldset>
         )}
+        {spaceAdmin && <TrackerPasskeysSection />}
         {error && <p className="error-text">{error}</p>}
         <div className="actions">
           {onImport && (

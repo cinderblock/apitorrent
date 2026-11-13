@@ -194,3 +194,110 @@ async fn a_spaces_users_edit_their_entrys_trackers() {
     assert!(d.trackers.is_empty() && d.tracker_status.is_empty());
     core.shutdown().await.unwrap();
 }
+
+/// A space's admins see its tracker passkeys (masked) and change one on every torrent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tracker_passkey_is_replaced_everywhere() {
+    const OLD: &str = "0123456789abcdef0123456789abcdef";
+    const NEW: &str = "fedcba9876543210fedcba9876543210";
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let meta = ClientMeta::default();
+    let session = f
+        .auth
+        .setup_with_password(&f.setup_token(), "admin", None, PASSWORD, &meta)
+        .unwrap();
+    let admin = f
+        .auth
+        .authenticate_session(&session.secret)
+        .unwrap()
+        .unwrap();
+    let t = f
+        .auth
+        .create_token_in(
+            &admin,
+            DEFAULT_SPACE,
+            &CreateTokenRequest {
+                name: "t".into(),
+                scope: TokenScope::Full,
+                expires_in_days: None,
+            },
+            &meta,
+        )
+        .unwrap()
+        .token;
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let private = format!("https://tracker.private.invalid/{OLD}/announce");
+    for name in ["one", "two"] {
+        let r = send(
+            &app,
+            Req::post("/api/v1/torrents")
+                .bearer(&t)
+                .raw_json(common::torrent_json_named(name)),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
+    }
+    let ids: Vec<String> = core.list(None).into_iter().map(|s| s.id).collect();
+    for id in &ids {
+        let r = send(
+            &app,
+            Req::new("PUT", format!("/api/v1/torrents/{id}/trackers"))
+                .bearer(&t)
+                .json(&json!({ "tiers": [[private], [A]] })),
+        )
+        .await;
+        assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.json());
+    }
+
+    let r = send(&app, Req::get("/api/v1/tracker-passkeys").bearer(&t)).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(
+        !String::from_utf8_lossy(&r.body).contains(OLD),
+        "the passkey itself is never sent"
+    );
+    let list = r.json();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["masked"], "0123…cdef");
+    assert_eq!(list[0]["hosts"], json!(["tracker.private.invalid"]));
+    assert_eq!(list[0]["torrents"], 2);
+    let pk = list[0]["id"].as_str().unwrap().to_owned();
+
+    let replace = |id: &str, new: &str| {
+        let app = app.clone();
+        let body = json!({ "id": id, "newPasskey": new });
+        let t = t.clone();
+        async move {
+            send(
+                &app,
+                Req::post("/api/v1/tracker-passkeys/replace")
+                    .bearer(&t)
+                    .json(&body),
+            )
+            .await
+        }
+    };
+    let r = replace(&pk, "not/a/key").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
+    assert!(!String::from_utf8_lossy(&r.body).contains(OLD));
+    assert_eq!(replace("0000", NEW).await.status, StatusCode::NOT_FOUND);
+    let r = replace(&pk, &format!("  {NEW} ")).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json());
+    assert_eq!(r.json()["changed"], 2);
+    for id in &ids {
+        let d: TorrentDetail = send(&app, Req::get(format!("/api/v1/torrents/{id}")).bearer(&t))
+            .await
+            .typed();
+        assert_eq!(
+            d.trackers,
+            [
+                vec![format!("https://tracker.private.invalid/{NEW}/announce")],
+                vec![A.to_owned()]
+            ]
+        );
+    }
+    let r = send(&app, Req::get("/api/v1/tracker-passkeys").bearer(&t)).await;
+    assert_eq!(r.json()[0]["masked"], "fedc…3210");
+    core.shutdown().await.unwrap();
+}

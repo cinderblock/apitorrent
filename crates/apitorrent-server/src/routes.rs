@@ -298,6 +298,29 @@ pub(crate) async fn preview_deluge(
     }
 }
 
+/// The space's tracker passkeys, masked (the space's admins: they are its credentials).
+pub(crate) async fn tracker_passkeys(State(s): State<AppState>, here: Here) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    Json(s.core.tracker_passkeys(here.id())).into_response()
+}
+
+/// Change one passkey on every torrent in the space that uses it.
+pub(crate) async fn replace_tracker_passkey(
+    State(s): State<AppState>,
+    here: Here,
+    Json(req): Json<apitorrent_types::ReplacePasskeyRequest>,
+) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.replace_tracker_passkey(here.id(), req).await {
+        Ok(r) => Json(r).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
 pub(crate) async fn bans(State(s): State<AppState>) -> Json<Vec<Ban>> {
     Json(s.core.bans())
 }
