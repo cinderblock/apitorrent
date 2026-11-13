@@ -16,8 +16,11 @@
 //! settings.
 //!
 //! Nothing here writes to the Deluge directory.
+//!
+//! [`rpc`] talks to a running Deluge daemon, to pause the torrents apitorrent takes over.
 
 pub mod pickle;
+pub mod rpc;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

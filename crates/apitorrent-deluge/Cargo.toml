@@ -12,10 +12,25 @@ repository.workspace = true
 apitorrent-bencode.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# Deluge daemon RPC (`rpc`): zlib framing, TLS pinned to the daemon's certificate.
+flate2 = "1"
+rustls.workspace = true
+tokio = { workspace = true, features = ["net", "time", "io-util"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+# Deluge's certificate is X.509 v1, which webpki can't parse: x509-parser finds its key, and
+# webpki verifies handshake signatures against that key directly. Same webpki as rustls.
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["std"] }
+x509-parser = { version = "0.18", default-features = false }
 
 [dev-dependencies]
+apitorrent-bencode.workspace = true
 apitorrent-metainfo.workspace = true
+base64.workspace = true
+hex.workspace = true
+sha1.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
 
 [lints]
 workspace = true

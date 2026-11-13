@@ -82,3 +82,10 @@ path = "fuzz_targets/pickle.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "deluge_rpc"
+path = "fuzz_targets/deluge_rpc.rs"
+test = false
+doc = false
+bench = false
