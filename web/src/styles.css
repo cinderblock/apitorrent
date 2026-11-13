@@ -1504,3 +1504,33 @@ button.link.danger-text {
   display: grid;
   gap: 6px;
 }
+
+/* The Deluge import's torrent list: scrolls inside the dialog. */
+.import-list {
+  max-height: 40vh;
+  overflow: auto;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.import-list thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.files th.import-tick,
+.import-tick {
+  width: 2rem;
+}
+
+.import-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-why {
+  font-size: 12px;
+}

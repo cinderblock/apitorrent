@@ -283,6 +283,21 @@ pub(crate) async fn import_deluge(
     }
 }
 
+/// What a Deluge installation holds, for choosing what to import (this space's admins).
+pub(crate) async fn preview_deluge(
+    State(s): State<AppState>,
+    here: Here,
+    Json(req): Json<apitorrent_types::DelugePreviewRequest>,
+) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.preview_deluge(here.id(), req).await {
+        Ok(p) => Json(p).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
 pub(crate) async fn bans(State(s): State<AppState>) -> Json<Vec<Ban>> {
     Json(s.core.bans())
 }

@@ -79,7 +79,7 @@ enum Command {
     /// Bring torrents in from another client, with the daemon stopped. They start on its
     /// next start.
     #[command(subcommand)]
-    Import(import::ImportCommand),
+    Import(Box<import::ImportCommand>),
 }
 
 #[derive(Debug, Parser)]

@@ -85,8 +85,18 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
        import paths; automatic passes hold imported copies (`heldBytes/heldFiles`),
        "Deduplicate now" merges them; imported copies preferred as keeper; default `on`;
        a swarm going Downloading → Seeding wakes a pass.
-5. [ ] Import filters: planner, CLI flags, API (preview + import), GUI wizard with space
-       choice/creation (main thread).
+5. [x] Import filters (main thread). Clippy and tests pass on sentinel; web tests and
+       typecheck pass. Not yet clicked through in a browser against a real Deluge dir.
+       - core: `deluge_import::{summarize, matches, select, suggested_slug}`,
+         `Core::preview_deluge`; `ImportDelugeRequest.filter`, `ImportReport.notSelected`.
+       - server: `POST /import/deluge/preview` (space admin).
+       - CLI: `--label --exclude-label --tracker --save-path --only-complete
+         --only-incomplete --only-paused --only-active --name --hash`.
+       - web: `ImportDeluge.tsx` is now a two-page wizard (source + space → preview with
+         filters and ticks → import); a new space is created first (server admins only)
+         with roots = the outermost save paths; `requestIn(slug, …)` in `api/client.ts`
+         sends the import to another space's API. Logic in `components/delugeImport.ts`
+         (tested). The GUI sends the ticked ids as `filter.ids`.
 6. [ ] Take-over: per torrent and in bulk, through the RPC client; guard against two
        owners (main thread, after 2).
 7. [ ] Import sets identity rules (after 3).
@@ -111,6 +121,8 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
 - [x] 2026-11-12: plan written. Delegates started for steps 2 (Deluge RPC) and 3
       (identity), each in its own worktree.
 - [x] Step 1 ports, step 4 dedupe committed on master.
+- [x] 2026-11-13: step 5 committed (local build slots were full, so clippy and tests ran
+      on sentinel with `rbuild`). Next: step 6 take-over once the RPC delegate lands.
 
 ## Open questions for the user
 

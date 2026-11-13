@@ -22,6 +22,8 @@ import type { ApproveDeviceRequest } from "./generated/ApproveDeviceRequest";
 import type { DeviceInfo } from "./generated/DeviceInfo";
 import type { DeviceRequestInfo } from "./generated/DeviceRequestInfo";
 import type { FilePriority } from "./generated/FilePriority";
+import type { DelugePreview } from "./generated/DelugePreview";
+import type { DelugePreviewRequest } from "./generated/DelugePreviewRequest";
 import type { ImportDelugeRequest } from "./generated/ImportDelugeRequest";
 import type { ImportReport } from "./generated/ImportReport";
 import type { QueueMove } from "./generated/QueueMove";
@@ -70,13 +72,22 @@ export function notifyAuthLost(): void {
   for (const l of authLostListeners) l();
 }
 
-export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return requestAt<T>(base(), method, path, body);
+}
+
+/** A request to the API of the space at `/s/<slug>` (`null`: the page's own space). */
+export function requestIn<T>(slug: string | null, method: string, path: string, body?: unknown): Promise<T> {
+  return requestAt<T>(slug === null ? base() : `/s/${encodeURIComponent(slug)}/api/v1`, method, path, body);
+}
+
+async function requestAt<T>(apiBase: string, method: string, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method, headers: {}, credentials: "same-origin" };
   if (body !== undefined) {
     init.body = JSON.stringify(body);
     init.headers = { "content-type": "application/json" };
   }
-  const resp = await transport.fetch(`${base()}${path}`, init);
+  const resp = await transport.fetch(`${apiBase}${path}`, init);
   if (!resp.ok) {
     let err: ApiError = { code: "http_error", message: `${resp.status} ${resp.statusText}` };
     try {
@@ -112,7 +123,10 @@ export const api = {
   bans: () => request<Ban[]>("GET", "/bans"),
   ban: (ip: string) => request<void>("POST", "/bans", { ip }),
   unban: (ip: string) => request<void>("DELETE", `/bans/${enc(ip)}`),
-  importDeluge: (req: ImportDelugeRequest) => request<ImportReport>("POST", "/import/deluge", req),
+  /** Import into the page's space, or the space `slug`. */
+  importDeluge: (req: ImportDelugeRequest, slug: string | null = null) => requestIn<ImportReport>(slug, "POST", "/import/deluge", req),
+  /** What a Deluge installation holds, as the space `slug` (or the page's) would import it. */
+  previewDeluge: (req: DelugePreviewRequest, slug: string | null = null) => requestIn<DelugePreview>(slug, "POST", "/import/deluge/preview", req),
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),
   setLimits: (id: string, limits: TorrentLimits) => request<void>("PUT", `/torrents/${enc(id)}/limits`, limits),
   setLabel: (id: string, label: string | null) => request<void>("PUT", `/torrents/${enc(id)}/label`, { label }),

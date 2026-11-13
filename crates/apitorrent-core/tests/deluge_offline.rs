@@ -65,7 +65,23 @@ async fn offline_import_into_a_new_space() {
         )],
         import_settings: false,
         paused: false,
+        filter: apitorrent_types::DelugeImportFilter::default(),
     };
+
+    // A filter that takes nothing says so.
+    let filtered = run_offline(
+        &data_dir,
+        &downloads,
+        &OfflineImport {
+            filter: apitorrent_types::DelugeImportFilter {
+                labels: vec!["movies".into()],
+                ..Default::default()
+            },
+            ..req(true)
+        },
+    )
+    .unwrap();
+    assert!(filtered.contains("left out 1 torrent"), "{filtered}");
 
     // A dry run reports and changes nothing: not even the database is made.
     let report = run_offline(&data_dir, &downloads, &req(true)).unwrap();

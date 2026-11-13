@@ -256,9 +256,19 @@ apitorrentd import deluge --config ~/.config/deluge --space tv
 the storage root it falls in, labels, limits, and what can't be carried over). The import
 creates the space if it's missing; the torrents start when the daemon does. `--map
 FROM=TO` rewrites save paths, `--settings` takes Deluge's limits, `--paused` adds
-everything paused. Running it again skips what the space already has. The Settings
-dialog's "Import from Deluge…" does the same into the current space with the daemon
-running.
+everything paused. Running it again skips what the space already has.
+
+To take only some torrents, filter them (each flag repeats; a torrent must match every
+kind given, and any one value of a kind): `--label tv`, `--exclude-label music`,
+`--tracker example.org` (and its subdomains), `--save-path /srv/torrents/tv`,
+`--only-complete` or `--only-incomplete`, `--only-paused` or `--only-active` (as in
+Deluge), `--name "words in the name"`, `--hash <info-hash>`. The report says how many
+the filter left out.
+
+With the daemon running, the Settings dialog's "Import from Deluge…" does the same as a
+wizard: it lists the installation's torrents, with the same filters and a tick box each,
+then imports the ticked ones into a space you choose, or into a new one it creates
+(server admins), with the outermost save paths as its storage roots.
 
 ## Signing in
 

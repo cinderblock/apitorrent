@@ -5,7 +5,11 @@ export type ImportReport = {
 /**
  * Names of the torrents added.
  */
-imported: Array<string>, skipped: Array<ImportSkip>, 
+imported: Array<string>, 
+/**
+ * How many torrents the filter left out.
+ */
+notSelected: number, skipped: Array<ImportSkip>, 
 /**
  * Problems that didn't stop the import.
  */

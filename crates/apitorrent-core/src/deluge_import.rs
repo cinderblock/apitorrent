@@ -19,7 +19,9 @@ use apitorrent_deluge::{DelugeSettings, DelugeState};
 use apitorrent_engine::bitfield::Bitfield;
 use apitorrent_metainfo::{Magnet, Torrent};
 use apitorrent_types::spaces::{SpaceId, SpaceSettings};
-use apitorrent_types::{ImportSkip, SeedLimitAction, SeedLimits, Settings, TorrentLimits};
+use apitorrent_types::{
+    DelugeImportFilter, ImportSkip, SeedLimitAction, SeedLimits, Settings, TorrentLimits,
+};
 
 use crate::db::{Database, TorrentRow};
 use crate::seeding::SeedState;
@@ -130,6 +132,221 @@ fn root_of<'r>(roots: &'r [String], path: &Path) -> Option<&'r str> {
 
 fn now_ms() -> i64 {
     crate::now_ms()
+}
+
+/// What one Deluge torrent is, for previewing and filtering an import.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Summary {
+    /// The info-hash id apitorrent will give it (Deluge's own id when it can't be read).
+    pub id: String,
+    /// Deluge's id: the v1 info-hash in hex.
+    pub deluge_id: String,
+    pub name: String,
+    pub label: Option<String>,
+    /// Its trackers' hosts, lowercase, without duplicates.
+    pub hosts: Vec<String>,
+    /// Where its files are, after the path mapping.
+    pub save_path: PathBuf,
+    pub size: u64,
+    /// Done, 0 to 1, from the resume data.
+    pub progress: Option<f64>,
+    pub paused: bool,
+    /// Why it can't be read.
+    pub error: Option<String>,
+}
+
+impl Summary {
+    pub fn complete(&self) -> bool {
+        self.progress.is_some_and(|p| p >= 1.0)
+    }
+}
+
+/// The host of a tracker URL, lowercase.
+pub fn tracker_host(url: &str) -> Option<String> {
+    url::Url::parse(url.trim())
+        .ok()?
+        .host_str()
+        .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+}
+
+fn hosts<'a>(urls: impl IntoIterator<Item = &'a String>) -> Vec<String> {
+    let mut out: Vec<String> = urls.into_iter().filter_map(|u| tracker_host(u)).collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Each of Deluge's torrents, described (in Deluge's order).
+pub fn summarize(
+    state: &DelugeState,
+    map: &[(String, String)],
+    download_dir: &Path,
+) -> Vec<Summary> {
+    state
+        .torrents
+        .iter()
+        .map(|d| {
+            let save_path = import::save_path(
+                d.save_path.as_deref(),
+                state.settings.download_location.as_deref(),
+                download_dir,
+                map,
+            );
+            let mut out = Summary {
+                id: d.id.to_ascii_lowercase(),
+                deluge_id: d.id.to_ascii_lowercase(),
+                name: d.id.clone(),
+                label: d.label.clone(),
+                hosts: d
+                    .trackers
+                    .as_ref()
+                    .map(|t| hosts(t.iter().flatten()))
+                    .unwrap_or_default(),
+                save_path,
+                size: 0,
+                progress: None,
+                paused: d.paused,
+                error: None,
+            };
+            match Torrent::from_bytes(&d.torrent) {
+                Ok(t) => {
+                    out.id = t.info.info_hashes().id_string();
+                    out.name.clone_from(&t.info.name);
+                    out.size = t.info.content_length();
+                    if d.trackers.is_none() {
+                        out.hosts = hosts(t.trackers.iter().flatten());
+                    }
+                    let count = t.info.piece_count();
+                    out.progress = d
+                        .pieces
+                        .as_deref()
+                        .filter(|p| p.len() as u64 == count && count > 0)
+                        .map(|p| {
+                            #[allow(clippy::cast_precision_loss, reason = "a fraction for display")]
+                            let f = p.iter().filter(|&&b| b != 0).count() as f64 / count as f64;
+                            f
+                        });
+                }
+                Err(e) => match d.magnet.as_deref().map(Magnet::parse) {
+                    Some(Ok(m)) => {
+                        out.id = m.info_hashes.id_string();
+                        if let Some(n) = m.display_name {
+                            out.name = n;
+                        }
+                        if d.trackers.is_none() {
+                            out.hosts = hosts(&m.trackers);
+                        }
+                        out.progress = Some(0.0);
+                    }
+                    _ => out.error = Some(format!("unreadable .torrent: {e}")),
+                },
+            }
+            out
+        })
+        .collect()
+}
+
+/// Whether a host matches a filter entry: the same host, or a subdomain of it.
+fn host_matches(host: &str, entry: &str) -> bool {
+    let entry = entry.trim().trim_end_matches('.').to_ascii_lowercase();
+    !entry.is_empty() && (host == entry || host.ends_with(&format!(".{entry}")))
+}
+
+/// Whether a torrent passes a filter.
+pub fn matches(s: &Summary, f: &DelugeImportFilter) -> bool {
+    let label = s.label.as_deref().unwrap_or("");
+    let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+    if !f.labels.is_empty() && !f.labels.iter().any(|l| same(l, label)) {
+        return false;
+    }
+    if f.exclude_labels.iter().any(|l| same(l, label)) {
+        return false;
+    }
+    if !f.trackers.is_empty()
+        && !s
+            .hosts
+            .iter()
+            .any(|h| f.trackers.iter().any(|e| host_matches(h, e)))
+    {
+        return false;
+    }
+    if !f.save_paths.is_empty()
+        && !f
+            .save_paths
+            .iter()
+            .any(|p| !p.trim().is_empty() && s.save_path.starts_with(p.trim()))
+    {
+        return false;
+    }
+    if f.complete.is_some_and(|c| c != s.complete()) {
+        return false;
+    }
+    if f.paused.is_some_and(|p| p != s.paused) {
+        return false;
+    }
+    if let Some(words) = &f.name {
+        let name = s.name.to_lowercase();
+        if !words
+            .split_whitespace()
+            .all(|w| name.contains(&w.to_lowercase()))
+        {
+            return false;
+        }
+    }
+    if !f.ids.is_empty() {
+        let wanted = |id: &str| f.ids.iter().any(|w| w.trim().eq_ignore_ascii_case(id));
+        if !wanted(&s.id) && !wanted(&s.deluge_id) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Keep only the torrents the filter takes; returns how many were left out.
+pub fn select(
+    state: &mut DelugeState,
+    filter: &DelugeImportFilter,
+    map: &[(String, String)],
+    download_dir: &Path,
+) -> u32 {
+    if filter.is_empty() {
+        return 0;
+    }
+    let keep: Vec<bool> = summarize(state, map, download_dir)
+        .iter()
+        .map(|s| matches(s, filter))
+        .collect();
+    let before = state.torrents.len();
+    let mut i = 0;
+    state.torrents.retain(|_| {
+        i += 1;
+        keep[i - 1]
+    });
+    u32::try_from(before - state.torrents.len()).unwrap_or(u32::MAX)
+}
+
+/// A space slug from a Deluge config directory's name (`deluge-tv` → `deluge-tv`,
+/// `.config/deluge` → `deluge`).
+pub fn suggested_slug(config_dir: &Path) -> String {
+    let name = config_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mut slug = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug: String = slug.trim_matches('-').chars().take(40).collect();
+    let slug = slug.trim_end_matches('-').to_owned();
+    if slug.is_empty() {
+        "deluge".to_owned()
+    } else {
+        slug
+    }
 }
 
 /// Plan importing what Deluge has into `t`'s space.
@@ -408,6 +625,8 @@ pub struct ReportContext<'a> {
     /// After a real import: how many rows were written.
     pub written: Option<usize>,
     pub failed: &'a [ImportSkip],
+    /// How many torrents the filter left out.
+    pub not_selected: u32,
 }
 
 /// A plain-text report of a plan, to paste into a chat.
@@ -441,6 +660,14 @@ pub fn report(state: &DelugeState, plan: &Plan, c: &ReportContext<'_>) -> String
         }
     );
     let _ = writeln!(out, "Default folder: {}", c.download_dir.display());
+    if c.not_selected > 0 {
+        let _ = writeln!(
+            out,
+            "Filter:         left out {} torrent{}",
+            c.not_selected,
+            if c.not_selected == 1 { "" } else { "s" }
+        );
+    }
     let _ = writeln!(
         out,
         "Storage roots:  {}",
@@ -667,6 +894,8 @@ pub struct OfflineImport {
     /// Take Deluge's limits too.
     pub import_settings: bool,
     pub paused: bool,
+    /// Which torrents to take.
+    pub filter: DelugeImportFilter,
 }
 
 /// Import into the instance in `data_dir` without a running daemon: rows the daemon starts
@@ -778,6 +1007,8 @@ pub fn run_offline(
         ratio_per_torrent: space_id != DEFAULT_SPACE && req.import_settings,
         first_position,
     };
+    let mut state = state;
+    let not_selected = select(&mut state, &req.filter, &req.map, &download_dir);
     let plan = plan(&state, &target);
     let (written, failed) = match (&mut db, req.dry_run) {
         (Some(db), false) => {
@@ -786,7 +1017,6 @@ pub fn run_offline(
         }
         _ => (None, Vec::new()),
     };
-    let mut state = state;
     state.warnings.extend(warnings);
     Ok(report(
         &state,
@@ -801,6 +1031,172 @@ pub fn run_offline(
             dry_run: req.dry_run,
             written,
             failed: &failed,
+            not_selected,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary() -> Summary {
+        Summary {
+            id: "aa".into(),
+            deluge_id: "aa".into(),
+            name: "Some.Show.S01E02.1080p".into(),
+            label: Some("TV".into()),
+            hosts: vec!["tracker.example.org".into(), "udp.other.net".into()],
+            save_path: PathBuf::from("/srv/torrents/tv"),
+            size: 10,
+            progress: Some(1.0),
+            paused: false,
+            error: None,
+        }
+    }
+
+    fn f() -> DelugeImportFilter {
+        DelugeImportFilter::default()
+    }
+
+    #[test]
+    fn filters() {
+        let s = summary();
+        assert!(matches(&s, &f()));
+        assert!(matches(
+            &s,
+            &DelugeImportFilter {
+                labels: vec!["tv".into()],
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                labels: vec![String::new()],
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                exclude_labels: vec!["Tv".into()],
+                ..f()
+            }
+        ));
+        assert!(matches(
+            &s,
+            &DelugeImportFilter {
+                trackers: vec!["example.org".into()],
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                trackers: vec!["ample.org".into()],
+                ..f()
+            }
+        ));
+        assert!(matches(
+            &s,
+            &DelugeImportFilter {
+                save_paths: vec!["/srv/torrents".into()],
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                save_paths: vec!["/srv/tor".into()],
+                ..f()
+            }
+        ));
+        assert!(matches(
+            &s,
+            &DelugeImportFilter {
+                complete: Some(true),
+                paused: Some(false),
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                complete: Some(false),
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                paused: Some(true),
+                ..f()
+            }
+        ));
+        assert!(matches(
+            &s,
+            &DelugeImportFilter {
+                name: Some("show s01e02".into()),
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                name: Some("show s02".into()),
+                ..f()
+            }
+        ));
+        assert!(matches(
+            &s,
+            &DelugeImportFilter {
+                ids: vec!["AA".into()],
+                ..f()
+            }
+        ));
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                ids: vec!["bb".into()],
+                ..f()
+            }
+        ));
+        // Kinds combine with "and".
+        assert!(!matches(
+            &s,
+            &DelugeImportFilter {
+                labels: vec!["tv".into()],
+                complete: Some(false),
+                ..f()
+            }
+        ));
+        let unknown = Summary {
+            progress: None,
+            ..summary()
+        };
+        assert!(!matches(
+            &unknown,
+            &DelugeImportFilter {
+                complete: Some(true),
+                ..f()
+            }
+        ));
+    }
+
+    #[test]
+    fn hosts_and_slugs() {
+        assert_eq!(
+            tracker_host("https://Tracker.Example.org:443/abc/announce").as_deref(),
+            Some("tracker.example.org")
+        );
+        assert_eq!(tracker_host("udp://t.net:1337").as_deref(), Some("t.net"));
+        assert_eq!(tracker_host("not a url"), None);
+        assert_eq!(
+            suggested_slug(Path::new("/home/u/.config/deluge")),
+            "deluge"
+        );
+        assert_eq!(suggested_slug(Path::new("/srv/Deluge TV_2")), "deluge-tv-2");
+        assert_eq!(suggested_slug(Path::new("/srv/...")), "deluge");
+    }
 }

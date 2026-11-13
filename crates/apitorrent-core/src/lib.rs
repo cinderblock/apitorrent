@@ -23,9 +23,9 @@ mod share;
 pub mod spaces;
 pub mod store;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -1145,6 +1145,93 @@ impl Core {
         }
     }
 
+    /// What a Deluge installation holds, for choosing what to import into `space`: each
+    /// torrent with its label, trackers, path and progress, whether the space has it
+    /// already, and why it couldn't be imported. Reads only.
+    pub async fn preview_deluge(
+        &self,
+        space: SpaceId,
+        req: apitorrent_types::DelugePreviewRequest,
+    ) -> Result<apitorrent_types::DelugePreview, CoreError> {
+        use apitorrent_types::{DelugePreview, DelugePreviewTorrent};
+        let target_space = self.space(space)?;
+        let dir = PathBuf::from(&req.config_dir);
+        let state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
+            .await
+            .expect("Deluge reader panicked")
+            .map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
+        let map: Vec<(String, String)> = req
+            .path_map
+            .iter()
+            .map(|m| (m.from.clone(), m.to.clone()))
+            .collect();
+        let download_dir = self.download_dir(space);
+        let present: HashSet<String> = if req.new_space {
+            HashSet::new()
+        } else {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let pending = self.inner.pending.read().expect("pending lock poisoned");
+            torrents
+                .keys()
+                .chain(pending.keys())
+                .filter(|k| k.space == space)
+                .map(|k| k.id.clone())
+                .collect()
+        };
+        let roots: &[String] = if req.new_space {
+            &[]
+        } else {
+            &target_space.settings.storage_roots
+        };
+        let summaries = deluge_import::summarize(&state, &map, &download_dir);
+        let mut labels: Vec<String> = summaries.iter().filter_map(|s| s.label.clone()).collect();
+        labels.sort();
+        labels.dedup();
+        let mut trackers: Vec<String> = summaries.iter().flat_map(|s| s.hosts.clone()).collect();
+        trackers.sort();
+        trackers.dedup();
+        let torrents = summaries
+            .into_iter()
+            .map(|s| {
+                let outside =
+                    !roots.is_empty() && !roots.iter().any(|r| s.save_path.starts_with(r.as_str()));
+                let problem = s.error.clone().or_else(|| {
+                    outside.then(|| {
+                        format!(
+                            "{} is outside space {}'s storage roots",
+                            s.save_path.display(),
+                            target_space.slug
+                        )
+                    })
+                });
+                DelugePreviewTorrent {
+                    present: present.contains(&s.id),
+                    id: s.id,
+                    name: s.name,
+                    label: s.label,
+                    trackers: s.hosts,
+                    save_path: s.save_path.to_string_lossy().into_owned(),
+                    size: s.size,
+                    progress: s.progress,
+                    paused: s.paused,
+                    problem,
+                }
+            })
+            .collect();
+        Ok(DelugePreview {
+            torrents,
+            labels,
+            trackers,
+            download_location: state
+                .settings
+                .download_location
+                .as_deref()
+                .map(|p| import::remap(p, &map)),
+            suggested_slug: deluge_import::suggested_slug(Path::new(&req.config_dir)),
+            warnings: state.warnings,
+        })
+    }
+
     /// Bring in a Deluge installation's torrents into a space: files where Deluge left them,
     /// progress from its resume data (validated against the files on disk, so nothing is
     /// rehashed), labels, queue order, per-torrent limits and all-time totals. Torrents the
@@ -1157,7 +1244,7 @@ impl Core {
         use apitorrent_types::{ImportReport, ImportSkip};
         let target_space = self.space(space)?;
         let dir = PathBuf::from(&req.config_dir);
-        let state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
+        let mut state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
             .await
             .expect("Deluge reader panicked")
             .map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
@@ -1196,6 +1283,7 @@ impl Core {
                 .collect()
         };
         let download_dir = self.download_dir(space);
+        let not_selected = deluge_import::select(&mut state, &req.filter, &map, &download_dir);
         let target = deluge_import::Target {
             space,
             slug: &target_space.slug,
@@ -1211,6 +1299,7 @@ impl Core {
         let mut report = ImportReport {
             warnings: state.warnings.clone(),
             skipped: plan.skipped.clone(),
+            not_selected,
             ..ImportReport::default()
         };
         report

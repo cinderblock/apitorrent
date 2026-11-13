@@ -714,6 +714,96 @@ pub struct ImportDelugeRequest {
     /// Add everything paused, whatever its state in Deluge.
     #[serde(default)]
     pub paused: bool,
+    /// Which torrents to import; the default takes them all.
+    #[serde(default)]
+    pub filter: DelugeImportFilter,
+}
+
+/// Which of a Deluge installation's torrents to import. Each list that isn't empty must
+/// match (a torrent matches a list when it matches any entry); empty lists and `None`
+/// don't filter.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct DelugeImportFilter {
+    /// Labels to take; `""` is "no label". Compared without regard to case.
+    pub labels: Vec<String>,
+    /// Labels to leave out.
+    pub exclude_labels: Vec<String>,
+    /// Tracker hosts: `tracker.example.org`, or `example.org` for it and its subdomains.
+    pub trackers: Vec<String>,
+    /// Save paths (after `pathMap`): a torrent saved in one of these or below it.
+    pub save_paths: Vec<String>,
+    /// Only complete torrents (`true`) or only incomplete ones (`false`).
+    pub complete: Option<bool>,
+    /// Only torrents paused in Deluge (`true`) or only running ones (`false`).
+    pub paused: Option<bool>,
+    /// Words that must all appear in the name, ignoring case.
+    pub name: Option<String>,
+    /// Exactly these torrents, by info-hash (hex, as Deluge and apitorrent show them).
+    pub ids: Vec<String>,
+}
+
+impl DelugeImportFilter {
+    /// Whether it takes everything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// `POST /api/v1/import/deluge/preview`: what a Deluge installation holds, for choosing
+/// what to import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DelugePreviewRequest {
+    pub config_dir: String,
+    #[serde(default)]
+    pub path_map: Vec<PathMapping>,
+    /// Preview for a space that doesn't exist yet: nothing is "already here" and every
+    /// path fits.
+    #[serde(default)]
+    pub new_space: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DelugePreview {
+    pub torrents: Vec<DelugePreviewTorrent>,
+    /// Every label in use, then every tracker host, sorted: the filter's choices.
+    pub labels: Vec<String>,
+    pub trackers: Vec<String>,
+    /// Deluge's default download folder (after `pathMap`).
+    pub download_location: Option<String>,
+    /// A space slug made from the config directory's name, for a new space.
+    pub suggested_slug: String,
+    pub warnings: Vec<String>,
+}
+
+/// One torrent in a Deluge installation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DelugePreviewTorrent {
+    /// The info-hash id, as apitorrent will know it.
+    pub id: String,
+    pub name: String,
+    pub label: Option<String>,
+    /// Hosts of its trackers.
+    pub trackers: Vec<String>,
+    /// Where its files are (after `pathMap`).
+    pub save_path: String,
+    #[ts(type = "number")]
+    pub size: u64,
+    /// Done, 0 to 1, from Deluge's resume data (`None`: Deluge never saved any).
+    pub progress: Option<f64>,
+    pub paused: bool,
+    /// The space already has it; importing leaves it alone.
+    pub present: bool,
+    /// Why it can't be imported (outside the space's storage roots, unreadable).
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -730,6 +820,9 @@ pub struct PathMapping {
 pub struct ImportReport {
     /// Names of the torrents added.
     pub imported: Vec<String>,
+    /// How many torrents the filter left out.
+    #[serde(default)]
+    pub not_selected: u32,
     pub skipped: Vec<ImportSkip>,
     /// Problems that didn't stop the import.
     pub warnings: Vec<String>,

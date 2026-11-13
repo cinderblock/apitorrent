@@ -1165,11 +1165,20 @@ options. Imported torrents get a fast validation (sizes and mtimes) instead of a
 recheck. That is the onboarding path for existing Deluge users.
 
 - **Into a space.** An import goes into one space: the request's for the web UI's
-  "Import from Deluge…" (`POST /api/v1/import/deluge`, the space's admins), or
+  "Import from Deluge…" (`POST /s/<slug>/api/v1/import/deluge`, that space's admins; the
+  wizard creates a new space first through `POST /api/v1/spaces` when asked), or
   `--space <slug>` for `apitorrentd import deluge --config <dir>`, which creates the
   space if it's missing (with Deluge's download folder as its default). Two Deluge
   instances become two spaces. Save paths outside the space's storage roots are skipped
   and listed.
+- **Filters.** `DelugeImportFilter` (labels to take or leave out, tracker hosts with
+  their subdomains, save-path prefixes, complete or not, paused in Deluge or not, name
+  words, info-hashes) chooses the torrents before planning; `deluge_import::select` is
+  the one implementation, used by the CLI flags, the API and the wizard (which sends the
+  ticked info-hashes). `POST …/import/deluge/preview` lists the installation's torrents
+  as the target space would see them (already there, outside its storage roots,
+  unreadable), with the labels and tracker hosts to filter by and a slug suggested from
+  the config directory's name.
 - **With the daemon stopped.** The command writes the rows into `apitorrent.db`; they
   start on the daemon's next start. One planner (`apitorrent_core::deluge_import`) serves
   both ways in.

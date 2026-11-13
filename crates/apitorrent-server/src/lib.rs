@@ -252,6 +252,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/torrents/{id}/trackers", put(routes::set_trackers))
         .route("/torrents/{id}/queue", post(routes::queue_move))
         .route("/import/deluge", post(routes::import_deluge))
+        .route("/import/deluge/preview", post(routes::preview_deluge))
         .route("/bans", get(routes::bans).post(routes::ban))
         .route("/bans/{ip}", delete(routes::unban))
         .route("/library", get(library_routes::status))

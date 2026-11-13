@@ -35,6 +35,65 @@ pub struct DelugeArgs {
     /// Add everything paused, whatever its state in Deluge.
     #[arg(long)]
     paused: bool,
+    #[command(flatten)]
+    filter: FilterArgs,
+}
+
+/// Which torrents to take. Each kind of filter given must match; a repeated flag matches
+/// any of its values. With none, everything is imported.
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+struct FilterArgs {
+    /// Only torrents with this label ("" for none). Repeatable.
+    #[arg(long = "label", value_name = "LABEL")]
+    labels: Vec<String>,
+    /// Leave out torrents with this label. Repeatable.
+    #[arg(long = "exclude-label", value_name = "LABEL")]
+    exclude_labels: Vec<String>,
+    /// Only torrents announcing to this tracker host or its subdomains. Repeatable.
+    #[arg(long = "tracker", value_name = "HOST")]
+    trackers: Vec<String>,
+    /// Only torrents saved in this folder or below it (after --map). Repeatable.
+    #[arg(long = "save-path", value_name = "PATH")]
+    save_paths: Vec<String>,
+    /// Only complete torrents.
+    #[arg(long, conflicts_with = "only_incomplete")]
+    only_complete: bool,
+    /// Only incomplete torrents.
+    #[arg(long)]
+    only_incomplete: bool,
+    /// Only torrents paused in Deluge.
+    #[arg(long, conflicts_with = "only_active")]
+    only_paused: bool,
+    /// Only torrents running in Deluge.
+    #[arg(long)]
+    only_active: bool,
+    /// Only torrents whose name contains all of these words (ignoring case).
+    #[arg(long, value_name = "WORDS")]
+    name: Option<String>,
+    /// Exactly this torrent, by info-hash. Repeatable.
+    #[arg(long = "hash", value_name = "HASH")]
+    ids: Vec<String>,
+}
+
+impl FilterArgs {
+    fn filter(&self) -> apitorrent_types::DelugeImportFilter {
+        let pick = |yes: bool, no: bool| match (yes, no) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        };
+        apitorrent_types::DelugeImportFilter {
+            labels: self.labels.clone(),
+            exclude_labels: self.exclude_labels.clone(),
+            trackers: self.trackers.clone(),
+            save_paths: self.save_paths.clone(),
+            complete: pick(self.only_complete, self.only_incomplete),
+            paused: pick(self.only_paused, self.only_active),
+            name: self.name.clone(),
+            ids: self.ids.clone(),
+        }
+    }
 }
 
 /// Run an import command; returns the report to print.
@@ -59,6 +118,7 @@ pub fn run(cmd: &ImportCommand, data_dir: &Path, download_dir: &Path) -> Result<
             map,
             import_settings: a.settings,
             paused: a.paused,
+            filter: a.filter.filter(),
         },
     )
 }

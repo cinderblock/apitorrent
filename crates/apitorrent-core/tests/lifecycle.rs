@@ -1013,6 +1013,45 @@ async fn deluge_import() {
     .unwrap();
 
     let core = Core::start(cfg.clone()).await.unwrap();
+    let preview = core
+        .preview_deluge(
+            DEFAULT_SPACE,
+            apitorrent_types::DelugePreviewRequest {
+                config_dir: deluge.to_string_lossy().into_owned(),
+                path_map: vec![apitorrent_types::PathMapping {
+                    from: deluge_save.into(),
+                    to: real_save.to_string_lossy().into_owned(),
+                }],
+                new_space: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview.torrents.len(), 1, "{preview:?}");
+    assert_eq!(preview.torrents[0].name, "album");
+    assert_eq!(preview.torrents[0].id, id);
+    assert_eq!(preview.torrents[0].progress, Some(1.0));
+    assert!(!preview.torrents[0].present);
+    assert_eq!(preview.labels, ["music"]);
+    // A filter that leaves it out imports nothing.
+    let none = core
+        .import_deluge(
+            DEFAULT_SPACE,
+            apitorrent_types::ImportDelugeRequest {
+                config_dir: deluge.to_string_lossy().into_owned(),
+                path_map: Vec::new(),
+                import_settings: false,
+                paused: false,
+                filter: apitorrent_types::DelugeImportFilter {
+                    exclude_labels: vec!["Music".into()],
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert!(none.imported.is_empty(), "{none:?}");
+    assert_eq!(none.not_selected, 1);
     let report = core
         .import_deluge(
             DEFAULT_SPACE,
@@ -1024,6 +1063,7 @@ async fn deluge_import() {
                 }],
                 import_settings: false,
                 paused: false,
+                filter: apitorrent_types::DelugeImportFilter::default(),
             },
         )
         .await
@@ -1051,6 +1091,7 @@ async fn deluge_import() {
                 path_map: Vec::new(),
                 import_settings: false,
                 paused: false,
+                filter: apitorrent_types::DelugeImportFilter::default(),
             },
         )
         .await
