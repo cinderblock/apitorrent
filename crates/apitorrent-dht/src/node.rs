@@ -428,8 +428,8 @@ impl Node {
         let target = self.id;
         let lid = self.new_lookup(target, LookupKind::FindNode, true, now);
         if let Some(l) = self.lookups.get_mut(&lid) {
-            for fam in 0..2 {
-                if let Some(fl) = l.fams[fam].as_mut() {
+            for (fam, slot) in l.fams.iter_mut().enumerate() {
+                if let Some(fl) = slot.as_mut() {
                     for n in self.saved_nodes.iter().filter(|n| fam_of(&n.addr) == fam) {
                         insert_candidate(fl, &target, *n, self.id);
                     }

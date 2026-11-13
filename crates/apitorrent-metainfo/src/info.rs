@@ -766,7 +766,7 @@ fn disambiguate(files: &mut [FileEntry], naming: Naming) {
     for file in files.iter_mut().filter(|f| !f.is_pad()) {
         let mut key = String::new();
         let last = file.path.len() - 1;
-        for i in 0..=last {
+        for (i, segment) in file.path.iter_mut().enumerate() {
             let base = key.clone();
             let join = |name: &str| {
                 if base.is_empty() {
@@ -775,7 +775,7 @@ fn disambiguate(files: &mut [FileEntry], naming: Naming) {
                     format!("{base}/{}", fold(name))
                 }
             };
-            let original = file.path[i].clone();
+            let original = segment.clone();
             let mut candidate = original.clone();
             let mut n = 0;
             loop {
@@ -792,7 +792,7 @@ fn disambiguate(files: &mut [FileEntry], naming: Naming) {
                 n += 1;
                 candidate = sanitize::with_counter(&original, n);
             }
-            file.path[i] = candidate;
+            *segment = candidate;
             if i == last {
                 file_keys.insert(key.clone());
             } else {
