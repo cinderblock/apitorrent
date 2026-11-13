@@ -233,9 +233,19 @@ version = "0.1.2"
 dependencies = [
  "apitorrent-bencode",
  "apitorrent-metainfo",
+ "base64 0.23.1",
+ "flate2",
+ "hex",
+ "rustls",
+ "rustls-webpki",
  "serde_json",
+ "sha1 0.11.0",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
 ]
 
 [[package]]
