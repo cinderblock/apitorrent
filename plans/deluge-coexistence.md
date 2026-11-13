@@ -75,7 +75,9 @@ files, and take torrents over a few at a time. Asked for on 2026-11-12:
 Work is split three ways; integration of 2 and 3 into the import happens last.
 
 1. [ ] Peer/DHT port auto-pick and persist (main thread).
-2. [ ] Deluge daemon RPC client in `apitorrent-deluge` (delegate, worktree).
+2. [x] Deluge daemon RPC client in `apitorrent-deluge` (delegate, worktree). Done
+       2026-11-12: `apitorrent_deluge::rpc` (`DelugeClient`), checked against a real
+       Deluge 2.1.1 daemon. API and how it was tested under Findings.
 3. [ ] Client identity: engine, tracker, settings, UI (delegate, worktree).
 4. [ ] Dedupe policy: `origin` per torrent, imported files report-only, finish-triggered
        pass, default `on` (main thread).
@@ -94,9 +96,98 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
   "move deselected files to the held area" should find nothing to move. Unverified;
   check with a real Deluge state when testing the take-over.
 
+### Deluge daemon RPC (step 2)
+
+**API** (`crates/apitorrent-deluge/src/rpc/`, re-exported from `rpc`):
+
+- `DelugeClient::connect_config_dir(&Path)`: port from `core.conf` (`daemon_port`),
+  certificate pinned from `ssl/daemon.cert`, `localclient` password from `auth`, then login.
+  Lower level: `DelugeClient::connect(&ConnectOptions, &PinnedCert)` + `login(&Credentials)`.
+- `versions()` / `deluge_version()` / `libtorrent_version()`, `config_value(key)`,
+  `torrents(Option<&[id]>) -> Vec<TorrentStatus>` (name, state, paused, progress, save_path,
+  label, trackers, tracker_host, total_size, is_finished), `known_ids(ids)`,
+  `pause(ids)` / `resume(ids) -> Vec<String>` (the ids acted on),
+  `wait_until_stopped(ids, timeout) -> Vec<TorrentStatus>` (still running),
+  `remove_keep_data(id)`, and generic `call(method, args, kwargs) -> Value`.
+- Errors: `RpcError`; the daemon's own exceptions are `RpcError::Remote(RemoteError {
+  exception, message, .. })` and don't break the connection. A timeout or I/O/protocol error
+  does: later calls return `RpcError::Broken`, reconnect.
+
+**Protocol facts, from Deluge 2.1.1's source and confirmed on the wire:**
+
+- The frame header is a version byte **`1`** and a big-endian u32 length, not `b"D"` (that
+  was 2.0's betas). Body is `zlib.compress(rencode.dumps(x))`.
+- `RPC_ERROR` has **6** fields: `[2, id, exception_class, args, kwargs, traceback]`.
+  Non-Deluge exceptions arrive as `WrappedException` with `args = (message, type, tb)`.
+- Python's `rencode.dumps` writes floats as **float32** by default; replies carry those.
+  The reference decoder doesn't reject trailing bytes; ours does. Its long-string form starts
+  with `1`–`9` only (`0` is not a type byte).
+- `daemon.login` needs a `client_version` kwarg (any value) or raises `IncompatibleClient`.
+- `core.pause_torrent` / `resume_torrent` take one id or a list (2.1); with a list they
+  stop at the first unknown id with a bare **`KeyError`**, and with an **empty list act on
+  every torrent**. `pause()`/`resume()` look ids up first and send nothing when none match.
+- Pausing turns off auto-management (so the queue won't resume it) and is asynchronous;
+  the state becomes `Paused` a moment later.
+- `get_torrents_status` with an `{"id": [...]}` filter silently leaves out unknown ids. An
+  empty key list means *all* keys.
+- `remove_torrent(id, False)` on an unknown id: `InvalidTorrentError`. `label.add` of an
+  existing label: plain `Exception: Label already exists`.
+- The daemon's certificate (`crypto_utils.generate_ssl_keys`) is **X.509 v1, serial 0**,
+  RSA 2048, valid 3 years and never renewed. webpki can't parse v1, so rustls'
+  `verify_tls1x_signature` can't be used: the verifier accepts only the exact DER from
+  `ssl/daemon.cert` and checks handshake signatures against that file's key (x509-parser
+  extracts it, webpki `RawPublicKeyEntity` verifies). Dates and host name aren't checked.
+- The daemon negotiates TLS 1.3 (`TLS_AES_256_GCM_SHA384`) and TLS 1.2
+  (`ECDHE-RSA-AES256-GCM-SHA384`), refuses 1.1 (probed with Python's `ssl`).
+- `auth` lines are `user:password[:level]`; Deluge splits on every `:` (a password can't
+  contain one) and skips lines with other field counts.
+- Deluge 2.1.1 with today's pyOpenSSL (26.x) can't create its certificate
+  (`OpenSSL.crypto` has no `X509Req`): a fresh 2.1.1 install needs pyOpenSSL 24.2 /
+  cryptography 43 / Twisted 24.7 / service-identity 24.1. Existing installs are unaffected.
+
+**How it was tested against a real daemon** (2026-11-12 1:45–2:10 PM PST (21:45–22:10Z), this
+dev machine, Windows 11):
+
+1. Venv in the session scratch dir: `py -3.12 -m venv venv`, then `pip install
+   deluge==2.1.1 libtorrent setuptools<81 rencode` (libtorrent 2.1.1 wheel, rencode 1.0.9),
+   then `pip install service-identity==24.1.0 twisted==24.7.0 pyopenssl==24.2.1
+   cryptography==43.0.3` (see the pyOpenSSL finding).
+2. A fresh config dir with a `core.conf` setting `daemon_port` 58899, `allow_remote` false,
+   `listen_interface` 127.0.0.1, `listen_ports` [58900, 58900], DHT/UPnP/NAT-PMP/LSD/uTP-PEX
+   off, `enabled_plugins` ["Label"].
+3. `deluged -c <dir> -u 127.0.0.1 -i 127.0.0.1 -p 58899 -L info -l deluged.log`, run as
+   a background process (no window), stopped afterwards.
+4. `APITORRENT_DELUGE_TEST_CONFIG=<dir> cargo test -p apitorrent-deluge --test
+   deluge_daemon -- --ignored --nocapture`.
+
+What `tests/deluge_daemon.rs` proved: TLS with the pinned v1 certificate; login as
+`localclient` (level 10) from the `auth` file; Deluge 2.1.1 / libtorrent 2.1.1.0;
+`config_value` (`daemon_port`, `listen_ports`); adding a torrent through `call`
+(`core.add_torrent_file`); listing it with every field right (label from the Label plugin,
+tracker, save path, 100 %); an unknown id left out of a listing; empty `pause` touching
+nothing; pause → `Paused` and `paused` true via `wait_until_stopped`; resume → `Seeding`;
+raw `core.pause_torrent([unknown])` → `KeyError`, while `pause([unknown, id])` pauses `id`;
+`remove_keep_data` keeps the file, and a second remove is `InvalidTorrentError`; a wrong
+password is `BadLoginError` without the password in the message; a different pinned
+certificate is refused at the handshake.
+
+Unit tests: rencode vectors produced by rencode 1.0.9 (the Cython build Deluge loads),
+frames produced by Deluge's own `transfer_message` logic, TLS 1.2 and 1.3 handshakes with
+certificates made by Deluge's own `generate_ssl_keys()` (`tests/fixtures/ssl`, test keys
+only), and a fake daemon for the client's error, event, timeout and id handling. Fuzz target
+`fuzz/fuzz_targets/deluge_rpc.rs` (frame decode, and rencode decode/re-encode round trip).
+It ran for 10 minutes on sentinel, 12:38–12:48 PM PST (20:38–20:48Z) on 2026-11-13:
+10.5 million runs, no crash. Run it with
+`rbuild -- 'cd fuzz && cargo +nightly fuzz run deluge_rpc -- -max_total_time=600'`.
+cargo-fuzz 0.13.2 is installed on sentinel in `~/.cargo/bin`, alongside the nightly toolchain.
+
 ## Progress log
 
 - [x] 2026-11-12: plan written.
+- [x] 2026-11-12 2:15 PM PST (22:15Z): step 2, the Deluge daemon RPC client, done and
+      checked against a real Deluge 2.1.1 daemon (the throwaway daemon has since stopped).
+- [x] 2026-11-13 12:48 PM PST (20:48Z): step 2 committed (`d34438b` client, `acb7bcd` fuzz
+      target). The fuzz target ran clean for 10 minutes on sentinel.
 
 ## Open questions for the user
 
