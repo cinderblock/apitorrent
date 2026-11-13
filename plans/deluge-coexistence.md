@@ -82,7 +82,11 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
        2026-11-12: `apitorrent_deluge::rpc` (`DelugeClient`), checked against a real
        Deluge 2.1.1 daemon. API and how it was tested under Findings. Merged to master
        2026-11-13.
-3. [ ] Client identity: engine, tracker, settings, UI (delegate, worktree).
+3. [x] Client identity: engine, tracker, settings, UI (delegate, worktree, branch
+       `t3/client-identity-per-tracker`). Done 2026-11-13: profiles and per-tracker rules
+       in the engine, `Settings.identity`, `Core::ensure_tracker_identity` /
+       `ensure_tracker_identities` for step 7, a "Client identity" section in Settings,
+       docs. See Findings, "Client identity". Merged to master 2026-11-13.
 4. [x] Dedupe policy (main thread), `e54a3fc`: an `imported` table (migration 14:
        space, torrent, source config dir, imported_at, taken_over_at) written by both
        import paths; automatic passes hold imported copies (`heldBytes/heldFiles`),
@@ -214,6 +218,48 @@ It ran for 10 minutes on sentinel, 12:38–12:48 PM PST (20:38–20:48Z) on 2026
 10.5 million runs, no crash. Run it with
 `rbuild -- 'cd fuzz && cargo +nightly fuzz run deluge_rpc -- -max_total_time=600'`.
 cargo-fuzz 0.13.2 is installed on sentinel in `~/.cargo/bin`, alongside the nightly toolchain.
+
+### Client identity (step 3)
+
+Formats, from each client's source at the versions the presets use:
+
+- **Deluge 2.1.1** on libtorrent 2.0.10: peer id `-DE211s-` + 12 characters from
+  libtorrent's `url_random` alphabet (`0-9A-Za-z-_.!~*()`). Deluge calls
+  `generate_fingerprint("DE", major, minor, patch, 0)` (version digits 0-9 then A-Z) and
+  puts its release character in the 7th place: `s` stable, `D` dev, else the first letter
+  of the pre-release suffix. User agent and `v`:
+  `Deluge/2.1.1 libtorrent/2.0.10.0`.
+  [core.py](https://github.com/deluge-torrent/deluge/blob/deluge-2.1.1/deluge/core/core.py),
+  [generate_peer_id.cpp](https://github.com/arvidn/libtorrent/blob/v2.0.10/src/generate_peer_id.cpp),
+  [fingerprint.cpp](https://github.com/arvidn/libtorrent/blob/v2.0.10/src/fingerprint.cpp).
+- **qBittorrent 4.6.5**: `-qB4650-` + libtorrent's random tail; user agent and `v`
+  `qBittorrent/4.6.5`.
+  [sessionimpl.cpp](https://github.com/qbittorrent/qBittorrent/blob/release-4.6.5/src/base/bittorrent/sessionimpl.cpp).
+- **Transmission 4.0.6**: `-TR4060-` (major, minor, patch in base 62, then `0` release,
+  `B` beta, `Z` dev) + 11 lower-case base-36 characters + a check character that makes
+  the sum a multiple of 36. User agent `Transmission/4.0.6`, `v` `Transmission 4.0.6`.
+  [session.cc `tr_peerIdInit`](https://github.com/transmission/transmission/blob/4.0.6/libtransmission/session.cc),
+  [announcer-http.cc](https://github.com/transmission/transmission/blob/4.0.6/libtransmission/announcer-http.cc).
+- **Announces**: libtorrent's parameter order and escaping (lower-case hex, keeps
+  `-_.!~*()`), `numwant=200`
+  ([http_tracker_connection.cpp](https://github.com/arvidn/libtorrent/blob/v2.0.10/src/http_tracker_connection.cpp));
+  Transmission's order, `numwant=80`, `supportcrypto`/`requirecrypto`; both `numwant=0`
+  on `stopped`. A peer id and `key` per torrent, as both clients do.
+
+What can still tell a spoof apart (also in `crates/apitorrent-engine/src/identity.rs`):
+
+- HTTP headers: we send `accept: */*` and no `Accept-Encoding`; libtorrent sends
+  `Accept-Encoding: gzip` and `Connection: close`; Transmission's curl sends its own set.
+- libtorrent's `ipv4=`/`ipv6=` on private torrents and `event=paused`; Transmission's
+  separate IPv4 and IPv6 announces. Not done.
+- The TLS `ClientHello` of HTTPS announces (rustls, not OpenSSL or curl).
+- Peers (not trackers) see handshake reserved bits, extension handshake keys (`reqq`,
+  `e`, the `m` ids), uTP and encryption behaviour. Only `v` is changed.
+
+Gotchas: a rule change takes effect at each torrent's next 1 s tick (a generation counter,
+no messages), and sends `stopped` with the old peer id before `started` with the new one,
+so the tracker doesn't count a ghost peer. Torrents with no rule keep the session's shared
+`-AT` peer id; the DHT always uses apitorrent's `v`.
 
 ## Progress log
 

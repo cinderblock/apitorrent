@@ -1209,6 +1209,40 @@ recheck. That is the onboarding path for existing Deluge users.
   level).
 - **Twice is safe.** Torrents the space already has are listed and left alone.
 
+### Client identity
+
+Some private trackers accept only clients on a list, recognised by the peer id prefix and
+the `User-Agent` of HTTP announces. A torrent moved over from Deluge must keep looking
+like the client the tracker knows, or the tracker may refuse it. So apitorrent can present
+itself as another client, chosen per tracker. Many trackers forbid this, so it is off
+unless the user sets it, and the settings say so plainly.
+
+- **Profiles** (`apitorrent_engine::identity::ClientProfile`): Deluge (with its
+  libtorrent version), qBittorrent, Transmission, or a custom prefix and user agent. Each
+  sets the peer id prefix and how the other bytes are filled, the `User-Agent` of HTTP
+  announces and scrapes, the client name (`v`) in the extension handshake, and the shape
+  of the HTTP announce: libtorrent's or Transmission's parameters, order, escaping and
+  `numwant`, with a peer id and `key` per torrent as those clients have.
+- **Settings** (`Settings.identity`): a default identity for the instance (apitorrent
+  unless changed) and an ordered list of rules from a tracker host (`tracker.example.org`,
+  or `*.example.org` for that domain and every name under it) to an identity. A torrent
+  uses the first rule that matches the host of any of its trackers, or else the default.
+  Changes apply live: each torrent picks up the new rules at its next announce tick, sends
+  `stopped` under the old identity and `started` under the new one.
+- **Where it shows**: announces (HTTP and UDP), both directions of the peer handshake
+  (an incoming connection is answered with the torrent's peer id), the extension
+  handshake, and magnet metadata fetches. The DHT always speaks as apitorrent, and
+  torrents with no rule keep the session's shared apitorrent peer id.
+- **Core API**: `Core::ensure_tracker_identity(host, identity)` and
+  `ensure_tracker_identities(hosts, identity)` add a rule for each host no rule covers
+  yet, so the Deluge import can give a tracker the identity its torrents had there. Rules
+  the user made always win.
+- **What still differs** from the real client, documented in `identity.rs`: HTTP headers
+  other than `User-Agent`, libtorrent's `ipv4=`/`ipv6=` and `event=paused`, Transmission's
+  separate IPv4 and IPv6 announces, the TLS `ClientHello` of HTTPS announces, and what
+  peers see beyond `v` (handshake reserved bits, extension handshake keys, uTP and
+  encryption behaviour).
+
 ## Spaces
 
 A space is a named partition of one daemon, with its own storage, limits, labels,

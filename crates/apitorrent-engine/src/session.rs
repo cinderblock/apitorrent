@@ -14,6 +14,7 @@ use apitorrent_tracker::TrackerClient;
 use apitorrent_wire::PeerId;
 
 use crate::ban::{BanInfo, BanPolicy, BanReason, Blocklist, IpFilter};
+use crate::identity::IdentityRules;
 use crate::limits::{Bucket, Counter, Group, GroupLimits};
 use crate::peer;
 use crate::torrent::{ActorMsg, AddTorrent, TorrentActor, TorrentHandle};
@@ -106,7 +107,12 @@ pub enum AddError {
 #[derive(Debug)]
 pub(crate) struct Shared {
     pub(crate) config: SessionConfig,
+    /// apitorrent's own peer id, for torrents that present as apitorrent.
     pub(crate) peer_id: PeerId,
+    /// Which client each torrent presents as (see [`crate::identity`]).
+    identity: std::sync::RwLock<Arc<IdentityRules>>,
+    /// Bumped on every change to `identity`, so torrents notice without being told.
+    identity_gen: AtomicU64,
     pub(crate) tracker: TrackerClient,
     /// Sent with every announce so trackers can recognise us across IP changes.
     pub(crate) announce_key: u32,
@@ -173,6 +179,17 @@ impl MemoryBudget {
 impl Shared {
     pub(crate) fn next_key(&self) -> u64 {
         self.next_key.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The identity rules, and their generation.
+    pub(crate) fn identity_rules(&self) -> (Arc<IdentityRules>, u64) {
+        // The generation is read under the lock, so it always belongs to these rules.
+        let guard = self.identity.read().expect("identity rules poisoned");
+        (guard.clone(), self.identity_gen.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn identity_gen(&self) -> u64 {
+        self.identity_gen.load(Ordering::Acquire)
     }
 
     pub(crate) fn listen_port(&self) -> u16 {
@@ -302,6 +319,8 @@ impl Session {
             dht,
             dialer,
             peer_id,
+            identity: std::sync::RwLock::new(Arc::new(IdentityRules::default())),
+            identity_gen: AtomicU64::new(0),
             tracker,
             announce_key: rand::random(),
             listen_port: listen_addr.port(),
@@ -351,8 +370,31 @@ impl Session {
         self.lsd_addr
     }
 
+    /// apitorrent's own peer id. Torrents that present as another client (see
+    /// [`Session::set_identity_rules`]) use their own.
     pub fn peer_id(&self) -> PeerId {
         self.shared.peer_id
+    }
+
+    /// Choose which client each torrent presents as. Torrents pick it up on their next
+    /// announce or connection: a torrent whose identity changes gets a new peer id, which
+    /// its trackers see on the next announce; connections already open keep the old one.
+    pub fn set_identity_rules(&self, rules: IdentityRules) {
+        let mut current = self
+            .shared
+            .identity
+            .write()
+            .expect("identity rules poisoned");
+        if **current == rules {
+            return;
+        }
+        *current = Arc::new(rules);
+        self.shared.identity_gen.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The identity rules in force.
+    pub fn identity_rules(&self) -> Arc<IdentityRules> {
+        self.shared.identity_rules().0
     }
 
     /// Bytes of piece data held in memory right now, across all torrents.

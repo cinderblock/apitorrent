@@ -34,6 +34,9 @@ fn request(info_hash: Sha1Hash) -> AnnounceRequest {
         num_want: Some(25),
         key: 0x0BAD_F00D,
         tracker_id: None,
+        style: apitorrent_tracker::AnnounceStyle::Apitorrent,
+        user_agent: None,
+        crypto: apitorrent_tracker::AnnounceCrypto::Enabled,
     }
 }
 
@@ -79,6 +82,15 @@ impl Reply {
 /// A mock HTTP tracker that answers every request with `reply` and records each request's
 /// target (path and query).
 async fn http_tracker(reply: Reply) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    http_tracker_logging(reply, false).await
+}
+
+/// Like [`http_tracker`], but records each request's whole head: request line and headers.
+async fn http_tracker_heads(reply: Reply) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    http_tracker_logging(reply, true).await
+}
+
+async fn http_tracker_logging(reply: Reply, heads: bool) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -90,13 +102,18 @@ async fn http_tracker(reply: Reply) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
             };
             let reply = reply.clone();
             let log = log.clone();
-            tokio::spawn(async move { serve_one(stream, reply, log).await });
+            tokio::spawn(async move { serve_one(stream, reply, log, heads).await });
         }
     });
     (addr, seen)
 }
 
-async fn serve_one(mut stream: TcpStream, reply: Reply, log: Arc<Mutex<Vec<String>>>) {
+async fn serve_one(
+    mut stream: TcpStream,
+    reply: Reply,
+    log: Arc<Mutex<Vec<String>>>,
+    whole_head: bool,
+) {
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
@@ -107,7 +124,11 @@ async fn serve_one(mut stream: TcpStream, reply: Reply, log: Arc<Mutex<Vec<Strin
     }
     let head = String::from_utf8_lossy(&head);
     let target = head.split(' ').nth(1).unwrap_or("").to_owned();
-    log.lock().unwrap().push(target);
+    log.lock().unwrap().push(if whole_head {
+        head.into_owned()
+    } else {
+        target
+    });
 
     let mut out = format!("HTTP/1.1 {}\r\nConnection: close\r\n", reply.status);
     if reply.content_length {
@@ -165,6 +186,59 @@ async fn http_announce_compact() {
     assert!(target.contains("&event=started"), "{target}");
     assert!(target.contains("&numwant=25"), "{target}");
     assert!(target.contains("&key=0BADF00D"), "{target}");
+}
+
+#[tokio::test]
+async fn http_announce_sends_the_requested_user_agent() {
+    let (addr, seen) = http_tracker_heads(Reply::ok(compact_body())).await;
+    let url = format!("http://{addr}/announce");
+    client().announce(&url, &request(HASH)).await.unwrap();
+    let mut req = request(HASH);
+    req.user_agent = Some("Deluge/2.1.1 libtorrent/2.0.10.0".into());
+    req.style = apitorrent_tracker::AnnounceStyle::Libtorrent;
+    client().announce(&url, &req).await.unwrap();
+    client()
+        .scrape_as(&url, &[HASH], Some("Transmission/4.0.6"))
+        .await
+        .ok();
+
+    let heads = seen.lock().unwrap().clone();
+    assert_eq!(heads.len(), 3);
+    let agents: Vec<Vec<&str>> = heads
+        .iter()
+        .map(|h| {
+            h.lines()
+                .filter_map(|l| l.split_once(':'))
+                .filter(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, v)| v.trim())
+                .collect()
+        })
+        .collect();
+    let ours = concat!("apitorrent/", env!("CARGO_PKG_VERSION"));
+    assert_eq!(agents[0], [ours], "the default");
+    assert_eq!(
+        agents[1],
+        ["Deluge/2.1.1 libtorrent/2.0.10.0"],
+        "replaced, not added"
+    );
+    assert_eq!(agents[2], ["Transmission/4.0.6"]);
+    assert!(
+        heads[1].contains("&corrupt=0&key=0BADF00D&event=started&numwant=25"),
+        "{}",
+        heads[1]
+    );
+    assert!(
+        heads[2].starts_with("GET /scrape?info_hash="),
+        "{}",
+        heads[2]
+    );
+
+    // A user agent that would break the header line is refused, not sent.
+    req.user_agent = Some("x\r\nEvil: 1".into());
+    assert!(matches!(
+        client().announce(&url, &req).await,
+        Err(TrackerError::InvalidRequest(_))
+    ));
 }
 
 #[tokio::test]
@@ -321,7 +395,7 @@ async fn http_redirects_are_limited() {
     };
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
-            tokio::spawn(serve_one(stream, reply.clone(), log.clone()));
+            tokio::spawn(serve_one(stream, reply.clone(), log.clone(), false));
         }
     });
     let err = client()

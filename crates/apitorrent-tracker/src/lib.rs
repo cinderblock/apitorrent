@@ -32,7 +32,7 @@ pub use error::TrackerError;
 /// Re-exported so users of [`strict_http_client`] share the exact same version.
 pub use reqwest;
 pub use types::{
-    AnnounceEvent, AnnounceRequest, AnnounceResponse, MAX_PEERS, MAX_SCRAPE_HASHES, ScrapeResponse,
-    ScrapeStats,
+    AnnounceCrypto, AnnounceEvent, AnnounceRequest, AnnounceResponse, AnnounceStyle, MAX_PEERS,
+    MAX_SCRAPE_HASHES, ScrapeResponse, ScrapeStats,
 };
 pub use udp::RetryPolicy;

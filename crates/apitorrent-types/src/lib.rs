@@ -378,6 +378,73 @@ pub struct Settings {
     /// The DHT's UDP port, chosen and kept like `peer_port`. `--dht-port` overrides it.
     #[serde(default)]
     pub dht_port: u16,
+    /// Which client apitorrent presents itself as, per tracker.
+    #[serde(default)]
+    pub identity: IdentitySettings,
+}
+
+/// Which client apitorrent presents itself as: its peer id, the `User-Agent` of HTTP
+/// announces and the client name in the extension handshake. Some private trackers only
+/// accept clients on a list; many others forbid presenting as another client and ban
+/// accounts that do. Use another identity only where the tracker allows or needs it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct IdentitySettings {
+    /// The identity of torrents no rule matches. `apitorrent` by default.
+    pub default: ClientIdentity,
+    /// Per-tracker identities. A torrent takes the first rule that matches the host of any
+    /// of its trackers.
+    pub rules: Vec<TrackerIdentityRule>,
+}
+
+/// The identity a torrent uses when one of its trackers is on `host`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct TrackerIdentityRule {
+    /// A host name (`tracker.example.org`), or `*.example.org` for that domain and every
+    /// name under it. Case doesn't matter; the port is ignored.
+    pub host: String,
+    pub identity: ClientIdentity,
+}
+
+/// A client to present as. Versions are dotted numbers (`2.1.1`); each part goes into the
+/// peer id as one character, so parts above 35 can't be written.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(tag = "client", rename_all = "camelCase")]
+#[ts(export)]
+pub enum ClientIdentity {
+    /// apitorrent itself: peer id `-ATxyz0-`.
+    #[default]
+    Apitorrent,
+    /// Deluge on libtorrent: peer id `-DE211s-`, user agent
+    /// `Deluge/2.1.1 libtorrent/2.0.10.0`.
+    Deluge { version: String, libtorrent: String },
+    /// qBittorrent (on libtorrent): peer id `-qB4650-`, user agent `qBittorrent/4.6.5`.
+    QBittorrent { version: String },
+    /// Transmission: peer id `-TR4060-`, user agent `Transmission/4.0.6`.
+    Transmission { version: String },
+    /// Anything else. The peer id is the prefix followed by random characters to 20 bytes.
+    Custom {
+        #[serde(rename = "peerIdPrefix")]
+        peer_id_prefix: String,
+        #[serde(rename = "userAgent")]
+        user_agent: String,
+        /// Sent to peers in the extension handshake (`v`).
+        #[serde(rename = "clientName")]
+        client_name: String,
+    },
+}
+
+impl ClientIdentity {
+    /// Deluge 2.1.1 on libtorrent 2.0.10, the newest stable Deluge release.
+    pub fn deluge_default() -> Self {
+        Self::Deluge {
+            version: "2.1.1".into(),
+            libtorrent: "2.0.10.0".into(),
+        }
+    }
 }
 
 /// Message stream encryption (MSE) for peer connections. It hides BitTorrent traffic from

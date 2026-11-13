@@ -362,6 +362,9 @@ mod tests {
             num_want: None,
             key: 0x0102_0304,
             tracker_id: None,
+            style: crate::AnnounceStyle::Apitorrent,
+            user_agent: None,
+            crypto: crate::AnnounceCrypto::Enabled,
         };
         let p = encode_announce(9, 10, &req);
         assert_eq!(&p[0..8], &9u64.to_be_bytes());

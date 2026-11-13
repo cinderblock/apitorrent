@@ -405,10 +405,56 @@ impl Core {
         Ok(())
     }
 
+    /// Present as `identity` to trackers on `host`, unless a rule already covers that
+    /// host (see [`Core::ensure_tracker_identities`]). Returns whether a rule was added.
+    pub async fn ensure_tracker_identity(
+        &self,
+        host: &str,
+        identity: apitorrent_types::ClientIdentity,
+    ) -> Result<bool, CoreError> {
+        let added = self
+            .ensure_tracker_identities(&[host.to_owned()], identity)
+            .await?;
+        Ok(!added.is_empty())
+    }
+
+    /// Add a client identity rule (see [`apitorrent_types::IdentitySettings`]) for each of
+    /// `hosts` that no rule covers yet: neither a rule for that host nor a `*.domain` rule
+    /// that matches it. Rules the user made always win. Used by the Deluge import, which
+    /// gives each tracker host its torrents use the Deluge identity they had there.
+    ///
+    /// The rules are stored and apply at once, like any settings change: torrents on those
+    /// trackers announce with the new identity from their next announce. Returns the hosts
+    /// that got a rule; bad host names are skipped.
+    pub async fn ensure_tracker_identities(
+        &self,
+        hosts: &[String],
+        identity: apitorrent_types::ClientIdentity,
+    ) -> Result<Vec<String>, CoreError> {
+        settings::client_profile(&identity)
+            .map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
+        let mut s = self.settings();
+        let added = settings::ensure_tracker_identities(&mut s.identity, hosts, &identity);
+        if !added.is_empty() {
+            tracing::info!(hosts = ?added, "added client identity rules");
+            self.set_settings(s).await?;
+        }
+        Ok(added)
+    }
+
     /// Push the settings' rates, connection limits and groups into the engine.
     fn apply_session_settings(&self) {
         let s = self.settings();
         let session = &self.inner.session;
+        match settings::identity_rules(&s.identity) {
+            Ok(rules) => session.set_identity_rules(rules),
+            // Only stored settings from another version could get here; new ones are
+            // validated. Torrents present as apitorrent until they are fixed.
+            Err(e) => {
+                tracing::warn!(error = %e, "client identity settings don't apply");
+                session.set_identity_rules(apitorrent_engine::identity::IdentityRules::default());
+            }
+        }
         session.set_rate_limits(s.download_rate, s.upload_rate);
         session.set_encryption(settings::encryption_policy(s.encryption));
         session.set_connection_limits(

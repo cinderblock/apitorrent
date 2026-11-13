@@ -65,6 +65,10 @@ Most of this is built.
 - **Moving from Deluge.** Import a Deluge config directory: torrents keep their files,
   progress, labels, queue order, limits and totals, with no rehash and no re-download.
   Two Deluge instances can become two spaces.
+- **Client identity per tracker.** For trackers that only accept clients on their list,
+  a torrent can announce as Deluge, qBittorrent or Transmission (peer id, user agent and
+  announce format), chosen by tracker host. Many private trackers forbid this: check the
+  tracker's rules first.
 - **qBittorrent Web API compatibility** (a plugin), so Sonarr, Radarr, Prowlarr, autobrr
   and cross-seed work unchanged, signing in with apitorrent API tokens.
 

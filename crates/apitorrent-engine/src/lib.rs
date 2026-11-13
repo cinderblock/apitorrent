@@ -9,6 +9,7 @@ pub mod ban;
 pub mod bitfield;
 pub mod fileid;
 pub mod hashreq;
+pub mod identity;
 pub mod layout;
 pub mod limits;
 pub mod lsd;
