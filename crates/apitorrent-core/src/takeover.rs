@@ -76,6 +76,29 @@ pub async fn pause_in_deluge(config_dir: &Path, ids: &[String]) -> Result<TakeOv
     Ok(TakeOver::Paused)
 }
 
+/// The identity of the Deluge that owns `config_dir`: its exact Deluge and libtorrent
+/// versions when its daemon answers, else Deluge 2.1.1 on libtorrent 2.0.10.
+pub async fn deluge_identity(config_dir: &Path) -> apitorrent_types::ClientIdentity {
+    let fallback = apitorrent_types::ClientIdentity::deluge_default();
+    let Ok(mut client) = DelugeClient::connect_config_dir(config_dir).await else {
+        return fallback;
+    };
+    let Ok(v) = client.versions().await else {
+        return fallback;
+    };
+    let found = apitorrent_types::ClientIdentity::Deluge {
+        version: v.deluge,
+        libtorrent: v.libtorrent,
+    };
+    // A version the peer id can't carry (a part above 35, a development suffix it
+    // doesn't know) falls back to the release everyone has.
+    if crate::settings::client_profile(&found).is_ok() {
+        found
+    } else {
+        fallback
+    }
+}
+
 /// Errors that mean no Deluge daemon is there to compete: nothing listens on its port, or
 /// the config directory's certificate or auth file is gone.
 fn not_running(e: &RpcError) -> bool {

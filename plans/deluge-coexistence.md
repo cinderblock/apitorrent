@@ -112,7 +112,10 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
        so the imported bitfield is a subset of what's on disk and stays safe. Tested with
        a fake daemon that accepts but won't speak TLS (refused) and a closed port
        (taken over); not yet against a real running Deluge.
-7. [ ] Import sets identity rules (after 3).
+7. [x] Import sets identity rules (main thread), 2026-11-13. Both import paths add a
+       Deluge rule for the tracker hosts of imported **private** torrents (public ones
+       keep apitorrent's identity), with the daemon's versions when it answers.
+       `ImportReport.identityHosts`; the wizard's result and the CLI report list them.
 8. [x] Tracker passkeys (main thread). Detector in `apitorrent-tracker/src/passkey.rs`,
        grouping/replace in `apitorrent-core/src/passkeys.rs`, routes
        `/tracker-passkeys` (named so to stay clear of the WebAuthn `/auth/passkeys`), web
@@ -274,8 +277,8 @@ so the tracker doesn't count a ghost peer. Torrents with no rule keep the sessio
 - [x] 2026-11-13 12:48 PM PST (20:48Z): step 2 committed (`d34438b` client, `acb7bcd` fuzz
       target; fuzzed clean for 10 minutes on sentinel) and merged to master. Next: step 6
       take-over.
-- [x] 2026-11-13: step 6 (take-over) committed. Next: step 7 once the identity branch
-      lands, then step 9 docs.
+- [x] 2026-11-13: step 6 (take-over) committed.
+- [x] 2026-11-13: identity branch merged (`2652b80`); step 7 committed. Next: step 9.
 
 ## Open questions for the user
 

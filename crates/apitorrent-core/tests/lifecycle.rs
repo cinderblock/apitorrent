@@ -1123,8 +1123,12 @@ async fn deluge_take_over() {
     let data: Vec<u8> = (0..40_000u32)
         .map(|i| u8::try_from(i % 251).unwrap())
         .collect();
+    // A private torrent, so the import gives its tracker the Deluge identity. The tracker
+    // doesn't exist; announces to it just fail.
     let bytes = TorrentBuilder::new("single", Version::V1)
         .piece_length(16 * 1024)
+        .private(true)
+        .tracker_tier(vec!["http://tracker.private.invalid/announce".into()])
         .file(FileSource::from_bytes(&["single.bin"], data.clone()))
         .build()
         .unwrap();
@@ -1188,6 +1192,15 @@ async fn deluge_take_over() {
     assert!(
         report.warnings.iter().any(|w| w.contains("imported paused")),
         "{report:?}"
+    );
+    // Deluge's daemon didn't answer properly, so the release everyone has.
+    assert_eq!(report.identity_hosts, ["tracker.private.invalid"]);
+    let rules = core.settings().identity.rules;
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].host, "tracker.private.invalid");
+    assert_eq!(
+        rules[0].identity,
+        apitorrent_types::ClientIdentity::deluge_default()
     );
     wait_for(&core, &id, TorrentState::Paused).await;
     let waiting = core.imports_not_taken_over(DEFAULT_SPACE).await.unwrap();

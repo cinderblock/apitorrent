@@ -626,6 +626,18 @@ pub fn running_ids(plan: &Plan) -> Vec<String> {
         .collect()
 }
 
+/// The tracker hosts of the plan's private torrents, sorted: the trackers that may only
+/// accept clients on a list, and knew these torrents as Deluge's.
+#[must_use]
+pub fn private_tracker_hosts(plan: &Plan) -> Vec<String> {
+    hosts(
+        plan.torrents
+            .iter()
+            .filter(|t| t.torrent.info.private)
+            .flat_map(|t| t.torrent.trackers.iter().flatten()),
+    )
+}
+
 /// Before an import starts any torrent here, pause Deluge's copies (see `takeover`).
 /// Returns when they were taken over (`None` when nothing starts). If Deluge runs but can't
 /// be made to stop them, everything is imported paused instead, with a warning.
@@ -710,6 +722,8 @@ pub struct ReportContext<'a> {
     pub failed: &'a [ImportSkip],
     /// How many torrents the filter left out.
     pub not_selected: u32,
+    /// Tracker hosts that got (or, in a dry run, would get) a Deluge identity rule.
+    pub identity_hosts: &'a [String],
 }
 
 /// A plain-text report of a plan, to paste into a chat.
@@ -749,6 +763,14 @@ pub fn report(state: &DelugeState, plan: &Plan, c: &ReportContext<'_>) -> String
             "Filter:         left out {} torrent{}",
             c.not_selected,
             if c.not_selected == 1 { "" } else { "s" }
+        );
+    }
+    if !c.identity_hosts.is_empty() {
+        let _ = writeln!(
+            out,
+            "Identity:       {} as Deluge to {}",
+            if c.dry_run { "would present" } else { "presents" },
+            c.identity_hosts.join(", ")
         );
     }
     let _ = writeln!(
@@ -1093,11 +1115,21 @@ pub fn run_offline(
     let mut state = state;
     let not_selected = select(&mut state, &req.filter, &req.map, &download_dir);
     let mut plan = plan(&state, &target);
+    let private_hosts = private_tracker_hosts(&plan);
+    let mut identity_hosts = Vec::new();
     let (written, failed) = if let (Some(db), false) = (&mut db, req.dry_run) {
         let taken_over_at = block_on(take_over_running(&mut plan, &req.config_dir, &mut warnings));
         let (n, failed) = write(db, &plan, &req.config_dir.to_string_lossy(), taken_over_at);
+        if !private_hosts.is_empty() {
+            let identity = block_on(crate::takeover::deluge_identity(&req.config_dir));
+            match add_identity_rules(db, &private_hosts, &identity) {
+                Ok(added) => identity_hosts = added,
+                Err(e) => warnings.push(format!("couldn't add client identity rules: {e}")),
+            }
+        }
         (Some(n), failed)
     } else {
+        identity_hosts.clone_from(&private_hosts);
         let n = running_ids(&plan).len();
         if n > 0 {
             warnings.push(format!(
@@ -1122,8 +1154,30 @@ pub fn run_offline(
             written,
             failed: &failed,
             not_selected,
+            identity_hosts: &identity_hosts,
         },
     ))
+}
+
+/// Add Deluge identity rules for `hosts` to the instance settings stored in `db` (for the
+/// offline import; the daemon does this through `Core::ensure_tracker_identities`).
+fn add_identity_rules(
+    db: &Database,
+    hosts: &[String],
+    identity: &apitorrent_types::ClientIdentity,
+) -> Result<Vec<String>, String> {
+    let mut s: Settings = db
+        .meta(crate::SETTINGS_KEY)
+        .map_err(|e| e.to_string())?
+        .and_then(|j| serde_json::from_str(&j).ok())
+        .unwrap_or_else(|| crate::settings::defaults(&apitorrent_engine::SessionConfig::default()));
+    let added = crate::settings::ensure_tracker_identities(&mut s.identity, hosts, identity);
+    if !added.is_empty() {
+        let json = serde_json::to_string(&s).expect("settings serialize");
+        db.set_meta(crate::SETTINGS_KEY, &json)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(added)
 }
 
 #[cfg(test)]

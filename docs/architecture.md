@@ -1193,6 +1193,12 @@ recheck. That is the onboarding path for existing Deluge users.
   torrents stopped. A refused connection, or a config directory without its certificate
   or auth file, means no daemon is there and the torrent is taken over at once. The
   offline CLI import does the same before writing its rows.
+- **Identity on import.** The tracker hosts of the imported private torrents get a Deluge
+  identity rule (`ensure_tracker_identities`: only hosts no rule covers, so the user's
+  rules win), before the torrents announce. The versions are the daemon's own
+  (`daemon.get_version`, `core.get_libtorrent_version`) when it answers and the peer id
+  can carry them, else Deluge 2.1.1 on libtorrent 2.0.10. Public torrents' trackers get
+  no rule. `ImportReport.identityHosts` (and the CLI report's "Identity" line) lists them.
 - **With the daemon stopped.** The command writes the rows into `apitorrent.db`; they
   start on the daemon's next start. One planner (`apitorrent_core::deluge_import`) serves
   both ways in.

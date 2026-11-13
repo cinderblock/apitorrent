@@ -9,7 +9,12 @@ imported: Array<string>,
 /**
  * How many torrents the filter left out.
  */
-notSelected: number, skipped: Array<ImportSkip>, 
+notSelected: number, 
+/**
+ * Tracker hosts that now get the Deluge client identity (the import's private
+ * torrents' trackers no identity rule covered yet).
+ */
+identityHosts: Array<string>, skipped: Array<ImportSkip>, 
 /**
  * Problems that didn't stop the import.
  */

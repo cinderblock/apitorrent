@@ -184,6 +184,11 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
               ))}
             </ul>
           )}
+          {report.identityHosts.length > 0 && (
+            <p className="hint muted">
+              These private trackers keep seeing Deluge, as before: {report.identityHosts.join(", ")}. Change that in Settings → Client identity.
+            </p>
+          )}
           {report.warnings.length > 0 && (
             <ul className="outcomes muted">
               {report.warnings.map((w) => (

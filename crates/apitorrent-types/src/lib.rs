@@ -890,6 +890,10 @@ pub struct ImportReport {
     /// How many torrents the filter left out.
     #[serde(default)]
     pub not_selected: u32,
+    /// Tracker hosts that now get the Deluge client identity (the import's private
+    /// torrents' trackers no identity rule covered yet).
+    #[serde(default)]
+    pub identity_hosts: Vec<String>,
     pub skipped: Vec<ImportSkip>,
     /// Problems that didn't stop the import.
     pub warnings: Vec<String>,

@@ -286,6 +286,11 @@ daemon, using the port, certificate and `localclient` password from the config d
 does this for the torrents it starts; ones imported paused wait, and resuming one takes
 it over then. Settings → Still with Deluge takes over everything still waiting at once.
 
+Private trackers that knew your torrents as Deluge's keep seeing Deluge: the import adds
+a client identity rule for each of their hosts (with the running daemon's exact Deluge
+and libtorrent versions, when it answers), unless a rule of yours already covers the
+host. Public trackers aren't touched.
+
 ## Signing in
 
 Everything except the sign-in pages needs an account. On first start, with no users yet,

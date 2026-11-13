@@ -1429,7 +1429,22 @@ impl Core {
             &mut warnings,
         )
         .await;
+        // Private trackers knew these torrents as Deluge's: keep presenting as Deluge there.
+        let private_hosts = deluge_import::private_tracker_hosts(&plan);
+        let identity_hosts = if private_hosts.is_empty() {
+            Vec::new()
+        } else {
+            let identity = takeover::deluge_identity(Path::new(&req.config_dir)).await;
+            match self.ensure_tracker_identities(&private_hosts, identity).await {
+                Ok(added) => added,
+                Err(e) => {
+                    warnings.push(format!("couldn't add client identity rules: {e}"));
+                    Vec::new()
+                }
+            }
+        };
         let mut report = ImportReport {
+            identity_hosts,
             warnings,
             skipped: plan.skipped.clone(),
             not_selected,
