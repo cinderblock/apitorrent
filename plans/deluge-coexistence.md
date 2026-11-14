@@ -128,6 +128,19 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
        web UI under Trackers). Passkeys are secrets: masked in the UI and never logged.
        Builds on the existing per-torrent `PUT /torrents/{id}/trackers`.
 9. [x] Docs (`docs/architecture.md` Deluge section, README), plan wrap-up, 2026-11-13.
+10. [x] Find Deluge installations (asked 2026-11-13, when installing on pokol):
+    `apitorrent_deluge::discover` reads running `deluged`s from `/proc` (`--config`, or
+    the user's `~/.config/deluge`), systemd units, `/home/*/.config/deluge` and the
+    usual paths; `GET /import/deluge/found` (space admins) adds how many are already
+    imported. The wizard lists them first; picking one fills the folder and a space of
+    its own; after importing it offers "Move N over from Deluge now" (take-over) and
+    "Import another installation".
+11. [ ] ← current **Try it on pokol** (the user's seedbox): two daemons as
+    `debian-deluged`, `/var/lib/deluged` (672 torrents, port 58846) and
+    `/var/lib/delugex` (243, port 58847), files under `/mnt/storage/deluge/{d,x}`.
+    Install with `packaging/linux/install.sh --binary … --user debian-deluged`
+    (`plans/linux-distribution.md`), reach it over an SSH tunnel, connect the desktop
+    app.
 
 ## Findings / gotchas
 

@@ -1564,6 +1564,31 @@ button.link.danger-text {
 }
 
 /* The Deluge import's torrent list: scrolls inside the dialog. */
+/* Import wizard: the Deluge installations found on the server, one button each. */
+.found-deluge {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.found-item {
+  display: grid;
+  gap: 2px;
+  text-align: start;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+.found-item code {
+  overflow-wrap: anywhere;
+}
+.found-item.picked {
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+}
 .import-list {
   max-height: 40vh;
   overflow: auto;

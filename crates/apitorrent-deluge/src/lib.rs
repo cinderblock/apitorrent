@@ -18,7 +18,9 @@
 //! Nothing here writes to the Deluge directory.
 //!
 //! [`rpc`] talks to a running Deluge daemon, to pause the torrents apitorrent takes over.
+//! [`discover`] finds the Deluge installations on this machine.
 
+pub mod discover;
 pub mod pickle;
 pub mod rpc;
 

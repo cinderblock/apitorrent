@@ -13,8 +13,8 @@ pub mod fingerprint;
 pub mod folders;
 pub mod import;
 pub mod library;
-pub mod passkeys;
 mod library_index;
+pub mod passkeys;
 pub mod plugin_api;
 pub mod ports;
 mod roots;
@@ -711,7 +711,11 @@ impl Core {
                             .is_some()
                 })
                 .map(|(k, p)| apitorrent_types::ImportSkip {
-                    name: p.magnet.display_name.clone().unwrap_or_else(|| k.id.clone()),
+                    name: p
+                        .magnet
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| k.id.clone()),
                     reason: "still fetching its metadata; change it once that arrives".into(),
                 }),
         );
@@ -1423,19 +1427,19 @@ impl Core {
         let mut plan = deluge_import::plan(&state, &target);
         let mut warnings = state.warnings.clone();
         // Nothing starts here while Deluge still runs it.
-        let taken_over_at = deluge_import::take_over_running(
-            &mut plan,
-            Path::new(&req.config_dir),
-            &mut warnings,
-        )
-        .await;
+        let taken_over_at =
+            deluge_import::take_over_running(&mut plan, Path::new(&req.config_dir), &mut warnings)
+                .await;
         // Private trackers knew these torrents as Deluge's: keep presenting as Deluge there.
         let private_hosts = deluge_import::private_tracker_hosts(&plan);
         let identity_hosts = if private_hosts.is_empty() {
             Vec::new()
         } else {
             let identity = takeover::deluge_identity(Path::new(&req.config_dir)).await;
-            match self.ensure_tracker_identities(&private_hosts, identity).await {
+            match self
+                .ensure_tracker_identities(&private_hosts, identity)
+                .await
+            {
                 Ok(added) => added,
                 Err(e) => {
                     warnings.push(format!("couldn't add client identity rules: {e}"));
@@ -2504,6 +2508,53 @@ impl Core {
         Ok(())
     }
 
+    /// The Deluge installations on this machine (see `apitorrent_deluge::discover`), with
+    /// how many of each one's torrents are already imported here and elsewhere.
+    pub async fn find_deluge(
+        &self,
+        space: SpaceId,
+    ) -> Result<Vec<apitorrent_types::DelugeInstall>, CoreError> {
+        use apitorrent_deluge::discover;
+        let found = tokio::task::spawn_blocking(|| discover::discover(&discover::Places::system()))
+            .await
+            .expect("Deluge discovery panicked");
+        let rows = self.db(|db| db.imported()).await?;
+        // Imports record the directory as it was typed: compare canonical forms.
+        let canonical = |p: &str| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+        let mut sources: std::collections::HashMap<String, PathBuf> =
+            std::collections::HashMap::new();
+        for r in &rows {
+            sources
+                .entry(r.source.clone())
+                .or_insert_with(|| canonical(&r.source));
+        }
+        Ok(found
+            .into_iter()
+            .map(|f| {
+                let (mut here, mut elsewhere) = (0u32, 0u32);
+                for r in rows.iter().filter(|r| sources[&r.source] == f.config_dir) {
+                    if r.key.space == space {
+                        here += 1;
+                    } else {
+                        elsewhere += 1;
+                    }
+                }
+                apitorrent_types::DelugeInstall {
+                    config_dir: f.config_dir.display().to_string(),
+                    suggested_slug: deluge_import::suggested_slug(Path::new(&f.name)),
+                    name: f.name,
+                    running: f.running,
+                    units: f.units,
+                    daemon_port: f.daemon_port,
+                    torrents: f.torrents,
+                    problem: f.problem,
+                    imported_here: here,
+                    imported_elsewhere: elsewhere,
+                }
+            })
+            .collect())
+    }
+
     /// The space's imported torrents that the client they came from may still run, by
     /// that client's config directory.
     pub async fn imports_not_taken_over(
@@ -2511,7 +2562,8 @@ impl Core {
         space: SpaceId,
     ) -> Result<Vec<apitorrent_types::ImportSource>, CoreError> {
         let rows = self.db(|db| db.imported()).await?;
-        let mut by_source: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        let mut by_source: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
         for r in rows
             .iter()
             .filter(|r| r.key.space == space && r.taken_over_at.is_none())
@@ -2557,10 +2609,12 @@ impl Core {
         for (source, rows) in groups {
             let deluge_ids: Vec<String> = rows.iter().map(|r| r.source_id().to_owned()).collect();
             if let Err(e) = takeover::pause_in_deluge(Path::new(&source), &deluge_ids).await {
-                report.skipped.extend(rows.iter().map(|r| apitorrent_types::ImportSkip {
-                    name: name(&r.key),
-                    reason: e.clone(),
-                }));
+                report
+                    .skipped
+                    .extend(rows.iter().map(|r| apitorrent_types::ImportSkip {
+                        name: name(&r.key),
+                        reason: e.clone(),
+                    }));
                 continue;
             }
             let at = now_ms();

@@ -309,9 +309,13 @@ Deluge), `--name "words in the name"`, `--hash <info-hash>`. The report says how
 the filter left out.
 
 With the daemon running, the Settings dialog's "Import from Deluge…" does the same as a
-wizard: it lists the installation's torrents, with the same filters and a tick box each,
-then imports the ticked ones into a space you choose, or into a new one it creates
-(server admins), with the outermost save paths as its storage roots.
+wizard. It starts with the Deluge installations it finds on the server (running
+`deluged`s and their `--config`, systemd units, `~/.config/deluge`, Debian's
+`/var/lib/deluged`), each a click away with a space of its own. It lists the chosen
+installation's torrents, with the same filters and a tick box each, then imports the
+ticked ones into a space you choose, or into a new one it creates (server admins), with
+the outermost save paths as its storage roots. Afterwards it offers to move them over
+from Deluge at once, and to go on to the next installation.
 
 Deluge can keep running while you move over. A torrent runs in only one client at a time:
 apitorrent starts an imported torrent only after pausing it in Deluge, through Deluge's

@@ -22,6 +22,7 @@ import type { ApproveDeviceRequest } from "./generated/ApproveDeviceRequest";
 import type { DeviceInfo } from "./generated/DeviceInfo";
 import type { DeviceRequestInfo } from "./generated/DeviceRequestInfo";
 import type { FilePriority } from "./generated/FilePriority";
+import type { DelugeInstall } from "./generated/DelugeInstall";
 import type { DelugePreview } from "./generated/DelugePreview";
 import type { DelugePreviewRequest } from "./generated/DelugePreviewRequest";
 import type { ImportDelugeRequest } from "./generated/ImportDelugeRequest";
@@ -38,6 +39,7 @@ import type { ServerInfo } from "./generated/ServerInfo";
 import type { SessionInfo } from "./generated/SessionInfo";
 import type { SetupPasswordRequest } from "./generated/SetupPasswordRequest";
 import type { SetupStartRequest } from "./generated/SetupStartRequest";
+import type { TakeOverReport } from "./generated/TakeOverReport";
 import type { TorrentDetail } from "./generated/TorrentDetail";
 import type { UnwantedPolicy } from "./generated/UnwantedPolicy";
 import type { UpdateSettings } from "./generated/UpdateSettings";
@@ -132,6 +134,10 @@ export const api = {
   trackerPasskeys: () => request<TrackerPasskey[]>("GET", "/tracker-passkeys"),
   /** Change one passkey on every torrent in the space that uses it. */
   replaceTrackerPasskey: (req: ReplacePasskeyRequest) => request<ReplacePasskeyReport>("POST", "/tracker-passkeys/replace", req),
+  /** The Deluge installations on the server (the space's admins). */
+  findDeluge: () => request<DelugeInstall[]>("GET", "/import/deluge/found"),
+  /** Pause the space's imported torrents still waiting in Deluge, and run them here. */
+  takeOver: (slug: string | null = null) => requestIn<TakeOverReport>(slug, "POST", "/import/deluge/take-over", { ids: [] }),
   /** What a Deluge installation holds, as the space `slug` (or the page's) would import it. */
   previewDeluge: (req: DelugePreviewRequest, slug: string | null = null) => requestIn<DelugePreview>(slug, "POST", "/import/deluge/preview", req),
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),

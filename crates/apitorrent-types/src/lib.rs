@@ -1048,6 +1048,31 @@ pub struct ImportSource {
     pub torrents: u32,
 }
 
+/// `GET /api/v1/import/deluge/found`: a Deluge installation on the server, found by its
+/// running daemon, its systemd unit, or where Deluge usually keeps its config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DelugeInstall {
+    pub config_dir: String,
+    /// Its systemd unit, else its user, else its folder.
+    pub name: String,
+    /// A slug for a space of its own.
+    pub suggested_slug: String,
+    /// A daemon is running with it.
+    pub running: bool,
+    pub units: Vec<String>,
+    pub daemon_port: Option<u16>,
+    /// `None` when it couldn't be read.
+    pub torrents: Option<u32>,
+    /// Why it can't be imported from, if it can't.
+    pub problem: Option<String>,
+    /// Its torrents already imported into this space.
+    pub imported_here: u32,
+    /// And into other spaces.
+    pub imported_elsewhere: u32,
+}
+
 /// `POST /api/v1/import/deluge/take-over`: pause these imported torrents in Deluge and run
 /// them here. No ids: every one still waiting in the space.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]

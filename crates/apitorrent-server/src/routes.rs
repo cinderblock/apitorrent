@@ -298,6 +298,18 @@ pub(crate) async fn preview_deluge(
     }
 }
 
+/// The Deluge installations on the server, for the import wizard (this space's admins,
+/// who can import from any of them).
+pub(crate) async fn find_deluge(State(s): State<AppState>, here: Here) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.find_deluge(here.id()).await {
+        Ok(f) => Json(f).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
 /// Imported torrents the client they came from may still run (the space's admins).
 pub(crate) async fn deluge_waiting(State(s): State<AppState>, here: Here) -> Response {
     if let Err(e) = here.require(SpaceRole::Admin) {

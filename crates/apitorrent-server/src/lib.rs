@@ -253,10 +253,14 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/torrents/{id}/queue", post(routes::queue_move))
         .route("/import/deluge", post(routes::import_deluge))
         .route("/import/deluge/preview", post(routes::preview_deluge))
+        .route("/import/deluge/found", get(routes::find_deluge))
         .route("/import/deluge/waiting", get(routes::deluge_waiting))
         .route("/import/deluge/take-over", post(routes::take_over))
         .route("/tracker-passkeys", get(routes::tracker_passkeys))
-        .route("/tracker-passkeys/replace", post(routes::replace_tracker_passkey))
+        .route(
+            "/tracker-passkeys/replace",
+            post(routes::replace_tracker_passkey),
+        )
         .route("/bans", get(routes::bans).post(routes::ban))
         .route("/bans/{ip}", delete(routes::unban))
         .route("/library", get(library_routes::status))

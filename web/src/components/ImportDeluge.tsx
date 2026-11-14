@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiRequestError, api } from "../api/client";
+import type { DelugeInstall } from "../api/generated/DelugeInstall";
 import type { DelugePreview } from "../api/generated/DelugePreview";
 import type { ImportReport } from "../api/generated/ImportReport";
 import type { PathMapping } from "../api/generated/PathMapping";
+import type { TakeOverReport } from "../api/generated/TakeOverReport";
 import { formatBytes, formatPercent } from "../format";
 import { navigate } from "../router";
 import { spacesApi } from "../spaces/api";
@@ -44,10 +46,18 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<ImportReport | null>(null);
+  const [takeOver, setTakeOver] = useState<TakeOverReport | null>(null);
+  // The Deluge installations the server found; `null` until it answers (or if it can't).
+  const [found, setFound] = useState<DelugeInstall[] | null>(null);
 
   useEffect(() => {
     dialog.current?.showModal();
   }, []);
+
+  function findDeluge() {
+    api.findDeluge().then(setFound, () => setFound(null));
+  }
+  useEffect(findDeluge, []);
 
   // Spaces this user may import into: the ones they administer.
   const spaces = useMemo(() => ctx?.spaces.filter((s) => s.role === "admin") ?? [], [ctx]);
@@ -55,6 +65,49 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
   const chosen: Target = target ?? (ctx ? { kind: "existing", slug: ctx.current.slug } : { kind: "existing", slug: "" });
   // `null`: the page's own space (also when spaces couldn't be loaded).
   const chosenSlug = chosen.kind === "existing" ? (ctx && chosen.slug !== ctx.current.slug ? chosen.slug : null) : null;
+
+  /** Pick a found installation: its folder, and its own space (made if needed). */
+  function choose(f: DelugeInstall) {
+    setConfigDir(f.configDir);
+    setError(null);
+    const existing = spaces.find((s) => s.slug === f.suggestedSlug);
+    if (existing) {
+      setTarget({ kind: "existing", slug: existing.slug });
+    } else if (canCreate) {
+      setTarget({ kind: "new" });
+      setNewSlug(f.suggestedSlug);
+      setNewName(f.name);
+      setNewRoots("");
+    }
+  }
+
+  /** Back to the start, for the next installation. */
+  function again() {
+    setReport(null);
+    setTakeOver(null);
+    setPreview(null);
+    setConfigDir("");
+    setTarget(null);
+    setNewSlug("");
+    setNewName("");
+    setNewRoots("");
+    setCreated(null);
+    setTicked(new Set());
+    setError(null);
+    findDeluge();
+  }
+
+  async function moveOver() {
+    setBusy(true);
+    setError(null);
+    try {
+      setTakeOver(await api.takeOver(elsewhere));
+    } catch (err) {
+      setError(message(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const pathMap = (): PathMapping[] => (from.trim() && to.trim() ? [{ from: from.trim(), to: to.trim() }] : []);
 
@@ -196,7 +249,41 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
               ))}
             </ul>
           )}
+          {paused && report.imported.length > 0 && !takeOver && (
+            <p className="hint">
+              They are paused here and still running in Deluge. Move them over now: apitorrent pauses each one in Deluge, waits until Deluge has stopped it,
+              then starts it here. Or do it later, from Settings → Still with Deluge, or by resuming one torrent at a time.
+            </p>
+          )}
+          {takeOver && (
+            <>
+              <p className={takeOver.skipped.length > 0 ? "error-text" : "ok-text"}>
+                Moved over {takeOver.takenOver} torrent{takeOver.takenOver === 1 ? "" : "s"}: paused in Deluge, running here.
+                {takeOver.skipped.length > 0 && ` ${takeOver.skipped.length} stayed paused:`}
+              </p>
+              {takeOver.skipped.length > 0 && (
+                <ul className="outcomes">
+                  {takeOver.skipped.map((s) => (
+                    <li key={s.name}>
+                      {s.name}: <span className="muted">{s.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          )}
+          {error && <p className="error-text">{error}</p>}
           <div className="actions">
+            {paused && report.imported.length > 0 && !takeOver && (
+              <button type="button" className="actions-start" disabled={busy} onClick={() => void moveOver()}>
+                {busy ? "Moving over…" : `Move ${report.imported.length} over from Deluge now`}
+              </button>
+            )}
+            {found !== null && found.length > 1 && (
+              <button type="button" disabled={busy} onClick={again}>
+                Import another installation
+              </button>
+            )}
             {elsewhere && (
               <button
                 type="button"
@@ -220,6 +307,35 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
             running: a torrent starts here only once it is paused in Deluge (the import does that for the ones it starts, through Deluge&apos;s daemon), so only one
             client runs it at a time. Each Deluge installation can go into a space of its own.
           </p>
+          {found !== null && found.length > 0 && (
+            <fieldset className="found-deluge">
+              <legend>Found on this server</legend>
+              {found.map((f) => {
+                const picked = configDir.trim() === f.configDir;
+                return (
+                  <button
+                    key={f.configDir}
+                    type="button"
+                    className={picked ? "found-item picked" : "found-item"}
+                    aria-pressed={picked}
+                    disabled={f.problem !== null}
+                    onClick={() => choose(f)}
+                  >
+                    <strong>{f.name}</strong>
+                    <span className="muted">
+                      {f.torrents === null ? "" : `${f.torrents} torrent${f.torrents === 1 ? "" : "s"} · `}
+                      {f.running ? "running" : "not running"}
+                      {f.daemonPort !== null && ` on port ${f.daemonPort}`}
+                      {f.importedHere > 0 && ` · ${f.importedHere} imported into this space`}
+                      {f.importedElsewhere > 0 && ` · ${f.importedElsewhere} imported into other spaces`}
+                    </span>
+                    <code>{f.configDir}</code>
+                    {f.problem && <span className="error-text">{f.problem}</span>}
+                  </button>
+                );
+              })}
+            </fieldset>
+          )}
           <label className="field">
             <span>Deluge config directory, on the machine running apitorrent</span>
             <input value={configDir} required placeholder="~/.config/deluge or %APPDATA%\deluge" onChange={(e) => setConfigDir(e.target.value)} />
