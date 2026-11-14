@@ -80,11 +80,18 @@ at startup and expire after ~10 minutes").
   migration 6 ran). Registered this PC (device NOOOK, account permission, all spaces)
   with a `register-device` token over HTTPS, stored the credential in Credential Manager
   (service `apitorrent-desktop`, key `profile:<id>:api-token`, same keyring 4.2.0 as the
-  app) and wrote `%APPDATA%pitorrent\config\desktop\profiles.json` (there was none);
+  app) and wrote `%APPDATA%\apitorrent\config\desktop\profiles.json` (there was none);
   the new app (`target/desktop-next`) signed in at 1:38 AM PST (09:38Z).
 - [x] Deployed `bca57c2` (stricter Deluge take-over) to pokol with the user's yes
   (2026-11-14 9:42 AM PST, 17:42Z). Both Deluge daemons listen dual-stack (`*:58846`,
   `*:58847`), so `::1` reaches `delugex`.
+- [x] 2026-11-14 1:43 PM PST (21:43Z): the app was a black window. A release build of
+  `apitorrent-desktop` without `tauri/custom-protocol` (another session, 2:40 AM)
+  replaced `target/desktop-next`'s exe through the shared cargo build-dir hard link;
+  that build points the window at Vite, which release builds refuse (`ERR_ABORTED` in
+  `%LOCALAPPDATA%\io.github.cinderblock.apitorrent\EBWebView\Breadcrumbs`). Rebuilt with
+  the feature and copied (not linked) to `target/desktop-app/run/apitorrent-desktop.exe`,
+  which is what runs now.
 - [ ] ← current The user: Account → "Open in my browser, signed in"; then the import
   wizard for `deluged` and `delugex`.
 

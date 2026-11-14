@@ -2,6 +2,18 @@
 
 Problems found while working on something else. Each entry is enough to start a fix.
 
+## Desktop app: a release build without `tauri/custom-protocol` is a black window
+
+Found 2026-11-14 1:30 PM PST (21:30Z). `cargo build --release -p apitorrent-desktop`
+without `--features tauri/custom-protocol` builds an app whose window loads Vite's
+`http://localhost:5173`; release builds' `on_navigation` (`is_app_url`,
+`apps/desktop/src-tauri/src/lib.rs`) refuses it, so the window stays black
+(`ERR_ABORTED` in WebView2's `Breadcrumbs`). With this machine's shared cargo
+`build-dir`, such a build also replaces, through hard links, an exe another `--target-dir`
+built with the feature. Why it matters: easy to ship or launch a dead app. To start:
+an app feature that is on by default for release (Tauri's `custom-protocol` pattern), or a
+build-time error when a release build has no frontend.
+
 ## Desktop app: API requests to a remote daemon hung once, then never again
 
 Seen in the first GUI run of the desktop app (2026-11-09, about 11:48 AM–11:51 AM PST
