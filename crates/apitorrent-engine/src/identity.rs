@@ -190,7 +190,7 @@ impl ClientProfile {
 
     /// A new peer id: the prefix, then random characters.
     pub fn peer_id(&self) -> PeerId {
-        use rand::Rng as _;
+        use rand::RngExt as _;
         let mut rng = rand::rng();
         let mut id = [0u8; 20];
         let n = self.peer_id_prefix.len().min(20);

@@ -12,7 +12,7 @@ use std::path::Path;
 
 use apitorrent_engine::SessionConfig;
 use apitorrent_types::Settings;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::db::Database;
 use crate::{CoreError, SETTINGS_KEY, settings};
