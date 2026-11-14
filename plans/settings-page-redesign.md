@@ -72,6 +72,12 @@ All done (2026-11-14). Layout of the code:
 - Bug in the old Groups editor: the labels input re-joined its parsed value on every
   keystroke, so typing a comma was swallowed (`"a,"` → `["a"]` → `"a"`). The new labels
   input keeps its own text.
+- A desktop build for local use needs `cargo build --release -p apitorrent-desktop
+  --features tauri/custom-protocol`. Without it the window points at the Vite dev server,
+  and a release build shows a black window. That happened with the 2:40 AM PST build.
+  Copy the exe (don't link it) to `target/desktop-app/run/`, which is what runs locally.
+- Number boxes have one fixed width (12.5rem, 10rem on a phone), units included, and
+  left-aligned text, so their edges line up from row to row (asked for after the first look).
 
 ## Progress log
 
@@ -85,7 +91,9 @@ All done (2026-11-14). Layout of the code:
   checks pass (save, discard, Ctrl+S, validation, kept draft, leave dialog, phone nav,
   read-only). Scripts: `shoot_settings.py`, `behave_settings.py`, `mocks.py` in the
   session scratchpad (API mocked, served from `web/dist`).
-- [ ] Not checked: inside the desktop app's window (same web UI, its own toolbar menu).
+- [x] The user's first look in the app: "much better". Asked for left-aligned inputs (`5c0234a`).
+- [x] Local app rebuilt at `5c0234a` with `custom-protocol` and running from
+  `target/desktop-app/run/` since 2:11 PM PST (22:11Z). The page loaded with no errors. Not pushed (the user's call).
 
 ## Open questions for the user
 
