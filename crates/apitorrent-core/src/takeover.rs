@@ -9,12 +9,20 @@
 //!
 //! The daemon is reached through `apitorrent_deluge::rpc`: port, certificate (pinned) and
 //! `localclient` password all come from the config directory, read each time and never
-//! stored.
+//! stored. A running `deluged` whose command line moved its RPC (`--port`,
+//! `--ui-interface`) is reached where it says.
+//!
+//! "Stopped" is Deluge's own answer, polled after the pause: every torrent must report
+//! `Paused` (or `Error`, which Deluge won't restart by itself). Asking is not enough.
+//! "Not running" needs two things: nothing answers, *and* no `deluged` process uses that
+//! config directory. A daemon that runs but can't be reached is an error, never a
+//! take-over.
 
 use std::path::Path;
 use std::time::Duration;
 
-use apitorrent_deluge::rpc::{AuthFileError, CertError, DelugeClient, RpcError};
+use apitorrent_deluge::discover::{self, Places};
+use apitorrent_deluge::rpc::{AuthFileError, CertError, ConnectOptions, DelugeClient, RpcError};
 
 /// How long Deluge gets to stop the torrents it was asked to pause.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -38,17 +46,32 @@ pub enum TakeOver {
 /// certificate, password refused, a timeout) or didn't stop them in time. The caller must
 /// then leave its copies stopped.
 pub async fn pause_in_deluge(config_dir: &Path, ids: &[String]) -> Result<TakeOver, String> {
+    pause_in_deluge_on(&Places::system(), config_dir, ids).await
+}
+
+async fn pause_in_deluge_on(
+    places: &Places,
+    config_dir: &Path,
+    ids: &[String],
+) -> Result<TakeOver, String> {
     if ids.is_empty() {
         return Ok(TakeOver::Paused);
     }
-    let mut client = match DelugeClient::connect_config_dir(config_dir).await {
+    let running = discover::running_daemon(places, config_dir);
+    let mut client = match connect(config_dir, running.as_ref()).await {
         Ok(c) => c,
-        Err(e) if not_running(&e) => {
+        Err(e) if not_running(&e) && running.is_none() => {
             tracing::info!(
                 dir = %config_dir.display(),
-                "no Deluge daemon answers for this config directory; taking over"
+                "no Deluge daemon answers or runs for this config directory; taking over"
             );
             return Ok(TakeOver::NotRunning);
+        }
+        Err(e) if not_running(&e) => {
+            return Err(format!(
+                "a Deluge daemon is running with {} but couldn't be reached to pause it there: {e}",
+                config_dir.display()
+            ));
         }
         Err(e) => return Err(format!("couldn't reach Deluge to pause it there: {e}")),
     };
@@ -80,7 +103,8 @@ pub async fn pause_in_deluge(config_dir: &Path, ids: &[String]) -> Result<TakeOv
 /// versions when its daemon answers, else Deluge 2.1.1 on libtorrent 2.0.10.
 pub async fn deluge_identity(config_dir: &Path) -> apitorrent_types::ClientIdentity {
     let fallback = apitorrent_types::ClientIdentity::deluge_default();
-    let Ok(mut client) = DelugeClient::connect_config_dir(config_dir).await else {
+    let running = discover::running_daemon(&Places::system(), config_dir);
+    let Ok(mut client) = connect(config_dir, running.as_ref()).await else {
         return fallback;
     };
     let Ok(v) = client.versions().await else {
@@ -96,6 +120,35 @@ pub async fn deluge_identity(config_dir: &Path) -> apitorrent_types::ClientIdent
         found
     } else {
         fallback
+    }
+}
+
+/// Connect to the daemon for `config_dir`: where `core.conf` says, unless the running
+/// process's command line moved it.
+async fn connect(
+    config_dir: &Path,
+    running: Option<&discover::Running>,
+) -> Result<DelugeClient, RpcError> {
+    let mut opts = ConnectOptions::from_config_dir(config_dir);
+    if let Some(r) = running {
+        if let Some(port) = r.port {
+            opts.port = port;
+        }
+        if let Some(i) = &r.interface {
+            opts.host = connect_host(i);
+        }
+    }
+    DelugeClient::connect_config_dir_with(config_dir, &opts).await
+}
+
+/// The address to reach a daemon listening on `interface` from this machine: loopback for
+/// a wildcard, else the address itself.
+fn connect_host(interface: &str) -> String {
+    let i = interface.trim_matches(['[', ']']);
+    match i {
+        "" | "0.0.0.0" => "127.0.0.1".to_owned(),
+        "::" => "::1".to_owned(),
+        _ => i.to_owned(),
     }
 }
 
@@ -127,9 +180,8 @@ mod tests {
         assert_eq!(pause_in_deluge(&gone, &[]).await, Ok(TakeOver::Paused));
     }
 
-    #[tokio::test]
-    async fn a_closed_port_is_not_running() {
-        // A config dir whose daemon port nothing listens on.
+    /// A config dir whose daemon port nothing listens on.
+    fn closed_port_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -151,9 +203,73 @@ mod tests {
             dir.path().join("ssl/daemon.cert"),
         )
         .unwrap();
+        dir
+    }
+
+    /// A machine with no `/proc`, or one whose `/proc` lists these `deluged` command lines.
+    fn places(root: &Path, daemons: &[Vec<String>]) -> Places {
+        for (pid, args) in daemons.iter().enumerate() {
+            let p = root.join(format!("proc/{}", pid + 1));
+            std::fs::create_dir_all(&p).unwrap();
+            let mut raw = args.join("\0").into_bytes();
+            raw.push(0);
+            std::fs::write(p.join("cmdline"), raw).unwrap();
+        }
+        Places {
+            proc: Some(root.join("proc")),
+            passwd: None,
+            unit_dirs: Vec::new(),
+            home_parents: Vec::new(),
+            candidates: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_port_is_not_running() {
+        let dir = closed_port_dir();
+        let machine = tempfile::tempdir().unwrap();
         assert_eq!(
-            pause_in_deluge(dir.path(), &["aa".repeat(20)]).await,
+            pause_in_deluge_on(&places(machine.path(), &[]), dir.path(), &["aa".repeat(20)]).await,
             Ok(TakeOver::NotRunning)
         );
+    }
+
+    /// Nothing answers where `core.conf` says, but a `deluged` runs with that directory
+    /// (here: told to listen on a port that is closed too). That is not "not running":
+    /// apitorrent must not start its copy.
+    #[tokio::test]
+    async fn a_running_daemon_that_does_not_answer_is_an_error() {
+        let dir = closed_port_dir();
+        let machine = tempfile::tempdir().unwrap();
+        let other = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let daemon = vec![
+            "/usr/bin/deluged".to_owned(),
+            "-c".to_owned(),
+            dir.path().display().to_string(),
+            "--port".to_owned(),
+            other.to_string(),
+        ];
+        let got = pause_in_deluge_on(
+            &places(machine.path(), &[daemon]),
+            dir.path(),
+            &["aa".repeat(20)],
+        )
+        .await;
+        let e = got.expect_err("a running daemon was taken for a stopped one");
+        assert!(e.contains("is running"), "{e}");
+        assert!(e.contains(&other.to_string()), "{e}");
+    }
+
+    #[test]
+    fn listen_addresses_to_connect_to() {
+        assert_eq!(connect_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(connect_host(""), "127.0.0.1");
+        assert_eq!(connect_host("::"), "::1");
+        assert_eq!(connect_host("[::]"), "::1");
+        assert_eq!(connect_host("10.0.0.5"), "10.0.0.5");
     }
 }

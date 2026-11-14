@@ -248,10 +248,19 @@ impl DelugeClient {
     /// from `core.conf`, the certificate pinned from `ssl/daemon.cert`, the password from
     /// `auth`. Each is read now and not kept.
     pub async fn connect_config_dir(config_dir: &Path) -> Result<Self, RpcError> {
-        let opts = ConnectOptions::from_config_dir(config_dir);
+        Self::connect_config_dir_with(config_dir, &ConnectOptions::from_config_dir(config_dir))
+            .await
+    }
+
+    /// [`DelugeClient::connect_config_dir`], at `opts`'s address instead of `core.conf`'s:
+    /// for a daemon whose command line moved it (`--port`, `--ui-interface`).
+    pub async fn connect_config_dir_with(
+        config_dir: &Path,
+        opts: &ConnectOptions,
+    ) -> Result<Self, RpcError> {
         let pin = PinnedCert::from_config_dir(config_dir)?;
         let creds = Credentials::from_config_dir(config_dir, auth::LOCALCLIENT)?;
-        let mut c = Self::connect(&opts, &pin).await?;
+        let mut c = Self::connect(opts, &pin).await?;
         c.login(&creds).await?;
         Ok(c)
     }

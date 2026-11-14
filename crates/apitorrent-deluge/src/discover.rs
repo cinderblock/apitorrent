@@ -107,7 +107,7 @@ pub fn discover(places: &Places) -> Vec<Found> {
     let mut seen: Vec<(PathBuf, Hint)> = Vec::new();
 
     if let Some(proc) = &places.proc {
-        for (dir, user) in running_daemons(proc, &users) {
+        for (dir, user, _) in running_daemons(proc, &users) {
             seen.push((
                 dir,
                 Hint {
@@ -314,8 +314,39 @@ fn read_passwd(path: &Path) -> Users {
     users
 }
 
-/// Each running `deluged`'s config directory, and the user it runs as.
-fn running_daemons(proc: &Path, users: &Users) -> Vec<(PathBuf, Option<String>)> {
+/// A `deluged` process running with a given config directory, and where its command line
+/// told it to listen for clients.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Running {
+    /// `-p`/`--port`: overrides `core.conf`'s `daemon_port`.
+    pub port: Option<u16>,
+    /// `-u`/`--ui-interface`: the address its RPC listens on.
+    pub interface: Option<String>,
+}
+
+/// The `deluged` process running with `config_dir` as its config directory, if any (Linux
+/// only: elsewhere there is no `/proc` to look in, and this is `None`).
+#[must_use]
+pub fn running_daemon(places: &Places, config_dir: &Path) -> Option<Running> {
+    let proc = places.proc.as_deref()?;
+    let users = places
+        .passwd
+        .as_deref()
+        .map(read_passwd)
+        .unwrap_or_default();
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let want = canonical(config_dir);
+    running_daemons(proc, &users)
+        .into_iter()
+        .find(|(dir, _, _)| canonical(dir) == want)
+        .map(|(_, _, args)| Running {
+            port: option_value(&args, "-p", "--port").and_then(|p| p.parse().ok()),
+            interface: option_value(&args, "-u", "--ui-interface").map(str::to_owned),
+        })
+}
+
+/// Each running `deluged`'s config directory, the user it runs as, and its arguments.
+fn running_daemons(proc: &Path, users: &Users) -> Vec<(PathBuf, Option<String>, Vec<String>)> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(proc) else {
         return out;
@@ -352,7 +383,7 @@ fn running_daemons(proc: &Path, users: &Users) -> Vec<(PathBuf, Option<String>)>
         let user = uid.and_then(|u| users.by_uid.get(&u));
         let cwd = std::fs::read_link(pid.join("cwd")).ok();
         if let Some(dir) = config_dir_of(rest, user.map(|(_, h)| h.as_path()), cwd.as_deref()) {
-            out.push((dir, user.map(|(n, _)| n.clone())));
+            out.push((dir, user.map(|(n, _)| n.clone()), rest.to_vec()));
         }
     }
     out
@@ -374,21 +405,7 @@ fn after_deluged(args: &[String]) -> Option<&[String]> {
 /// The config directory a `deluged` command line uses: `-c X`, `-cX`, `--config X`,
 /// `--config=X`; else `~/.config/deluge`.
 fn config_dir_of(args: &[String], home: Option<&Path>, cwd: Option<&Path>) -> Option<PathBuf> {
-    let mut it = args.iter();
-    let mut given: Option<&str> = None;
-    while let Some(a) = it.next() {
-        if a == "-c" || a == "--config" {
-            given = it.next().map(String::as_str);
-        } else if let Some(v) = a.strip_prefix("--config=") {
-            given = Some(v);
-        } else if let Some(v) = a.strip_prefix("-c")
-            && !v.is_empty()
-            && !a.starts_with("--")
-        {
-            given = Some(v);
-        }
-    }
-    match given {
+    match option_value(args, "-c", "--config") {
         Some(g) => {
             let g = expand_home(g, home);
             if g.is_absolute() {
@@ -399,6 +416,26 @@ fn config_dir_of(args: &[String], home: Option<&Path>, cwd: Option<&Path>) -> Op
         }
         None => home.map(|h| h.join(".config/deluge")),
     }
+}
+
+/// An option's value in a command line: `-x V`, `-xV`, `--long V` or `--long=V`. The last
+/// one wins, as with Deluge's own parser.
+fn option_value<'a>(args: &'a [String], short: &str, long: &str) -> Option<&'a str> {
+    let mut it = args.iter();
+    let mut given = None;
+    while let Some(a) = it.next() {
+        if a == short || a == long {
+            given = it.next().map(String::as_str);
+        } else if let Some(v) = a.strip_prefix(long).and_then(|v| v.strip_prefix('=')) {
+            given = Some(v);
+        } else if let Some(v) = a.strip_prefix(short)
+            && !v.is_empty()
+            && !a.starts_with("--")
+        {
+            given = Some(v);
+        }
+    }
+    given
 }
 
 fn expand_home(path: &str, home: Option<&Path>) -> PathBuf {
@@ -560,6 +597,40 @@ mod tests {
         );
         assert_eq!(found[1].units, vec!["delugex.service".to_owned()]);
         assert!(found.iter().all(|f| f.problem.is_none()));
+    }
+
+    #[test]
+    fn a_running_daemon_says_where_it_listens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = tmp.path();
+        let d = r.join("var/lib/deluged");
+        let x = r.join("var/lib/delugex");
+        deluge_dir(&d, 0, 58846);
+        deluge_dir(&x, 0, 58847);
+        std::fs::create_dir_all(r.join("etc")).unwrap();
+        std::fs::write(r.join("etc/passwd"), "").unwrap();
+        let ds = d.display().to_string();
+        process(r, 5, 0, &["/usr/bin/deluged", "-d", "-c", &ds]);
+        let xs = format!("--config={}", x.display());
+        process(
+            r,
+            6,
+            0,
+            &["/usr/bin/deluged", &xs, "--ui-interface", "::", "-p58900"],
+        );
+        let p = places(r);
+        assert_eq!(running_daemon(&p, &d), Some(Running::default()));
+        assert_eq!(
+            running_daemon(&p, &x),
+            Some(Running {
+                port: Some(58900),
+                interface: Some("::".to_owned()),
+            })
+        );
+        assert_eq!(
+            running_daemon(&p, &r.join("home/alice/.config/deluge")),
+            None
+        );
     }
 
     #[test]

@@ -112,6 +112,13 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
        so the imported bitfield is a subset of what's on disk and stays safe. Tested with
        a fake daemon that accepts but won't speak TLS (refused) and a closed port
        (taken over); not yet against a real running Deluge.
+       2026-11-14: tightened. A refused connection counts as "not running" only when no
+       `deluged` process uses that config dir (`discover::running_daemon`, from `/proc`);
+       a running one that can't be reached is an error and nothing starts here. The
+       daemon's own `--port`/`--ui-interface` are used to reach it (pokol's `delugex`
+       unit has `--ui-interface ::`, reached at `::1`). "Stopped" stays Deluge's polled
+       answer: `Paused`, or `Error` (Deluge refuses to pause an errored torrent, and won't
+       restart it by itself).
 7. [x] Import sets identity rules (main thread), 2026-11-13. Both import paths add a
        Deluge rule for the tracker hosts of imported **private** torrents (public ones
        keep apitorrent's identity), with the daemon's versions when it answers.
@@ -295,6 +302,8 @@ so the tracker doesn't count a ghost peer. Torrents with no rule keep the sessio
 - [x] 2026-11-13: step 9, docs pass. Everything asked for is built. Not yet tried by
       hand: the wizard, the Settings sections and a take-over against a real running
       Deluge (see "Still to verify by hand").
+- [x] 2026-11-14: take-over refuses when a `deluged` runs for that folder but can't be
+      reached, and connects where the daemon's command line says.
 
 ## Still to verify by hand
 

@@ -323,7 +323,9 @@ from Deluge at once, and to go on to the next installation.
 Deluge can keep running while you move over. A torrent runs in only one client at a time:
 apitorrent starts an imported torrent only after pausing it in Deluge, through Deluge's
 daemon, using the port, certificate and `localclient` password from the config directory
-(read each time, never stored). If no daemon answers there, it just starts. The import
+(read each time, never stored), then waits until Deluge itself reports them paused. If no
+daemon answers there and no `deluged` process uses that folder, it just starts; a daemon
+that runs but can't be reached leaves the torrent stopped here, with the reason. The import
 does this for the torrents it starts; ones imported paused wait, and resuming one takes
 it over then. Settings → Deluge → "Take over all" takes over everything still waiting at once.
 

@@ -1211,8 +1211,11 @@ recheck. That is the onboarding path for existing Deluge users.
   (`GET …/import/deluge/waiting` lists them). Pausing goes through
   `apitorrent_deluge::rpc` (port, pinned `ssl/daemon.cert`, `localclient` password from
   the config dir, read each time) and waits up to 30 s for Deluge to report the
-  torrents stopped. A refused connection, or a config directory without its certificate
-  or auth file, means no daemon is there and the torrent is taken over at once. The
+  torrents stopped (`Paused`, or `Error`). A refused connection, or a config directory
+  without its certificate or auth file, means no daemon is there and the torrent is taken
+  over at once, but only if no `deluged` process runs with that config directory
+  (`discover::running_daemon`, from `/proc`); one that does is an error. A running
+  daemon's `--port` and `--ui-interface` override `core.conf` when connecting. The
   offline CLI import does the same before writing its rows.
 - **Identity on import.** The tracker hosts of the imported private torrents get a Deluge
   identity rule (`ensure_tracker_identities`: only hosts no rule covers, so the user's
