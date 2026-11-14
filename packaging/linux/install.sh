@@ -306,16 +306,18 @@ say "  Downloads: $DOWNLOAD_DIR"
 say "  Settings:  $ENV_FILE"
 say "  Log:       journalctl -u apitorrentd -f"
 
-# A first install has no admin yet: the daemon writes a setup token for one.
+# While there is no admin yet, the daemon keeps a setup token in this file (a new one
+# every ten minutes). A first install waits for it; a re-run finds it at once if there is
+# still no admin.
 token=
-if [ -n "$FRESH" ]; then
-	i=0
-	while [ $i -lt 15 ] && [ ! -s "$DATA_DIR/setup-token" ]; do
-		i=$((i + 1))
-		sleep 1
-	done
-	[ -s "$DATA_DIR/setup-token" ] && token=$(cat "$DATA_DIR/setup-token")
-fi
+wait=3
+[ -n "$FRESH" ] && wait=15
+i=0
+while [ $i -lt $wait ] && [ ! -s "$DATA_DIR/setup-token" ]; do
+	i=$((i + 1))
+	sleep 1
+done
+[ -s "$DATA_DIR/setup-token" ] && token=$(cat "$DATA_DIR/setup-token")
 
 host=$(hostname -f 2>/dev/null || hostname)
 remote=
