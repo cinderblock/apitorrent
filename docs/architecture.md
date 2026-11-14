@@ -1433,7 +1433,9 @@ update key signed, so no paid code-signing certificate is involved. Plan and dec
 - **Paths**: torrent file names are sanitised. That covers Windows reserved names (`CON`,
   `NUL`, …), trailing dots and spaces, illegal characters, `..` and absolute components, and
   long paths: the core uses `\\?\` internally on Windows.
-- **Services**: a systemd unit, a Windows service (`windows-service` crate) and a launchd
-  plist. A systemd unit needs `Restart=on-failure` (or `always`) for self-updates: the
-  daemon exits with code 75 to be restarted into the new binary.
+- **Services**: on Linux, `packaging/linux/install.sh` (also a release asset) installs a
+  systemd unit, with the executable in `/opt/apitorrent` owned by the service user so
+  self-update can replace it. Any systemd unit needs `Restart=on-failure` (or `always`)
+  for self-updates: the daemon exits with code 75 to be restarted into the new binary.
+  There is no Windows service or launchd plist yet.
 - **Desktop**: Tauri 2, with WebView2 on Windows, WKWebView on macOS and WebKitGTK on Linux.

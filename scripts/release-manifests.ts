@@ -182,6 +182,7 @@ async function main(): Promise<void> {
   }
   const daemon = daemonManifest(release, files);
   if (daemon.assets.length === 0) throw new Error(`no apitorrentd-${tag}-<target> executables in ${dir}`);
+  // Pretty-printed, one field per line: packaging/linux/install.sh reads it with awk.
   await writeFile(join(dir, DAEMON_MANIFEST), `${JSON.stringify(daemon, null, 2)}\n`);
   const latest = latestJson(release, names, signatures);
   await writeFile(join(dir, "latest.json"), `${JSON.stringify(latest, null, 2)}\n`);

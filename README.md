@@ -75,6 +75,36 @@ Most of this is built.
 - **qBittorrent Web API compatibility** (a plugin), so Sonarr, Radarr, Prowlarr, autobrr
   and cross-seed work unchanged, signing in with apitorrent API tokens.
 
+## Installing
+
+**The desktop app**: the installers on the [latest
+release](https://github.com/cinderblock/apitorrent/releases/latest) (`.exe`/`.msi`,
+`.dmg`, `.deb`/`.rpm`/`.AppImage`). It runs the engine itself, or connects to a daemon.
+
+**The daemon on a Linux server**, as a systemd service:
+
+```sh
+curl -fsSL https://github.com/cinderblock/apitorrent/releases/latest/download/install.sh | sudo sh
+```
+
+It installs `apitorrentd` in `/opt/apitorrent`, keeps its data in `/var/lib/apitorrent`,
+runs it as a new system user `apitorrent`, starts it, and prints the link for creating
+the first admin. Settings go in `/etc/apitorrent/apitorrentd.env` (any `APITORRENT_*`
+variable from `apitorrentd --help`). The API stays on `127.0.0.1:8742`: open it through
+an SSH tunnel, `ssh -L 8742:localhost:8742 your-server`, at `http://localhost:8742`
+(passkeys work there), and point the desktop app at the same address. To reach it
+without a tunnel, see "Reaching it from other machines" below.
+
+- `--user deluge` runs it as an existing user instead. Moving from Deluge, use Deluge's
+  user: apitorrent then reads Deluge's config and shares its files.
+- `--data-dir`, `--download-dir`, `--version vX.Y.Z`, `--binary ./apitorrentd` (a build
+  of your own); `--uninstall` removes the program and keeps the data. `--help` lists
+  them all.
+- It updates itself (Settings → Updates). Running the script again also upgrades, and
+  keeps the choices made the first time.
+
+Elsewhere, run the `apitorrentd` executable from the release directly.
+
 ## Development
 
 You need Rust (stable) and Bun. CI (`.github/workflows/ci.yml`) runs the same checks on

@@ -242,6 +242,8 @@ jobs:
             find artifacts -type f
             exit 1
           fi
+          # The Linux installer, at releases/latest/download/install.sh.
+          cp packaging/linux/install.sh files/
           ls -l files
       # Every file gets a signature (the updater bundles have theirs already). Then the
       # manifests are written from the files and signed themselves.
