@@ -76,7 +76,14 @@ at startup and expire after ~10 minutes").
   link each time, password refused, passkey sign-in afterwards, no permission → 403);
   enroll page, approval checkbox, app Account page button, desktop `browser_sign_in`.
   Clippy clean (workspace on sentinel, desktop locally), web typecheck and tests pass.
-- [ ] ← current Build, then deploy to pokol and run the app (ask first).
+- [x] Deployed `f4d476d` to pokol with the user's yes (2026-11-14 1:36 AM PST, 09:36Z; auth
+  migration 6 ran). Registered this PC (device NOOOK, account permission, all spaces)
+  with a `register-device` token over HTTPS, stored the credential in Credential Manager
+  (service `apitorrent-desktop`, key `profile:<id>:api-token`, same keyring 4.2.0 as the
+  app) and wrote `%APPDATA%pitorrent\config\desktop\profiles.json` (there was none);
+  the new app (`target/desktop-next`) signed in at 1:38 AM PST (09:38Z).
+- [ ] ← current The user: Account → "Open in my browser, signed in"; then the import
+  wizard for `deluged` and `delugex`.
 
 - [x] Plan written (2026-11-13)
 - [x] Steps 1-5: auth (36 tests), server test
