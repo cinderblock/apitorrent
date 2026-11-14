@@ -746,7 +746,7 @@ fn op_at_app_info(state: &OpState) -> Result<String, JsErrorBox> {
 
 /// An unguessable session id: 32 random bytes, in hex.
 fn session_id() -> String {
-    use rand::RngCore as _;
+    use rand::Rng as _;
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
@@ -1195,14 +1195,14 @@ fn op_at_text_decode(
 
 #[op2(fast)]
 fn op_at_random(#[buffer] buf: &mut [u8]) {
-    use rand::RngCore as _;
+    use rand::Rng as _;
     rand::rng().fill_bytes(buf);
 }
 
 #[op2]
 #[string]
 fn op_at_uuid() -> String {
-    use rand::RngCore as _;
+    use rand::Rng as _;
     let mut b = [0u8; 16];
     rand::rng().fill_bytes(&mut b);
     b[6] = (b[6] & 0x0f) | 0x40;

@@ -11,7 +11,7 @@
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 use sha1::{Digest, Sha1};
 
 /// How often the secret rotates.

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use apitorrent_dht::{AnnounceSpec, Event, LookupId, Node, NodeConfig, NodeId};
 use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{RngExt, SeedableRng};
 
 struct Sim {
     nodes: Vec<Node>,

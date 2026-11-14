@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use apitorrent_metainfo::Sha1Hash;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::crypto::{self, Ciphers, KEY_LEN, KeyPair, PRIVATE_KEY_LEN, PublicKey, SharedSecret};
 use crate::error::MseError;
