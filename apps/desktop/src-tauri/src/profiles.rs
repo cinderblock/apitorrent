@@ -493,7 +493,12 @@ mod tests {
             "id": "b", "name": "Here", "mode": "local"
         }))
         .unwrap();
-        assert_eq!(p, local("b").tap_name("Here"));
+        let mut expected = local("b").tap_name("Here");
+        if let ProfileKind::Local(l) = &mut expected.kind {
+            // Left out, the port is picked on the first start.
+            l.peer_port = 0;
+        }
+        assert_eq!(p, expected);
     }
 
     trait TapName {
