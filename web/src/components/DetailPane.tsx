@@ -11,6 +11,7 @@ import { PathActions } from "../desktop/PathActions";
 import { describeReuse } from "../library";
 import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, STATE_LABEL, toKiB } from "../format";
 import { describeSeedLimits, formatSeedingTime, SeedLimitsFields } from "./SeedLimitsFields";
+import { WebLink } from "./WebLink";
 import { badUrls, duplicateUrls, fromDrafts, moveTier, newTier, sameTiers, toDrafts, type TierDraft } from "./trackerTiers";
 
 type Tab = "general" | "files" | "peers" | "trackers";
@@ -485,6 +486,12 @@ function FilesTab({ summary, detail, refetch, readOnly }: { summary: TorrentSumm
               <td className="cell-path">
                 {f.path}
                 {f.placement === "save" && <PathActions savePath={summary.savePath} file={f.path} />}
+                {/* Only whole files: a partial one would download with holes. */}
+                {f.placement === "save" && f.progress >= 1 && (
+                  <WebLink savePath={summary.savePath} path={f.path}>
+                    Download
+                  </WebLink>
+                )}
                 {f.reused && <div className="file-reuse muted">{describeReuse(f.reused, f.length)}</div>}
               </td>
               <td className="end">{formatBytes(f.length)}</td>
@@ -556,6 +563,9 @@ export function DetailPane({ summary, onClose, readOnly = false }: { summary: To
               value={
                 <>
                   <code>{summary.savePath}</code>
+                  <WebLink savePath={summary.savePath} dir>
+                    Browse
+                  </WebLink>
                   <PathActions savePath={summary.savePath} file={summary.name} explain />
                 </>
               }

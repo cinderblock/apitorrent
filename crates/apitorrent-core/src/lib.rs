@@ -1678,6 +1678,26 @@ impl Core {
         Ok(root.clone())
     }
 
+    /// Fetch a web locator's copy of a storage root's marker file, to tell an admin whether
+    /// the URL serves that root. The locator needn't be saved yet.
+    pub async fn check_root_locator(
+        &self,
+        id: &str,
+        locator: &str,
+    ) -> Result<apitorrent_types::LocatorCheck, CoreError> {
+        if !self.storage_roots().iter().any(|r| r.id == id) {
+            return Err(CoreError::NotFound);
+        }
+        let parsed = apitorrent_types::share::ShareLocator::parse(locator)
+            .map_err(CoreError::InvalidRequest)?;
+        if !parsed.protocol.is_web() {
+            return Err(CoreError::InvalidRequest(
+                "only http:// and https:// locators can be checked from the server".into(),
+            ));
+        }
+        Ok(roots::check_web_locator(id, &parsed).await)
+    }
+
     pub fn peer_port(&self) -> u16 {
         self.inner.session.listen_addr().port()
     }

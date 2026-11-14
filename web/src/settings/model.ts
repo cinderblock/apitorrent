@@ -104,7 +104,7 @@ export const SECTIONS: readonly Section[] = [
     title: "Files",
     group: "server",
     summary: "File names, and where other computers find downloads",
-    keywords: "naming portable native names storage roots share smb nfs unc network path locators",
+    keywords: "naming portable native names storage roots share smb nfs unc network path locators web http https nginx download links",
     fields: ["naming"],
     visible: always,
   },

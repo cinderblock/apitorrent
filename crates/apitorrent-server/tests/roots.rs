@@ -127,3 +127,75 @@ async fn admins_set_share_locators() {
     assert_eq!(again.storage_roots()[0].locators, updated.locators);
     again.shutdown().await.unwrap();
 }
+
+/// A web locator is checked by fetching the root's marker file through it, here from a
+/// static file server standing in for nginx.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admins_check_web_locators() {
+    use serde_json::json;
+
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let admin = f.admin_token();
+    let id = core.storage_roots()[0].id.clone();
+    let path = format!("/api/v1/roots/{id}/locators/check");
+
+    // `/dl/` serves the downloads directory; `/other/` another root's.
+    let other = root.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        other.join(RootMarker::FILE_NAME),
+        serde_json::to_vec(&RootMarker::new("someone-else")).unwrap(),
+    )
+    .unwrap();
+    let files = axum::Router::new()
+        .nest_service(
+            "/dl",
+            tower_http::services::ServeDir::new(root.path().join("downloads")),
+        )
+        .nest_service("/other", tower_http::services::ServeDir::new(&other));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, files).await });
+
+    let check = |locator: String| {
+        send(
+            &app,
+            Req::new("POST", &path)
+                .bearer(&admin)
+                .json(&json!({ "locator": locator })),
+        )
+    };
+    let resp = check(format!("{base}/dl")).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.json());
+    let got: apitorrent_types::LocatorCheck = resp.typed();
+    assert!(got.verified, "{}", got.message);
+
+    let got: apitorrent_types::LocatorCheck = check(format!("{base}/other/")).await.typed();
+    assert!(!got.verified);
+    assert!(
+        got.message.contains("another storage root"),
+        "{}",
+        got.message
+    );
+
+    let got: apitorrent_types::LocatorCheck = check(format!("{base}/nothing/")).await.typed();
+    assert!(!got.verified);
+    assert!(got.message.contains("404"), "{}", got.message);
+
+    // Only web locators are checked, and only for known roots.
+    let resp = check(r"\nas\torrents".into()).await;
+    assert_eq!(resp.status, StatusCode::BAD_REQUEST);
+    let resp = send(
+        &app,
+        Req::new("POST", "/api/v1/roots/nope/locators/check")
+            .bearer(&admin)
+            .json(&json!({ "locator": format!("{base}/dl/") })),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::NOT_FOUND);
+
+    core.shutdown().await.unwrap();
+}

@@ -990,7 +990,8 @@ hashes, never disk names.
 ## Remote file access (thin client)
 
 - Each storage root on the daemon has an optional set of **share locators**: a UNC path
-  (`\\nas\torrents`), `smb://` or `nfs://` URLs.
+  (`\\nas\torrents`), `smb://` or `nfs://` URLs, or `https://` URLs of a web server listing
+  its files (links in the web UI; see below).
 - Each client profile holds **path mappings**: remote prefix → local path, with
   suggestions from the share locators.
 - **Verification**: the daemon writes a marker file (`.apitorrent-root`) containing the
@@ -1018,6 +1019,19 @@ in the mount table (`/proc/self/mounts`, or `mount`), plus GNOME's GVFS folder. 
 own path comes first when it is a path on this kind of OS. The first candidate whose marker
 verifies is suggested; otherwise the first one is, unverified, with a note to mount it.
 Only the instance's download directory is a storage root so far (see `ISSUES.md`).
+
+**Web locators** (`http://`, `https://`) name a web server listing the root's files (an
+nginx `autoindex`, say); apitorrent never serves the files itself. They are normalised with a
+trailing `/`, may name the top of a host, and give the desktop app no local candidates. The
+web UI (`web/src/components/webLinks.ts`) links a finished file, and the save folder, through
+the first web locator of the innermost root holding the save path: the path below the root
+plus the file's path, each part percent-encoded, with the same refusals as the desktop's
+mappings (`.`, `..`, empty parts; Windows paths compared case-insensitively). Links aren't
+verified in the browser, which couldn't read another origin without CORS headers. Instead
+`POST /roots/{id}/locators/check` (server admins) has the daemon fetch
+`<locator>.apitorrent-root` with the strict HTTP client and compare the id; Settings runs it
+on save and on request. It is advice only, so a failure never hides the links: the daemon may
+not reach its own public address, or get past the web server's sign-in.
 
 ## Automation
 

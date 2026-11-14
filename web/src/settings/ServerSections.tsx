@@ -356,8 +356,10 @@ export function FilesSection({ draft, update, serverAdmin }: DraftProps) {
           title="Storage roots"
           description={
             <>
-              Where other computers reach each download folder over the network: <code>\\nas\torrents</code>, <code>smb://</code> or <code>nfs://</code>. The
-              desktop app suggests its folder mappings from these. Don&apos;t put passwords here. Each folder saves on its own.
+              Where other computers reach each download folder over the network: <code>\\nas\torrents</code>, <code>smb://</code> or <code>nfs://</code> (the
+              desktop app suggests its folder mappings from these), or a web server listing its files, such as{" "}
+              <code>https://files.example.com/downloads/</code> (files get download links; the first web address is used). Every user can see these, so
+              don&apos;t put passwords here. Each folder saves on its own.
             </>
           }
         >

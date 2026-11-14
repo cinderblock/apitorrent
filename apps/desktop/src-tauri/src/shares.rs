@@ -102,6 +102,8 @@ fn mount_source(source: &str, protocol: ShareProtocol) -> Option<(String, Vec<St
             path.starts_with('/')
                 .then(|| (host.to_owned(), split(path)))
         }
+        // Web servers aren't mounted.
+        ShareProtocol::Http | ShareProtocol::Https => None,
     }
 }
 
@@ -124,7 +126,7 @@ fn below<'a>(
     }
     let same = |a: &String, b: &String| match protocol {
         ShareProtocol::Smb => a.to_lowercase() == b.to_lowercase(),
-        ShareProtocol::Nfs => a == b,
+        ShareProtocol::Nfs | ShareProtocol::Http | ShareProtocol::Https => a == b,
     };
     prefix
         .iter()
@@ -142,6 +144,10 @@ fn join(base: &Path, parts: &[String]) -> PathBuf {
 /// Local paths that may reach the share `locator` names, most direct first.
 pub fn local_paths(locator: &ShareLocator, windows: bool, mounts: &[Mount]) -> Vec<PathBuf> {
     let mut out = Vec::new();
+    if locator.protocol.is_web() {
+        // Opened in a browser, through the web UI's links; never a local path.
+        return out;
+    }
     if windows {
         match locator.protocol {
             ShareProtocol::Smb => out.extend(locator.unc_path().map(PathBuf::from)),
@@ -151,7 +157,7 @@ pub fn local_paths(locator: &ShareLocator, windows: bool, mounts: &[Mount]) -> V
                 locator.host,
                 locator.path.join("\\")
             ))),
-            ShareProtocol::Nfs => {}
+            ShareProtocol::Nfs | ShareProtocol::Http | ShareProtocol::Https => {}
         }
         return out;
     }
@@ -216,6 +222,14 @@ mod tests {
         assert_eq!(w(r"\\nas\t"), [PathBuf::from(r"\\nas\t")]);
         assert_eq!(w("nfs://nas/srv/t"), [PathBuf::from(r"\\nas\srv\t")]);
         assert!(w("smb://nas:4455/t").is_empty(), "UNC can't name a port");
+    }
+
+    #[test]
+    fn web_servers_give_no_local_paths() {
+        let mounts = parse_proc_mounts("//files.example.com/t /mnt/t cifs rw 0 0\n");
+        for windows in [true, false] {
+            assert!(local_paths(&loc("https://files.example.com/t/"), windows, &mounts).is_empty());
+        }
     }
 
     #[test]

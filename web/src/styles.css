@@ -108,6 +108,17 @@ code {
   color: var(--ok);
 }
 
+.warn-text {
+  color: var(--warn);
+}
+
+/* The daemon's checks of a storage root's web addresses (Settings → Files). */
+.locator-checks {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  overflow-wrap: anywhere;
+}
+
 /* Layout */
 
 .app {
@@ -626,6 +637,14 @@ code {
 
 .cell-path {
   overflow-wrap: anywhere;
+}
+
+/* A file's or folder's link on the web server serving its storage root. */
+.web-link {
+  margin-left: 10px;
+  font-family: var(--font);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 .file-reuse {

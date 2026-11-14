@@ -8,6 +8,7 @@ import type { Ban } from "./generated/Ban";
 import type { DedupeStatus } from "./generated/DedupeStatus";
 import type { LibraryFolder } from "./generated/LibraryFolder";
 import type { LibraryStatus } from "./generated/LibraryStatus";
+import type { LocatorCheck } from "./generated/LocatorCheck";
 import type { SeedLimits } from "./generated/SeedLimits";
 import type { TlsStatus } from "./generated/TlsStatus";
 import type { SessionStats } from "./generated/SessionStats";
@@ -125,6 +126,8 @@ export const api = {
   roots: () => request<StorageRoot[]>("GET", "/roots"),
   /** Replace a root's share locators (server admins); answers with the normalised root. */
   setRootLocators: (id: string, locators: string[]) => request<StorageRoot>("PUT", `/roots/${enc(id)}/locators`, { locators }),
+  /** Have the daemon fetch a web locator's marker file (server admins). Advisory. */
+  checkRootLocator: (id: string, locator: string) => request<LocatorCheck>("POST", `/roots/${enc(id)}/locators/check`, { locator }),
   bans: () => request<Ban[]>("GET", "/bans"),
   ban: (ip: string) => request<void>("POST", "/bans", { ip }),
   unban: (ip: string) => request<void>("DELETE", `/bans/${enc(ip)}`),

@@ -14,7 +14,9 @@ id: string,
  */
 path: string, 
 /**
- * Where other machines reach this root: UNC paths, `smb://` and `nfs://` URLs, set by a
- * server admin (see [`share`]). Clients suggest path mappings from them.
+ * Where other machines reach this root: UNC paths, `smb://` and `nfs://` URLs (desktop
+ * clients suggest path mappings from them), and `http(s)://` URLs of a web server
+ * listing its files (the web UI links files there). Set by a server admin (see
+ * [`share`]).
  */
 locators: Array<string>, };

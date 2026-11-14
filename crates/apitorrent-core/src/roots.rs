@@ -8,7 +8,8 @@
 
 use std::path::Path;
 
-use apitorrent_types::{RootMarker, StorageRoot};
+use apitorrent_types::share::ShareLocator;
+use apitorrent_types::{LocatorCheck, RootMarker, StorageRoot};
 
 use crate::db::Database;
 
@@ -91,6 +92,97 @@ pub(crate) fn write_marker(root: &StorageRoot) {
              can't be verified"
         );
     }
+}
+
+/// A marker is a few dozen bytes; anything much bigger isn't one.
+const MAX_MARKER_BYTES: usize = 4096;
+
+/// Fetch `<locator>/.apitorrent-root` and compare its id with the root's. Every outcome is
+/// a message for the admin rather than an error: the check is advisory.
+pub(crate) async fn check_web_locator(id: &str, locator: &ShareLocator) -> LocatorCheck {
+    let Some(url) = locator.web_marker_url() else {
+        return failed("It isn't a web locator.".into());
+    };
+    let client = match apitorrent_tracker::strict_http_client(
+        concat!("apitorrent/", env!("CARGO_PKG_VERSION")),
+        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(10),
+    ) {
+        Ok(c) => c,
+        Err(e) => return failed(format!("Couldn't check it: {e}")),
+    };
+    let mut response = match client.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return failed(format!(
+                "The daemon couldn't fetch {url}: {}. Links still show: browsers may reach \
+                 it where the daemon can't.",
+                describe(&e)
+            ));
+        }
+    };
+    let status = response.status();
+    match status.as_u16() {
+        200 => {}
+        401 | 403 => {
+            return failed(format!(
+                "{url} answered HTTP {status}: the server needs a sign-in or refuses \
+                 dotfiles, so it can't be checked from here. Links still show."
+            ));
+        }
+        404 => {
+            return failed(format!(
+                "{url} wasn't found (HTTP 404): the URL may not be this folder, or the \
+                 server hides dotfiles."
+            ));
+        }
+        _ => return failed(format!("{url} answered HTTP {status}.")),
+    }
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                body.extend_from_slice(&chunk);
+                if body.len() > MAX_MARKER_BYTES {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return failed(format!("Reading {url} failed: {}", describe(&e))),
+        }
+    }
+    match RootMarker::parse(&body) {
+        Some(m) if m.id == id => LocatorCheck {
+            verified: true,
+            message: "Serves this folder: its marker file matches.".into(),
+        },
+        Some(_) => failed(format!(
+            "{url} is another storage root's marker, so this URL serves a different folder."
+        )),
+        None => failed(format!(
+            "{url} answered, but not with this folder's marker file: the URL may serve \
+             another folder, or answer every path with one page."
+        )),
+    }
+}
+
+fn failed(message: String) -> LocatorCheck {
+    LocatorCheck {
+        verified: false,
+        message,
+    }
+}
+
+/// reqwest's top-level message hides the cause ("error sending request"); add the chain.
+fn describe(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        source = s.source();
+    }
+    out
 }
 
 #[cfg(test)]

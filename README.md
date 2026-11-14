@@ -498,6 +498,35 @@ warn about a self-signed certificate (and won't offer passkeys behind the warnin
 for browser use prefer your own certificate or ACME. The code is also shown by
 `GET /api/v1/tls`, which reports the current certificate and ACME progress.
 
+### Downloading files over the web
+
+If a web server already lists the download folder, such as nginx with `autoindex`, the web UI
+can link to it. A server admin adds the folder's address in Settings → Files → Storage roots,
+next to any `\\nas\…` or `smb://` entries:
+
+```text
+https://my-files.server.tld/path/to/downloads/
+```
+
+Each finished file then gets a **Download** link in the Files tab, and the save path a
+**Browse** link to its folder's listing. The first web address of a folder is the one used.
+apitorrent doesn't serve the files itself; the web server does, with its own access rules:
+
+```nginx
+location /path/to/downloads/ {
+    alias /srv/torrents/;   # the daemon's download folder
+    autoindex on;
+    auth_basic "Downloads"; # optional; never put the password in the address
+    auth_basic_user_file /etc/nginx/downloads.htpasswd;
+}
+```
+
+Saving the address (or **Check web address**) has the daemon fetch the folder's
+`.apitorrent-root` marker through it, to confirm it is the right folder. The check is only
+advice: links show either way, since the daemon may not reach an address your browser can, or
+be let past a sign-in. nginx's listing hides dotfiles but serves them; a rule that denies
+`/\.` paths makes the check fail with HTTP 403.
+
 ## Updates
 
 The daemon looks for a new published release once a day and tells admins in the web UI

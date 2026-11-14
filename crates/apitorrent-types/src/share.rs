@@ -4,6 +4,10 @@
 //! `nfs://nas/export/torrents`), and a desktop client turns them into local paths to
 //! suggest for its path mappings. They are hints, never trusted on their own: a mapping is
 //! used only once the root's marker file reads correctly through it.
+//!
+//! A root can also be served over the web (`https://files.example.com/downloads/`, an nginx
+//! `autoindex` listing, say). The web UI links files to their URLs there; the first web
+//! locator of a root is the one it uses.
 
 use std::fmt;
 
@@ -20,6 +24,17 @@ pub enum ShareProtocol {
     Smb,
     /// NFS, as an `nfs://host/export/…` URL.
     Nfs,
+    /// A web server listing the root's files, as an `http://` URL.
+    Http,
+    /// The same over TLS, as an `https://` URL.
+    Https,
+}
+
+impl ShareProtocol {
+    /// Served over HTTP(S): opened in a browser rather than mounted.
+    pub fn is_web(self) -> bool {
+        matches!(self, Self::Http | Self::Https)
+    }
 }
 
 /// A parsed, checked share locator.
@@ -34,7 +49,8 @@ pub struct ShareLocator {
     /// A port other than the protocol's own, from a URL.
     pub port: Option<u16>,
     /// The path on the server: for SMB the share name first, then folders inside it; for
-    /// NFS the export path's components. Never empty, never `.` or `..`.
+    /// NFS the export path's components; for the web, the URL path's (decoded). Empty only
+    /// for the web (a root served at the top of a host); never `.` or `..`.
     pub path: Vec<String>,
 }
 
@@ -106,7 +122,8 @@ fn percent_encode(s: &str) -> String {
 
 impl ShareLocator {
     /// Parse a locator: `\\host\share[\folder…]` (or with `/`), `smb://host[:port]/share[/…]`
-    /// or `nfs://host[:port]/export[/…]`. Credentials, queries and fragments are refused.
+    /// `nfs://host[:port]/export[/…]` or `http(s)://host[:port][/folder…]`. Credentials,
+    /// queries and fragments are refused: every signed-in user can read a root's locators.
     pub fn parse(input: &str) -> Result<Self, String> {
         let s = input.trim();
         if s.len() > MAX_LOCATOR_LEN {
@@ -136,13 +153,15 @@ impl ShareLocator {
         }
         let (scheme, rest) = s
             .split_once("://")
-            .ok_or_else(|| format!("{s} isn't a UNC path or an smb:// or nfs:// URL"))?;
+            .ok_or_else(|| format!("{s} isn't a UNC path or an smb://, nfs:// or https:// URL"))?;
         let protocol = match scheme.to_ascii_lowercase().as_str() {
             "smb" | "cifs" => ShareProtocol::Smb,
             "nfs" => ShareProtocol::Nfs,
+            "http" => ShareProtocol::Http,
+            "https" => ShareProtocol::Https,
             other => {
                 return Err(format!(
-                    "`{other}://` isn't supported; use a UNC path, smb:// or nfs://"
+                    "`{other}://` isn't supported; use a UNC path, smb://, nfs:// or https://"
                 ));
             }
         };
@@ -191,11 +210,12 @@ impl ShareLocator {
             .filter(|c| !c.is_empty())
             .map(percent_decode)
             .collect::<Result<Vec<_>, _>>()?;
-        if path.is_empty() {
-            return Err(match protocol {
-                ShareProtocol::Smb => format!("{s} names no share (smb://host/share)"),
-                ShareProtocol::Nfs => format!("{s} names no export (nfs://host/export)"),
-            });
+        match protocol {
+            _ if !path.is_empty() => {}
+            ShareProtocol::Smb => return Err(format!("{s} names no share (smb://host/share)")),
+            ShareProtocol::Nfs => return Err(format!("{s} names no export (nfs://host/export)")),
+            // A root served at the top of its host.
+            ShareProtocol::Http | ShareProtocol::Https => {}
         }
         for c in &path {
             check_component(c)?;
@@ -207,6 +227,18 @@ impl ShareLocator {
             port,
             path,
         })
+    }
+
+    /// The root's URL, ending in `/`, when it is served over the web: what a path below the
+    /// root (each part escaped) is appended to.
+    pub fn web_base(&self) -> Option<String> {
+        self.protocol.is_web().then(|| self.to_string())
+    }
+
+    /// Where the root's marker file is served, when the root is served over the web.
+    pub fn web_marker_url(&self) -> Option<String> {
+        self.web_base()
+            .map(|base| format!("{base}{}", percent_encode(crate::RootMarker::FILE_NAME)))
     }
 
     /// The same share, written as a UNC path (`\\host\share\…`), when it is SMB on the
@@ -229,6 +261,8 @@ impl fmt::Display for ShareLocator {
         let scheme = match self.protocol {
             ShareProtocol::Smb => "smb",
             ShareProtocol::Nfs => "nfs",
+            ShareProtocol::Http => "http",
+            ShareProtocol::Https => "https",
         };
         write!(f, "{scheme}://")?;
         if self.host.contains(':') {
@@ -242,6 +276,11 @@ impl fmt::Display for ShareLocator {
         for c in &self.path {
             write!(f, "/{}", percent_encode(c))?;
         }
+        if self.protocol.is_web() {
+            // A directory: paths below it are appended, and a web server would redirect
+            // the bare form to this one anyway.
+            f.write_str("/")?;
+        }
         Ok(())
     }
 }
@@ -251,8 +290,17 @@ impl fmt::Display for ShareLocator {
 pub fn normalise_locators(input: &[String]) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     for l in input.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
-        let parsed = ShareLocator::parse(l)?.to_string();
-        if !out.iter().any(|o| o.eq_ignore_ascii_case(&parsed)) {
+        let locator = ShareLocator::parse(l)?;
+        let parsed = locator.to_string();
+        // Web paths are case-sensitive; SMB and NFS hosts and SMB paths aren't.
+        let web = locator.protocol.is_web();
+        if !out.iter().any(|o| {
+            if web {
+                *o == parsed
+            } else {
+                o.eq_ignore_ascii_case(&parsed)
+            }
+        }) {
             out.push(parsed);
         }
     }
@@ -310,6 +358,37 @@ mod tests {
     }
 
     #[test]
+    fn web_urls() {
+        let l = ok("HTTPS://files.example.com/path/to/downloads");
+        assert_eq!(l.protocol, ShareProtocol::Https);
+        assert_eq!(l.path, ["path", "to", "downloads"]);
+        assert_eq!(
+            l.to_string(),
+            "https://files.example.com/path/to/downloads/"
+        );
+        assert_eq!(
+            l.web_base().as_deref(),
+            Some("https://files.example.com/path/to/downloads/")
+        );
+        assert_eq!(
+            l.web_marker_url().as_deref(),
+            Some("https://files.example.com/path/to/downloads/.apitorrent-root")
+        );
+        assert_eq!(l.unc_path(), None);
+
+        // The top of a host, a port, escapes.
+        let l = ok("http://10.0.0.5:8080");
+        assert_eq!((l.protocol, l.path.len()), (ShareProtocol::Http, 0));
+        assert_eq!(l.to_string(), "http://10.0.0.5:8080/");
+        assert_eq!(ok("https://f.example/").to_string(), "https://f.example/");
+        assert_eq!(
+            ok("https://f.example/My%20Files/").to_string(),
+            "https://f.example/My%20Files/"
+        );
+        assert_eq!(ok("smb://nas/t").web_base(), None);
+    }
+
+    #[test]
     fn refusals() {
         for bad in [
             "",
@@ -329,6 +408,11 @@ mod tests {
             "smb://nas/a%2Fb",
             "smb://nas/a%zz",
             "sftp://nas/t",
+            "ftp://nas/t",
+            "https://user:pw@files.example.com/t/",
+            "https://files.example.com/t/?token=1",
+            "https://files.example.com/a/../b/",
+            "https://",
             "/srv/torrents",
             r"C:\torrents",
             "smb://[fd00::5/t",
@@ -355,5 +439,13 @@ mod tests {
         let many: Vec<String> = (0..=MAX_LOCATORS).map(|i| format!(r"\\nas\t{i}")).collect();
         assert!(normalise_locators(&many).is_err());
         assert!(normalise_locators(&["nope".into()]).is_err());
+        // Web paths differ by case.
+        let got = normalise_locators(&[
+            "https://f.example/T".into(),
+            "https://f.example/t/".into(),
+            "https://f.example/t".into(),
+        ])
+        .unwrap();
+        assert_eq!(got, ["https://f.example/T/", "https://f.example/t/"]);
     }
 }

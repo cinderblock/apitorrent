@@ -718,8 +718,10 @@ pub struct StorageRoot {
     pub id: String,
     /// The path on the daemon's machine.
     pub path: String,
-    /// Where other machines reach this root: UNC paths, `smb://` and `nfs://` URLs, set by a
-    /// server admin (see [`share`]). Clients suggest path mappings from them.
+    /// Where other machines reach this root: UNC paths, `smb://` and `nfs://` URLs (desktop
+    /// clients suggest path mappings from them), and `http(s)://` URLs of a web server
+    /// listing its files (the web UI links files there). Set by a server admin (see
+    /// [`share`]).
     #[serde(default)]
     pub locators: Vec<String>,
 }
@@ -730,6 +732,28 @@ pub struct StorageRoot {
 #[ts(export)]
 pub struct SetLocatorsRequest {
     pub locators: Vec<String>,
+}
+
+/// `POST /api/v1/roots/{id}/locators/check`: check a web locator from the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct CheckLocatorRequest {
+    /// An `http(s)://` locator, saved or not.
+    pub locator: String,
+}
+
+/// What the daemon found when it fetched a web locator's marker file. Advisory: the
+/// daemon may not reach a URL browsers can (its own public address, say), so a failed
+/// check doesn't hide the web UI's links.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LocatorCheck {
+    /// The URL served this root's marker.
+    pub verified: bool,
+    /// What happened, to show the admin.
+    pub message: String,
 }
 
 /// The contents of `.apitorrent-root`, the marker file at the top of every storage root.
