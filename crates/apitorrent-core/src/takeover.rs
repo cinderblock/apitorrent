@@ -103,9 +103,7 @@ pub async fn deluge_identity(config_dir: &Path) -> apitorrent_types::ClientIdent
 /// the config directory's certificate or auth file is gone.
 fn not_running(e: &RpcError) -> bool {
     match e {
-        RpcError::Connect { source, .. } => {
-            source.kind() == std::io::ErrorKind::ConnectionRefused
-        }
+        RpcError::Connect { source, .. } => source.kind() == std::io::ErrorKind::ConnectionRefused,
         RpcError::Cert(CertError::Io { source, .. })
         | RpcError::AuthFile(AuthFileError::Io { source, .. }) => {
             source.kind() == std::io::ErrorKind::NotFound

@@ -200,7 +200,12 @@ mod tests {
         assert_eq!(find(url).unwrap().key, "Ab12Cd34Ef56");
         let url = "udp://u@t.example.org:6969/announce?torrent_pass=abcdefgh12345678#frag";
         assert_eq!(find(url).unwrap().key, "abcdefgh12345678");
-        assert_eq!(find("http://[::1]:80/abcdefgh12345678/announce").unwrap().host, "::1");
+        assert_eq!(
+            find("http://[::1]:80/abcdefgh12345678/announce")
+                .unwrap()
+                .host,
+            "::1"
+        );
     }
 
     #[test]

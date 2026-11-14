@@ -769,7 +769,11 @@ pub fn report(state: &DelugeState, plan: &Plan, c: &ReportContext<'_>) -> String
         let _ = writeln!(
             out,
             "Identity:       {} as Deluge to {}",
-            if c.dry_run { "would present" } else { "presents" },
+            if c.dry_run {
+                "would present"
+            } else {
+                "presents"
+            },
             c.identity_hosts.join(", ")
         );
     }

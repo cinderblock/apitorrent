@@ -1190,7 +1190,10 @@ async fn deluge_take_over() {
         .unwrap();
     assert_eq!(report.imported, ["single"], "{report:?}");
     assert!(
-        report.warnings.iter().any(|w| w.contains("imported paused")),
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("imported paused")),
         "{report:?}"
     );
     // Deluge's daemon didn't answer properly, so the release everyone has.

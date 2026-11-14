@@ -15,10 +15,12 @@ use sha2::{Digest, Sha256};
 #[must_use]
 pub fn id(key: &str) -> String {
     let digest = Sha256::digest(key.as_bytes());
-    digest[..8].iter().fold(String::with_capacity(16), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    digest[..8]
+        .iter()
+        .fold(String::with_capacity(16), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 /// The passkeys in `torrents`' announce lists (one list of tiers per torrent), with the
