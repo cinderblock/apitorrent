@@ -82,6 +82,9 @@ at startup and expire after ~10 minutes").
   (service `apitorrent-desktop`, key `profile:<id>:api-token`, same keyring 4.2.0 as the
   app) and wrote `%APPDATA%pitorrent\config\desktop\profiles.json` (there was none);
   the new app (`target/desktop-next`) signed in at 1:38 AM PST (09:38Z).
+- [x] Deployed `bca57c2` (stricter Deluge take-over) to pokol with the user's yes
+  (2026-11-14 9:42 AM PST, 17:42Z). Both Deluge daemons listen dual-stack (`*:58846`,
+  `*:58847`), so `::1` reaches `delugex`.
 - [ ] ← current The user: Account → "Open in my browser, signed in"; then the import
   wizard for `deluged` and `delugex`.
 
