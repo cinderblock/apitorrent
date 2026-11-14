@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 
 import { authApi } from "../api/client";
 import type { AuthStatus } from "../api/generated/AuthStatus";
+import { AuthHeader } from "./AuthHeader";
 import { describeError } from "./flow";
 import { passkeysSupported, signWithPasskey } from "./webauthn";
 
@@ -25,10 +26,10 @@ export function InsecureBanner({ status }: { status: AuthStatus }) {
 export function PasskeyHint({ status }: { status: AuthStatus }) {
   if (status.passkeysAvailable && passkeysSupported()) return null;
   if (!passkeysSupported()) {
-    return <p className="muted">This browser doesn't support passkeys.</p>;
+    return <p className="auth-note">This browser doesn't support passkeys.</p>;
   }
   return (
-    <p className="muted">
+    <p className="auth-note">
       Passkeys don't work at this address.
       {status.passkeyHint && (
         <>
@@ -84,10 +85,8 @@ export function LoginPage({ status, onSignedIn }: Props) {
     return (
       <div className="auth-page">
         <form className="auth-card" onSubmit={withPassword}>
-          <h1 className="brand">apitorrent</h1>
-          <h2>Enter your password</h2>
+          <AuthHeader title="Enter your password" lead="Your passkey worked. This server also asks for your password." />
           <InsecureBanner status={status} />
-          <p className="muted">Your passkey worked. This instance also asks for your password.</p>
           <label className="field">
             <span>Password</span>
             <input
@@ -99,19 +98,17 @@ export function LoginPage({ status, onSignedIn }: Props) {
               required
             />
           </label>
+          <button type="submit" className="primary auth-submit" disabled={busy || !password}>
+            Sign in
+          </button>
+          <button type="button" className="link auth-secondary" onClick={cancelSecondFactor} disabled={busy}>
+            Cancel and sign out
+          </button>
           {error && (
-            <p className="error-text" role="alert">
+            <p className="auth-error" role="alert">
               {error}
             </p>
           )}
-          <div className="actions">
-            <button type="button" onClick={cancelSecondFactor} disabled={busy}>
-              Cancel
-            </button>
-            <button type="submit" className="primary" disabled={busy || !password}>
-              Sign in
-            </button>
-          </div>
         </form>
       </div>
     );
@@ -120,49 +117,52 @@ export function LoginPage({ status, onSignedIn }: Props) {
   return (
     <div className="auth-page">
       <section className="auth-card">
-        <h1 className="brand">apitorrent</h1>
-        <h2>Sign in</h2>
+        <AuthHeader title="Sign in" />
         <InsecureBanner status={status} />
         {canPasskey ? (
-          <div className="actions start">
-            <button type="button" className="primary wide" onClick={withPasskey} disabled={busy}>
-              Sign in with a passkey
-            </button>
-          </div>
+          <button type="button" className="primary auth-submit" onClick={withPasskey} disabled={busy}>
+            {busy ? "Waiting for your passkey…" : "Sign in with a passkey"}
+          </button>
         ) : (
           <PasskeyHint status={status} />
         )}
         {status.passwordMode === "fallback" && (
-          <form className="auth-alt" onSubmit={withPassword}>
-            <p className="muted">{canPasskey ? "Or with your password:" : "Sign in with your password:"}</p>
-            <label className="field">
-              <span>Username</span>
-              <input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                required
-              />
-            </label>
-            <label className="field">
-              <span>Password</span>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </label>
-            <div className="actions">
-              <button type="submit" disabled={busy || !username || !password}>
+          <form onSubmit={withPassword}>
+            <fieldset className="auth-alt">
+              <legend>{canPasskey ? "or use your password" : "Sign in with your password"}</legend>
+              <label className="field">
+                <span>Username</span>
+                <input
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  required
+                />
+              </label>
+              <label className="field">
+                <span>Password</span>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  required
+                />
+              </label>
+              <button
+                type="submit"
+                className={canPasskey ? "auth-submit" : "primary auth-submit"}
+                disabled={busy || !username || !password}
+              >
                 Sign in with password
               </button>
-            </div>
+            </fieldset>
           </form>
         )}
         {error && (
-          <p className="error-text" role="alert">
+          <p className="auth-error" role="alert">
             {error}
           </p>
         )}

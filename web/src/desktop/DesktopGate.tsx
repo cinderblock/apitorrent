@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { AuthHeader } from "../auth/AuthHeader";
 import { desktop, type DesktopState } from "./bridge";
 import { DesktopNotices } from "./DesktopNotices";
 import { addNotice } from "./notices";
@@ -35,7 +36,7 @@ export function DesktopGate({ children }: { children: ReactNode }) {
     return (
       <div className="auth-page">
         <section className="auth-card">
-          <h1 className="brand">apitorrent</h1>
+          <AuthHeader />
           <p className="error-text">{error}</p>
         </section>
       </div>
@@ -53,7 +54,7 @@ export function DesktopGate({ children }: { children: ReactNode }) {
     return (
       <div className="auth-page">
         <section className="auth-card profiles-card">
-          <h1 className="brand">apitorrent</h1>
+          <AuthHeader />
           <ProfilesPanel state={state} onChanged={load} />
         </section>
         <DesktopNotices />

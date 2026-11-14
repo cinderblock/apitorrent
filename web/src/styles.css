@@ -827,9 +827,11 @@ code {
   gap: 10px;
 }
 
-/* Fields in a row may shrink below their inputs' natural width; on phones they stack. */
+/* Fields in a row may shrink below their inputs' natural width; on phones they stack. They
+   keep their own height, so a hint under one input doesn't stretch its neighbour's. */
 .field-row > .field {
   min-width: 0;
+  align-content: start;
 }
 
 @media (max-width: 480px) {
@@ -1018,52 +1020,209 @@ code {
   padding-left: 18px;
 }
 
-/* Sign-in, setup and account */
+/* Sign-in, setup and account. The cards are the first thing anyone sees, so they get a
+   little more room than the dense app: larger type, taller inputs, a full-width action. */
 
 .auth-page {
   min-height: 100%;
   display: grid;
   place-items: center;
-  padding: 24px 16px;
+  padding: 40px 16px;
+  background:
+    radial-gradient(56rem 28rem at 50% -8rem, color-mix(in srgb, var(--accent) 14%, transparent), transparent 70%),
+    var(--bg);
 }
 
 .auth-card {
-  width: min(30rem, 100%);
+  width: min(28rem, 100%);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 20px 22px;
+  border-radius: 14px;
+  padding: 28px;
+  font-size: 14px;
+  box-shadow: 0 16px 40px -20px var(--shadow);
 }
 
+@media (max-width: 480px) {
+  .auth-page {
+    place-items: start center;
+    padding: 16px;
+  }
+
+  .auth-card {
+    padding: 22px 18px;
+  }
+}
+
+.auth-header {
+  margin-bottom: 22px;
+}
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.brand-mark {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.auth-header h1 {
+  margin: 22px 0 0;
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.auth-header .auth-lead {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+/* Headings inside a card below the header (the desktop app's Connections list). */
 .auth-card h2 {
   margin: 4px 0 12px;
   font-size: 16px;
 }
 
-.auth-card .brand {
-  margin: 0;
+.auth-card p {
+  margin: 0 0 14px;
 }
 
+.auth-card .field {
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.auth-card .field > span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.auth-card .field input {
+  padding: 9px 11px;
+  border-radius: 8px;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.auth-card .field input:hover {
+  border-color: color-mix(in srgb, var(--border), var(--text) 25%);
+}
+
+.auth-card .field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* Side by side only; stacked on a phone, the fields' own margins space them. */
+@media (min-width: 481px) {
+  .auth-card .field-row {
+    gap: 14px;
+  }
+}
+
+input.mono {
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* "optional" beside a field's label, quieter than the label itself. */
+.optional {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+button.auth-submit {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+
+button.auth-secondary {
+  display: block;
+  margin: 14px auto 0;
+  padding: 4px 8px;
+}
+
+/* A second way in (a password after a passkey, or an existing account), set off by a
+   centred label between two rules. The floated legend lays out like a normal block. */
 .auth-alt {
-  margin: 16px 0 0;
-  padding: 12px 0 0;
+  min-width: 0;
+  margin: 22px 0 0;
+  padding: 0;
   border: none;
+}
+
+.auth-alt > legend {
+  float: left;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.auth-alt > legend::before,
+.auth-alt > legend::after {
+  content: "";
+  flex: 1;
   border-top: 1px solid var(--border);
 }
 
-.auth-alt legend {
+.auth-alt > legend + * {
+  clear: both;
+}
+
+.auth-card .banner-warn {
+  margin: 0 0 18px;
+  border-radius: 8px;
+}
+
+.auth-error {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--err) 45%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+
+.auth-card .auth-error {
+  margin: 18px 0 0;
+}
+
+/* Why passkeys aren't on offer here. */
+.auth-note {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
   color: var(--muted);
-  padding: 0;
 }
 
 .actions.start {
   justify-content: flex-start;
   margin: 8px 0;
-}
-
-button.wide {
-  width: 100%;
-  padding: 8px 10px;
 }
 
 .banner-info {

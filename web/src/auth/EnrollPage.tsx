@@ -15,6 +15,7 @@ import { enrollApi } from "../users/api";
 import { ROLE_TEXT, SPACE_ROLE_TEXT, enrollLinkAt, validUsername } from "../users/format";
 import { formatDateTime, formatUtc } from "../format";
 import { describeError, readSetupToken } from "./flow";
+import { AuthHeader } from "./AuthHeader";
 import { InsecureBanner } from "./LoginPage";
 import { createPasskey, passkeysSupported } from "./webauthn";
 
@@ -109,7 +110,7 @@ export function EnrollPage({ status, onSignedIn }: Props) {
     );
   } else if (linkError) {
     body = (
-      <p className="error-text" role="alert">
+      <p className="auth-error" role="alert">
         {linkError}
       </p>
     );
@@ -156,12 +157,14 @@ export function EnrollPage({ status, onSignedIn }: Props) {
                 pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}"
                 aria-describedby="enroll-username-hint"
               />
-              <small id="enroll-username-hint" className="muted">
-                Letters, digits, ., _ or -, starting with a letter or digit
+              <small id="enroll-username-hint" className="field-hint">
+                Letters, digits, ., _ or -
               </small>
             </label>
             <label className="field grow">
-              <span>Display name (optional)</span>
+              <span>
+                Display name <span className="optional">optional</span>
+              </span>
               <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} autoComplete="name" />
             </label>
           </div>
@@ -169,44 +172,51 @@ export function EnrollPage({ status, onSignedIn }: Props) {
         {canPasskey ? (
           <>
             <label className="field">
-              <span>Name for this passkey (optional)</span>
+              <span>
+                Passkey name <span className="optional">optional</span>
+              </span>
               <input
                 value={passkeyName}
                 onChange={(e) => setPasskeyName(e.target.value)}
                 placeholder="Laptop, phone, security key…"
               />
             </label>
-            <div className="actions">
-              <button type="submit" className={joinAs ? undefined : "primary"} disabled={busy || !nameOk}>
-                {recovery ? "Register a new passkey" : "Create my account with a passkey"}
-              </button>
-            </div>
+            <button type="submit" className={joinAs ? "auth-submit" : "primary auth-submit"} disabled={busy || !nameOk}>
+              {recovery ? "Register a new passkey" : "Create my account with a passkey"}
+            </button>
           </>
         ) : (
           <EnrollPasskeyHint status={status} token={token} />
         )}
         {canPassword && (
           <fieldset className="auth-alt">
-            <legend>{canPasskey ? "Or with a password" : "With a password"}</legend>
+            <legend>{canPasskey ? "or use a password" : "Use a password"}</legend>
             <label className="field">
-              <span>Password (at least 12 characters)</span>
+              <span>Password</span>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password"
                 minLength={12}
+                aria-describedby="enroll-password-hint"
               />
+              <small id="enroll-password-hint" className="field-hint">
+                At least 12 characters
+              </small>
             </label>
-            <div className="actions">
-              <button type="button" disabled={busy || !nameOk || password.length < 12} onClick={withPassword}>
-                {recovery ? "Set a new password" : "Create my account with a password"}
-              </button>
-            </div>
+            <button
+              type="button"
+              className={canPasskey || joinAs ? "auth-submit" : "primary auth-submit"}
+              disabled={busy || !nameOk || password.length < 12}
+              onClick={withPassword}
+            >
+              {recovery ? "Set a new password" : "Create my account with a password"}
+            </button>
           </fieldset>
         )}
         {error && (
-          <p className="error-text" role="alert">
+          <p className="auth-error" role="alert">
             {error}
           </p>
         )}
@@ -217,16 +227,13 @@ export function EnrollPage({ status, onSignedIn }: Props) {
   return (
     <div className="auth-page">
       <form className="auth-card" onSubmit={withPasskey}>
-        <h1 className="brand">apitorrent</h1>
-        <h2>{recovery ? "Recover your account" : "Join apitorrent"}</h2>
+        <AuthHeader title={recovery ? "Recover your account" : "Join apitorrent"} />
         <InsecureBanner status={status} />
         {body}
         {status.user && (
-          <div className="actions start">
-            <button type="button" className="link" onClick={() => navigate("/", { replace: true })}>
-              Back to apitorrent
-            </button>
-          </div>
+          <button type="button" className="link auth-secondary" onClick={() => navigate("/", { replace: true })}>
+            Back to apitorrent
+          </button>
         )}
       </form>
     </div>
@@ -272,10 +279,10 @@ function Summary({ info }: { info: EnrollInfo }) {
 /** Passkeys need a secure context and a relying party for this host; say where they work. */
 function EnrollPasskeyHint({ status, token }: { status: AuthStatus; token: string }) {
   if (!passkeysSupported()) {
-    return <p className="muted">This browser doesn't support passkeys.</p>;
+    return <p className="auth-note">This browser doesn't support passkeys.</p>;
   }
   return (
-    <p className="muted">
+    <p className="auth-note">
       Passkeys don't work at this address.
       {status.passkeyHint && (
         <>

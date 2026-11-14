@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { authApi } from "../api/client";
 import type { AuthStatus } from "../api/generated/AuthStatus";
 import { describeError, readSetupToken } from "./flow";
+import { AuthHeader } from "./AuthHeader";
 import { InsecureBanner, PasskeyHint } from "./LoginPage";
 import { createPasskey, passkeysSupported } from "./webauthn";
 
@@ -62,23 +63,24 @@ export function SetupPage({ status, onSignedIn }: Props) {
   return (
     <div className="auth-page">
       <form className="auth-card" onSubmit={withPasskey}>
-        <h1 className="brand">apitorrent</h1>
-        <h2>Create the first admin</h2>
+        <AuthHeader title="Set up apitorrent" lead="Create the first admin account for this server." />
         <InsecureBanner status={status} />
-        <p className="muted">
-          The daemon printed a one-time setup token on its console when it started (and a new one each hour
-          until it's used).
-        </p>
         <label className="field">
           <span>Setup token</span>
           <input
+            className="mono"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             autoComplete="off"
+            autoCapitalize="none"
             spellCheck={false}
             required
             placeholder="xxxx-xxxx-xxxx-…"
+            aria-describedby="setup-token-hint"
           />
+          <small id="setup-token-hint" className="field-hint">
+            The daemon prints it on its console when it starts, and a new one each hour until it's used.
+          </small>
         </label>
         <div className="field-row">
           <label className="field grow">
@@ -87,60 +89,71 @@ export function SetupPage({ status, onSignedIn }: Props) {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
               required
               pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}"
               aria-describedby="username-hint"
             />
-            <small id="username-hint" className="muted">
-              Letters, digits, ., _ or -, starting with a letter or digit
+            <small id="username-hint" className="field-hint">
+              Letters, digits, ., _ or -
             </small>
           </label>
           <label className="field grow">
-            <span>Display name (optional)</span>
+            <span>
+              Display name <span className="optional">optional</span>
+            </span>
             <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} autoComplete="name" />
           </label>
         </div>
         {canPasskey ? (
           <>
             <label className="field">
-              <span>Name for this passkey (optional)</span>
+              <span>
+                Passkey name <span className="optional">optional</span>
+              </span>
               <input
                 value={passkeyName}
                 onChange={(e) => setPasskeyName(e.target.value)}
                 placeholder="Laptop, phone, security key…"
               />
             </label>
-            <div className="actions">
-              <button type="submit" className="primary" disabled={busy || !token}>
-                Create admin with a passkey
-              </button>
-            </div>
+            <button type="submit" className="primary auth-submit" disabled={busy || !token}>
+              {busy ? "Waiting for your passkey…" : "Create admin with a passkey"}
+            </button>
           </>
         ) : (
           <PasskeyHint status={status} />
         )}
         {canPassword && (
           <fieldset className="auth-alt">
-            <legend>Or with a password</legend>
+            <legend>{canPasskey ? "or use a password" : "Use a password"}</legend>
             <label className="field">
-              <span>Password (at least 12 characters)</span>
+              <span>Password</span>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="new-password"
                 minLength={12}
+                aria-describedby="setup-password-hint"
               />
+              <small id="setup-password-hint" className="field-hint">
+                At least 12 characters
+              </small>
             </label>
-            <div className="actions">
-              <button type="button" disabled={busy || !token || password.length < 12} onClick={withPassword}>
-                Create admin with a password
-              </button>
-            </div>
+            <button
+              type="button"
+              className={canPasskey ? "auth-submit" : "primary auth-submit"}
+              disabled={busy || !token || password.length < 12}
+              onClick={withPassword}
+            >
+              Create admin with a password
+            </button>
           </fieldset>
         )}
         {error && (
-          <p className="error-text" role="alert">
+          <p className="auth-error" role="alert">
             {error}
           </p>
         )}

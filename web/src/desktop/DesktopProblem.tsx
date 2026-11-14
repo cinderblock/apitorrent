@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 
 import { authApi } from "../api/client";
+import { AuthHeader } from "../auth/AuthHeader";
 import type { AuthView } from "../auth/flow";
 import { ProfilesDialog } from "./DesktopGate";
 import { describe } from "./util";
@@ -31,7 +32,7 @@ export function DesktopProblem({ view, retry }: { view: AuthView; retry: () => v
   return (
     <div className="auth-page">
       <section className="auth-card">
-        <h1 className="brand">apitorrent</h1>
+        <AuthHeader />
         <p>{text}</p>
         {detail && <p className="error-text">{detail}</p>}
         <div className="actions">

@@ -11,6 +11,7 @@ import { RulesPage } from "../rules/RulesPage";
 import { SpacesPage } from "../spaces/SpacesPage";
 import { UsersPage } from "../users/UsersPage";
 import { AccountPage } from "./AccountPage";
+import { AuthHeader } from "./AuthHeader";
 import { EnrollPage } from "./EnrollPage";
 import { viewFor } from "./flow";
 import { LoginPage } from "./LoginPage";
@@ -52,7 +53,7 @@ export function AuthGate() {
     return (
       <div className="auth-page">
         <section className="auth-card">
-          <h1 className="brand">apitorrent</h1>
+          <AuthHeader />
           <p>Can't reach the apitorrent daemon.</p>
           <div className="actions">
             <button type="button" className="primary" onClick={() => void refresh()}>
