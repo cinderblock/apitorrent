@@ -345,8 +345,10 @@ a.button-link:hover {
 /* Inputs */
 
 .s-amount {
+  /* One width for every number box, units included, so their edges line up row to row. */
   display: inline-flex;
   align-items: stretch;
+  width: 12.5rem;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg);
@@ -363,22 +365,19 @@ a.button-link:hover {
 }
 
 .s-amount input {
-  width: 7.5rem;
+  flex: 1 1 auto;
+  width: 0;
   min-width: 0;
   padding: 5px 8px;
   border: none;
   background: none;
-  text-align: right;
+  text-align: left;
   font-variant-numeric: tabular-nums;
 }
 
 .s-amount input:focus-visible,
 .s-amount select:focus-visible {
   outline: none;
-}
-
-.s-amount input::placeholder {
-  text-align: right;
 }
 
 .s-unit,
@@ -893,8 +892,8 @@ button.danger-outline {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .s-amount input {
-    width: 5.5rem;
+  .s-amount {
+    width: 10rem;
   }
 
   input.s-text {
