@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiRequestError, api } from "../api/client";
 import type { ReplacePasskeyReport } from "../api/generated/ReplacePasskeyReport";
 import type { TrackerPasskey } from "../api/generated/TrackerPasskey";
+import { Empty, SettingCard } from "../settings/controls";
 
 function message(e: unknown): string {
   return e instanceof ApiRequestError ? e.message : String(e);
@@ -35,42 +36,49 @@ function PasskeyRow({ passkey, onReplaced }: { passkey: TrackerPasskey; onReplac
   }
 
   const id = `passkey-${passkey.id}`;
+  const n = `${passkey.torrents} torrent${passkey.torrents === 1 ? "" : "s"}`;
   return (
-    <div className="root-row">
-      <div>
-        <code>{passkey.masked}</code> on {passkey.hosts.join(", ")}{" "}
+    <li>
+      <div className="s-list-main">
+        <code>{passkey.masked}</code>
         <span className="muted">
-          ({passkey.torrents} torrent{passkey.torrents === 1 ? "" : "s"})
-        </span>{" "}
-        {!editing && (
-          <button type="button" className="link" onClick={() => setEditing(true)}>
+          {passkey.hosts.join(", ")} · {n}
+        </span>
+      </div>
+      {!editing && (
+        <div className="s-list-actions">
+          <button type="button" onClick={() => setEditing(true)}>
             Change…
           </button>
-        )}
-      </div>
+        </div>
+      )}
       {editing && (
-        <>
-          <label className="field" htmlFor={id}>
-            <span>The new passkey, as the tracker shows it</span>
-          </label>
-          <input
-            id={id}
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            value={value}
-            onChange={(e) => {
-              setValue(e.target.value);
-              setError(null);
-            }}
-          />
-          <div className="inline-edit">
-            <button type="button" disabled={busy || fresh === ""} onClick={() => void replace()}>
-              {busy ? "Changing…" : `Change on ${passkey.torrents} torrent${passkey.torrents === 1 ? "" : "s"}`}
+        <form
+          className="s-list-edit"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void replace();
+          }}
+        >
+          <label htmlFor={id}>The new passkey, as the tracker shows it</label>
+          <div className="s-add">
+            <input
+              id={id}
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              autoFocus
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value);
+                setError(null);
+              }}
+            />
+            <button type="submit" className="primary" disabled={busy || fresh === ""}>
+              {busy ? "Changing…" : `Change on ${n}`}
             </button>
             <button
               type="button"
-              className="link"
               onClick={() => {
                 setEditing(false);
                 setValue("");
@@ -79,15 +87,15 @@ function PasskeyRow({ passkey, onReplaced }: { passkey: TrackerPasskey; onReplac
             >
               Cancel
             </button>
-            {error && <span className="error-text">{error}</span>}
           </div>
-        </>
+          {error && <p className="error-text">{error}</p>}
+        </form>
       )}
-    </div>
+    </li>
   );
 }
 
-/** This space's admins: the passkeys are the space's credentials. */
+/** This space's admins: the passkeys are the space's credentials. Acts at once. */
 export function TrackerPasskeysSection() {
   const [passkeys, setPasskeys] = useState<TrackerPasskey[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -98,23 +106,24 @@ export function TrackerPasskeysSection() {
   useEffect(load, [load]);
 
   return (
-    <fieldset className="settings-section">
-      <legend>Tracker passkeys</legend>
-      <p className="hint muted">
-        Private trackers know you by a passkey in their announce addresses. After you change yours on the tracker&apos;s site, put the new one here: every
-        torrent in this space that uses the old one gets the new one. Only its first and last characters are shown.
-      </p>
-      {passkeys?.map((p) => (
-        <PasskeyRow
-          key={p.id}
-          passkey={p}
-          onReplaced={(r) => {
-            setReport(r);
-            load();
-          }}
-        />
-      ))}
-      {passkeys?.length === 0 && <p className="hint muted">No torrent in this space has a passkey in its trackers.</p>}
+    <SettingCard
+      description="After you change your passkey on a tracker's site, put the new one here: every torrent in this space that uses the old one gets the new one. Only the first and last characters are shown."
+    >
+      {passkeys && passkeys.length > 0 && (
+        <ul className="s-list">
+          {passkeys.map((p) => (
+            <PasskeyRow
+              key={p.id}
+              passkey={p}
+              onReplaced={(r) => {
+                setReport(r);
+                load();
+              }}
+            />
+          ))}
+        </ul>
+      )}
+      {passkeys?.length === 0 && <Empty>No torrent in this space has a passkey in its trackers.</Empty>}
       {report && (
         <p className="ok-text">
           Changed on {report.changed} torrent{report.changed === 1 ? "" : "s"}.
@@ -131,6 +140,6 @@ export function TrackerPasskeysSection() {
         </ul>
       )}
       {error && <p className="error-text">{error}</p>}
-    </fieldset>
+    </SettingCard>
   );
 }

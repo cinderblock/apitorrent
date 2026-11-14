@@ -561,7 +561,7 @@ export function DetailPane({ summary, onClose, readOnly = false }: { summary: To
               }
             />
             <Row label="Label" value={<LabelEditor id={summary.id} label={summary.label} readOnly={readOnly} />} />
-            <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings)</span>} />
+            <Row label="Group" value={summary.group ?? <span className="muted">None (set up groups in Settings → Groups)</span>} />
             <Row label="Queue" value={`Position ${summary.queuePosition + 1}`} />
             {summary.supersededBy && <Row label="Superseded" value={<SupersededBy id={summary.supersededBy} />} />}
             {detail && detail.libraryBytes > 0 && (

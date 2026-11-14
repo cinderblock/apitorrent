@@ -1,13 +1,14 @@
-// Settings → Still with Deluge: imported torrents the Deluge they came from may still be
+// Settings → Deluge → Still with Deluge: imported torrents the Deluge they came from may still be
 // running. Taking them over pauses them in Deluge (through its daemon, with the config
 // directory's own password and certificate) and then runs them here. Resuming one torrent
-// does the same for it. Hidden when there's nothing waiting.
+// does the same for it.
 
 import { useCallback, useEffect, useState } from "react";
 
 import { ApiRequestError, request } from "../api/client";
 import type { ImportSource } from "../api/generated/ImportSource";
 import type { TakeOverReport } from "../api/generated/TakeOverReport";
+import { Empty, SettingCard } from "../settings/controls";
 
 function message(e: unknown): string {
   return e instanceof ApiRequestError ? e.message : String(e);
@@ -37,15 +38,13 @@ export function DelugeTakeOverSection() {
     }
   }
 
-  if ((waiting === null || waiting.length === 0) && !report && !error) return null;
   const total = waiting?.reduce((n, w) => n + w.torrents, 0) ?? 0;
   return (
-    <fieldset className="settings-section">
-      <legend>Still with Deluge</legend>
-      <p className="hint muted">
-        These imported torrents stay paused here until Deluge&apos;s copy is stopped, so only one client runs each. Taking them over pauses them in Deluge
-        (if its daemon is running) and starts them here. Resuming a single torrent does the same for it.
-      </p>
+    <SettingCard
+      title="Still with Deluge"
+      description="Imported torrents stay paused here until Deluge's copy is stopped, so only one client runs each. Taking them over pauses them in Deluge (if its daemon is running) and starts them here. Resuming a single torrent does the same for it."
+    >
+      {waiting?.length === 0 && !report && <Empty>No imported torrent is waiting on Deluge.</Empty>}
       {waiting && waiting.length > 0 && (
         <ul className="outcomes">
           {waiting.map((w) => (
@@ -56,9 +55,11 @@ export function DelugeTakeOverSection() {
         </ul>
       )}
       {total > 0 && (
-        <button type="button" disabled={busy} onClick={() => void takeOver()}>
-          {busy ? "Taking over…" : `Take over all ${total}`}
-        </button>
+        <div>
+          <button type="button" disabled={busy} onClick={() => void takeOver()}>
+            {busy ? "Taking over…" : `Take over all ${total}`}
+          </button>
+        </div>
       )}
       {report && (
         <p className={report.skipped.length > 0 ? "error-text" : "ok-text"}>
@@ -76,6 +77,6 @@ export function DelugeTakeOverSection() {
         </ul>
       )}
       {error && <p className="error-text">{error}</p>}
-    </fieldset>
+    </SettingCard>
   );
 }

@@ -9,12 +9,16 @@ import type { UpdateSettings } from "../api/generated/UpdateSettings";
 import type { UpdateStatus } from "../api/generated/UpdateStatus";
 import { formatDateTime, formatUtc } from "../format";
 import { Markdown } from "../markdown";
+import { SettingCard, ToggleRow } from "../settings/controls";
 
 // One shared copy of the status, so the toolbar and Settings agree.
 let current: UpdateStatus | null = null;
+// The daemon answered that it has no updater (the desktop app's own core), or refused.
+let unavailable = false;
 const listeners = new Set<() => void>();
 function publish(s: UpdateStatus | null): void {
   current = s;
+  unavailable = s === null;
   for (const l of listeners) l();
 }
 function subscribe(l: () => void): () => void {
@@ -150,13 +154,16 @@ export function UpdateButton({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-/** Settings → Updates (admins). */
+/** Settings → Updates (admins). Acts at once, apart from the page's Save. */
 export function UpdatesSection() {
   const status = useUpdateStatus(true);
+  const missing = useSyncExternalStore(subscribe, () => unavailable);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  if (!status) return null;
+  if (!status) {
+    return <SettingCard>{missing ? <p className="muted">This server can&apos;t check for updates itself. Update it the way it was installed.</p> : <p className="muted">Loading…</p>}</SettingCard>;
+  }
 
   async function check() {
     setChecking(true);
@@ -181,43 +188,50 @@ export function UpdatesSection() {
   }
 
   return (
-    <fieldset className="settings-section">
-      <legend>Updates</legend>
-      <p className="muted">
-        This server runs apitorrent {status.currentVersion}.{" "}
-        {status.checkedMs != null && (
+    <>
+      <SettingCard
+        title={`apitorrent ${status.currentVersion}`}
+        description={
           <>
-            Last checked <When ms={status.checkedMs} />.
+            {status.available ? "A newer release is out." : status.latest ? "Up to date." : "Not checked yet."}
+            {status.checkedMs != null && (
+              <>
+                {" "}
+                Last checked <When ms={status.checkedMs} />.
+              </>
+            )}
           </>
-        )}
-      </p>
-      {status.available ? (
-        <UpdateDetails status={status} />
-      ) : (
-        status.latest && <p className="muted">It is up to date.</p>
-      )}
-      {status.lastError && <p className="error-text">{status.lastError}</p>}
-      {error && <p className="error-text">{error}</p>}
-      <button type="button" disabled={checking} onClick={() => void check()}>
-        {checking ? "Checking…" : "Check now"}
-      </button>
-      <label className="check">
-        <input type="checkbox" checked={status.settings.checkDaily} onChange={(e) => void set({ checkDaily: e.target.checked })} />
-        Check for a new release once a day
-      </label>
-      <label className="check">
-        <input
-          type="checkbox"
+        }
+        footer={
+          <div className="s-inline">
+            <button type="button" disabled={checking} onClick={() => void check()}>
+              {checking ? "Checking…" : "Check now"}
+            </button>
+            {status.lastError && <span className="error-text">{status.lastError}</span>}
+            {error && <span className="error-text">{error}</span>}
+          </div>
+        }
+      >
+        {status.available && <UpdateDetails status={status} />}
+      </SettingCard>
+      <SettingCard
+        title="Automatic updates"
+        description={
+          <>
+            Only releases signed with apitorrent&apos;s update key install, and never an older version. Otherwise install from here, or with{" "}
+            <code>apitorrentd update</code>. These save at once.
+          </>
+        }
+      >
+        <ToggleRow label="Check for a new release once a day" checked={status.settings.checkDaily} onChange={(checkDaily) => void set({ checkDaily })} />
+        <ToggleRow
+          label="Install new releases automatically, and restart"
+          description={status.installsEnabled ? undefined : `This build can't install updates: ${status.installsDisabledReason}.`}
           checked={status.settings.autoInstall}
           disabled={!status.installsEnabled}
-          onChange={(e) => void set({ autoInstall: e.target.checked })}
+          onChange={(autoInstall) => void set({ autoInstall })}
         />
-        Install new releases automatically, and restart
-      </label>
-      <p className="hint muted">
-        Only releases signed with apitorrent&apos;s update key install, and never an older version. Otherwise an admin installs from here, or with{" "}
-        <code>apitorrentd update</code>.
-      </p>
-    </fieldset>
+      </SettingCard>
+    </>
   );
 }

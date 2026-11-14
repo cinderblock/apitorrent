@@ -262,14 +262,14 @@ in `<data dir>/automation.db`. See "Automation" in
 A space is a separate setup inside one daemon: its own torrents, storage roots and default
 folder, folders by label, rate, connection and queue limits, labels, rules, plugin
 settings and members. Every install starts with one, `default`, and looks and works as it
-always did until a server admin adds another (Settings, Spaces…).
+always did until a server admin adds another (Settings → Spaces).
 
 - **Pages and API** of a space are under `/s/<slug>/`: `/s/tv/` in a browser, and
   `/s/tv/api/v1/…` for scripts. A header switcher appears once you have more than one.
 - **Members** hold a role per space: viewer, user or admin. Server admins (the
   instance's admins) use every space. Someone who isn't a member gets 404, as if the
   space didn't exist. A space's admins invite people into it and manage its members
-  (Settings, Spaces…, Members and invitations), and manage its per-space plugins'
+  (Settings → Spaces, Members and invitations), and manage its per-space plugins'
   settings on the Plugins page.
 - **API tokens** work in the space they were made in (switch to it on the Account page
   first), so a Sonarr or Radarr signed in with one lands in its space.
@@ -311,7 +311,7 @@ kind given, and any one value of a kind): `--label tv`, `--exclude-label music`,
 Deluge), `--name "words in the name"`, `--hash <info-hash>`. The report says how many
 the filter left out.
 
-With the daemon running, the Settings dialog's "Import from Deluge…" does the same as a
+With the daemon running, Settings → Deluge → "Import from Deluge…" does the same as a
 wizard. It starts with the Deluge installations it finds on the server (running
 `deluged`s and their `--config`, systemd units, `~/.config/deluge`, Debian's
 `/var/lib/deluged`), each a click away with a space of its own. It lists the chosen
@@ -325,7 +325,7 @@ apitorrent starts an imported torrent only after pausing it in Deluge, through D
 daemon, using the port, certificate and `localclient` password from the config directory
 (read each time, never stored). If no daemon answers there, it just starts. The import
 does this for the torrents it starts; ones imported paused wait, and resuming one takes
-it over then. Settings → Still with Deluge takes over everything still waiting at once.
+it over then. Settings → Deluge → "Take over all" takes over everything still waiting at once.
 
 Private trackers that knew your torrents as Deluge's keep seeing Deluge: the import adds
 a client identity rule for each of their hosts (with the running daemon's exact Deluge
@@ -392,8 +392,8 @@ new user gets; they open it, pick a username and create a passkey (or a password
 `--passwords fallback`). The secret is in the link's `#` part, so it never reaches a
 server log. Send it privately.
 
-- **Server admins** invite from Settings, Users…, into any spaces and with any server
-  role; a **space's admins** invite into their own space from Settings, Spaces….
+- **Server admins** invite from Settings → Users, into any spaces and with any server
+  role; a **space's admins** invite into their own space from Settings → Spaces.
 - **Someone who already has an account** opens the link while signed in and picks "Join
   as …": the invitation's spaces are added to their account (a higher role they already
   have stays), and no new user is made. That is how a space's admins add existing users.
@@ -553,7 +553,7 @@ folder on the server (`/srv/torrents`) to where this computer sees it (`\\nas\to
 `/mnt/torrents`). A mapping is used only after the app reads the server's
 `.apitorrent-root` marker through it, so "Show in folder" never opens the wrong place.
 "Suggest from the server" fills them in from the **share locators** a server admin sets in
-Settings → Storage roots (`\\nas\torrents`, `smb://nas/torrents`,
+Settings → Files → Storage roots (`\\nas\torrents`, `smb://nas/torrents`,
 `nfs://nas/srv/torrents`): on Windows the share is opened by its UNC path, and on macOS and
 Linux the app finds where it is mounted. Folders on this computer (mappings, and the
 folders of "This computer" connections) can be picked with the system's folder picker.

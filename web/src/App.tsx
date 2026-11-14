@@ -6,9 +6,7 @@ import { SyncClient } from "./api/sync";
 import { AddTorrent } from "./components/AddTorrent";
 import { ConfirmRemove } from "./components/ConfirmRemove";
 import { DetailPane } from "./components/DetailPane";
-import { ImportDeluge } from "./components/ImportDeluge";
 import { StatusBar } from "./components/StatusBar";
-import { SettingsDialog } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
 import { ThemePicker } from "./components/ThemePicker";
@@ -49,7 +47,6 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const serverAdmin = space ? space.serverAdmin : auth.authDisabled || auth.user?.role === "admin";
   // A space's admins get its space-aware plugins, its members and its invitations.
   const spaceAdmin = serverAdmin || space?.current.role === "admin";
-  const administersASpace = serverAdmin || (space?.spaces.some((s) => s.role === "admin") ?? false);
   // Viewers read only: no add, pause, remove or queue controls, and no editors in the details.
   const mayWrite = space ? atLeast(space.current.role, "user") : auth.authDisabled || auth.user?.role !== "viewer";
 
@@ -65,8 +62,6 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const [addingMagnet, setAddingMagnet] = useState("");
   const [removing, setRemoving] = useState<string[] | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [importing, setImporting] = useState(false);
   const narrow = useNarrow();
   // The filters drawer, on a phone.
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -216,7 +211,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
           </>
         )}
         {!mayWrite && <span className="badge">Read only</span>}
-        <button type="button" className="wide-only" onClick={() => setSettingsOpen(true)}>
+        <button type="button" className="wide-only" onClick={() => navigate("/settings")}>
           Settings
         </button>
         <button type="button" className="wide-only" onClick={() => navigate("/rules")}>
@@ -232,7 +227,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
         </span>
         <ToolbarMore
           items={[
-            { label: "Settings", onSelect: () => setSettingsOpen(true) },
+            { label: "Settings", onSelect: () => navigate("/settings") },
             { label: "Rules", onSelect: () => navigate("/rules") },
             ...(spaceAdmin ? [{ label: "Plugins", onSelect: () => navigate("/plugins") }] : []),
           ]}
@@ -345,38 +340,6 @@ export function App({ status: auth }: { status: AuthStatus }) {
           }}
         />
       )}
-      {settingsOpen && (
-        <SettingsDialog
-          isAdmin={serverAdmin}
-          spaceAdmin={spaceAdmin}
-          onClose={() => setSettingsOpen(false)}
-          onImport={
-            spaceAdmin
-              ? () => {
-                  setSettingsOpen(false);
-                  setImporting(true);
-                }
-              : undefined
-          }
-          onSpaces={
-            administersASpace
-              ? () => {
-                  setSettingsOpen(false);
-                  navigate("/spaces");
-                }
-              : undefined
-          }
-          onUsers={
-            serverAdmin && !auth.authDisabled
-              ? () => {
-                  setSettingsOpen(false);
-                  navigate("/users");
-                }
-              : undefined
-          }
-        />
-      )}
-      {importing && <ImportDeluge onClose={() => setImporting(false)} />}
       {removing && (
         <ConfirmRemove
           count={removing.length}

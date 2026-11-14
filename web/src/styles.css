@@ -878,14 +878,6 @@ code {
   width: min(46rem, 94vw);
 }
 
-/* Wraps every section, so one `disabled` makes the dialog read-only for non-admins. */
-.settings-all {
-  border: none;
-  margin: 0;
-  padding: 0;
-  min-width: 0;
-}
-
 .settings-section {
   /* A fieldset is at least as wide as its widest content by default. */
   min-width: 0;
@@ -900,66 +892,8 @@ code {
   padding: 0;
 }
 
-.settings-subhead {
-  font-size: inherit;
-  font-weight: 600;
-  margin: 12px 0 4px;
-}
-
-.library-status p {
-  margin: 4px 0;
-}
-
 .outcomes code {
   overflow-wrap: anywhere;
-}
-
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
-  gap: 8px 12px;
-}
-
-.root-row {
-  margin-bottom: 10px;
-}
-
-.root-row .field {
-  margin-bottom: 4px;
-}
-
-.root-row code {
-  overflow-wrap: anywhere;
-}
-
-.root-row textarea {
-  width: 100%;
-  box-sizing: border-box;
-  font-family: var(--mono, ui-monospace, monospace);
-}
-
-.group-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) 5.5rem 5.5rem 5.5rem auto;
-  gap: 6px;
-  align-items: end;
-  margin-bottom: 6px;
-}
-
-.group-row .field {
-  margin-bottom: 0;
-  min-width: 0;
-}
-
-.group-row input:not([type="checkbox"]) {
-  width: 100%;
-  min-width: 0;
-}
-
-@media (max-width: 640px) {
-  .group-row {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 
 .identity-fields {
@@ -990,29 +924,9 @@ code {
   overflow-wrap: anywhere;
 }
 
-.identity-rules-title {
-  margin: 14px 0 6px;
-  font-size: 13px;
-}
-
-.identity-rule {
-  border-top: 1px solid var(--border);
-  padding: 8px 0;
-}
-
-.identity-rule > .field {
-  margin-bottom: 6px;
-}
-
-.identity-rule > .field input {
-  width: 100%;
-  box-sizing: border-box;
-}
-
 .identity-rule-actions {
   display: flex;
   gap: 6px;
-  margin-top: 6px;
 }
 
 .identity-problems {
@@ -1223,13 +1137,6 @@ button.auth-secondary {
 .actions.start {
   justify-content: flex-start;
   margin: 8px 0;
-}
-
-.banner-info {
-  background: var(--accent-soft);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin: 0 0 12px;
 }
 
 .banner-warn {
@@ -1711,10 +1618,6 @@ button.link.danger-text {
   grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
   gap: 8px 12px;
   max-width: 40rem;
-}
-
-.group-seed {
-  grid-column: 1 / -1;
 }
 
 .seed-limits-form {

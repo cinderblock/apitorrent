@@ -1,0 +1,916 @@
+/* The Settings page. Two columns: the sections nav (sticky) and one section of cards. Each
+   card holds rows: label and description on the left, the control on the right. On a phone
+   the nav is its own screen and rows stack. */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A link that looks like the toolbar's plain link buttons. */
+a.button-link {
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0 4px;
+  border-radius: 4px;
+}
+
+a.button-link:hover {
+  text-decoration: underline;
+}
+
+.settings-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.s-layout {
+  display: grid;
+  grid-template-columns: 14.5rem minmax(0, 50rem);
+  justify-content: center;
+  gap: 36px;
+  width: 100%;
+  padding: 24px 24px 120px;
+}
+
+.s-layout.narrow {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 12px 12px 120px;
+}
+
+/* Nav */
+
+.s-nav {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.s-nav-title {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.s-search {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  margin-bottom: 8px;
+}
+
+.s-nav-none {
+  margin: 4px 8px;
+}
+
+.s-nav-group h3 {
+  margin: 14px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.s-nav-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.s-nav-group a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.s-nav-group a:hover {
+  background: var(--row-hover);
+}
+
+.s-nav-group a[aria-current="page"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.s-nav-out {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.s-nav-summary {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+/* An unsaved section; red when it holds something to fix. */
+.s-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.s-dot.bad {
+  background: var(--err);
+}
+
+/* The phone's nav screen: bigger rows, as a list of cards. */
+.narrow .s-nav {
+  position: static;
+}
+
+.narrow .s-nav-group ul {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  gap: 0;
+}
+
+.narrow .s-nav-group li + li {
+  border-top: 1px solid var(--border);
+}
+
+.narrow .s-nav-group a {
+  border-radius: 0;
+  padding: 10px 14px;
+  font-size: 14px;
+  row-gap: 2px;
+}
+
+.narrow .s-nav-group a::after {
+  content: "›";
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.narrow .s-nav-group a:has(.s-nav-out)::after {
+  content: none;
+}
+
+.narrow .s-nav-group a:has(.s-dot)::after {
+  content: none;
+}
+
+/* Main */
+
+.s-main {
+  min-width: 0;
+}
+
+.s-back {
+  display: inline-block;
+  margin: 0 0 10px;
+}
+
+.s-head {
+  margin-bottom: 16px;
+}
+
+.s-head h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.s-head p {
+  margin: 2px 0 0;
+}
+
+.s-head .s-scope {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.s-fields {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+/* Cards */
+
+.s-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin: 0 0 16px;
+  min-width: 0;
+}
+
+.s-card-head {
+  padding: 14px 16px 10px;
+}
+
+.s-card-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.s-card-head p {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+}
+
+.s-card-body {
+  display: flow-root;
+}
+
+.s-card-head + .s-card-body {
+  border-top: 1px solid var(--border);
+}
+
+/* A card with only a body (no header) keeps its content off the border. */
+.s-card-body > :is(p, ul.outcomes, .s-choices, .s-empty, .s-status, div:not([class])):first-child {
+  margin-top: 14px;
+}
+
+.s-card-body > :is(p, ul.outcomes, .s-choices, .s-empty, .s-status, div:not([class])) {
+  margin-inline: 16px;
+}
+
+.s-card-body > :is(p, ul.outcomes, .s-choices, .s-empty, .s-status, div:not([class])):last-child {
+  margin-bottom: 14px;
+}
+
+.s-card-body > .s-choices {
+  margin-block: 14px;
+}
+
+.s-card-foot {
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+}
+
+.s-card-body > .s-card-foot {
+  margin: 0;
+}
+
+/* Rows */
+
+.s-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 24px;
+  padding: 12px 16px;
+}
+
+.s-card-body > .s-row + .s-row,
+.s-card-body > .s-nested,
+.s-card-body > .s-row + .s-note,
+.s-card-body > .s-nested + .s-row,
+.s-card-body > .identity-rule + .identity-rule,
+.s-card-body > .s-row + .identity-problems {
+  border-top: 1px solid var(--border);
+}
+
+.s-row-wide {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.s-row-label {
+  font-weight: 500;
+  font-size: 13.5px;
+}
+
+.s-row-desc {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.s-row-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.s-row-wide .s-row-control {
+  align-items: stretch;
+}
+
+.s-toggle-row.disabled .s-row-label {
+  color: var(--muted);
+}
+
+/* Settings that apply only while the toggle above is on. */
+.s-nested {
+  margin-left: 16px;
+  border-left: 2px solid var(--accent-soft);
+}
+
+.s-nested > .s-row + .s-row,
+.s-nested > .s-nested,
+.s-nested > .s-nested + .s-row {
+  border-top: 1px solid var(--border);
+}
+
+.s-nested > .s-row {
+  padding-left: 14px;
+}
+
+/* Inputs */
+
+.s-amount {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.s-amount:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.s-amount.invalid {
+  border-color: var(--err);
+}
+
+.s-amount input {
+  width: 7.5rem;
+  min-width: 0;
+  padding: 5px 8px;
+  border: none;
+  background: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.s-amount input:focus-visible,
+.s-amount select:focus-visible {
+  outline: none;
+}
+
+.s-amount input::placeholder {
+  text-align: right;
+}
+
+.s-unit,
+.s-amount select {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.s-amount select {
+  padding-right: 4px;
+  cursor: pointer;
+}
+
+input.s-text,
+textarea.s-text,
+.s-add input {
+  width: min(22rem, 100%);
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+textarea.s-text {
+  width: 100%;
+  resize: vertical;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+/* A switch: a checkbox drawn as a pill. */
+.s-switch {
+  appearance: none;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+
+.s-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.3);
+  transition: transform 0.15s;
+}
+
+.s-switch:checked {
+  background: var(--accent);
+}
+
+.s-switch:checked::after {
+  transform: translateX(16px);
+}
+
+.s-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-switch,
+  .s-switch::after {
+    transition: none;
+  }
+}
+
+/* Radio cards */
+
+.s-choices {
+  display: grid;
+  gap: 8px;
+}
+
+.s-choices-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.s-choices-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.s-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.s-choice:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.s-choice.picked {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 55%, var(--bg));
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.s-choice.warn.picked {
+  border-color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg));
+  box-shadow: inset 0 0 0 1px var(--warn);
+}
+
+.s-choice input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.s-choice-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.s-choice-label {
+  font-weight: 500;
+}
+
+.s-choice-desc {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Read only (not a server admin): the controls show their values but plainly can't change. */
+fieldset:disabled .s-choice {
+  cursor: default;
+}
+
+fieldset:disabled :is(.s-amount, .s-choice:not(.picked), input.s-text, select, .s-switch) {
+  opacity: 0.6;
+}
+
+fieldset:disabled .s-amount select {
+  appearance: none;
+  padding-right: 8px;
+}
+
+/* Notes and empty states */
+
+.s-note {
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin: 0 0 16px;
+  font-size: 12.5px;
+}
+
+.s-card-body > .s-note {
+  margin: 0;
+  border-radius: 0;
+  padding: 10px 16px;
+}
+
+.s-note-info {
+  background: var(--accent-soft);
+}
+
+.s-note-warn {
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+}
+
+.s-card-body > .s-note-info {
+  background: color-mix(in srgb, var(--accent-soft) 50%, transparent);
+  color: var(--muted);
+}
+
+.s-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Lists: bans, passkeys, library folders */
+
+.s-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.s-card-body > .s-list > li,
+.s-row .s-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 10px 16px;
+}
+
+.s-row .s-list > li {
+  padding-inline: 0;
+}
+
+.s-list > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.s-list-main {
+  display: grid;
+  gap: 2px;
+  flex: 1 1 14rem;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.s-list-main code {
+  font-size: 12.5px;
+}
+
+.s-list-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.s-list-edit {
+  flex: 1 1 100%;
+  display: grid;
+  gap: 6px;
+}
+
+.s-list-edit label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.s-add,
+.s-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.s-add input {
+  flex: 1 1 12rem;
+  width: auto;
+}
+
+.s-status {
+  display: grid;
+  gap: 6px;
+}
+
+.s-status p {
+  margin: 0;
+}
+
+/* Groups */
+
+.s-group-head {
+  display: flex;
+}
+
+.s-group-toggle {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  text-align: left;
+}
+
+.s-group.open .s-group-toggle {
+  border-radius: 10px 10px 0 0;
+}
+
+.s-group-toggle:hover:not(:disabled) {
+  background: var(--row-hover);
+}
+
+.s-chevron {
+  display: inline-block;
+  width: 1em;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.15s;
+}
+
+.s-group.open .s-chevron {
+  transform: rotate(90deg);
+}
+
+.s-group-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.s-group-labels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.s-group-labels .chip {
+  font-size: 11.5px;
+}
+
+.s-group-summary {
+  flex-basis: 100%;
+  padding-left: calc(1em + 10px);
+  font-size: 12px;
+}
+
+.s-group .s-card-body {
+  border-top: 1px solid var(--border);
+}
+
+button.danger-outline {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 45%, var(--border));
+}
+
+/* Client identity, inside the page's cards. */
+
+.s-card-body > .identity-fields {
+  padding: 12px 16px;
+}
+
+.s-card-body > .identity-rule {
+  padding: 12px 16px;
+  border-top: none;
+}
+
+.identity-rule-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.identity-rule-n {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: 20px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.identity-rule-host {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.identity-rule-head .identity-rule-actions {
+  margin-top: 19px;
+}
+
+.s-card-body > .identity-problems {
+  margin: 0;
+  padding: 10px 16px 10px 34px;
+}
+
+/* TLS and update facts, inside cards: one column of labels. */
+
+.s-card-body > .facts {
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+  gap: 6px 16px;
+  padding: 12px 16px;
+  margin: 0;
+}
+
+.s-card-body > .update-details {
+  padding: 12px 16px;
+}
+
+/* The save bar: floats at the bottom while anything is unsaved. */
+
+.s-savebar {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  z-index: 30;
+  width: min(48rem, calc(100% - 24px));
+  transform: translateX(-50%);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px var(--shadow);
+  animation: s-rise 0.18s ease-out;
+}
+
+.s-savebar.bad {
+  border-color: var(--err);
+}
+
+.s-savebar.done {
+  border-color: var(--ok);
+}
+
+.s-savebar.done strong {
+  color: var(--ok);
+}
+
+@keyframes s-rise {
+  from {
+    transform: translate(-50%, 12px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .s-savebar {
+    animation: none;
+  }
+
+  .s-chevron {
+    transition: none;
+  }
+}
+
+.s-savebar-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 12px 10px 16px;
+}
+
+.s-savebar-text {
+  min-width: 0;
+  flex: 1 1 16rem;
+}
+
+.s-savebar-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.s-savebar-actions button {
+  white-space: nowrap;
+  padding: 6px 14px;
+}
+
+/* Phones: the label and the control share a line, and the description wraps under both,
+   across the card. Rows with a text box or a list stack; choices go one per line. */
+
+@media (max-width: 720px) {
+  .s-row {
+    gap: 4px 12px;
+  }
+
+  .s-row > .s-row-text {
+    display: contents;
+  }
+
+  .s-row > .s-row-text > .s-row-label {
+    grid-column: 1;
+    grid-row: 1;
+    align-self: center;
+  }
+
+  .s-row > .s-row-text > .s-row-desc {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    margin-top: 0;
+  }
+
+  .s-row > .s-row-control {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .s-row-wide > .s-row-control,
+  .s-row:has(.s-text) > .s-row-control {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    align-items: stretch;
+  }
+
+  .s-row:has(.s-text) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .s-amount input {
+    width: 5.5rem;
+  }
+
+  input.s-text {
+    width: 100%;
+  }
+
+  .s-choices-2,
+  .s-choices-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .s-head h2 {
+    font-size: 20px;
+  }
+
+  .s-savebar {
+    bottom: 8px;
+  }
+}

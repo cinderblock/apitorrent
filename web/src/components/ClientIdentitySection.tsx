@@ -2,6 +2,7 @@ import type { ClientIdentity } from "../api/generated/ClientIdentity";
 import type { IdentitySettings } from "../api/generated/IdentitySettings";
 import type { TrackerIdentityRule } from "../api/generated/TrackerIdentityRule";
 import { CLIENT_LABELS, type ClientKind, describeIdentity, hostProblem, identityProblems, moveRule, presetIdentity } from "./clientIdentity";
+import { Empty, Note, SettingCard } from "../settings/controls";
 
 const KINDS = Object.keys(CLIENT_LABELS) as ClientKind[];
 
@@ -65,70 +66,78 @@ function IdentityFields({ value, onChange, idPrefix }: { value: ClientIdentity; 
 
 const NEW_RULE: TrackerIdentityRule = { host: "", identity: presetIdentity("deluge") };
 
-/** The settings section: the default identity and the per-tracker rules. */
+/** Settings → Client identity: the default identity and the per-tracker rules. */
 export function ClientIdentitySection({ value, onChange }: { value: IdentitySettings; onChange: (v: IdentitySettings) => void }) {
   const setRule = (i: number, patch: Partial<TrackerIdentityRule>) => onChange({ ...value, rules: value.rules.map((r, j) => (j === i ? { ...r, ...patch } : r)) });
   const problems = identityProblems(value);
   return (
-    <fieldset className="settings-section">
-      <legend>Client identity</legend>
-      <p className="banner-warn">
-        Many private trackers forbid presenting as another client, and can ban your account for it. Only use this for a tracker that allows it, or
-        that only accepts clients on its list. Check its rules first.
-      </p>
-      <p className="hint muted">
-        Trackers and peers see which client you use from its peer id and user agent. A torrent uses the first rule below that matches one of its
-        trackers&apos; hosts, or else the default. A change applies from each torrent&apos;s next announce. The DHT always sees apitorrent.
-      </p>
-      <IdentityFields idPrefix="identity-default" value={value.default} onChange={(d) => onChange({ ...value, default: d })} />
-      {value.rules.length > 0 && <h4 className="identity-rules-title">Per tracker</h4>}
-      {value.rules.map((r, i) => {
-        const bad = r.host.trim() !== "" ? hostProblem(r.host) : null;
-        return (
-          <div className="identity-rule" key={i}>
-            <label className="field">
-              <span>Tracker host</span>
-              <input
-                id={`identity-rule-${i}-host`}
-                value={r.host}
-                required
-                placeholder="tracker.example.org or *.example.org"
-                aria-invalid={bad !== null}
-                onChange={(e) => setRule(i, { host: e.target.value })}
-              />
-              {bad && <span className="error-text">{bad}</span>}
-            </label>
-            <IdentityFields idPrefix={`identity-rule-${i}`} value={r.identity} onChange={(identity) => setRule(i, { identity })} />
-            <div className="identity-rule-actions">
-              <button type="button" aria-label="Move up" title="Move up: an earlier rule wins" disabled={i === 0} onClick={() => onChange({ ...value, rules: moveRule(value.rules, i, -1) })}>
-                ↑
-              </button>
-              <button
-                type="button"
-                aria-label="Move down"
-                title="Move down"
-                disabled={i === value.rules.length - 1}
-                onClick={() => onChange({ ...value, rules: moveRule(value.rules, i, 1) })}
-              >
-                ↓
-              </button>
-              <button type="button" onClick={() => onChange({ ...value, rules: value.rules.filter((_, j) => j !== i) })}>
-                Remove
-              </button>
+    <>
+      <Note tone="warn">
+        Many private trackers forbid presenting as another client, and can ban your account for it. Only use this for a tracker that allows it, or that only
+        accepts clients on its list. Check its rules first.
+      </Note>
+      <SettingCard
+        title="Default"
+        description="Trackers and peers tell which client you use from its peer id and user agent. A change applies from each torrent's next announce. The DHT always sees apitorrent."
+      >
+        <IdentityFields idPrefix="identity-default" value={value.default} onChange={(d) => onChange({ ...value, default: d })} />
+      </SettingCard>
+      <SettingCard
+        title="Per tracker"
+        description="A torrent uses the first rule that matches one of its trackers' hosts, or else the default."
+        footer={
+          <button type="button" onClick={() => onChange({ ...value, rules: [...value.rules, { ...NEW_RULE, identity: presetIdentity("deluge") }] })}>
+            + Add tracker rule
+          </button>
+        }
+      >
+        {value.rules.length === 0 && <Empty>No rules: every tracker sees the default.</Empty>}
+        {value.rules.map((r, i) => {
+          const bad = r.host.trim() !== "" ? hostProblem(r.host) : null;
+          return (
+            <div className="identity-rule" key={i}>
+              <div className="identity-rule-head">
+                <span className="identity-rule-n">{i + 1}</span>
+                <label className="field identity-rule-host">
+                  <span>Tracker host</span>
+                  <input
+                    id={`identity-rule-${i}-host`}
+                    value={r.host}
+                    placeholder="tracker.example.org or *.example.org"
+                    aria-invalid={bad !== null}
+                    onChange={(e) => setRule(i, { host: e.target.value })}
+                  />
+                  {bad && <span className="error-text">{bad}</span>}
+                </label>
+                <div className="identity-rule-actions">
+                  <button type="button" aria-label={`Move rule ${i + 1} up`} disabled={i === 0} onClick={() => onChange({ ...value, rules: moveRule(value.rules, i, -1) })}>
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Move rule ${i + 1} down`}
+                    disabled={i === value.rules.length - 1}
+                    onClick={() => onChange({ ...value, rules: moveRule(value.rules, i, 1) })}
+                  >
+                    ↓
+                  </button>
+                  <button type="button" onClick={() => onChange({ ...value, rules: value.rules.filter((_, j) => j !== i) })}>
+                    Remove
+                  </button>
+                </div>
+              </div>
+              <IdentityFields idPrefix={`identity-rule-${i}`} value={r.identity} onChange={(identity) => setRule(i, { identity })} />
             </div>
-          </div>
-        );
-      })}
-      <button type="button" onClick={() => onChange({ ...value, rules: [...value.rules, { ...NEW_RULE, identity: presetIdentity("deluge") }] })}>
-        Add tracker rule
-      </button>
-      {problems.length > 0 && (
-        <ul className="error-text identity-problems">
-          {problems.map((p) => (
-            <li key={p}>{p}</li>
-          ))}
-        </ul>
-      )}
-    </fieldset>
+          );
+        })}
+        {problems.length > 0 && (
+          <ul className="error-text identity-problems">
+            {problems.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+          </ul>
+        )}
+      </SettingCard>
+    </>
   );
 }

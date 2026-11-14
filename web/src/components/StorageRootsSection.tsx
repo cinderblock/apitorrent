@@ -1,10 +1,11 @@
-// Settings → Storage roots: where other computers reach each of the instance's download
+// Settings → Files → Storage roots: where other computers reach each of the instance's download
 // directories (share locators). The desktop app suggests path mappings from them.
 
 import { useEffect, useState } from "react";
 
 import { api, ApiRequestError } from "../api/client";
 import type { StorageRoot } from "../api/generated/StorageRoot";
+import { Empty, SettingRow } from "../settings/controls";
 
 /** One locator per line (folder names may hold commas), blanks dropped. */
 export function parseLocators(text: string): string[] {
@@ -37,53 +38,43 @@ function RootRow({ root, onSaved }: { root: StorageRoot; onSaved: (r: StorageRoo
 
   const id = `locators-${root.id}`;
   return (
-    <div className="root-row">
-      <label className="field" htmlFor={id}>
-        <span>
-          <code>{root.path}</code> is shared as <span className="muted">(one per line)</span>
-        </span>
-      </label>
+    <SettingRow label={<code>{root.path}</code>} description="Shared as (one per line)" htmlFor={id} wide>
       <textarea
         id={id}
+        className="s-text mono"
         rows={Math.max(2, parseLocators(text).length + 1)}
         spellCheck={false}
         value={text}
-        placeholder={"\\\\nas\\torrents\nsmb://nas/torrents\nnfs://nas/srv/torrents"}
+        placeholder="Not shared yet"
         onChange={(e) => {
           setText(e.target.value);
           setMessage(null);
         }}
       />
-      <div className="inline-edit">
+      <div className="s-inline">
         <button type="button" disabled={busy || !dirty} onClick={() => void save()}>
-          {busy ? "Saving…" : "Save locators"}
+          {busy ? "Saving…" : "Save"}
         </button>
         {message && <span className={message.ok ? "ok-text" : "error-text"}>{message.text}</span>}
       </div>
-    </div>
+    </SettingRow>
   );
 }
 
-/** Server admins only: roots belong to the instance. */
-export function StorageRootsSection() {
+/** Server admins only: roots belong to the instance. Each folder saves on its own. */
+export function StorageRoots() {
   const [roots, setRoots] = useState<StorageRoot[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api.roots().then(setRoots, (e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   }, []);
   return (
-    <fieldset className="settings-section">
-      <legend>Storage roots</legend>
-      <p className="hint muted">
-        Where other computers reach each download folder over the network: a UNC path (<code>\\nas\torrents</code>), <code>smb://</code> or{" "}
-        <code>nfs://</code>. The desktop app suggests its folder mappings from these, and uses one only after it finds the folder&apos;s{" "}
-        <code>.apitorrent-root</code> marker through it. Don&apos;t put passwords here.
-      </p>
+    <>
       {roots?.map((r) => (
         <RootRow key={r.id} root={r} onSaved={(saved) => setRoots(roots.map((x) => (x.id === saved.id ? saved : x)))} />
       ))}
-      {roots?.length === 0 && <p className="hint muted">This server reports no storage roots.</p>}
+      {roots?.length === 0 && <Empty>This server reports no storage roots.</Empty>}
       {error && <p className="error-text">{error}</p>}
-    </fieldset>
+    </>
   );
 }

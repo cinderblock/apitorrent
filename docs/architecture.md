@@ -1008,8 +1008,8 @@ since shares get unmounted and remounted. Server-supplied paths with `.` or `..`
 with names that mean something else locally (`a:b` on Windows), are refused, and "open
 file" refuses programs and scripts (use "show in folder").
 
-Share locators (`apitorrent_types::share`) are set by a server admin in Settings → Storage
-roots (`PUT /api/v1/roots/{id}/locators`), checked and normalised (credentials, queries,
+Share locators (`apitorrent_types::share`) are set by a server admin in Settings → Files →
+Storage roots (`PUT /api/v1/roots/{id}/locators`), checked and normalised (credentials, queries,
 `.`/`..` and unknown schemes refused; at most 8 per root), kept in the instance database
 by root id, and listed by `GET /roots`. The desktop app (`shares.rs`) turns each into
 local candidates: on Windows the UNC path (an `smb://` URL rewritten as one; NFS exports

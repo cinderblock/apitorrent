@@ -182,7 +182,7 @@ describe("mapping suggestions", () => {
     expect(suggestionNote({ ...base, local: "Z:\t", verified: true })).toBeNull();
     expect(suggestionNote({ ...base, local: "\\\\nas\\t", via: "smb://nas/t", locators: ["smb://nas/t"] })).toContain("can't be read through \\\\nas\\t");
     expect(suggestionNote({ ...base, locators: ["nfs://nas/srv/t"] })).toContain("Mount that share");
-    expect(suggestionNote(base)).toContain("Settings → Storage roots");
+    expect(suggestionNote(base)).toContain("Settings → Files → Storage roots");
   });
 
   test("locators are edited one per line", () => {

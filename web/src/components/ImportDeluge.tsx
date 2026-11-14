@@ -252,7 +252,7 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
           {paused && report.imported.length > 0 && !takeOver && (
             <p className="hint">
               They are paused here and still running in Deluge. Move them over now: apitorrent pauses each one in Deluge, waits until Deluge has stopped it,
-              then starts it here. Or do it later, from Settings → Still with Deluge, or by resuming one torrent at a time.
+              then starts it here. Or do it later, from Settings → Deluge, or by resuming one torrent at a time.
             </p>
           )}
           {takeOver && (

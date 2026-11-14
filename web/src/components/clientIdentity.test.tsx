@@ -65,7 +65,7 @@ describe("client identity", () => {
         onChange={() => {}}
       />,
     );
-    expect(html).toContain("<legend>Client identity</legend>");
+    expect(html).toContain("<h3>Per tracker</h3>");
     expect(html).toContain("can ban your account");
     expect(html).toContain('value="tracker.example.org"');
     expect(html).toContain("<code>-DE211s-…</code>");

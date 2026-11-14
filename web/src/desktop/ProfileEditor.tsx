@@ -591,7 +591,7 @@ export function suggestionNote(s: Suggestion): string | null {
   if (s.locators.length > 0) {
     return `${s.remote}: the server shares it as ${s.locators.join(" or ")}. Mount that share on this computer, then suggest again, or type where it is.`;
   }
-  return `${s.remote}: the server's admin hasn't said where it's shared (Settings → Storage roots). Type where this computer reaches it.`;
+  return `${s.remote}: the server's admin hasn't said where it's shared (Settings → Files → Storage roots). Type where this computer reaches it.`;
 }
 
 function LanField({ lan, setLan }: { lan: LanSettings | null; setLan: (l: LanSettings | null) => void }) {
