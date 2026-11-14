@@ -30,6 +30,10 @@ Usage: install.sh [options]
                        Default: a new system user, "apitorrent".
   --data-dir DIR       Database and state. Default: /var/lib/apitorrent
   --download-dir DIR   Where new downloads go. Default: <data dir>/downloads
+  --remote             Reach it from other computers: listen on all addresses with
+                       built-in HTTPS (self-signed; the desktop app pins its key by a
+                       code). Only when the settings file is first written. Default:
+                       this machine only, through an SSH tunnel.
   --version vX.Y.Z     Install this release instead of the latest.
   --binary FILE        Install this apitorrentd executable instead of downloading one
                        (a build of your own). It won't be replaced until an update.
@@ -54,7 +58,7 @@ if [ -r "$STATE" ]; then
 fi
 PREV_USER=$SVC_USER PREV_DATA_DIR=$DATA_DIR
 
-VERSION='' BINARY='' START=1 UNINSTALL=''
+VERSION='' BINARY='' START=1 UNINSTALL='' REMOTE=''
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--user) [ $# -ge 2 ] || die "$1 needs a value"; SVC_USER=$2; shift 2 ;;
@@ -63,6 +67,7 @@ while [ $# -gt 0 ]; do
 		--version) [ $# -ge 2 ] || die "$1 needs a value"; VERSION=$2; shift 2 ;;
 		--binary) [ $# -ge 2 ] || die "$1 needs a value"; BINARY=$2; shift 2 ;;
 		--no-start) START=; shift ;;
+		--remote) REMOTE=1; shift ;;
 		--uninstall) UNINSTALL=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		*) usage >&2; die "unknown option: $1" ;;
@@ -201,24 +206,33 @@ can_write "$DOWNLOAD_DIR" || say "Warning: $SVC_USER can't write to $DOWNLOAD_DI
 
 install -d -m 755 "$CONF_DIR"
 if [ ! -f "$ENV_FILE" ]; then
-	cat >"$ENV_FILE" <<'EOF'
+	if [ -n "$REMOTE" ]; then
+		listen='APITORRENT_API=0.0.0.0:8742
+APITORRENT_TLS_SELF_SIGNED=true'
+	else
+		listen='#APITORRENT_API=127.0.0.1:8742
+#APITORRENT_TLS_SELF_SIGNED=true'
+	fi
+	cat >"$ENV_FILE" <<EOF
 # apitorrentd's settings, as environment variables. Every command-line option has one:
-# see `apitorrentd --help`. Restart after a change: sudo systemctl restart apitorrentd
+# see \`apitorrentd --help\`. Restart after a change: sudo systemctl restart apitorrentd
 # This file is yours; install.sh never changes it once written.
 
-# Where the API and web UI listen. Loopback only: reach it through an SSH tunnel
-# (ssh -L 8742:localhost:8742 this-server) or a reverse proxy. See "Reaching it from
-# other machines" in the README before listening elsewhere.
-#APITORRENT_API=127.0.0.1:8742
+# Where the API and web UI listen. The default, 127.0.0.1:8742, is this machine only:
+# reach it through an SSH tunnel (ssh -L 8742:localhost:8742 this-server) or a reverse
+# proxy. Listening on other addresses needs HTTPS: built-in, with a self-signed
+# certificate whose key the desktop app pins by a code (or your own certificate, or
+# Let's Encrypt; see "Reaching it from other machines" in the README).
+$listen
 
 # While no user exists, also write the setup token to <data dir>/setup-token.
 APITORRENT_WRITE_SETUP_TOKEN=true
-
-# Built-in HTTPS, for a desktop app on your network (it shows a code to compare):
-#APITORRENT_TLS_SELF_SIGNED=true
 EOF
 	chmod 640 "$ENV_FILE"
 	chgrp "$SVC_GROUP" "$ENV_FILE"
+elif [ -n "$REMOTE" ] && ! grep -q '^APITORRENT_TLS_SELF_SIGNED=true' "$ENV_FILE"; then
+	say "Warning: $ENV_FILE is kept as it is, so --remote changed nothing. Set"
+	say "  APITORRENT_API=0.0.0.0:8742 and APITORRENT_TLS_SELF_SIGNED=true there, then restart."
 fi
 
 cat >"$STATE" <<EOF
@@ -304,19 +318,34 @@ if [ -n "$FRESH" ]; then
 fi
 
 host=$(hostname -f 2>/dev/null || hostname)
+remote=
+grep -q '^APITORRENT_TLS_SELF_SIGNED=true' "$ENV_FILE" && grep -q '^APITORRENT_API=0\.0\.0\.0' "$ENV_FILE" && remote=1
 say ""
-say "To open it from your computer, tunnel its port over SSH:"
-say ""
-say "  ssh -L 8742:localhost:8742 $host"
-say ""
-if [ -n "$token" ]; then
-	say "then create the first admin at"
-	say ""
-	say "  http://localhost:8742/setup#token=$token"
-	say ""
-	say "The token works once and expires after an hour. A new one: sudo cat $DATA_DIR/setup-token"
+if [ -n "$remote" ]; then
+	# The daemon prints its key's code at startup.
+	code=$(journalctl -u apitorrentd.service -n 200 --no-pager -o cat 2>/dev/null |
+		grep -E '^ +[A-Z2-7]{4}(-[A-Z2-7]{4}){4}$' | tail -n 1 | tr -d ' ')
+	say "In the desktop app, add a server at https://$host:8742"
+	[ -n "$code" ] && say "and check that it shows the server's key code $code."
 else
-	say "then open http://localhost:8742"
+	say "It listens on this machine only. From your computer, tunnel its port over SSH:"
+	say ""
+	say "  ssh -N -L 8742:localhost:8742 $host"
+	say ""
+	say "and in the desktop app, add a server at http://localhost:8742."
+	say "(Or install again with --remote, to connect without a tunnel.)"
 fi
 say ""
-say "The desktop app connects through the same tunnel: add a server at http://localhost:8742."
+if [ -n "$token" ]; then
+	say "Register the app with this setup token, and a username for the first admin:"
+	say ""
+	say "  $token"
+	say ""
+	say "No browser needed. It works once and lasts ten minutes; the current one is always in"
+	say "  sudo cat $DATA_DIR/setup-token"
+	[ -z "$remote" ] && say "(Or set up in a browser, through the tunnel: http://localhost:8742/setup#token=$token)"
+else
+	say "To register another device, run here:"
+	say ""
+	say "  sudo -u $SVC_USER $LINK register-device --data-dir $DATA_DIR"
+fi

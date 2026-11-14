@@ -6,7 +6,7 @@ mod common;
 use axum::http::StatusCode;
 use serde_json::json;
 
-use apitorrent_auth::{ClientMeta, PasswordMode};
+use apitorrent_auth::{ClientMeta, Clock as _, PasswordMode};
 use apitorrent_server::AuthMode;
 use apitorrent_types::auth::{
     DeviceInfo, DevicePollResponse, DeviceRequestInfo, DeviceRequestStarted,
@@ -110,4 +110,65 @@ async fn a_device_is_paired_from_a_browser_session() {
     let resp = send(&app, Req::get("/api/v1/torrents").bearer(&credential)).await;
     assert_eq!(resp.status, StatusCode::UNAUTHORIZED);
     core.shutdown().await.unwrap();
+}
+
+/// A headless server set up from the app, without a browser: the setup token from the
+/// console registers the app and makes the first admin; the device works in every space;
+/// a second device registers with a token from `apitorrentd register-device`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_app_sets_up_a_headless_server_with_console_tokens() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Off, &[]);
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let register = |token: String, username: Option<&str>| {
+        Req::post("/api/v1/auth/devices/requests").json(&json!({
+            "name": "Laptop",
+            "platform": "apitorrent on tests",
+            "registration": { "token": token, "username": username },
+        }))
+    };
+    let collect = |started: &DeviceRequestStarted| {
+        Req::post("/api/v1/auth/devices/poll").json(&json!({ "pollSecret": started.poll_secret }))
+    };
+
+    let resp = send(&app, register("not-the-token".into(), Some("cam"))).await;
+    assert_eq!(resp.status, StatusCode::UNAUTHORIZED);
+    let resp = send(&app, register(f.setup_token(), Some("cam"))).await;
+    assert_eq!(resp.status, StatusCode::CREATED, "{}", resp.json());
+    let started: DeviceRequestStarted = resp.typed();
+    assert!(started.registered);
+    let DevicePollResponse::Approved { credential, device } =
+        send(&app, collect(&started)).await.typed()
+    else {
+        panic!("registered requests are approved at once");
+    };
+    assert_eq!(device.space, None);
+
+    // The first admin, signed in as this device, in any space.
+    let resp = send(&app, Req::get("/api/v1/auth/devices").bearer(&credential)).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.json());
+    let resp = send(
+        &app,
+        Req::post("/api/v1/spaces")
+            .bearer(&credential)
+            .json(&json!({ "slug": "tv", "name": "TV" })),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::CREATED, "{}", resp.json());
+    let resp = send(&app, Req::get("/s/tv/api/v1/torrents").bearer(&credential)).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.json());
+
+    // Another device, with a token from the server's command line.
+    let issued = apitorrent_auth::create_registration_token(
+        &root.path().join("data").join("auth.db"),
+        None,
+        f.clock.now_ms(),
+    )
+    .unwrap();
+    assert_eq!(issued.username, "cam");
+    let resp = send(&app, register(issued.token.clone(), None)).await;
+    assert_eq!(resp.status, StatusCode::CREATED, "{}", resp.json());
+    let resp = send(&app, register(issued.token, None)).await;
+    assert_eq!(resp.status, StatusCode::UNAUTHORIZED, "one use");
 }

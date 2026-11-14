@@ -6,9 +6,9 @@ import type { TokenScope } from "./TokenScope";
  */
 export type DeviceInfo = { id: string, name: string, platform: string, scope: TokenScope, 
 /**
- * The space the device works in, as for API tokens.
+ * The space the device works in, as for API tokens; `None`: every space its user is in.
  */
-space: number, createdAt: number, lastUsedAt: number | null, lastIp: string | null, 
+space: number | null, createdAt: number, lastUsedAt: number | null, lastIp: string | null, 
 /**
  * The pairing code of the server key it is bound to; `None` when unbound.
  */

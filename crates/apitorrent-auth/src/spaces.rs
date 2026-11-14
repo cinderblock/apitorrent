@@ -23,7 +23,8 @@ impl Principal {
     /// The space an API token or paired device is bound to.
     pub fn token_space(&self) -> Option<SpaceId> {
         match &self.credential {
-            Credential::Token { space, .. } | Credential::Device { space, .. } => Some(*space),
+            Credential::Token { space, .. } => Some(*space),
+            Credential::Device { space, .. } => *space,
             _ => None,
         }
     }

@@ -307,6 +307,25 @@ pub struct DeviceRequestStart {
     /// the device to it.
     #[serde(default)]
     pub server_key: Option<String>,
+    /// A token from the server's console, which approves the request at once: no browser
+    /// needed. See [`DeviceRegistration`].
+    #[serde(default)]
+    pub registration: Option<DeviceRegistration>,
+}
+
+/// Registering a device with a token from the server's console. While the server has no
+/// users the token is the setup token it prints at startup, and `username` names the first
+/// admin, made now. Afterwards it is a one-use token from `apitorrentd register-device`.
+/// Either way the device works in all of its user's spaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DeviceRegistration {
+    pub token: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 /// The answer to [`DeviceRequestStart`]. The poll secret stays in the app; the user code is
@@ -325,6 +344,9 @@ pub struct DeviceRequestStarted {
     pub interval_secs: u32,
     /// Whether the device will be bound to the server's TLS key.
     pub bound: bool,
+    /// Approved already, by a registration token: the first poll returns the credential.
+    #[serde(default)]
+    pub registered: bool,
 }
 
 /// `POST /api/v1/auth/devices/poll` (no sign-in).
@@ -397,9 +419,9 @@ pub struct DeviceInfo {
     pub name: String,
     pub platform: String,
     pub scope: TokenScope,
-    /// The space the device works in, as for API tokens.
-    #[ts(type = "number")]
-    pub space: crate::spaces::SpaceId,
+    /// The space the device works in, as for API tokens; `None`: every space its user is in.
+    #[ts(type = "number | null")]
+    pub space: Option<crate::spaces::SpaceId>,
     #[ts(type = "number")]
     pub created_at: i64,
     #[ts(type = "number | null")]

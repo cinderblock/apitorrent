@@ -170,6 +170,8 @@ function SignInField(props: {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showToken, setShowToken] = useState(props.hasToken && !props.device);
+  const [regToken, setRegToken] = useState("");
+  const [regUser, setRegUser] = useState("");
   const live = useRef<string | null>(null);
 
   // Poll while the request waits for approval; stop when it's decided or the editor closes.
@@ -189,7 +191,8 @@ function SignInField(props: {
           setPair({ ...pair, status: "expired" });
         },
       );
-    }, pair.started.intervalSecs * 1000);
+      // A registered request is approved already: collect it at once.
+    }, pair.started.registered ? 0 : pair.started.intervalSecs * 1000);
     return () => clearTimeout(t);
   }, [pair, onPaired]);
 
@@ -203,17 +206,19 @@ function SignInField(props: {
 
   const notPairedYet = trust.kind === "pinned" && trust.spkiSha256 === "";
 
-  async function start() {
+  /** Pair: approved in the browser, or at once with a token from the server's console. */
+  async function start(register: boolean) {
     setBusy(true);
     setError(null);
     onPaired(null);
     if (live.current) void desktop.pairCancel(live.current);
     try {
-      const started = await desktop.pairStart(baseUrl.trim(), trust, deviceName.trim() || undefined);
+      const registration = register ? { token: regToken.trim(), username: regUser.trim() || null, displayName: null } : undefined;
+      const started = await desktop.pairStart(baseUrl.trim(), trust, deviceName.trim() || undefined, registration);
       live.current = started.pairingId;
       setPair({ started, status: "pending" });
       // Straight to the browser, where the user is signed in to the server.
-      await desktop.pairOpen(started.pairingId).catch(() => {});
+      if (!started.registered) await desktop.pairOpen(started.pairingId).catch(() => {});
     } catch (e) {
       setError(describe(e));
     } finally {
@@ -241,9 +246,34 @@ function SignInField(props: {
           placeholder="Device name (default: this computer's)"
           onChange={(e) => setDeviceName(e.target.value)}
         />
-        <button type="button" disabled={busy || notPairedYet || !baseUrl.startsWith("http")} onClick={() => void start()}>
+        <button type="button" disabled={busy || notPairedYet || !baseUrl.startsWith("http")} onClick={() => void start(false)}>
           {pair ? "Start again" : props.device ? "Pair again" : "Pair this device"}
         </button>
+      </div>
+      <div className="indent">
+        <p className="hint muted">
+          Or register with a token from the server, no browser needed. A new server prints a setup token when it starts (in its log:{" "}
+          <code>journalctl -u apitorrentd</code>); give it the username for its first admin. On a server that is already set up, run{" "}
+          <code>apitorrentd register-device</code> there. Tokens work once, for ten minutes.
+        </p>
+        <div className="inline-edit">
+          <input
+            aria-label="Registration token"
+            value={regToken}
+            placeholder="Token from the server"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => setRegToken(e.target.value)}
+          />
+          <input aria-label="First admin's username" value={regUser} placeholder="Username (new server only)" onChange={(e) => setRegUser(e.target.value)} />
+          <button
+            type="button"
+            disabled={busy || notPairedYet || !baseUrl.startsWith("http") || regToken.trim() === ""}
+            onClick={() => void start(true)}
+          >
+            Register with a token
+          </button>
+        </div>
       </div>
       {notPairedYet && <p className="hint muted">Pair with the server's key first (above), so the app knows it's talking to your server.</p>}
       {pair && <PairProgress pair={pair} />}
@@ -266,6 +296,7 @@ function PairProgress({ pair }: { pair: PairView }) {
   }
   if (status === "denied") return <p className="error-text">The request was refused on the server.</p>;
   if (status === "expired") return <p className="error-text">The request expired. Start again.</p>;
+  if (started.registered) return <p className="muted">Registered. Collecting this device's credential…</p>;
   return (
     <div className="pair-progress" role="status">
       <p>

@@ -421,6 +421,17 @@ from the torrent database.
     list and remove only itself (the app signs out on the server when its connection is
     removed or re-paired); the Account page lists every device with its last use and
     address, and removes any. Removal closes its sync sockets.
+  - **Registered from the console, without a browser**
+    (`apitorrent-auth/src/registration.rs`): the request may carry a token, and is then
+    approved at once, after the pin check. With no users yet the token is the setup token
+    (printed at startup, ten minutes, replaced when it expires) plus a username, and the
+    request makes the first admin (no passkey or password). Afterwards it is a one-use
+    token from `apitorrentd register-device [--user NAME]`, which the command line writes
+    to `auth.db` (`registration_tokens`, SHA-256 only, ten minutes) while the daemon runs.
+    Wrong tokens count against the address. Such a device has full scope and no bound
+    space (`space_id` NULL): every space its user is in, as a session. Registration
+    tokens aren't printed at startup: logs are often readable by more people (the `adm`
+    group) than the data directory, and a token there makes an admin's device.
   - **Bound to the pinned key**: when the daemon serves TLS itself, a request whose pin
     isn't the key it serves is refused (something answered in between), and a matching
     pin binds the device: its credential works only while the daemon serves that key. A

@@ -12,7 +12,7 @@ const CHEAP: PasswordCost = PasswordCost {
 };
 
 struct Fixture {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     auth: Auth,
     clock: Arc<ManualClock>,
     tokens: Arc<Mutex<Vec<String>>>,
@@ -35,7 +35,7 @@ fn fixture(mode: PasswordMode) -> Fixture {
     }));
     let auth = Auth::open(config).unwrap();
     Fixture {
-        _dir: dir,
+        dir,
         auth,
         clock,
         tokens,
@@ -80,7 +80,7 @@ fn setup_token_lifecycle() {
     assert_eq!(on_disk.trim(), first);
 
     // It expires, and a new one replaces it.
-    f.clock.advance(Duration::from_secs(3601));
+    f.clock.advance(Duration::from_secs(10 * 60 + 1));
     f.auth.tick().unwrap();
     let second = f.last_token();
     assert_ne!(first, second);
@@ -311,6 +311,7 @@ fn device_pairing() {
                 name: "Laptop".into(),
                 platform: "apitorrent on tests".into(),
                 server_key: server_key.map(hex::encode),
+                registration: None,
             },
             served,
             &meta(),
@@ -1391,4 +1392,131 @@ mod enrollment {
             Err(AuthError::Unavailable(_))
         ));
     }
+}
+
+fn register(
+    f: &Fixture,
+    token: &str,
+    username: Option<&str>,
+) -> Result<apitorrent_types::auth::DeviceRequestStarted> {
+    use apitorrent_types::auth::{DeviceRegistration, DeviceRequestStart};
+    f.auth.start_device_request(
+        &DeviceRequestStart {
+            name: "Laptop".into(),
+            platform: "apitorrent on tests".into(),
+            server_key: None,
+            registration: Some(DeviceRegistration {
+                token: token.into(),
+                username: username.map(Into::into),
+                display_name: None,
+            }),
+        },
+        None,
+        &meta(),
+    )
+}
+
+/// The credential a registered request's first poll returns, and the device it signs in as.
+fn registered_device(
+    f: &Fixture,
+    started: &apitorrent_types::auth::DeviceRequestStarted,
+) -> Principal {
+    use apitorrent_types::auth::DevicePollResponse;
+    assert!(started.registered);
+    let DevicePollResponse::Approved { credential, device } = f
+        .auth
+        .poll_device_request(&started.poll_secret, &meta())
+        .unwrap()
+    else {
+        panic!("a registered request is approved at once");
+    };
+    assert_eq!(
+        device.space, None,
+        "a registered device works in every space"
+    );
+    assert_eq!(device.scope, TokenScope::Full);
+    let p = f
+        .auth
+        .authenticate_device(&credential, None, &meta())
+        .unwrap()
+        .unwrap();
+    assert_eq!(p.token_space(), None);
+    p
+}
+
+#[test]
+fn the_first_admin_registers_from_an_app() {
+    let f = fixture(PasswordMode::Off);
+    let token = f.last_token();
+    assert!(matches!(
+        register(&f, "wrong-token", Some("cam")),
+        Err(AuthError::InvalidSetupToken)
+    ));
+    assert!(matches!(
+        register(&f, &token, None),
+        Err(AuthError::InvalidRequest(_))
+    ));
+    let started = register(&f, &token, Some("Cam")).unwrap();
+    let p = registered_device(&f, &started);
+    assert_eq!(p.user.name, "cam");
+    assert_eq!(p.user.role, Role::Admin);
+    assert!(!f.auth.setup_required().unwrap());
+    assert!(
+        !f.token_file.exists(),
+        "the setup token file goes once used"
+    );
+    // The setup token is spent: now it is just a wrong registration token.
+    assert!(matches!(
+        register(&f, &token, Some("eve")),
+        Err(AuthError::InvalidRegistrationToken)
+    ));
+}
+
+#[test]
+fn the_setup_token_lasts_ten_minutes() {
+    let f = fixture(PasswordMode::Off);
+    let first = f.last_token();
+    f.clock.advance(Duration::from_secs(9 * 60));
+    f.auth.tick().unwrap();
+    assert_eq!(f.last_token(), first);
+    f.clock.advance(Duration::from_secs(2 * 60));
+    f.auth.tick().unwrap();
+    assert_ne!(f.last_token(), first, "a new one replaces it");
+    assert!(matches!(
+        register(&f, &first, Some("cam")),
+        Err(AuthError::InvalidSetupToken)
+    ));
+}
+
+#[test]
+fn registration_tokens_from_the_command_line() {
+    let f = fixture(PasswordMode::Fallback);
+    let db = f.dir.path().join("auth.db");
+    let now = || f.clock.now_ms();
+    // No users yet: the setup token is the way.
+    let r = create_registration_token(&db, None, now());
+    assert!(matches!(r, Err(AuthError::InvalidRequest(_))), "{r:?}");
+    let admin = f.admin();
+    assert!(matches!(
+        create_registration_token(&db, Some("nobody"), now()),
+        Err(AuthError::InvalidRequest(_))
+    ));
+
+    let issued = create_registration_token(&db, None, now()).unwrap();
+    assert_eq!(issued.username, admin.user.name);
+    let p = registered_device(&f, &register(&f, &issued.token, None).unwrap());
+    assert_eq!(p.user.id, admin.user.id);
+    // One use.
+    assert!(matches!(
+        register(&f, &issued.token, None),
+        Err(AuthError::InvalidRegistrationToken)
+    ));
+
+    // Ten minutes.
+    let late = create_registration_token(&db, Some(&admin.user.name), now()).unwrap();
+    f.clock.advance(REGISTRATION_TTL + Duration::from_secs(1));
+    assert!(matches!(
+        register(&f, &late.token, None),
+        Err(AuthError::InvalidRegistrationToken)
+    ));
 }

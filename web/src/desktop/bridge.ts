@@ -5,6 +5,7 @@
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import type { DeviceRegistration } from "../api/generated/DeviceRegistration";
 import type { ThemePreference } from "../theme";
 
 /** The capability check: true only in the desktop app's window. */
@@ -159,6 +160,8 @@ export interface PairingStarted {
   intervalSecs: number;
   /** Bound to the server's pinned key. */
   bound: boolean;
+  /** Approved already, by a token from the server's console: no browser step. */
+  registered: boolean;
   approveUrl: string;
 }
 
@@ -185,9 +188,12 @@ export const desktop = {
    */
   saveProfile: (profile: Profile, token?: string, pairing?: string) =>
     call<ProfileView>("profile_save", { profile, token: token ?? null, pairing: pairing ?? null }),
-  /** Ask the server to pair this app as a device; `name` defaults to the computer's. */
-  pairStart: (baseUrl: string, trust: Trust, name?: string) =>
-    call<PairingStarted>("device_pair_start", { baseUrl, trust, name: name ?? null }),
+  /**
+   * Ask the server to pair this app as a device; `name` defaults to the computer's. With a
+   * `registration` (a token from the server's console) it is approved at once.
+   */
+  pairStart: (baseUrl: string, trust: Trust, name?: string, registration?: DeviceRegistration) =>
+    call<PairingStarted>("device_pair_start", { baseUrl, trust, name: name ?? null, registration: registration ?? null }),
   pairPoll: (pairingId: string) => call<PairingStatus>("device_pair_poll", { pairingId }),
   /** Open the server's approval page in the default browser. */
   pairOpen: (pairingId: string) => call<void>("device_pair_open", { pairingId }),

@@ -3,6 +3,7 @@
 mod bundled;
 mod import;
 mod plugins;
+mod register;
 mod tls;
 mod update;
 
@@ -80,6 +81,9 @@ enum Command {
     /// next start.
     #[command(subcommand)]
     Import(Box<import::ImportCommand>),
+    /// Print a one-use token, valid ten minutes, that registers the desktop app as a
+    /// user's device without a browser. Run it on the server as the daemon's user.
+    RegisterDevice(register::RegisterArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -283,8 +287,10 @@ fn print_setup_token(token: &SetupToken, urls: &[String], now_ms: i64) {
     }
     let _ = write!(
         msg,
-        "\n or enter this setup token on the setup page:\n\n   {}\n\n It works once and \
-         expires in {minutes} minutes; a new one is printed then.\n{line}\n",
+        "\n or enter this setup token on the setup page. Or, without a browser: in the \
+         desktop app,\n add this server and register with it (the app makes the first \
+         admin):\n\n   {}\n\n It works once and expires in {minutes} minutes; a new one is \
+         printed then.\n{line}\n",
         token.token
     );
     eprintln!("{msg}");
@@ -326,6 +332,9 @@ async fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if let Some(Command::RegisterDevice(r)) = &args.command {
+        return register::run(r, &data_dir);
     }
     if let Some(Command::Update(u)) = &args.command {
         return update::run_cli(u, data_dir, args.no_update_check).await;

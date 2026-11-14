@@ -11,6 +11,10 @@ pub enum AuthError {
     Unauthorized,
     #[error("the setup token is wrong or has expired")]
     InvalidSetupToken,
+    #[error(
+        "the registration token is wrong, used or expired: make a new one on the server with `apitorrentd register-device`"
+    )]
+    InvalidRegistrationToken,
     #[error("this instance is already set up")]
     AlreadySetUp,
     /// An invitation or recovery link that is wrong, used, revoked or expired. Which of
@@ -41,6 +45,7 @@ impl AuthError {
             Self::InvalidRequest(_) => "invalid_request",
             Self::Unauthorized => "unauthorized",
             Self::InvalidSetupToken => "invalid_setup_token",
+            Self::InvalidRegistrationToken => "invalid_registration_token",
             Self::AlreadySetUp => "already_set_up",
             Self::InvalidLink => "invalid_link",
             Self::RateLimited(_) => "rate_limited",

@@ -20,4 +20,8 @@ intervalSecs: number,
 /**
  * Whether the device will be bound to the server's TLS key.
  */
-bound: boolean, };
+bound: boolean, 
+/**
+ * Approved already, by a registration token: the first poll returns the credential.
+ */
+registered: boolean, };

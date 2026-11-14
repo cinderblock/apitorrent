@@ -33,9 +33,10 @@ impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let status = match &self.0 {
             AuthError::InvalidRequest(_) | AuthError::Unavailable(_) => StatusCode::BAD_REQUEST,
-            AuthError::Unauthorized | AuthError::InvalidSetupToken | AuthError::InvalidLink => {
-                StatusCode::UNAUTHORIZED
-            }
+            AuthError::Unauthorized
+            | AuthError::InvalidSetupToken
+            | AuthError::InvalidRegistrationToken
+            | AuthError::InvalidLink => StatusCode::UNAUTHORIZED,
             AuthError::AlreadySetUp | AuthError::Conflict(_) => StatusCode::CONFLICT,
             AuthError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
             AuthError::ReauthRequired | AuthError::Forbidden(_) => StatusCode::FORBIDDEN,

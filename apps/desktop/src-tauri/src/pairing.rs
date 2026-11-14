@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use apitorrent_client::{Remote, Trust};
 use apitorrent_types::auth::{
-    DeviceInfo, DevicePollRequest, DevicePollResponse, DeviceRequestStart, DeviceRequestStarted,
+    DeviceInfo, DevicePollRequest, DevicePollResponse, DeviceRegistration, DeviceRequestStart,
+    DeviceRequestStarted,
 };
 
 /// What a profile records about the device it is paired as (not secret: the credential is
@@ -55,6 +56,8 @@ pub struct PairingStarted {
     pub interval_secs: u32,
     /// The device will be bound to the server's key (pinned trust).
     pub bound: bool,
+    /// Approved already, by a token from the server's console: no browser step.
+    pub registered: bool,
     /// The server's page to approve it on.
     pub approve_url: String,
 }
@@ -140,12 +143,14 @@ impl Pairings {
         map.retain(|_, p| p.started.elapsed() < KEEP);
     }
 
-    /// Ask `base_url` (trusted as `trust`) to pair this app as `name`.
+    /// Ask `base_url` (trusted as `trust`) to pair this app as `name`. With a
+    /// `registration` (a token from the server's console) it is approved at once.
     pub async fn start(
         &self,
         base_url: &str,
         trust: &Trust,
         name: &str,
+        registration: Option<DeviceRegistration>,
     ) -> Result<PairingStarted, String> {
         let remote = Remote::new(base_url, trust, None).map_err(|e| e.to_string())?;
         let started: DeviceRequestStarted = post(
@@ -155,6 +160,7 @@ impl Pairings {
                 name: name.trim().to_owned(),
                 platform: platform(),
                 server_key: pinned_key(trust),
+                registration,
             },
         )
         .await?;
@@ -166,6 +172,7 @@ impl Pairings {
             expires_at: started.expires_at,
             interval_secs: started.interval_secs.max(1),
             bound: started.bound,
+            registered: started.registered,
         };
         let mut map = self.0.lock().expect("not poisoned");
         Self::prune(&mut map);

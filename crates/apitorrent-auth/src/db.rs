@@ -115,6 +115,33 @@ const MIGRATIONS: &[&str] = &[
          last_ip TEXT
      );
      CREATE INDEX devices_user ON devices(user_id);",
+    // 5: a device may work in all of its user's spaces (space_id NULL), as the desktop app
+    // registered with a token from the server's console does; and those one-use
+    // registration tokens (`apitorrentd register-device`), by SHA-256.
+    "CREATE TABLE devices_new (
+         id TEXT PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+         name TEXT NOT NULL,
+         platform TEXT NOT NULL,
+         scope TEXT NOT NULL CHECK (scope IN ('read', 'full')),
+         space_id INTEGER,                      -- NULL: every space the user is in
+         credential_hash BLOB NOT NULL UNIQUE,
+         server_key BLOB,
+         created_at INTEGER NOT NULL,
+         last_used_at INTEGER,
+         last_ip TEXT
+     );
+     INSERT INTO devices_new SELECT id, user_id, name, platform, scope, space_id,
+         credential_hash, server_key, created_at, last_used_at, last_ip FROM devices;
+     DROP TABLE devices;
+     ALTER TABLE devices_new RENAME TO devices;
+     CREATE INDEX devices_user ON devices(user_id);
+     CREATE TABLE registration_tokens (
+         digest BLOB PRIMARY KEY,
+         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+         created_at INTEGER NOT NULL,
+         expires_at INTEGER NOT NULL
+     );",
 ];
 
 pub(crate) fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -130,6 +157,8 @@ fn init(mut conn: Connection) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // Deleted rows (revoked tokens, ended sessions) are overwritten, not left in free pages.
     conn.pragma_update(None, "secure_delete", "ON")?;
+    // `apitorrentd register-device` writes here while the daemon runs.
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
     migrate(&mut conn)?;
     Ok(conn)
 }

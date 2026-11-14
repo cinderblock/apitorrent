@@ -611,11 +611,15 @@ pub async fn device_pair_start(
     base_url: String,
     trust: Trust,
     name: Option<String>,
+    registration: Option<apitorrent_types::auth::DeviceRegistration>,
 ) -> CmdResult<crate::pairing::PairingStarted> {
     let name = name
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(crate::pairing::default_device_name);
-    state.pairings.start(&base_url, &trust, &name).await
+    state
+        .pairings
+        .start(&base_url, &trust, &name, registration)
+        .await
 }
 
 #[tauri::command]

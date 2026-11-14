@@ -13,6 +13,9 @@
 //! 3. The app polls ([`Auth::poll_device_request`]) and receives the credential once
 //!    (`apd_` + 256 bits); only its SHA-256 is stored.
 //!
+//! Or, without a browser: the request carries a token from the server's console and is
+//! approved at once (see `registration`), for setting up a headless server from the app.
+//!
 //! Requests live in memory for ten minutes. A device credential works like an API token of
 //! the approver (scope `read` or `full`, bound to the approver's space), can't manage
 //! credentials, and is listed and revoked on the Account page. A bound device works only
@@ -56,7 +59,8 @@ enum State {
     Approved {
         user_id: String,
         scope: TokenScope,
-        space: SpaceId,
+        /// `None`: every space the user is in.
+        space: Option<SpaceId>,
     },
     Denied,
 }
@@ -165,7 +169,7 @@ struct AuthRow {
     id: String,
     user_id: String,
     scope: String,
-    space: SpaceId,
+    space: Option<SpaceId>,
     last_used: Option<i64>,
     bound: Option<Vec<u8>>,
 }
@@ -224,13 +228,28 @@ impl Auth {
             (Some(p), Some(_)) => Some(p),
             _ => None,
         };
+        {
+            let mut map = self.inner.device_requests.lock().expect("device lock");
+            self.purge_device_requests(&mut map);
+            if map.len() >= MAX_REQUESTS {
+                return Err(AuthError::RateLimited(Duration::from_secs(60)));
+            }
+        }
+        // A token from the server's console approves it now (see `registration`), after the
+        // pin was checked above: never for a connection something else answered.
+        let state = match &req.registration {
+            Some(reg) => State::Approved {
+                user_id: self.registered_user(reg, meta)?,
+                scope: TokenScope::Full,
+                space: None,
+            },
+            None => State::Pending,
+        };
+        let registered = matches!(state, State::Approved { .. });
         let now = self.now();
         let poll_secret = secret::token256();
         let mut map = self.inner.device_requests.lock().expect("device lock");
         self.purge_device_requests(&mut map);
-        if map.len() >= MAX_REQUESTS {
-            return Err(AuthError::RateLimited(Duration::from_secs(60)));
-        }
         let code = loop {
             let c = new_code();
             if !map.iter().any(|r| r.code == c) {
@@ -247,16 +266,21 @@ impl Auth {
             ip: meta.ip_string(),
             requested_at: now,
             expires_at,
-            state: State::Pending,
+            state,
         });
         drop(map);
-        self.log("device_requested", None, meta, &name);
+        if registered {
+            self.log("device_registered", None, meta, &name);
+        } else {
+            self.log("device_requested", None, meta, &name);
+        }
         Ok(DeviceRequestStarted {
             poll_secret,
             user_code: format_code(&code),
             expires_at,
             interval_secs: POLL_INTERVAL_SECS,
             bound: server_key.is_some(),
+            registered,
         })
     }
 
@@ -406,7 +430,7 @@ impl Auth {
                 r.state = State::Approved {
                     user_id: p.user.id.clone(),
                     scope: req.scope,
-                    space,
+                    space: Some(space),
                 };
                 r.name.clone()
             })

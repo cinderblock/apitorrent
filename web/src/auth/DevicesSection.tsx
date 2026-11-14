@@ -163,7 +163,7 @@ export function DevicesSection({ devices, busy, change, initialCode }: Props) {
               <td>
                 {d.name} <small className="muted">{d.platform}</small>
               </td>
-              {spaces && <td>{spaceName(d.space)}</td>}
+              {spaces && <td>{d.space === null ? <span className="muted">all its spaces</span> : spaceName(d.space)}</td>}
               <td>{d.scope === "full" ? "Full" : "Read only"}</td>
               <td>{d.serverKeyCode ? <code className="key">{d.serverKeyCode}</code> : <span className="muted">not bound</span>}</td>
               <td>

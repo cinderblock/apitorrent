@@ -22,6 +22,7 @@ mod enroll;
 mod error;
 mod limit;
 mod password;
+mod registration;
 mod secret;
 mod spaces;
 mod store;
@@ -53,6 +54,7 @@ pub use devices::DEVICE_PREFIX;
 pub use enroll::{EnrollmentRecord, IssuedLink, UserRecord, joinable};
 pub use error::{AuthError, Result};
 pub use password::PasswordCost;
+pub use registration::{IssuedRegistration, REGISTRATION_TTL, create_registration_token};
 
 use crate::clock::ms;
 use crate::secret::Digest32;
@@ -112,7 +114,8 @@ impl AuthConfig {
             session_idle: Duration::from_secs(7 * 24 * 3600),
             session_lifetime: Duration::from_secs(30 * 24 * 3600),
             reauth_window: Duration::from_secs(10 * 60),
-            setup_token_ttl: Duration::from_secs(3600),
+            // Short: whoever reads the console in that window can make the first admin.
+            setup_token_ttl: Duration::from_secs(10 * 60),
             setup_token_file: None,
             on_setup_token: None,
             clock: Arc::new(SystemClock),
@@ -201,11 +204,12 @@ pub enum Credential {
         space: apitorrent_types::spaces::SpaceId,
     },
     /// A paired device (see `devices`): like a token, but approved from a browser session
-    /// and named after the device.
+    /// (or registered with a token from the server's console) and named after the device.
     Device {
         id: String,
         scope: TokenScope,
-        space: apitorrent_types::spaces::SpaceId,
+        /// `None`: every space the user is in, as for a session.
+        space: Option<apitorrent_types::spaces::SpaceId>,
     },
     /// `--insecure-no-auth-loopback`: a loopback request with authentication disabled.
     Local,

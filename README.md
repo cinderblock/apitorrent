@@ -100,6 +100,9 @@ without a tunnel, see "Reaching it from other machines" below.
 - `--data-dir`, `--download-dir`, `--version vX.Y.Z`, `--binary ./apitorrentd` (a build
   of your own); `--uninstall` removes the program and keeps the data. `--help` lists
   them all.
+- `--remote` listens on all addresses with built-in HTTPS (a self-signed certificate;
+  the desktop app pins its key by the code the installer prints), so the app connects
+  without a tunnel.
 - It updates itself (Settings → Updates). Running the script again also upgrades, and
   keeps the choices made the first time.
 
@@ -343,10 +346,26 @@ the daemon prints a one-time setup link on its console:
 ```
 
 Open it in a browser (or open `/setup` and paste the token), pick a username and create
-a passkey. That account is the admin. The token works once and expires after an hour; a
-new one is printed while nobody has used one. Pass `--write-setup-token` to also write it
-to `<data dir>/setup-token` (owner-only on Unix), for headless installs. It is deleted
-once used.
+a passkey. That account is the admin. The token works once and expires after ten
+minutes; a new one is printed while nobody has used one. Pass `--write-setup-token` to
+also write it to `<data dir>/setup-token` (owner-only on Unix), for headless installs. It
+is deleted once used.
+
+**A headless server needs no browser at all.** In the desktop app, add the server, choose
+"Register with a token", and give it the setup token from the server's console (or its
+log, `journalctl -u apitorrentd`) and a username: the app makes the first admin and
+becomes that admin's device. That admin has no passkey or password, so the web UI can't
+sign them in: their apps are the way in (a browser sign-in handed over from the app isn't
+there yet). Once the server is set up, a new device registers with a token from the server's command line, which works once
+for ten minutes:
+
+```sh
+sudo -u <the daemon's user> apitorrentd register-device --data-dir /var/lib/apitorrent [--user NAME]
+```
+
+It isn't printed at every start, because a server's log is often readable by more people
+than its data directory. A device registered this way works in every space its user is
+in.
 
 - **Passkeys** are the sign-in method. Browsers only allow them on `https://` or
   `http://localhost`, so open the UI as `http://localhost:8742`, not
@@ -358,8 +377,8 @@ once used.
   as `Authorization: Bearer <token>`.
 - **Paired devices**: the desktop app pairs instead of taking a token. It shows a short
   code and opens the server's `/pair` page in your browser, where you approve it (or enter
-  the code under Account → Paired devices). Each device is listed there and can be removed
-  on its own.
+  the code under Account → Paired devices), or it registers with a token from the
+  server's console (above). Each device is listed there and can be removed on its own.
 
 ### Inviting people
 
