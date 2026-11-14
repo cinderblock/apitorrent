@@ -81,6 +81,12 @@ the user wanting to try apitorrent on their seedbox next to Deluge
   --cap-add SYS_ADMIN --security-opt seccomp=unconfined --security-opt apparmor=unconfined
   --tmpfs /run --tmpfs /run/lock` and `sh -c "mount -o remount,rw /sys/fs/cgroup && exec
   /sbin/init"` (not `--privileged`). Test files are in `~/apitorrent-install-test` there.
+- A test build from master for the user's seedbox: built in `rust:1-bookworm` on
+  sentinel (glibc 2.36; runs on Ubuntu 22.04 and Debian 12), installed with
+  `install.sh --binary`. Copy in the session scratchpad. Merging origin's rand 0.10
+  upgrade broke two files from the Deluge work (`RngExt`), fixed in `af7146f`.
+- `scp` from Windows drops the executable bit; `chmod +x` on the far side (the
+  installer's `install -m 755` handles it).
 - A container's loopback isn't the host's: with bridge networking the daemon sees the
   Docker gateway, not loopback, and refuses plain HTTP. Host networking avoids that.
 
