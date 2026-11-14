@@ -16,6 +16,7 @@ import { ReauthDialog } from "./ReauthDialog";
 import { createPasskey, passkeysSupported } from "./webauthn";
 import { DevicesSection, readPairCode } from "./DevicesSection";
 import { useSpaceContext } from "../spaces/context";
+import { desktop, isDesktop } from "../desktop/bridge";
 
 interface Props {
   status: AuthStatus;
@@ -54,10 +55,17 @@ export function AccountPage({ status, onStatus, refresh }: Props) {
   const [busy, setBusy] = useState(false);
   const [reauth, setReauth] = useState<{ resolve: () => void; reject: (e: unknown) => void } | null>(null);
   const [created, setCreated] = useState<CreatedToken | null>(null);
+  // The desktop app signs in as a paired device, not a browser session: passkeys, tokens
+  // and sessions are managed in the browser, which the app can open signed in.
+  const inApp = isDesktop() && !status.session;
 
   const load = useCallback(async () => {
     if (status.authDisabled) return;
     try {
+      if (inApp) {
+        setDevices(await authApi.devices());
+        return;
+      }
       const [p, t, s, d] = await Promise.all([authApi.passkeys(), authApi.tokens(), authApi.sessions(), authApi.devices()]);
       setPasskeys(p);
       setTokens(t);
@@ -66,7 +74,7 @@ export function AccountPage({ status, onStatus, refresh }: Props) {
     } catch (e) {
       setError(describeError(e));
     }
-  }, [status.authDisabled]);
+  }, [status.authDisabled, inApp]);
 
   useEffect(() => {
     void load();
@@ -139,16 +147,12 @@ export function AccountPage({ status, onStatus, refresh }: Props) {
         </p>
       )}
 
-      <PasskeysSection status={status} passkeys={passkeys} busy={busy} change={change} />
-      {status.passwordMode !== "off" && <PasswordSection status={status} busy={busy} change={change} />}
-      <TokensSection
-        tokens={tokens}
-        busy={busy}
-        change={change}
-        onCreated={setCreated}
-      />
+      {inApp && <BrowserSignInSection device={devices.find((d) => d.current)} />}
+      {!inApp && <PasskeysSection status={status} passkeys={passkeys} busy={busy} change={change} />}
+      {!inApp && status.passwordMode !== "off" && <PasswordSection status={status} busy={busy} change={change} />}
+      {!inApp && <TokensSection tokens={tokens} busy={busy} change={change} onCreated={setCreated} />}
       <DevicesSection devices={devices} busy={busy} change={change} initialCode={pairCode} />
-      <SessionsSection sessions={sessions} busy={busy} change={change} />
+      {!inApp && <SessionsSection sessions={sessions} busy={busy} change={change} />}
 
       {created && <ShowToken created={created} onClose={() => setCreated(null)} />}
       {reauth && (
@@ -569,5 +573,48 @@ function ShowToken({ created, onClose }: { created: CreatedToken; onClose: () =>
         </button>
       </div>
     </dialog>
+  );
+}
+
+/** In the desktop app: open the web UI in the browser, signed in (which makes a passkey there). */
+function BrowserSignInSection({ device }: { device: DeviceInfo | undefined }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  async function open() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      await desktop.browserSignIn();
+      setMessage({
+        ok: true,
+        text: "Your browser should have opened the server's page. Create a passkey there to finish signing in; the link works once, for ten minutes.",
+      });
+    } catch (e) {
+      setMessage({ ok: false, text: describeError(e) ?? String(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section className="account-section">
+      <h2>The web UI</h2>
+      {device?.account ? (
+        <>
+          <p className="hint muted">
+            Passkeys, API tokens and sessions are managed in your browser. Open the web UI there, signed in as you: the browser first creates a passkey,
+            which is how it signs in from then on. Each click makes a new link.
+          </p>
+          <button type="button" disabled={busy} onClick={() => void open()}>
+            {busy ? "Opening…" : "Open in my browser, signed in"}
+          </button>
+        </>
+      ) : (
+        <p className="hint muted">
+          This app wasn&apos;t paired with permission to manage your account, so it can&apos;t sign your browser in. Pair it again with that permission, or
+          register it with a token from the server.
+        </p>
+      )}
+      {message && <p className={message.ok ? "ok-text" : "error-text"}>{message.text}</p>}
+    </section>
   );
 }

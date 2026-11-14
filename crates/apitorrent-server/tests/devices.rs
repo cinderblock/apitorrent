@@ -12,6 +12,7 @@ use apitorrent_types::auth::{
     DeviceInfo, DevicePollResponse, DeviceRequestInfo, DeviceRequestStarted,
 };
 
+use common::authenticator::SoftAuthenticator;
 use common::{AuthFixture, PASSWORD, Req, app, core, send};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -171,4 +172,167 @@ async fn the_app_sets_up_a_headless_server_with_console_tokens() {
     assert_eq!(resp.status, StatusCode::CREATED, "{}", resp.json());
     let resp = send(&app, register(issued.token, None)).await;
     assert_eq!(resp.status, StatusCode::UNAUTHORIZED, "one use");
+}
+
+/// An app opens the web UI on a browser: a device with the `account` permission asks for
+/// a one-use link; the browser must create a passkey there before it is signed in; the
+/// passkey signs in from then on. Each link is new, and a device without the permission
+/// can't ask.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_app_signs_its_user_in_on_a_browser_with_a_new_passkey() {
+    const ORIGIN: &str = "http://localhost:8742";
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let post = |path: &str, body: serde_json::Value| Req::post(path).browser().json(&body);
+
+    // The app, registered from the console: the first admin's device, with `account`.
+    let resp = send(
+        &app,
+        Req::post("/api/v1/auth/devices/requests").json(&json!({
+            "name": "Laptop",
+            "platform": "apitorrent on tests",
+            "registration": { "token": f.setup_token(), "username": "cam" },
+        })),
+    )
+    .await;
+    let started: DeviceRequestStarted = resp.typed();
+    let DevicePollResponse::Approved { credential, device } = send(
+        &app,
+        Req::post("/api/v1/auth/devices/poll").json(&json!({ "pollSecret": started.poll_secret })),
+    )
+    .await
+    .typed() else {
+        panic!("registered requests are approved at once");
+    };
+    assert!(device.account);
+
+    // Each link is new; a new one replaces the last.
+    let link = || Req::post("/api/v1/auth/devices/browser-link").bearer(&credential);
+    let first = send(&app, link()).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.json());
+    let first = first.json()["token"].as_str().unwrap().to_owned();
+    let token = send(&app, link()).await.json()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(first, token);
+    let r = send(
+        &app,
+        post("/api/v1/auth/enroll/info", json!({ "token": first })),
+    )
+    .await;
+    assert_eq!(r.code(), "invalid_link");
+    let info = send(
+        &app,
+        post("/api/v1/auth/enroll/info", json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(info.status, StatusCode::OK, "{}", info.json());
+    assert_eq!(info.json()["kind"], "browser");
+    assert_eq!(info.json()["username"], "cam");
+
+    // A password won't do, even with password sign-in on: a passkey is the point.
+    let r = send(
+        &app,
+        post(
+            "/api/v1/auth/enroll/password",
+            json!({ "token": token, "username": "cam", "password": PASSWORD }),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST, "{}", r.json());
+
+    let mut key = SoftAuthenticator::default();
+    let start = send(
+        &app,
+        post(
+            "/api/v1/auth/enroll/start",
+            json!({ "token": token, "username": "x" }),
+        ),
+    )
+    .await;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.json());
+    let start = start.json();
+    assert_eq!(start["options"]["user"]["name"], "cam");
+    let cred = key.register(&start["options"], ORIGIN).unwrap();
+    let r = send(
+        &app,
+        post(
+            "/api/v1/auth/enroll/finish",
+            json!({ "ceremonyId": start["ceremonyId"], "credential": cred }),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json());
+    assert_eq!(r.json()["user"]["name"], "cam");
+    let browser = r.cookie();
+    let r = send(
+        &app,
+        post("/api/v1/auth/enroll/info", json!({ "token": token })),
+    )
+    .await;
+    assert_eq!(r.code(), "invalid_link", "one use");
+
+    // The next sign-in uses that passkey.
+    let start = send(&app, post("/api/v1/auth/login/passkey/start", json!({})))
+        .await
+        .json();
+    let cred = key.authenticate(&start["options"], ORIGIN).unwrap();
+    let r = send(
+        &app,
+        post(
+            "/api/v1/auth/login/passkey/finish",
+            json!({ "ceremonyId": start["ceremonyId"], "credential": cred }),
+        ),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.json());
+
+    // The app may make API tokens; a device approved without `account` may not ask for
+    // browser links.
+    let r = send(
+        &app,
+        Req::post("/api/v1/auth/tokens")
+            .bearer(&credential)
+            .json(&json!({ "name": "script", "scope": "read" })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.json());
+    let started: DeviceRequestStarted = send(
+        &app,
+        Req::post("/api/v1/auth/devices/requests")
+            .json(&json!({ "name": "Other", "platform": "apitorrent on tests" })),
+    )
+    .await
+    .typed();
+    let r = send(
+        &app,
+        Req::post("/api/v1/auth/devices/approve")
+            .browser()
+            .cookie(&browser)
+            .json(&json!({ "userCode": started.user_code, "scope": "full" })),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::NO_CONTENT, "{}", r.json());
+    let DevicePollResponse::Approved {
+        credential: plain,
+        device,
+    } = send(
+        &app,
+        Req::post("/api/v1/auth/devices/poll").json(&json!({ "pollSecret": started.poll_secret })),
+    )
+    .await
+    .typed()
+    else {
+        panic!("approved");
+    };
+    assert!(!device.account);
+    let r = send(
+        &app,
+        Req::post("/api/v1/auth/devices/browser-link").bearer(&plain),
+    )
+    .await;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.json());
 }

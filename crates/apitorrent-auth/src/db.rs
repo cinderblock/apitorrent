@@ -142,6 +142,40 @@ const MIGRATIONS: &[&str] = &[
          created_at INTEGER NOT NULL,
          expires_at INTEGER NOT NULL
      );",
+    // 6: devices may manage their user's account (`account`: browser sign-in links, API
+    // tokens); and a third kind of enrollment link, `browser`, which signs an existing
+    // user in on a browser after they create a passkey there. SQLite can't change a
+    // CHECK, so `enrollments` is rebuilt, with `enrollment_spaces` beside it: dropping
+    // `enrollments` with foreign keys on would cascade-delete pending invitations' spaces.
+    "ALTER TABLE devices ADD COLUMN account INTEGER NOT NULL DEFAULT 0;
+     CREATE TABLE enrollments_new (
+         id TEXT PRIMARY KEY,
+         kind TEXT NOT NULL CHECK (kind IN ('invite', 'recovery', 'browser')),
+         secret_hash BLOB NOT NULL UNIQUE,
+         created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+         created_at INTEGER NOT NULL,
+         expires_at INTEGER NOT NULL,
+         role TEXT CHECK (role IN ('admin', 'user', 'viewer')),
+         user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+         note TEXT,
+         used_at INTEGER,
+         revoked_at INTEGER
+     );
+     INSERT INTO enrollments_new SELECT id, kind, secret_hash, created_by, created_at,
+         expires_at, role, user_id, note, used_at, revoked_at FROM enrollments;
+     CREATE TABLE enrollment_spaces_new (
+         enrollment_id TEXT NOT NULL REFERENCES enrollments_new(id) ON DELETE CASCADE,
+         space_id INTEGER NOT NULL,
+         role TEXT NOT NULL CHECK (role IN ('admin', 'user', 'viewer')),
+         PRIMARY KEY (enrollment_id, space_id)
+     );
+     INSERT INTO enrollment_spaces_new SELECT enrollment_id, space_id, role
+         FROM enrollment_spaces;
+     DROP TABLE enrollment_spaces;
+     DROP TABLE enrollments;
+     ALTER TABLE enrollments_new RENAME TO enrollments;
+     ALTER TABLE enrollment_spaces_new RENAME TO enrollment_spaces;
+     CREATE INDEX enrollments_user ON enrollments(user_id);",
 ];
 
 pub(crate) fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -224,6 +258,49 @@ mod tests {
             .pragma_query_value(None, "journal_mode", |r| r.get(0))
             .unwrap();
         assert_eq!(mode, "wal");
+    }
+
+    /// Migration 6 rebuilds `enrollments`: a pending invitation keeps its spaces.
+    #[test]
+    fn rebuilding_enrollments_keeps_invitation_spaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.db");
+        let mut conn = Connection::open(&path).unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for (i, sql) in MIGRATIONS.iter().enumerate().take(5) {
+            let tx = conn.transaction().unwrap();
+            tx.execute_batch(sql).unwrap();
+            tx.pragma_update(None, "user_version", i64::try_from(i + 1).unwrap())
+                .unwrap();
+            tx.commit().unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO enrollments (id, kind, secret_hash, created_at, expires_at, role)
+             VALUES ('inv', 'invite', x'01', 1, 2, 'user');
+             INSERT INTO enrollment_spaces (enrollment_id, space_id, role)
+             VALUES ('inv', 7, 'admin');",
+        )
+        .unwrap();
+        drop(conn);
+        let conn = open(&path).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), MIGRATIONS.len());
+        let spaces: i64 = conn
+            .query_row("SELECT count(*) FROM enrollment_spaces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spaces, 1);
+        conn.execute(
+            "INSERT INTO enrollments (id, kind, secret_hash, created_at, expires_at)
+             VALUES ('b', 'browser', x'02', 1, 2)",
+            [],
+        )
+        .unwrap();
+        // The cascade still points at the rebuilt table.
+        conn.execute("DELETE FROM enrollments WHERE id = 'inv'", [])
+            .unwrap();
+        let spaces: i64 = conn
+            .query_row("SELECT count(*) FROM enrollment_spaces", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spaces, 0);
     }
 
     #[test]

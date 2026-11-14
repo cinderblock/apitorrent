@@ -51,7 +51,7 @@ pub use apitorrent_types::auth::{
 };
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use devices::DEVICE_PREFIX;
-pub use enroll::{EnrollmentRecord, IssuedLink, UserRecord, joinable};
+pub use enroll::{BROWSER_LINK_TTL, EnrollmentRecord, IssuedLink, UserRecord, joinable};
 pub use error::{AuthError, Result};
 pub use password::PasswordCost;
 pub use registration::{IssuedRegistration, REGISTRATION_TTL, create_registration_token};
@@ -210,6 +210,8 @@ pub enum Credential {
         scope: TokenScope,
         /// `None`: every space the user is in, as for a session.
         space: Option<apitorrent_types::spaces::SpaceId>,
+        /// It may manage the account (see `devices`): browser sign-in links, API tokens.
+        account: bool,
     },
     /// `--insecure-no-auth-loopback`: a loopback request with authentication disabled.
     Local,
@@ -259,6 +261,19 @@ impl Principal {
     /// session can do nothing except finish signing in, check its status or sign out.
     pub fn pending_second_factor(&self) -> bool {
         self.session().is_some_and(|s| s.pending_second_factor)
+    }
+
+    /// A full-scope device with the `account` permission: it may do what a fresh browser
+    /// sign-in may (browser sign-in links, API tokens), since it has no way to re-sign-in.
+    pub fn device_may_manage_account(&self) -> bool {
+        matches!(
+            self.credential,
+            Credential::Device {
+                account: true,
+                scope: TokenScope::Full,
+                ..
+            }
+        )
     }
 
     pub fn may_read(&self) -> bool {
@@ -1636,7 +1651,9 @@ impl Auth {
         req: &CreateTokenRequest,
         meta: &ClientMeta,
     ) -> Result<CreatedToken> {
-        self.recent_session(p)?;
+        if !p.device_may_manage_account() {
+            self.recent_session(p)?;
+        }
         let name = clean_label(&req.name, "token names")?;
         if req
             .expires_in_days

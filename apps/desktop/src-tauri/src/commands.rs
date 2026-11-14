@@ -642,6 +642,35 @@ pub fn device_pair_open(state: State<'_, AppState>, pairing_id: String) -> CmdRe
     tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Open the web UI in the default browser, signed in: ask the server, as this device, for a
+/// fresh one-use sign-in link and open `<server>/enroll#token=…`, where the browser creates
+/// a passkey (how it signs in from then on) and is signed in. The device needs the server's
+/// `account` permission. The secret is in the fragment, so it never reaches a server log.
+#[tauri::command]
+pub async fn browser_sign_in(state: State<'_, AppState>) -> CmdResult<()> {
+    let backend = state.backend().await?;
+    let Backend::Remote(remote) = &backend else {
+        return Err(
+            "this connection runs the engine on this computer, which has no separate web sign-in"
+                .into(),
+        );
+    };
+    let r = backend
+        .request("POST", "/api/v1/auth/devices/browser-link", None, None)
+        .await?;
+    if r.status != 200 {
+        return Err(crate::pairing::error_message(r.status, &r.body));
+    }
+    let link: apitorrent_types::auth::BrowserLink =
+        serde_json::from_slice(&r.body).map_err(|e| e.to_string())?;
+    let mut url = remote
+        .base_url()
+        .join("enroll")
+        .map_err(|e| e.to_string())?;
+    url.set_fragment(Some(&format!("token={}", link.token)));
+    tauri_plugin_opener::open_url(url.as_str(), None::<&str>).map_err(|e| e.to_string())
+}
+
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command]
 pub fn device_pair_cancel(state: State<'_, AppState>, pairing_id: String) {

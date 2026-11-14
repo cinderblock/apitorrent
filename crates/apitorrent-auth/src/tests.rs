@@ -372,6 +372,7 @@ fn device_pairing() {
     let approve = ApproveDeviceRequest {
         user_code: started.user_code.clone(),
         scope: TokenScope::Read,
+        account: false,
     };
     f.clock.advance(Duration::from_secs(11 * 60));
     assert!(matches!(
@@ -392,6 +393,7 @@ fn device_pairing() {
             &ApproveDeviceRequest {
                 user_code: started.user_code.clone(),
                 scope: TokenScope::Read,
+                account: false,
             },
             &meta(),
         )

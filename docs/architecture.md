@@ -432,6 +432,16 @@ from the torrent database.
     space (`space_id` NULL): every space its user is in, as a session. Registration
     tokens aren't printed at startup: logs are often readable by more people (the `adm`
     group) than the data directory, and a token there makes an admin's device.
+  - **Account permission and browser sign-in** (`devices.account`, auth migration 6):
+    a full-scope device may manage its user's account. Console-registered devices get
+    it; a browser approval grants it only when ticked. Such a device may make API tokens
+    without a fresh sign-in, and ask for a browser sign-in link
+    (`POST /auth/devices/browser-link`): a third enrollment kind, `browser`, for its own
+    user, ten minutes, one at a time (a new one revokes the last), a new random secret
+    each time. Redeeming it at `/enroll#token=…` requires creating a passkey (passwords
+    are refused even in fallback mode); it adds that passkey and a session, and removes
+    nothing. The app opens it with `browser_sign_in`, which keeps the secret in Rust and
+    in the URL fragment.
   - **Bound to the pinned key**: when the daemon serves TLS itself, a request whose pin
     isn't the key it serves is refused (something answered in between), and a matching
     pin binds the device: its credential works only while the daemon serves that key. A

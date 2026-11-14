@@ -25,6 +25,9 @@ pub enum EnrollmentKind {
     Invitation,
     /// Replaces an existing user's sign-in credentials.
     Recovery,
+    /// Signs an existing user in on a browser, once they create a passkey there. Made by
+    /// one of their apps (a device with the `account` permission), for minutes.
+    Browser,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

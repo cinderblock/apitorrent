@@ -408,6 +408,22 @@ pub struct DeviceRequestInfo {
 pub struct ApproveDeviceRequest {
     pub user_code: String,
     pub scope: TokenScope,
+    /// Let the device manage the account too: open the web UI signed in on a browser
+    /// (which then makes a passkey) and make API tokens.
+    #[serde(default)]
+    pub account: bool,
+}
+
+/// `POST /api/v1/auth/devices/browser-link` (a device with the `account` permission): a
+/// one-use link that signs its user in on a browser, once they create a passkey there.
+/// The app opens `<server>/enroll#token=<token>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BrowserLink {
+    pub token: String,
+    #[ts(type = "number")]
+    pub expires_at: i64,
 }
 
 /// A paired device, as its owner sees it on the Account page.
@@ -422,6 +438,8 @@ pub struct DeviceInfo {
     /// The space the device works in, as for API tokens; `None`: every space its user is in.
     #[ts(type = "number | null")]
     pub space: Option<crate::spaces::SpaceId>,
+    /// It may manage the account: open the web UI signed in on a browser, make API tokens.
+    pub account: bool,
     #[ts(type = "number")]
     pub created_at: i64,
     #[ts(type = "number | null")]

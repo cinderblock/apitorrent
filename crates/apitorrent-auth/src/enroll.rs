@@ -7,7 +7,11 @@
 //! - **A recovery link** is built the same way, for an existing user who lost their
 //!   credentials. Whoever opens it registers a new passkey (or password); the old passkeys
 //!   and password are removed and every session ends. API tokens stay.
-//! - Both expire (7 days by default, 30 at most), can be revoked, work once, and are stored
+//! - **A browser sign-in link** is made by one of the user's apps (a device with the
+//!   `account` permission), lasts ten minutes, and signs the user in on a browser once they
+//!   create a passkey there. It only adds: nothing is removed and no session ends.
+//! - Invitations and recovery links expire (7 days by default, 30 at most); every link can
+//!   be revoked, works once, and is stored
 //!   only as the SHA-256 of their 256-bit secret. Redeeming one is rate-limited and audited
 //!   like setup and sign-in: a wrong, used, revoked or expired secret counts as a failure
 //!   against the caller's address.
@@ -37,6 +41,8 @@ use crate::{
 /// Used, revoked and expired links are forgotten this long after they stopped working.
 const KEEP_FINISHED: Duration = Duration::from_secs(30 * 24 * 3600);
 const MAX_NOTE: usize = 200;
+/// How long a browser sign-in link works.
+pub const BROWSER_LINK_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// A new link. Give `secret` to the person it is for; it is never shown again.
 #[derive(Clone)]
@@ -103,6 +109,7 @@ fn kind_str(k: EnrollmentKind) -> &'static str {
     match k {
         EnrollmentKind::Invitation => "invite",
         EnrollmentKind::Recovery => "recovery",
+        EnrollmentKind::Browser => "browser",
     }
 }
 
@@ -167,10 +174,10 @@ fn record_row(
     now: i64,
 ) -> rusqlite::Result<EnrollmentRecord> {
     let id: String = r.get(0)?;
-    let kind = if r.get::<_, String>(1)? == "recovery" {
-        EnrollmentKind::Recovery
-    } else {
-        EnrollmentKind::Invitation
+    let kind = match r.get::<_, String>(1)?.as_str() {
+        "recovery" => EnrollmentKind::Recovery,
+        "browser" => EnrollmentKind::Browser,
+        _ => EnrollmentKind::Invitation,
     };
     let expires_at: i64 = r.get(8)?;
     let used_at: Option<i64> = r.get(9)?;
@@ -261,7 +268,7 @@ impl Auth {
         let Some(rec) = self.pending_link(token)? else {
             return Err(self.bad_link(meta, "wrong, used, revoked or expired link"));
         };
-        if rec.kind == EnrollmentKind::Recovery {
+        if matches!(rec.kind, EnrollmentKind::Recovery | EnrollmentKind::Browser) {
             let disabled = rec
                 .user_id
                 .as_deref()
@@ -286,11 +293,10 @@ impl Auth {
         role: Option<Role>,
         spaces: &[(SpaceId, SpaceRole)],
         user_id: Option<&str>,
-        days: Option<u32>,
+        lifetime: i64,
         note: Option<&str>,
         meta: &ClientMeta,
     ) -> Result<IssuedLink> {
-        let lifetime = link_lifetime(days)?;
         let secret = secret::token256();
         let id = secret::public_id();
         let now = self.now();
@@ -302,12 +308,12 @@ impl Auth {
             "DELETE FROM enrollments WHERE COALESCE(used_at, revoked_at, expires_at) < ?1",
             [now - ms(KEEP_FINISHED)],
         )?;
-        if kind == EnrollmentKind::Recovery {
-            // One recovery link per user: a new one replaces any still waiting.
+        if matches!(kind, EnrollmentKind::Recovery | EnrollmentKind::Browser) {
+            // One per user: a new one replaces any still waiting.
             tx.execute(
-                "UPDATE enrollments SET revoked_at = ?2 WHERE kind = 'recovery' AND user_id = ?1
+                "UPDATE enrollments SET revoked_at = ?3 WHERE kind = ?2 AND user_id = ?1
                  AND used_at IS NULL AND revoked_at IS NULL",
-                params![user_id, now],
+                params![user_id, kind_str(kind), now],
             )?;
         }
         tx.execute(
@@ -342,11 +348,14 @@ impl Auth {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            EnrollmentKind::Recovery => format!("{id}: for {}", user_id.unwrap_or_default()),
+            EnrollmentKind::Recovery | EnrollmentKind::Browser => {
+                format!("{id}: for {}", user_id.unwrap_or_default())
+            }
         };
         let event = match kind {
             EnrollmentKind::Invitation => "invitation_created",
             EnrollmentKind::Recovery => "recovery_issued",
+            EnrollmentKind::Browser => "browser_link_created",
         };
         self.log_with(&tx, event, creator, meta, &detail);
         let rec = record(&tx, &id, now)?.ok_or_else(|| internal("link vanished"))?;
@@ -400,7 +409,7 @@ impl Auth {
             Some(role),
             spaces,
             None,
-            days,
+            link_lifetime(days)?,
             note.as_deref(),
             meta,
         )
@@ -428,7 +437,38 @@ impl Auth {
             None,
             &[],
             Some(user_id),
-            days,
+            link_lifetime(days)?,
+            None,
+            meta,
+        )
+    }
+
+    /// A link that signs `p`'s user in on a browser once they create a passkey there, for
+    /// [`BROWSER_LINK_TTL`]. Only a device with the `account` permission and full scope
+    /// may ask: it is how an app (whose window can't use passkeys) gets its user into the
+    /// web UI. Each call makes a new random secret and replaces the user's earlier one.
+    pub fn create_browser_link(&self, p: &Principal, meta: &ClientMeta) -> Result<IssuedLink> {
+        let allowed = matches!(
+            p.credential,
+            crate::Credential::Device {
+                account: true,
+                scope: apitorrent_types::auth::TokenScope::Full,
+                ..
+            }
+        );
+        if !allowed {
+            return Err(AuthError::Forbidden(
+                "only an app paired with permission to manage the account can open the web UI \
+                 signed in",
+            ));
+        }
+        self.insert_link(
+            p,
+            EnrollmentKind::Browser,
+            None,
+            &[],
+            Some(&p.user.id),
+            ms(BROWSER_LINK_TTL),
             None,
             meta,
         )
@@ -572,7 +612,7 @@ impl Auth {
                 }
                 Ok((Uuid::new_v4(), username, display_name))
             }
-            EnrollmentKind::Recovery => {
+            EnrollmentKind::Recovery | EnrollmentKind::Browser => {
                 let id = rec.user_id.as_deref().ok_or(AuthError::InvalidLink)?;
                 let user = store::user_by_id(&self.db(), id)?.ok_or(AuthError::InvalidLink)?;
                 let uuid = Uuid::parse_str(&user.id).map_err(internal)?;
@@ -644,6 +684,11 @@ impl Auth {
             ));
         }
         let rec = self.usable_link(token, meta)?;
+        if rec.kind == EnrollmentKind::Browser {
+            return Err(AuthError::InvalidRequest(
+                "this link signs in only after creating a passkey".into(),
+            ));
+        }
         let (user_id, username, display_name) = self.enrollee(&rec, username, display_name)?;
         let hash = self.hash_password(password)?;
         self.complete_enrollment(
@@ -732,6 +777,20 @@ impl Auth {
                 ended_sessions =
                     tx.execute("DELETE FROM sessions WHERE user_id = ?1", [&user.id])? > 0;
             }
+            EnrollmentKind::Browser => {
+                // Only adds: the new passkey below, and a session.
+                rec.user_id
+                    .as_deref()
+                    .filter(|u| *u == user_id)
+                    .map(|u| store::user_by_id(&tx, u))
+                    .transpose()?
+                    .flatten()
+                    .filter(|u| !u.disabled)
+                    .ok_or(AuthError::InvalidLink)?;
+                if !matches!(how, Completion::Passkey { .. }) {
+                    return Err(AuthError::InvalidLink);
+                }
+            }
         }
         if let Completion::Passkey {
             rp_id,
@@ -770,6 +829,10 @@ impl Auth {
         let (event, detail) = match rec.kind {
             EnrollmentKind::Invitation => ("enrolled", format!("invitation {enrollment}")),
             EnrollmentKind::Recovery => ("recovered", format!("recovery link {enrollment}")),
+            EnrollmentKind::Browser => (
+                "browser_signed_in",
+                format!("browser sign-in link {enrollment}"),
+            ),
         };
         let detail = match how {
             Completion::Passkey { .. } => format!("{detail}, passkey"),
@@ -808,8 +871,8 @@ impl Auth {
         let rec = self.usable_link(token, meta)?;
         if !joinable(&rec) {
             return Err(match rec.kind {
-                EnrollmentKind::Recovery => AuthError::InvalidRequest(
-                    "a recovery link can't be joined; it is for its own account".into(),
+                EnrollmentKind::Recovery | EnrollmentKind::Browser => AuthError::InvalidRequest(
+                    "this link can't be joined; it is for its own account".into(),
                 ),
                 EnrollmentKind::Invitation => AuthError::Conflict(
                     "this invitation makes a new server admin, so it can only create a new \

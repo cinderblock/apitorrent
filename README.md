@@ -354,9 +354,10 @@ is deleted once used.
 **A headless server needs no browser at all.** In the desktop app, add the server, choose
 "Register with a token", and give it the setup token from the server's console (or its
 log, `journalctl -u apitorrentd`) and a username: the app makes the first admin and
-becomes that admin's device. That admin has no passkey or password, so the web UI can't
-sign them in: their apps are the way in (a browser sign-in handed over from the app isn't
-there yet). Once the server is set up, a new device registers with a token from the server's command line, which works once
+becomes that admin's device. To use the web UI too, open the app's Account page and choose
+"Open in my browser, signed in": the server makes a new one-use link (ten minutes), the
+browser opens it, creates a passkey for the server's address, and is signed in; that
+passkey signs it in from then on. Once the server is set up, a new device registers with a token from the server's command line, which works once
 for ten minutes:
 
 ```sh
@@ -379,6 +380,9 @@ in.
   code and opens the server's `/pair` page in your browser, where you approve it (or enter
   the code under Account → Paired devices), or it registers with a token from the
   server's console (above). Each device is listed there and can be removed on its own.
+  A device may also be allowed to manage the account (the approval's checkbox; devices
+  registered from the console always are): it can then open the web UI signed in on a
+  browser, which creates a passkey there first, and make API tokens.
 
 ### Inviting people
 

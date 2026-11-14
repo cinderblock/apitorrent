@@ -12,8 +12,8 @@ use apitorrent_types::auth::{
     RenameRequest, SessionInfo, SetupFinishRequest, SetupPasswordRequest, SetupStartRequest,
 };
 use apitorrent_types::auth::{
-    ApproveDeviceRequest, DeviceCodeRequest, DeviceInfo, DevicePollRequest, DevicePollResponse,
-    DeviceRequestInfo, DeviceRequestStart, DeviceRequestStarted,
+    ApproveDeviceRequest, BrowserLink, DeviceCodeRequest, DeviceInfo, DevicePollRequest,
+    DevicePollResponse, DeviceRequestInfo, DeviceRequestStart, DeviceRequestStarted,
 };
 
 use crate::authn::{RequestCtx, is_loopback_host};
@@ -517,6 +517,19 @@ pub(crate) async fn devices(
     Extension(ctx): Extension<RequestCtx>,
 ) -> AuthResult<Json<Vec<DeviceInfo>>> {
     Ok(Json(enabled(&s)?.list_devices(principal(&ctx)?)?))
+}
+
+/// A one-use link that signs the device's user in on a browser, once they create a
+/// passkey there (a device with the `account` permission).
+pub(crate) async fn browser_link(
+    State(s): State<AppState>,
+    Extension(ctx): Extension<RequestCtx>,
+) -> AuthResult<Json<BrowserLink>> {
+    let link = enabled(&s)?.create_browser_link(principal(&ctx)?, &ctx.meta)?;
+    Ok(Json(BrowserLink {
+        token: link.secret,
+        expires_at: link.record.expires_at,
+    }))
 }
 
 pub(crate) async fn device_delete(

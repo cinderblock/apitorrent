@@ -49,9 +49,13 @@ export function EnrollPage({ status, onSignedIn }: Props) {
     });
   }, [token]);
 
-  const recovery = info?.kind === "recovery";
+  // Browser sign-in links, from the desktop app, are for an existing account too.
+  const browser = info?.kind === "browser";
+  const recovery = info?.kind === "recovery" || browser;
   const canPasskey = status.passkeysAvailable && passkeysSupported();
-  const canPassword = info?.passwordMode === "fallback";
+  // A browser sign-in link takes a passkey and nothing else: it is how this browser
+  // signs in from now on.
+  const canPassword = info?.passwordMode === "fallback" && !browser;
   const nameOk = recovery || validUsername(username);
 
   async function run(action: () => Promise<AuthStatus>) {
@@ -182,7 +186,7 @@ export function EnrollPage({ status, onSignedIn }: Props) {
               />
             </label>
             <button type="submit" className={joinAs ? "auth-submit" : "primary auth-submit"} disabled={busy || !nameOk}>
-              {recovery ? "Register a new passkey" : "Create my account with a passkey"}
+              {browser ? "Create a passkey and sign in" : recovery ? "Register a new passkey" : "Create my account with a passkey"}
             </button>
           </>
         ) : (
@@ -227,7 +231,7 @@ export function EnrollPage({ status, onSignedIn }: Props) {
   return (
     <div className="auth-page">
       <form className="auth-card" onSubmit={withPasskey}>
-        <AuthHeader title={recovery ? "Recover your account" : "Join apitorrent"} />
+        <AuthHeader title={browser ? "Sign in on this browser" : recovery ? "Recover your account" : "Join apitorrent"} />
         <InsecureBanner status={status} />
         {body}
         {status.user && (
@@ -247,6 +251,14 @@ function Summary({ info }: { info: EnrollInfo }) {
       <small className="muted">{formatUtc(info.expiresAt)}</small>
     </>
   );
+  if (info.kind === "browser") {
+    return (
+      <p>
+        Your app sent you here to sign in as <strong>{info.displayName ?? info.username}</strong> ({info.username}). First create a passkey for this
+        browser: it is how you sign in here from now on. Nothing else about your account changes. This link works once, until {expires}.
+      </p>
+    );
+  }
   if (info.kind === "recovery") {
     return (
       <p>

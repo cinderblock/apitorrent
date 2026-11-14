@@ -111,7 +111,7 @@ pub fn pinned_key(trust: &Trust) -> Option<String> {
     }
 }
 
-fn error_message(status: u16, body: &[u8]) -> String {
+pub(crate) fn error_message(status: u16, body: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
         .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_owned))

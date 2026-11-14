@@ -8,7 +8,11 @@ export type DeviceInfo = { id: string, name: string, platform: string, scope: To
 /**
  * The space the device works in, as for API tokens; `None`: every space its user is in.
  */
-space: number | null, createdAt: number, lastUsedAt: number | null, lastIp: string | null, 
+space: number | null, 
+/**
+ * It may manage the account: open the web UI signed in on a browser, make API tokens.
+ */
+account: boolean, createdAt: number, lastUsedAt: number | null, lastIp: string | null, 
 /**
  * The pairing code of the server key it is bound to; `None` when unbound.
  */

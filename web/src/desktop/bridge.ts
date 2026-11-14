@@ -198,6 +198,11 @@ export const desktop = {
   /** Open the server's approval page in the default browser. */
   pairOpen: (pairingId: string) => call<void>("device_pair_open", { pairingId }),
   pairCancel: (pairingId: string) => call<void>("device_pair_cancel", { pairingId }),
+  /**
+   * Open the web UI in the default browser, signed in: the server makes a fresh one-use
+   * link (this device needs the `account` permission), and the browser creates a passkey.
+   */
+  browserSignIn: () => call<void>("browser_sign_in"),
   deleteProfile: (id: string) => call<void>("profile_delete", { id }),
   activate: (id: string) => call<void>("profile_activate", { id }),
   disconnect: () => call<void>("profile_disconnect"),

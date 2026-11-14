@@ -173,6 +173,7 @@ pub fn run() {
             commands::device_pair_poll,
             commands::device_pair_open,
             commands::device_pair_cancel,
+            commands::browser_sign_in,
             theme::theme_set,
             app_update::app_update_check,
             app_update::app_update_install,

@@ -61,6 +61,7 @@ enum State {
         scope: TokenScope,
         /// `None`: every space the user is in.
         space: Option<SpaceId>,
+        account: bool,
     },
     Denied,
 }
@@ -140,7 +141,7 @@ fn platform_label(platform: &str) -> Result<String> {
 }
 
 const DEVICE_COLS: &str = "id, name, platform, scope, space_id, created_at, last_used_at, \
-                           last_ip, server_key";
+                           last_ip, server_key, account";
 
 fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceInfo> {
     let key: Option<Vec<u8>> = r.get(8)?;
@@ -160,6 +161,7 @@ fn device_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeviceInfo> {
         server_key_code: key
             .and_then(|k| Digest32::try_from(k.as_slice()).ok())
             .map(|k| key_code(&k)),
+        account: r.get(9)?,
         current: false,
     })
 }
@@ -172,6 +174,7 @@ struct AuthRow {
     space: Option<SpaceId>,
     last_used: Option<i64>,
     bound: Option<Vec<u8>>,
+    account: bool,
 }
 
 /// Whether the device still exists (for long-lived sockets).
@@ -242,6 +245,8 @@ impl Auth {
                 user_id: self.registered_user(reg, meta)?,
                 scope: TokenScope::Full,
                 space: None,
+                // Whoever has the server's console has the account already.
+                account: true,
             },
             None => State::Pending,
         };
@@ -304,7 +309,7 @@ impl Auth {
             map.swap_remove(i);
             return Ok(DevicePollResponse::Expired);
         }
-        let (user_id, scope, space) = match &map[i].state {
+        let (user_id, scope, space, account) = match &map[i].state {
             State::Pending => return Ok(DevicePollResponse::Pending),
             State::Denied => {
                 map.swap_remove(i);
@@ -314,7 +319,8 @@ impl Auth {
                 user_id,
                 scope,
                 space,
-            } => (user_id.clone(), *scope, *space),
+                account,
+            } => (user_id.clone(), *scope, *space, *account),
         };
         let req = map.swap_remove(i);
         drop(map);
@@ -328,8 +334,8 @@ impl Auth {
         }
         conn.execute(
             "INSERT INTO devices (id, user_id, name, platform, scope, space_id, credential_hash,
-                                  server_key, created_at, last_used_at, last_ip)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL)",
+                                  server_key, created_at, last_used_at, last_ip, account)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10)",
             params![
                 id,
                 user_id,
@@ -340,6 +346,7 @@ impl Auth {
                 secret::sha256(credential.as_bytes()).as_slice(),
                 req.server_key.as_ref().map(<[u8; 32]>::as_slice),
                 now,
+                account,
             ],
         )?;
         self.log_with(&conn, "device_paired", Some(&user_id), meta, &req.name);
@@ -431,6 +438,7 @@ impl Auth {
                     user_id: p.user.id.clone(),
                     scope: req.scope,
                     space: Some(space),
+                    account: req.account && req.scope == TokenScope::Full,
                 };
                 r.name.clone()
             })
@@ -472,8 +480,8 @@ impl Auth {
         let conn = self.db();
         let row = conn
             .query_row(
-                "SELECT id, user_id, scope, space_id, last_used_at, server_key FROM devices
-                 WHERE credential_hash = ?1",
+                "SELECT id, user_id, scope, space_id, last_used_at, server_key, account
+                 FROM devices WHERE credential_hash = ?1",
                 [hash.as_slice()],
                 |r| {
                     Ok(AuthRow {
@@ -483,6 +491,7 @@ impl Auth {
                         space: r.get(3)?,
                         last_used: r.get(4)?,
                         bound: r.get(5)?,
+                        account: r.get(6)?,
                     })
                 },
             )
@@ -494,6 +503,7 @@ impl Auth {
             space,
             last_used,
             bound,
+            account,
         }) = row
         else {
             return Ok(None);
@@ -528,6 +538,7 @@ impl Auth {
                     TokenScope::Read
                 },
                 space,
+                account,
             },
         }))
     }

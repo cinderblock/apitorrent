@@ -39,6 +39,7 @@ export function DevicesSection({ devices, busy, change, initialCode }: Props) {
   const [code, setCode] = useState(initialCode);
   const [request, setRequest] = useState<DeviceRequestInfo | null>(null);
   const [scope, setScope] = useState<TokenScope>("full");
+  const [account, setAccount] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
   const space = useSpaceContext();
   const spaces = space && space.spaces.length > 1 ? space.spaces : null;
@@ -63,7 +64,7 @@ export function DevicesSection({ devices, busy, change, initialCode }: Props) {
   function decide(approve: boolean) {
     if (!request) return;
     void change(async () => {
-      if (approve) await authApi.deviceApprove({ userCode: request.userCode, scope });
+      if (approve) await authApi.deviceApprove({ userCode: request.userCode, scope, account: account && scope === "full" });
       else await authApi.deviceDeny(request.userCode);
       setOutcome(
         approve
@@ -126,6 +127,10 @@ export function DevicesSection({ devices, busy, change, initialCode }: Props) {
               <option value="full">Full access</option>
               <option value="read">Read only</option>
             </select>
+            <label className="check">
+              <input type="checkbox" checked={account && scope === "full"} disabled={scope !== "full"} onChange={(e) => setAccount(e.target.checked)} />
+              Also manage this account (open the web UI signed in, make API tokens)
+            </label>
             <button type="button" className="primary" disabled={busy} onClick={() => decide(true)}>
               Approve
             </button>
@@ -164,7 +169,10 @@ export function DevicesSection({ devices, busy, change, initialCode }: Props) {
                 {d.name} <small className="muted">{d.platform}</small>
               </td>
               {spaces && <td>{d.space === null ? <span className="muted">all its spaces</span> : spaceName(d.space)}</td>}
-              <td>{d.scope === "full" ? "Full" : "Read only"}</td>
+              <td>
+                {d.scope === "full" ? "Full" : "Read only"}
+                {d.account && <small className="muted"> and account</small>}
+              </td>
               <td>{d.serverKeyCode ? <code className="key">{d.serverKeyCode}</code> : <span className="muted">not bound</span>}</td>
               <td>
                 <When ms={d.createdAt} />

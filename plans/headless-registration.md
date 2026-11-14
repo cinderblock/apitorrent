@@ -38,13 +38,25 @@ at startup and expire after ~10 minutes").
 3. [x] Daemon: console text; `register-device` subcommand.
 4. [x] Desktop app: token (and username) fields in the server connection's pairing.
 5. [x] Docs: README "Signing in", architecture security model.
-6. [ ] ← current On pokol: the user chose a real name over tunnels and `--remote`
+6. [x] On pokol: the user chose a real name over tunnels and `--remote`
    (2026-11-14). DNS `apitorrent.isozilla.com` CNAME to pokol, not proxied: ops
    `6cf8da78`, applied by CI. The user sets up nginx and the certificate by hand;
    apitorrentd then needs `APITORRENT_PUBLIC_URLS=https://apitorrent.isozilla.com` and
    `APITORRENT_TRUSTED_PROXIES=127.0.0.1`. Then the app registers at that address with a
    `register-device` token (user `cameron` already exists, made in the browser
    2026-11-13 7:59 PM PST).
+
+7. [x] **Browser sign-in from the app** (asked 2026-11-14): a device with the
+   new `account` permission asks for a fresh random one-use link (a third enrollment kind,
+   `browser`, ten minutes; never the registration token). The app opens
+   `<server>/enroll#token=…`; the page makes the user create a passkey for that address,
+   and only then signs the browser in. Nothing else about the account changes.
+   - `account` on devices (auth migration 6): console-registered devices get it; a
+     browser approval may grant it (off by default). It lets a full-scope device make
+     browser sign-in links and API tokens without a fresh browser sign-in.
+   - Migration 6 also rebuilds `enrollments` (its kind CHECK) together with
+     `enrollment_spaces`: dropping `enrollments` with foreign keys on would cascade-delete
+     the spaces of pending invitations.
 
 ## Findings / gotchas
 
@@ -58,6 +70,14 @@ at startup and expire after ~10 minutes").
 
 ## Progress log
 
+- [x] Step 7 (2026-11-14): auth migration 6 (test that invitation spaces survive the
+  rebuild), `create_browser_link`, `browser` enrollment kind, account permission on
+  devices; server test `an_app_signs_its_user_in_on_a_browser_with_a_new_passkey` (new
+  link each time, password refused, passkey sign-in afterwards, no permission → 403);
+  enroll page, approval checkbox, app Account page button, desktop `browser_sign_in`.
+  Clippy clean (workspace on sentinel, desktop locally), web typecheck and tests pass.
+- [ ] ← current Build, then deploy to pokol and run the app (ask first).
+
 - [x] Plan written (2026-11-13)
 - [x] Steps 1-5: auth (36 tests), server test
   `the_app_sets_up_a_headless_server_with_console_tokens`, daemon `register-device`, app
@@ -66,6 +86,4 @@ at startup and expire after ~10 minutes").
 
 ## Open questions for the user
 
-1. Should the app be able to open the web UI in the browser already signed in (a one-use
-   sign-in link, made by the app's device credential), so an app-made admin can add a
-   passkey? Recommended.
+(none)

@@ -318,6 +318,10 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/auth/devices", get(auth_routes::devices))
         .route("/auth/devices/{id}", delete(auth_routes::device_delete))
         .route("/auth/devices/requests", post(auth_routes::device_request))
+        .route(
+            "/auth/devices/browser-link",
+            post(auth_routes::browser_link),
+        )
         .route("/auth/devices/poll", post(auth_routes::device_poll))
         .route("/auth/devices/lookup", post(auth_routes::device_lookup))
         .route("/auth/devices/approve", post(auth_routes::device_approve))

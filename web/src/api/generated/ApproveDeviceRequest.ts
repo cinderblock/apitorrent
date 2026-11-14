@@ -4,4 +4,9 @@ import type { TokenScope } from "./TokenScope";
 /**
  * `POST /api/v1/auth/devices/approve`.
  */
-export type ApproveDeviceRequest = { userCode: string, scope: TokenScope, };
+export type ApproveDeviceRequest = { userCode: string, scope: TokenScope, 
+/**
+ * Let the device manage the account too: open the web UI signed in on a browser
+ * (which then makes a passkey) and make API tokens.
+ */
+account: boolean, };
