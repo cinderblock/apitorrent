@@ -38,7 +38,13 @@ at startup and expire after ~10 minutes").
 3. [x] Daemon: console text; `register-device` subcommand.
 4. [x] Desktop app: token (and username) fields in the server connection's pairing.
 5. [x] Docs: README "Signing in", architecture security model.
-6. [ ] ← current On pokol: TLS self-signed on a public port (needs the user's yes), connect the app.
+6. [ ] ← current On pokol: the user chose a real name over tunnels and `--remote`
+   (2026-11-14). DNS `apitorrent.isozilla.com` CNAME to pokol, not proxied: ops
+   `6cf8da78`, applied by CI. The user sets up nginx and the certificate by hand;
+   apitorrentd then needs `APITORRENT_PUBLIC_URLS=https://apitorrent.isozilla.com` and
+   `APITORRENT_TRUSTED_PROXIES=127.0.0.1`. Then the app registers at that address with a
+   `register-device` token (user `cameron` already exists, made in the browser
+   2026-11-13 7:59 PM PST).
 
 ## Findings / gotchas
 
