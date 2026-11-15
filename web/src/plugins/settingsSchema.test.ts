@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   describeCapabilities,
   emptyValue,
+  generateToken,
   labelFor,
   parseNumber,
   secretNames,
@@ -109,4 +110,10 @@ test("capabilities in words", () => {
     "store its own data",
     "act as a release source",
   ]);
+});
+
+test("generated tokens are long, URL-safe and different each time", () => {
+  const a = generateToken();
+  expect(a).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  expect(generateToken()).not.toBe(a);
 });

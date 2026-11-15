@@ -600,7 +600,10 @@ capabilities listed in words, while the old version keeps running.
 **Settings** are described by a JSON Schema subset (types, titles, defaults, enums,
 ranges, lengths, `uri` and `multiline` formats, nested objects and arrays) that the host
 validates and the UI renders; unsupported keywords are refused at install. Top-level
-`writeOnly` strings are secrets: the API never returns them.
+`writeOnly` strings are secrets: the API never returns them. A secret with
+`format: "token"` is a key the plugin checks itself (`remote-add`'s): the form offers
+**Generate** (32 random bytes, base64url) and shows the value until it's saved, then
+never again.
 
 ### Management API and plugin routes
 

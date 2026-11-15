@@ -11,7 +11,8 @@
 //!   always refused, so `true` isn't allowed).
 //! - Arrays: `items` (required), `minItems`, `maxItems`.
 //! - Strings: `minLength`, `maxLength`, `format` (`uri`: an absolute `http`/`https` URL;
-//!   `multiline`: a UI hint for a text area).
+//!   `multiline`: a UI hint for a text area; `token`, on a secret only: the UI offers to
+//!   generate a random value, for keys the plugin checks rather than ones a service issues).
 //! - Numbers: `minimum`, `maximum`.
 //! - `writeOnly: true` on a top-level string property marks a secret: the API never sends it
 //!   back, and the UI shows only whether it is set.
@@ -115,9 +116,18 @@ fn check_node(schema: &Value, path: &str, depth: usize, root: bool) -> Result<()
         }
     }
     if let Some(f) = obj.get("format")
-        && !matches!(f.as_str(), Some("uri" | "multiline"))
+        && !matches!(f.as_str(), Some("uri" | "multiline" | "token"))
     {
-        return Err(at("`format` must be `uri` or `multiline`".to_owned()));
+        return Err(at(
+            "`format` must be `uri`, `multiline` or `token`".to_owned()
+        ));
+    }
+    if obj.get("format").and_then(Value::as_str) == Some("token")
+        && obj.get("writeOnly") != Some(&Value::Bool(true))
+    {
+        return Err(at(
+            "`format: \"token\"` is for secrets (`writeOnly: true`)".to_owned()
+        ));
     }
     if let Some(w) = obj.get("writeOnly") {
         let top_string = depth == 1 && t == "string";
@@ -424,7 +434,7 @@ mod tests {
             "type": "object",
             "properties": {
                 "interval": {"type": "integer", "minimum": 5, "default": 15, "title": "Minutes"},
-                "token": {"type": "string", "writeOnly": true},
+                "token": {"type": "string", "writeOnly": true, "format": "token"},
                 "mode": {"type": "string", "enum": ["auto", "manual"], "default": "auto"},
                 "feeds": {
                     "type": "array", "maxItems": 3, "default": [],
@@ -467,6 +477,7 @@ mod tests {
             json!({"type": "object", "properties": {"a": {"type": "integer", "writeOnly": true}}}),
             json!({"type": "object", "properties": {"a": {"type": "object", "properties": {"b": {"type": "string", "writeOnly": true}}}}}),
             json!({"type": "object", "properties": {"a": {"type": "string", "format": "email"}}}),
+            json!({"type": "object", "properties": {"a": {"type": "string", "format": "token"}}}),
             json!({"type": "object", "properties": {"a": {"type": "string", "minimum": 1}}}),
         ];
         for c in cases {

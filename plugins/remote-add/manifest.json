@@ -17,8 +17,9 @@
     "properties": {
       "key": {
         "type": "string",
-        "title": "Key (goes in the link; at least 32 characters, random)",
+        "title": "Key (goes in the link; generate one, at least 32 characters)",
         "writeOnly": true,
+        "format": "token",
         "minLength": 32,
         "maxLength": 200
       },

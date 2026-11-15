@@ -2,9 +2,17 @@
 // exactly what the server validates, so every field here has a widget and every rule the
 // server applies has an input attribute where HTML has one.
 
-import { useId } from "react";
+import { useId, useState } from "react";
 
-import { emptyValue, labelFor, parseNumber, type JsonSchema, type SecretEdit, type Values } from "./settingsSchema";
+import {
+  emptyValue,
+  generateToken,
+  labelFor,
+  parseNumber,
+  type JsonSchema,
+  type SecretEdit,
+  type Values,
+} from "./settingsSchema";
 
 interface FieldProps {
   name: string;
@@ -211,6 +219,9 @@ function SecretField({
   onEdit: (e: SecretEdit) => void;
 }) {
   const id = useId();
+  // A generated value is shown (so it can be copied) until it's saved; then never again.
+  const [generated, setGenerated] = useState<string | null>(null);
+  const shown = generated !== null && edit.kind === "set" && edit.value === generated;
   const state =
     edit.kind === "clear" ? "will be cleared" : edit.kind === "set" ? "will be replaced" : isSet ? "set" : "not set";
   return (
@@ -221,18 +232,37 @@ function SecretField({
       <div className="field-row">
         <input
           id={id}
-          type="password"
+          type={shown ? "text" : "password"}
+          readOnly={shown}
           autoComplete="new-password"
           placeholder={isSet ? "Leave empty to keep the current value" : ""}
           value={edit.kind === "set" ? edit.value : ""}
           onChange={(e) => onEdit(e.target.value ? { kind: "set", value: e.target.value } : { kind: "keep" })}
         />
+        {schema.format === "token" && (
+          <button
+            type="button"
+            onClick={() => {
+              const value = generateToken();
+              setGenerated(value);
+              onEdit({ kind: "set", value });
+            }}
+          >
+            Generate
+          </button>
+        )}
+        {shown && (
+          <button type="button" onClick={() => void navigator.clipboard?.writeText(generated)}>
+            Copy
+          </button>
+        )}
         {isSet && (
           <button type="button" onClick={() => onEdit({ kind: "clear" })}>
             Clear
           </button>
         )}
       </div>
+      {shown && <small className="muted">Copy it now: once saved, it isn't shown again.</small>}
       <Help schema={schema} />
     </label>
   );

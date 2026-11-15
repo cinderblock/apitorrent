@@ -17,7 +17,8 @@ export interface JsonSchema {
   maxItems?: number;
   minLength?: number;
   maxLength?: number;
-  format?: "uri" | "multiline";
+  /** `token`, on a secret: the form offers to generate a random value. */
+  format?: "uri" | "multiline" | "token";
   minimum?: number;
   maximum?: number;
   writeOnly?: boolean;
@@ -60,6 +61,15 @@ export function secretNames(schema: JsonSchema | null): string[] {
   return Object.entries(schema?.properties ?? {})
     .filter(([, s]) => s.writeOnly === true)
     .map(([k]) => k);
+}
+
+/**
+ * A random value for a `format: "token"` secret: 32 bytes as base64url (43 characters),
+ * safe to put in a URL's query string as is.
+ */
+export function generateToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 /** What a secret field holds in the form: untouched, a new value, or cleared. */
