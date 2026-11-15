@@ -191,6 +191,7 @@ current version keeps running.
   (or added directly, if you ask).
 - `plugins/qbittorrent-api`: qBittorrent's Web API v2 (see below).
 - `plugins/cloudflare-dns`: ACME DNS-01 records through Cloudflare's API (see "HTTPS").
+- `plugins/remote-add`: add a torrent by opening a link with a key in it (see below).
 
 Release builds ship these first-party plugins: on start the daemon installs any it hasn't
 offered before, and each waits on the Plugins page for an admin to approve what it asks
@@ -226,6 +227,34 @@ torrent is added and announces on its own schedule), "force start" resumes, comp
 times are approximate, and `sync/maindata` always sends a full update. Adding by `.torrent`
 URL works for the hosts listed in the plugin's "download hosts" setting (a Prowlarr or
 Jackett address, say); magnet links and uploaded files always work.
+
+### Adding from a link (`remote-add`)
+
+For links you inject into a tracker's pages with your own JavaScript there: opening
+`/api/v1/plugins/remote-add/add?key=<key>&url=<.torrent link>` makes apitorrent fetch the
+`.torrent` and add it, so the file never passes through your browser. Such a script can
+only open a URL (it can't send an apitorrent token in a header to another site), so the
+key rides in the link, where proxy logs and the tracker's staff can see it. It is narrow
+on purpose:
+
+- **The key only adds.** It's the plugin's own setting (random, at least 32 characters),
+  not an apitorrent API token.
+- **Only from the hosts you list** (your tracker), redirects included, so a leaked key
+  can't make apitorrent fetch anything else. No magnet links.
+- **Per space**: in another space use `/s/<slug>/api/v1/plugins/remote-add/add` with that
+  space's key. Label, folder and "add paused" are settings too.
+
+The reply is a short page for a popup (plugin pages can't run script, so it can't close
+itself), or, with `&reply=image`, a 1×1 GIF when the torrent was added or already there and
+an error status otherwise, so an `<img>`'s `load`/`error` events show the result on the
+tracker's page without a popup:
+
+```js
+const img = new Image();
+img.onload = () => mark(link, "added");
+img.onerror = () => mark(link, "failed"); // open the URL without &reply=image to see why
+img.src = `${BASE}/add?key=${KEY}&url=${encodeURIComponent(torrentUrl)}&reply=image`;
+```
 
 ## Rules, aliases and channels
 

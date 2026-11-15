@@ -113,7 +113,7 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `apps/desktop` | Tauri 2 app. |
 | `web/` | The web UI (TypeScript, React, Vite, Bun), shared with the desktop app. |
 | `packages/plugin-sdk` | `@apitorrent/plugin-sdk`: types, a `bun test` harness and a build script for plugin authors. |
-| `plugins/` | First-party plugins: `rss`, `ubuntu-releases`, `qbittorrent-api` and `cloudflare-dns`; planned: Raspberry Pi images. Release daemons embed them (the `first-party-plugins` feature). |
+| `plugins/` | First-party plugins: `rss`, `ubuntu-releases`, `qbittorrent-api`, `cloudflare-dns` and `remote-add`; planned: Raspberry Pi images. Release daemons embed them (the `first-party-plugins` feature). |
 
 ## Engine
 
@@ -673,6 +673,16 @@ They prove the plugin API, and they ship in the box:
     totals are all-time totals, and `sync/maindata` is always a full update.
   - Tested by replaying pinned conversations of Sonarr (shared by Radarr and Prowlarr),
     autobrr and cross-seed, multipart layouts included, and end to end in Rust.
+- **`remote-add`** (built): `GET /add?key=…&url=…` fetches a `.torrent` and adds it, for
+  links injected into a tracker's pages by the user's own script there, which can only
+  open a URL: no `Authorization` header cross-site (no CORS preflight is ever granted) and
+  no cross-site POST (the CSRF guard). So the key is in the query string, and narrow: the
+  plugin's own write-only setting (not an API token, which is `read` or `full`), compared
+  in constant time, good only for adding, and only `.torrent` files from the hosts in its
+  `hosts` setting (`networkFromSettings`; redirects re-checked per hop). No magnets.
+  Space-aware: a key per space. Replies with a page (sandboxed, so no `window.close()`),
+  or with `reply=image` a GIF on success and an error status otherwise, for an `<img>`'s
+  events. Needs the `api-compat` role for its `"auth": "plugin"` route.
 - **Sources** (planned): Raspberry Pi images, open-data publishers.
 - **`cloudflare-dns`** (built): ACME DNS-01 through Cloudflare's API with a token scoped
   to the zone; finds the zone by walking up the name unless a zone id is set; quoted TXT

@@ -38,6 +38,17 @@
         "typescript": "^7.0.2",
       },
     },
+    "plugins/remote-add": {
+      "name": "@apitorrent/plugin-remote-add",
+      "version": "1.0.0",
+      "dependencies": {
+        "@apitorrent/plugin-sdk": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.4.4",
+        "typescript": "^7.0.2",
+      },
+    },
     "plugins/rss": {
       "name": "@apitorrent/plugin-rss",
       "version": "1.2.0",
@@ -65,6 +76,8 @@
     "@apitorrent/plugin-cloudflare-dns": ["@apitorrent/plugin-cloudflare-dns@workspace:plugins/cloudflare-dns"],
 
     "@apitorrent/plugin-qbittorrent-api": ["@apitorrent/plugin-qbittorrent-api@workspace:plugins/qbittorrent-api"],
+
+    "@apitorrent/plugin-remote-add": ["@apitorrent/plugin-remote-add@workspace:plugins/remote-add"],
 
     "@apitorrent/plugin-rss": ["@apitorrent/plugin-rss@workspace:plugins/rss"],
 

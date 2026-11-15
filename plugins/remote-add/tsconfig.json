@@ -1,0 +1,4 @@
+{
+  "extends": "@apitorrent/plugin-sdk/tsconfig.plugin.json",
+  "include": ["src"]
+}

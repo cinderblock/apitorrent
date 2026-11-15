@@ -1,0 +1,42 @@
+{
+  "id": "remote-add",
+  "name": "Remote add",
+  "version": "1.0.0",
+  "description": "Add a torrent by opening a link: GET /api/v1/plugins/remote-add/add?key=<key>&url=<.torrent link>. apitorrent fetches the .torrent itself, so it never passes through the browser. Made for links injected into a tracker's pages, which can only open a URL. The key only adds torrents, and only from the hosts you list. In another space, use /s/<space>/api/v1/plugins/remote-add/add with that space's key.",
+  "author": "apitorrent",
+  "apiVersion": 1,
+  "spaceAware": true,
+  "capabilities": {
+    "networkFromSettings": ["hosts[]"],
+    "api": ["torrents:add"],
+    "routes": [{ "path": "/add", "methods": ["GET"], "auth": "plugin" }],
+    "roles": ["api-compat"]
+  },
+  "settings": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "title": "Key (goes in the link; at least 32 characters, random)",
+        "writeOnly": true,
+        "minLength": 32,
+        "maxLength": 200
+      },
+      "hosts": {
+        "type": "array",
+        "title": "Hosts .torrent links may be fetched from (your tracker, such as tracker.example or https://tracker.example:8443)",
+        "default": [],
+        "maxItems": 20,
+        "items": { "type": "string", "maxLength": 300 }
+      },
+      "label": { "type": "string", "title": "Label for added torrents", "default": "", "maxLength": 100 },
+      "savePath": {
+        "type": "string",
+        "title": "Folder, relative to the download directory (empty: the default)",
+        "default": "",
+        "maxLength": 500
+      },
+      "paused": { "type": "boolean", "title": "Add paused", "default": false }
+    }
+  }
+}
