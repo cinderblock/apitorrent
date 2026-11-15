@@ -93,7 +93,11 @@ All done (2026-11-14). Layout of the code:
   session scratchpad (API mocked, served from `web/dist`).
 - [x] The user's first look in the app: "much better". Asked for left-aligned inputs (`5c0234a`).
 - [x] Local app rebuilt at `5c0234a` with `custom-protocol` and running from
-  `target/desktop-app/run/` since 2:11 PM PST (22:11Z). The page loaded with no errors. Not pushed (the user's call).
+  `target/desktop-app/run/` since 2:11 PM PST (22:11Z). The page loaded with no errors.
+- [x] Pushed `master` to `91ad588` and deployed it to pokol with the user's yes
+  (2026-11-14 4:49 PM PST, 00:49Z). Built on sentinel from a clean worktree at that
+  commit (`rust:1-bookworm`, `embedded-ui`), so other threads' uncommitted work stayed out.
+  pokol serves the new CSS, and `https://apitorrent.isozilla.com/settings` returns 200.
 
 ## Open questions for the user
 
