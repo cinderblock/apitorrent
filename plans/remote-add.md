@@ -52,10 +52,10 @@ GET, the server fetches the `.torrent`, and the torrent never touches the local 
    auth on, no sign-in, IP-granted local "tracker".
 4. ✅ Docs: README section, architecture.md plugin list and settings schema.
 5. ✅ Generate button: schema `format: "token"` (secrets only), Plugins page (`7269135`).
-6. ⏭ **Current:** push + deploy to pokol (needs the user's yes; same procedure as
-   `plans/settings-page-redesign.md`: build on sentinel from a clean worktree). The
-   running daemon would refuse the manifest's `format: "token"` until it's updated.
-7. User: approve/enable `remote-add` on the Plugins page, Generate a key, set hosts to
+6. ✅ Pushed and deployed `fc94fab` to pokol (2026-11-14 11:02 PM PST, 07:02Z), built on
+   sentinel from a clean worktree with `embedded-ui,first-party-plugins`, so the daemon
+   offers every first-party plugin (including `remote-add`) for approval.
+7. ⏭ **Current:** user: approve/enable `remote-add` on the Plugins page, Generate a key, set hosts to
    the tracker's host, switch the tracker snippet (one step at a time).
 8. Afterwards: retire pokol's `http-endpoints.service` (ops repo, per-change approval).
 
@@ -71,6 +71,11 @@ GET, the server fetches the `.torrent`, and the torrent never touches the local 
   end-to-end test sends `Origin`/`Sec-Fetch-Site: cross-site` to prove it.
 - Plugin fetches drop loopback/private answers for host *names*; an IP grant
   (`http://127.0.0.1:port`) works, which the end-to-end test uses.
+- Before the plugin is enabled, `/api/v1/plugins/remote-add/add` answers 401 "sign in
+  first" (no route registered, so the normal auth applies).
+- Earlier deploys built without `first-party-plugins`; this one includes it, so pokol now
+  also offers `rss`, `qbittorrent-api`, `ubuntu-releases` and `cloudflare-dns` for
+  approval. Nothing runs until approved.
 - apitorrent's `TraceLayer` puts the full URI (with the key) in spans at DEBUG level only.
 
 ## Progress log
@@ -79,14 +84,13 @@ GET, the server fetches the `.torrent`, and the torrent never touches the local 
 - [x] Tests: 9 Bun, 1 Rust end-to-end; plugin-api schema tests; web settingsSchema test
 - [x] Docs
 - [x] Generate button (`7269135`)
-- [ ] Push + deploy to pokol (waiting on the user's yes)
+- [x] Push + deploy to pokol (`fc94fab`, 2026-11-14 11:02 PM PST); first-party plugins embedded, waiting for approval
 - [ ] Enable + key + hosts + tracker snippet (user)
 - [ ] Retire `http-endpoints.service` on pokol (ops, per-change approval)
 
 ## Open questions for the user
 
-1. Push `master` and deploy to pokol? (Recommended; needed before the plugin installs.)
-2. Which apitorrent space stands in for `alternate` (the second Deluge, `delugex`)? Does
+1. Which apitorrent space stands in for `alternate` (the second Deluge, `delugex`)? Does
    one exist on pokol yet, and what's its slug?
 
 ## Things not to do
