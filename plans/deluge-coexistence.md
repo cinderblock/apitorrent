@@ -148,6 +148,21 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
     Install with `packaging/linux/install.sh --binary … --user debian-deluged`
     (`plans/linux-distribution.md`), reach it over an SSH tunnel, connect the desktop
     app.
+    2026-11-14 11:30 PM PST: the user wants **both** daemons moved onto apitorrent ("they're
+    both real"). pokol runs `fc94fab` (installed 11:02 PM PST, 07:02Z), public at
+    `https://apitorrent.isozilla.com`; its database has only the Default space and no
+    torrents. Order, one user step at a time:
+    a. Wizard: `/var/lib/deluged` into a **new space** (the wizard sets its storage roots
+       from the save paths; Default's roots don't cover `/mnt/storage`). Tick only 2–3
+       seeding torrents from a private tracker first.
+    b. Check those: Paused in Deluge, seeding here, the tracker accepts the Deluge
+       identity, `.parts` files (the "Still to verify by hand" list).
+    c. Import the rest of `deluged` (re-running skips what's there), take over all.
+    d. Same for `/var/lib/delugex` into its own space.
+    e. remote-add per space (`plans/remote-add.md`), switch the tracker snippet, then
+       re-run both imports for stragglers that the old endpoint added meanwhile.
+    f. Later, with the user's per-change yes: stop and disable `deluged`/`delugex` and
+       `http-endpoints` (ops repo).
 
 ## Findings / gotchas
 

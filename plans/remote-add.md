@@ -55,7 +55,8 @@ GET, the server fetches the `.torrent`, and the torrent never touches the local 
 6. ✅ Pushed and deployed `fc94fab` to pokol (2026-11-14 11:02 PM PST, 07:02Z), built on
    sentinel from a clean worktree with `embedded-ui,first-party-plugins`, so the daemon
    offers every first-party plugin (including `remote-add`) for approval.
-7. ⏭ **Current:** user: approve/enable `remote-add` on the Plugins page, Generate a key, set hosts to
+7. ⏭ **Current:** waits on the Deluge imports (`plans/deluge-coexistence.md` step 11),
+   since each space's key goes with that space. Then user: approve/enable `remote-add` on the Plugins page, Generate a key, set hosts to
    the tracker's host, switch the tracker snippet (one step at a time).
 8. Afterwards: retire pokol's `http-endpoints.service` (ops repo, per-change approval).
 
@@ -90,8 +91,8 @@ GET, the server fetches the `.torrent`, and the torrent never touches the local 
 
 ## Open questions for the user
 
-1. Which apitorrent space stands in for `alternate` (the second Deluge, `delugex`)? Does
-   one exist on pokol yet, and what's its slug?
+(none: `alternate` is the space `delugex` is imported into, per `plans/deluge-coexistence.md`
+step 11; `main` is the `deluged` space, not Default.)
 
 ## Things not to do
 
