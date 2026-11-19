@@ -671,6 +671,35 @@ code {
   font-size: 12px;
 }
 
+/* A field's ⓘ: tap to show its explanation (no hover tooltips; they don't work on touch). */
+.help-toggle {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.help-text {
+  margin-top: -4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+/* The torrent list with nothing in it: how to add some. */
+.empty-start {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.empty-start p {
+  margin: 0;
+}
+
 .chip {
   display: inline-block;
   padding: 0 6px;

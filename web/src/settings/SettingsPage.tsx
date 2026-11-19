@@ -46,6 +46,15 @@ function onAppLink(e: MouseEvent, go: () => void) {
   go();
 }
 
+/** Set by [`openDelugeImport`]: the next Settings page opens with the Deluge import. */
+let importOnOpen = false;
+
+/** Go to Settings → Deluge with the import wizard open (from the empty torrent list). */
+export function openDelugeImport(): void {
+  importOnOpen = true;
+  navigate(settingsPath("deluge"));
+}
+
 export function SettingsPage({ status }: { status: AuthStatus }) {
   const path = usePath();
   const narrow = useNarrow();
@@ -149,9 +158,37 @@ export function SettingsPage({ status }: { status: AuthStatus }) {
     else navigate(to);
   };
 
-  const [importing, setImporting] = useState(false);
+  const [importing, setImporting] = useState(() => {
+    const open = importOnOpen;
+    importOnOpen = false;
+    return open;
+  });
   const [query, setQuery] = useState("");
   const shown = filterSections(sections, query);
+
+  // Escape backs out: a section on a phone goes back to the list of sections, otherwise back
+  // to the torrents (asking first when there are unsaved changes). An open dialog takes its
+  // own Escape, and a focused box just lets go of the focus first.
+  const escape = useRef<() => void>(() => {});
+  escape.current = () => {
+    if (narrow && current) navigate("/settings");
+    else leave("/");
+  };
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (document.querySelector("dialog[open]")) return;
+      const t = e.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) {
+        // A search box with text clears it on Escape by itself; anything else just loses focus.
+        if (!(t instanceof HTMLInputElement && t.type === "search" && t.value !== "")) t.blur();
+        return;
+      }
+      escape.current();
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
 
   const showNav = !narrow || !current;
   const showMain = current !== undefined;

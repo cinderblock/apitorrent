@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useRef } from "react";
+import { useRef, type ReactNode } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import { formatBytes, formatEta, formatPercent, formatRate, STATE_LABEL } from "../format";
@@ -18,6 +18,8 @@ interface Props {
   onOpen: (id: string) => void;
   /** False for a viewer, who has no actions to select torrents for. */
   selectable?: boolean;
+  /** What to show when there are no rows. */
+  empty: ReactNode;
 }
 
 /**
@@ -25,7 +27,7 @@ interface Props {
  * numbers that matter, instead of a grid too wide for the screen. Tapping a card opens its
  * details; the checkbox adds it to the selection for the action bar.
  */
-export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, onOpen, selectable = true }: Props) {
+export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, onOpen, selectable = true, empty }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -65,7 +67,7 @@ export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, on
       </div>
       <div className="cards-body" ref={scroller}>
         {rows.length === 0 ? (
-          <div className="empty">No torrents here. Use Add to add one.</div>
+          <div className="empty">{empty}</div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((v) => {

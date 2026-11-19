@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio, STATE_LABEL } from "../format";
@@ -97,9 +97,11 @@ interface Props {
   focus: string | null;
   onOpen: (id: string) => void;
   onKey: (e: KeyboardEvent) => void;
+  /** What to show when there are no rows. */
+  empty: ReactNode;
 }
 
-export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, onOpen, onKey }: Props) {
+export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, onOpen, onKey, empty }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [prefs, setPrefs] = useState<ColumnPrefs | null>(loadColumnPrefs);
   const [choosing, setChoosing] = useState(false);
@@ -190,7 +192,7 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
       {choosing && <ColumnChooser columns={COLUMNS} prefs={prefs} onChange={changePrefs} onClose={() => setChoosing(false)} />}
       <div className="table-body" ref={scroller} tabIndex={0} onKeyDown={move}>
         {rows.length === 0 ? (
-          <div className="empty">No torrents here. Drop a .torrent file anywhere to add one.</div>
+          <div className="empty">{empty}</div>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((v) => {

@@ -6,6 +6,7 @@ import { SyncClient } from "./api/sync";
 import { AddTorrent } from "./components/AddTorrent";
 import { ConfirmRemove } from "./components/ConfirmRemove";
 import { DetailPane } from "./components/DetailPane";
+import { EmptyStart } from "./components/EmptyStart";
 import { StatusBar } from "./components/StatusBar";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
@@ -18,6 +19,7 @@ import { isDesktop } from "./desktop/bridge";
 import { useIncomingLinks } from "./desktop/links";
 import { formatRate } from "./format";
 import { navigate } from "./router";
+import { openDelugeImport } from "./settings/SettingsPage";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
 import { SpaceSwitcher } from "./spaces/SpaceSwitcher";
 import { atLeast, useSpaceContext } from "./spaces/context";
@@ -73,6 +75,16 @@ export function App({ status: auth }: { status: AuthStatus }) {
   });
 
   const rows = useMemo(() => visibleTorrents(state.torrents, view), [state.torrents, view]);
+
+  // What the list shows with no rows: why, and how to add some.
+  const empty =
+    state.torrents.size > 0 ? (
+      <>No torrents match this view.</>
+    ) : status === "connecting" ? (
+      <>Loading…</>
+    ) : (
+      <EmptyStart mayWrite={mayWrite} mayImport={spaceAdmin} narrow={narrow} onAdd={() => setAdding([])} onImport={openDelugeImport} />
+    );
   const counts = useMemo(() => countByFilter(state.torrents), [state.torrents]);
   const labels = useMemo(() => labelCounts(state.torrents), [state.torrents]);
   const totals = useMemo(() => {
@@ -293,6 +305,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
             }}
             onOpen={(id) => setFocus(id)}
             selectable={mayWrite}
+            empty={empty}
           />
         ) : (
           <TorrentTable
@@ -307,6 +320,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
             }}
             onOpen={(id) => setFocus(id)}
             onKey={onKey}
+            empty={empty}
           />
         )}
         {focused && <DetailPane summary={focused} onClose={narrow ? () => setFocus(null) : undefined} readOnly={!mayWrite} />}
