@@ -317,6 +317,9 @@ so the tracker doesn't count a ghost peer. Torrents with no rule keep the sessio
 - [x] 2026-11-13: step 9, docs pass. Everything asked for is built. Not yet tried by
       hand: the wizard, the Settings sections and a take-over against a real running
       Deluge (see "Still to verify by hand").
+- [x] 2026-11-19 (`9380ddd`): wizard's path boxes explained (tap ⓘ), Escape leaves
+      Settings, empty torrent list offers Import from Deluge. App rebuilt to
+      `target/desktop-app/run/` (11:45 AM PST, 19:45Z); the running copy needs a restart.
 - [x] 2026-11-14: take-over refuses when a `deluged` runs for that folder but can't be
       reached, and connects where the daemon's command line says.
 
