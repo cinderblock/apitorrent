@@ -72,11 +72,11 @@ the user can keep using the app (close the dialog, come back to it) while it run
       pass. Committed on branch `deluge-import-progress`, rebased onto master `d87361f` (`91612c7`,
       `0401a82`, then the web commit). After the rebase the new "In Deluge" indicator needed
       setting in the batched path too (fixed; `deluge_take_over` caught it). All green again.
-- [ ] 6. Land on master: the shared checkout has another thread's uncommitted edits in
-      `apitorrent-core/src/lib.rs`, `apitorrent-types/src/lib.rs`, `AuthGate.tsx` and
-      `styles.css` (now `apitorrent-types/src/lib.rs` and `docs/architecture.md`), so a
-      fast-forward there would be refused. Waiting on the user. Local master is already
-      7 commits ahead of `origin/master`; nothing pushed.
+- [x] 6. Landed on local master (fast-forward) after rebasing onto `2d6feff`, the
+      import-options commit: the job's planner takes `req.options` (cloned into the
+      blocking task) and `stop_at_ratio` in place of `importSettings`. Clippy and tests
+      on sentinel, web typecheck/121 tests/build all green. Commits `583798d`, `4de591c`,
+      `25dae41`. Not pushed.
 - [ ] 7. Try it by hand against a real Deluge (user), then deploy to pokol
 
 ## Things not to do
