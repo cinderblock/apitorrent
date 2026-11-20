@@ -11,6 +11,7 @@ import { navigate } from "../router";
 import { spacesApi } from "../spaces/api";
 import { loadSpaceContext, useSpaceContext } from "../spaces/context";
 import { spaceHome } from "../spaces/prefix";
+import { Tip } from "./Tip";
 import { NO_FILTER, importable, matches, rootsFor, validSlug, within, type WizardFilter } from "./delugeImport";
 
 /** The space to import into: one that exists (by slug), or a new one. */
@@ -33,7 +34,6 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   // Which path box's explanation is showing.
-  const [help, setHelp] = useState<HelpTopic | null>(null);
   const [target, setTarget] = useState<Target | null>(null);
   const [preview, setPreview] = useState<DelugePreview | null>(null);
   const [filter, setFilter] = useState<WizardFilter>(NO_FILTER);
@@ -345,30 +345,26 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
           <div className="field-row">
             <label className="field grow">
               <span>
-                Deluge saved under (optional) <HelpToggle topic="from" open={help} onToggle={setHelp} label="Deluge saved under" />
+                Deluge saved under (optional){" "}
+                <Tip label='What is "Deluge saved under"?'>
+                  Only needed when apitorrent finds Deluge&apos;s files at a different path than Deluge saved them to: Deluge ran on another machine or
+                  in a container, or the disk is mounted somewhere else now. Enter the start of the path as Deluge knew it, such as <code>/srv/torrents</code>.
+                  When apitorrent runs on the same machine as Deluge, leave both boxes empty.
+                </Tip>
               </span>
               <input value={from} placeholder="/srv/torrents" onChange={(e) => setFrom(e.target.value)} />
             </label>
             <label className="field grow">
               <span>
-                which is now <HelpToggle topic="to" open={help} onToggle={setHelp} label="which is now" />
+                which is now{" "}
+                <Tip label='What is "which is now"?'>
+                  The same folder, as apitorrent sees it now. Every save path that starts with the first box starts with this instead:{" "}
+                  <code>/srv/torrents/tv</code> becomes <code>D:	orrents	v</code>. The files themselves aren&apos;t moved.
+                </Tip>
               </span>
               <input value={to} placeholder="D:\torrents" onChange={(e) => setTo(e.target.value)} />
             </label>
           </div>
-          {help === "from" && (
-            <p className="hint help-text" id="help-from">
-              Only needed when apitorrent finds Deluge&apos;s files at a different path than Deluge saved them to: Deluge ran on another machine or in a
-              container, or the disk is mounted somewhere else now. Enter the start of the path as Deluge knew it, such as <code>/srv/torrents</code>. When
-              apitorrent runs on the same machine as Deluge, leave both boxes empty.
-            </p>
-          )}
-          {help === "to" && (
-            <p className="hint help-text" id="help-to">
-              The same folder, as apitorrent sees it now. Every save path that starts with the first box starts with this instead:{" "}
-              <code>/srv/torrents/tv</code> becomes <code>D:\torrents\tv</code>. The files themselves aren&apos;t moved.
-            </p>
-          )}
           {(spaces.length > 1 || canCreate) && (
             <label className="field">
               <span>Into the space</span>
@@ -549,28 +545,5 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
         </div>
       )}
     </dialog>
-  );
-}
-
-type HelpTopic = "from" | "to";
-
-/** A tap-to-expand ⓘ beside a field's caption: works on touch, unlike a hover tooltip. */
-function HelpToggle({ topic, open, onToggle, label }: { topic: HelpTopic; open: HelpTopic | null; onToggle: (t: HelpTopic | null) => void; label: string }) {
-  const shown = open === topic;
-  return (
-    <button
-      type="button"
-      className="help-toggle"
-      aria-label={`What is "${label}"?`}
-      aria-expanded={shown}
-      aria-controls={`help-${topic}`}
-      onClick={(e) => {
-        // Inside a label: don't let the click focus the input instead.
-        e.preventDefault();
-        onToggle(shown ? null : topic);
-      }}
-    >
-      ⓘ
-    </button>
   );
 }

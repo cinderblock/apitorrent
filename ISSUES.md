@@ -2,6 +2,13 @@
 
 Problems found while working on something else. Each entry is enough to start a fix.
 
+## Web: native `title=` tooltips left over
+
+Found 2026-11-20. The browser's own tooltips are slow, look out of place and never show on
+touch screens. Still there: `web/src/components/DetailPane.tsx` (the pop-out and close
+buttons) and `web/src/components/ImportDeluge.tsx` (the preview table's save path and
+trackers cell). Replace them with `components/Tip.tsx` or visible text.
+
 ## Desktop app: a release build without `tauri/custom-protocol` is a black window
 
 Found 2026-11-14 1:30 PM PST (21:30Z). `cargo build --release -p apitorrent-desktop`

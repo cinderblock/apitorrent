@@ -577,6 +577,26 @@ code {
   color: var(--muted);
 }
 
+/* Pop-out and close, at the tab bar's right end. */
+.tabs-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tabs-action {
+  border: none;
+  border-radius: 0;
+  background: none;
+  padding: 6px 10px;
+  color: var(--muted);
+}
+
+.tabs-action:hover {
+  color: var(--text);
+}
+
 .tab.active {
   color: var(--text);
   box-shadow: inset 0 -2px 0 var(--accent);
@@ -672,21 +692,51 @@ code {
 }
 
 /* A field's ⓘ: tap to show its explanation (no hover tooltips; they don't work on touch). */
-.help-toggle {
+/* An ⓘ with an explanation that opens on hover, focus or tap (components/Tip.tsx). */
+.tip {
+  display: inline;
+}
+
+.tip-button {
   padding: 0 4px;
   border: none;
   background: none;
   color: var(--accent);
   font-size: 13px;
   line-height: 1;
-  cursor: pointer;
+  cursor: help;
 }
 
-.help-text {
-  margin-top: -4px;
+.tip-bubble {
+  position: fixed;
+  z-index: 1000;
+  max-width: min(340px, calc(100vw - 16px));
   padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 6px 20px var(--shadow);
+  font-size: 13px;
+  font-weight: normal;
+  line-height: 1.45;
+  white-space: normal;
+  text-align: left;
+  cursor: auto;
+  animation: tip-in 90ms ease-out;
+}
+
+@keyframes tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tip-bubble {
+    animation: none;
+  }
 }
 
 /* The torrent list with nothing in it: how to add some. */
