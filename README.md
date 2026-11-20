@@ -70,7 +70,9 @@ Most of this is built.
   two spaces.
 - **Client identity per tracker.** For trackers that only accept clients on their list,
   a torrent can announce as Deluge, qBittorrent or Transmission (peer id, user agent and
-  announce format), chosen by tracker host. Many private trackers forbid this: check the
+  announce format), chosen by tracker host. Changing it applies within a second: the
+  tracker sees the old client stop, then a new one start, with nothing shared between
+  them and no bytes reported twice. Many private trackers forbid this: check the
   tracker's rules first.
 - **qBittorrent Web API compatibility** (a plugin), so Sonarr, Radarr, Prowlarr, autobrr
   and cross-seed work unchanged, signing in with apitorrent API tokens.
