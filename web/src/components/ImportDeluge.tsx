@@ -362,7 +362,7 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
                 which is now{" "}
                 <Tip label='What is "which is now"?'>
                   The same folder, as apitorrent sees it now. Every save path that starts with the first box starts with this instead:{" "}
-                  <code>/srv/torrents/tv</code> becomes <code>D:	orrents	v</code>. The files themselves aren&apos;t moved.
+                  <code>/srv/torrents/tv</code> becomes <code>D:\torrents\tv</code>. The files themselves aren&apos;t moved.
                 </Tip>
               </span>
               <input value={to} placeholder="D:\torrents" onChange={(e) => setTo(e.target.value)} />
