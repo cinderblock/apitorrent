@@ -50,6 +50,8 @@ export interface BulkForm {
   /** URLs to add, one per line. */
   add: string;
   unwanted: UnwantedPolicy | null;
+  /** The folder to move their files to. */
+  location: string | null;
 }
 
 export const EMPTY_FORM: BulkForm = {
@@ -62,6 +64,7 @@ export const EMPTY_FORM: BulkForm = {
   replace: new Map(),
   add: "",
   unwanted: null,
+  location: null,
 };
 
 /** The URLs in a multi-line "add trackers" box: trimmed, blank lines dropped, each once. */
@@ -98,6 +101,10 @@ export function buildEdit(ids: readonly string[], f: BulkForm): BulkEdit | null 
   }
   if (f.unwanted !== null) {
     edit.unwantedPolicy = f.unwanted;
+    changed = true;
+  }
+  if (f.location !== null && f.location.trim() !== "") {
+    edit.savePath = f.location.trim();
     changed = true;
   }
   return changed ? edit : null;

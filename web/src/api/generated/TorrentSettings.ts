@@ -7,7 +7,11 @@ import type { UnwantedPolicy } from "./UnwantedPolicy";
  * A torrent's own settings, the ones a [`BulkEdit`] changes. Torrents not in the space
  * are left out of the answer.
  */
-export type TorrentSettings = { id: string, label: string | null, limits: TorrentLimits, 
+export type TorrentSettings = { id: string, label: string | null, 
+/**
+ * The folder its files are saved in.
+ */
+savePath: string, limits: TorrentLimits, 
 /**
  * Its own seed limits; `null` follows its group's or the instance's.
  */

@@ -615,12 +615,30 @@ impl Database {
         Ok(())
     }
 
-    pub fn set_save_path(&self, key: &Key, save_path: &str) -> rusqlite::Result<()> {
+    /// Where a torrent's files and held copies are, after a move.
+    pub fn set_location(
+        &self,
+        key: &Key,
+        save_path: &str,
+        held_path: Option<&str>,
+    ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE torrents SET save_path = ?3 WHERE space_id = ?1 AND id = ?2",
-            params![key.space, key.id, save_path],
+            "UPDATE torrents SET save_path = ?3, held_path = ?4 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, save_path, held_path],
         )?;
         Ok(())
+    }
+
+    /// The held area recorded for a torrent, if one was.
+    pub fn held_path(&self, key: &Key) -> rusqlite::Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT held_path FROM torrents WHERE space_id = ?1 AND id = ?2",
+                params![key.space, key.id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map(Option::flatten)
     }
 
     /// Store the metadata fetched for a magnet link.

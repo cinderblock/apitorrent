@@ -15,6 +15,8 @@ interface Props {
   names: ReadonlyMap<string, string>;
   /** Labels in use in the space, offered as suggestions. */
   labels: readonly string[];
+  /** Folders the space's torrents are in, offered as suggestions. */
+  folders: readonly string[];
   onClose: () => void;
   /** Select these torrents (the ones that failed). */
   onSelect: (ids: string[]) => void;
@@ -55,7 +57,7 @@ function numberOrNull(raw: string): number | null {
  * Change the settings of many torrents at once. Each field starts as "keep": it shows what
  * the selection has (one value, or "Mixed"), and only the fields someone changes are sent.
  */
-export function BulkEdit({ ids, names, labels, onClose, onSelect }: Props) {
+export function BulkEdit({ ids, names, labels, folders, onClose, onSelect }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [settings, setSettings] = useState<TorrentSettings[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -87,6 +89,7 @@ export function BulkEdit({ ids, names, labels, onClose, onSelect }: Props) {
       peers: common(s.map((t) => t.limits.maxConnections)),
       seed: common(s.map((t) => t.seedLimits)),
       unwanted: common(s.map((t) => t.unwantedPolicy)),
+      location: common(s.map((t) => t.savePath)),
       trackers: trackerCounts(s),
     };
   }, [settings]);
@@ -271,6 +274,32 @@ export function BulkEdit({ ids, names, labels, onClose, onSelect }: Props) {
                 <span>Add trackers, one per line (each its own tier, where not listed yet)</span>
                 <textarea rows={2} value={form.add} placeholder="https://tracker.example/announce" onChange={(e) => set({ add: e.target.value })} />
               </label>
+            </fieldset>
+
+            <fieldset className="settings-section">
+              <legend>Location</legend>
+              <Changed on={form.location !== null} onReset={() => set({ location: null })}>
+                <label className="field grow">
+                  <span>Move their files to this folder (on the server)</span>
+                  <input
+                    list="bulk-folders"
+                    value={form.location ?? ""}
+                    placeholder={now.location.kind === "mixed" ? `Now in ${now.location.distinct} folders` : shared(now.location, String)}
+                    onChange={(e) => set({ location: e.target.value })}
+                  />
+                </label>
+              </Changed>
+              <datalist id="bulk-folders">
+                {folders.map((f) => (
+                  <option key={f} value={f} />
+                ))}
+              </datalist>
+              {form.location !== null && form.location.trim() !== "" && (
+                <p className="muted bulk-note">
+                  The moves run one torrent at a time, in the background. Each shows as Moving until its files are there; one that fails stays where it was and
+                  says why.
+                </p>
+              )}
             </fieldset>
 
             <fieldset className="settings-section">

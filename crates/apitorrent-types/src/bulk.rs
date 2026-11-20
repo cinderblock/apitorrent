@@ -34,6 +34,13 @@ pub struct BulkEdit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub unwanted_policy: Option<UnwantedPolicy>,
+    /// Move the torrents' files to this folder (absolute, inside the space's storage
+    /// roots). Checked at once; the moves then run one at a time, and each torrent shows
+    /// as `moving` until its move is done. A move that fails leaves the files where they
+    /// were and shows why in the torrent's `error`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub save_path: Option<String>,
 }
 
 /// Rate and connection limits to set; a field left out keeps each torrent's own value.
@@ -180,6 +187,8 @@ pub struct TorrentSettingsRequest {
 pub struct TorrentSettings {
     pub id: String,
     pub label: Option<String>,
+    /// The folder its files are saved in.
+    pub save_path: String,
     pub limits: TorrentLimits,
     /// Its own seed limits; `null` follows its group's or the instance's.
     pub seed_limits: Option<SeedLimits>,

@@ -8,6 +8,7 @@ function settings(id: string, trackers: string[][], label: string | null = null)
   return {
     id,
     label,
+    savePath: "/downloads",
     limits: { downloadRate: 0, uploadRate: 0, maxConnections: null },
     seedLimits: null,
     trackers,
@@ -66,6 +67,11 @@ describe("bulk edit", () => {
       remove: ["http://old"],
       add: ["http://c", "http://d"],
     });
+  });
+
+  test("a location is sent only when one is typed", () => {
+    expect(buildEdit(["1"], { ...EMPTY_FORM, location: "  " })).toBeNull();
+    expect(buildEdit(["1"], { ...EMPTY_FORM, location: " /media/tv " })).toEqual({ ids: ["1"], savePath: "/media/tv" });
   });
 
   test("tracker lines", () => {

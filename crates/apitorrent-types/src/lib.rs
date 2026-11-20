@@ -43,6 +43,8 @@ pub enum TorrentState {
     /// Waiting for a free slot in the queue (see [`QueueSettings`]).
     Queued,
     Error,
+    /// Its files are being moved to another folder, or waiting their turn to be.
+    Moving,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

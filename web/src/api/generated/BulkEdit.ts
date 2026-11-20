@@ -20,4 +20,11 @@ label?: string, limits?: BulkLimits,
  * The torrents' own seed limits; `{ "limits": null }` makes them follow their group's
  * or the instance's again.
  */
-seedLimits?: SetSeedLimitsRequest, trackers?: BulkTrackers, unwantedPolicy?: UnwantedPolicy, };
+seedLimits?: SetSeedLimitsRequest, trackers?: BulkTrackers, unwantedPolicy?: UnwantedPolicy, 
+/**
+ * Move the torrents' files to this folder (absolute, inside the space's storage
+ * roots). Checked at once; the moves then run one at a time, and each torrent shows
+ * as `moving` until its move is done. A move that fails leaves the files where they
+ * were and shows why in the torrent's `error`.
+ */
+savePath?: string, };

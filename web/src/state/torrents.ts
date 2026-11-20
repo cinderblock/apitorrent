@@ -82,6 +82,7 @@ export type StateFilter =
   | "queued"
   | "metadata"
   | "checking"
+  | "moving"
   | "error"
   | "active";
 
@@ -192,6 +193,7 @@ export function countByFilter(torrents: TorrentMap): Record<StateFilter, number>
     queued: 0,
     metadata: 0,
     checking: 0,
+    moving: 0,
     error: 0,
     active: 0,
   };

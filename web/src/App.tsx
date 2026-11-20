@@ -104,6 +104,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const counts = useMemo(() => countByFilter(state.torrents), [state.torrents]);
   const labels = useMemo(() => labelCounts(state.torrents), [state.torrents]);
   const names = useMemo(() => new Map([...state.torrents.values()].map((t) => [t.id, t.name])), [state.torrents]);
+  const folders = useMemo(() => [...new Set([...state.torrents.values()].map((t) => t.savePath))].sort(), [state.torrents]);
   const totals = useMemo(() => {
     let down = 0;
     let up = 0;
@@ -452,6 +453,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
           ids={editing}
           names={names}
           labels={labels.map(([l]) => l)}
+          folders={folders}
           onClose={() => setEditing(null)}
           onSelect={selectOnly}
         />
