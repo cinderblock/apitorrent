@@ -20,7 +20,8 @@ use apitorrent_engine::bitfield::Bitfield;
 use apitorrent_metainfo::{Magnet, Torrent};
 use apitorrent_types::spaces::{SpaceId, SpaceSettings};
 use apitorrent_types::{
-    DelugeImportFilter, ImportSkip, SeedLimitAction, SeedLimits, Settings, TorrentLimits,
+    DelugeImportFilter, DelugeImportOptions, DelugeSettingsPick, ImportSkip, SeedLimitAction,
+    SeedLimits, Settings, TorrentLimits,
 };
 
 use crate::db::{Database, TorrentRow};
@@ -45,6 +46,8 @@ pub struct Target<'a> {
     /// Give every torrent Deluge's stop-at-ratio as limits of its own (a space other than
     /// `default`, whose seed limits have no space-wide level).
     pub ratio_per_torrent: bool,
+    /// What of each torrent comes over.
+    pub options: &'a DelugeImportOptions,
     /// The queue position of the first imported torrent.
     pub first_position: u32,
 }
@@ -98,28 +101,70 @@ pub fn seed_limits(stop: Option<(f64, bool)>) -> SeedLimits {
     })
 }
 
-/// Deluge's settings applied to the instance's (for the `default` space).
-pub fn apply_instance_settings(s: &mut Settings, d: &DelugeSettings) {
-    s.download_rate = d.max_download_rate.unwrap_or(0);
-    s.upload_rate = d.max_upload_rate.unwrap_or(0);
-    if let Some(n) = d.max_connections {
+/// The picked ones of Deluge's settings applied to the instance's (for the `default`
+/// space).
+pub fn apply_instance_settings(s: &mut Settings, d: &DelugeSettings, pick: DelugeSettingsPick) {
+    if pick.download_rate {
+        s.download_rate = d.max_download_rate.unwrap_or(0);
+    }
+    if pick.upload_rate {
+        s.upload_rate = d.max_upload_rate.unwrap_or(0);
+    }
+    if pick.max_connections
+        && let Some(n) = d.max_connections
+    {
         s.max_connections = n;
     }
-    s.queue.max_active_downloads = d.max_active_downloading.unwrap_or(0);
-    s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
-    s.queue.max_active = d.max_active_limit.unwrap_or(0);
-    s.queue.ignore_slow = d.dont_count_slow;
-    s.seed_limits = seed_limits(d.stop_at_ratio);
+    if pick.queue_slots {
+        s.queue.max_active_downloads = d.max_active_downloading.unwrap_or(0);
+        s.queue.max_active_seeds = d.max_active_seeding.unwrap_or(0);
+        s.queue.max_active = d.max_active_limit.unwrap_or(0);
+    }
+    if pick.ignore_slow {
+        s.queue.ignore_slow = d.dont_count_slow;
+    }
+    if pick.stop_at_ratio {
+        s.seed_limits = seed_limits(d.stop_at_ratio);
+    }
 }
 
-/// Deluge's settings applied to another space's: its rates, connections and slots.
-pub fn apply_space_settings(s: &mut SpaceSettings, d: &DelugeSettings) {
-    s.download_rate = d.max_download_rate.unwrap_or(0);
-    s.upload_rate = d.max_upload_rate.unwrap_or(0);
-    s.max_connections = d.max_connections.unwrap_or(0);
-    s.max_active_downloads = d.max_active_downloading.unwrap_or(0);
-    s.max_active_seeds = d.max_active_seeding.unwrap_or(0);
-    s.max_active = d.max_active_limit.unwrap_or(0);
+/// The picked ones of Deluge's settings applied to another space's: its rates,
+/// connections and slots. (Its stop-at-ratio goes on each torrent: see
+/// [`Target::ratio_per_torrent`].)
+pub fn apply_space_settings(s: &mut SpaceSettings, d: &DelugeSettings, pick: DelugeSettingsPick) {
+    if pick.download_rate {
+        s.download_rate = d.max_download_rate.unwrap_or(0);
+    }
+    if pick.upload_rate {
+        s.upload_rate = d.max_upload_rate.unwrap_or(0);
+    }
+    if pick.max_connections {
+        s.max_connections = d.max_connections.unwrap_or(0);
+    }
+    if pick.queue_slots {
+        s.max_active_downloads = d.max_active_downloading.unwrap_or(0);
+        s.max_active_seeds = d.max_active_seeding.unwrap_or(0);
+        s.max_active = d.max_active_limit.unwrap_or(0);
+    }
+}
+
+/// Deluge's settings, for showing before an import.
+#[must_use]
+pub fn settings_view(d: &DelugeSettings) -> apitorrent_types::DelugeSettingsView {
+    apitorrent_types::DelugeSettingsView {
+        download_rate: d.max_download_rate,
+        upload_rate: d.max_upload_rate,
+        max_connections: d.max_connections,
+        max_active_downloading: d.max_active_downloading,
+        max_active_seeding: d.max_active_seeding,
+        max_active: d.max_active_limit,
+        dont_count_slow: d.dont_count_slow,
+        stop_at_ratio: stop_at_ratio(d.stop_at_ratio),
+    }
+}
+
+fn stop_at_ratio(s: Option<(f64, bool)>) -> Option<apitorrent_types::StopAtRatio> {
+    s.map(|(ratio, remove)| apitorrent_types::StopAtRatio { ratio, remove })
 }
 
 /// The storage root a path is in: `Some(root)`, `Some("")` when the space has none (any
@@ -157,6 +202,41 @@ pub struct Summary {
     pub paused: bool,
     /// Why it can't be read.
     pub error: Option<String>,
+    /// What else it has that an import may carry over.
+    pub details: Details,
+}
+
+/// A Deluge torrent's options, as the import's choices see them.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Details {
+    pub private: bool,
+    pub limits: TorrentLimits,
+    pub stop_at_ratio: Option<(f64, bool)>,
+    /// Files Deluge doesn't download.
+    pub skipped_files: u32,
+    pub renamed_files: u32,
+    pub downloaded: u64,
+    pub uploaded: u64,
+    pub seeding_secs: u64,
+    pub queue: Option<u32>,
+    /// Milliseconds since the epoch.
+    pub added_at: Option<i64>,
+    /// Deluge's tracker list differs from the `.torrent` file's.
+    pub edited_trackers: bool,
+    pub not_carried: Vec<String>,
+}
+
+/// Tracker tiers without empty tiers or blank URLs, for comparing.
+fn tiers(t: &[Vec<String>]) -> Vec<Vec<&str>> {
+    t.iter()
+        .map(|tier| {
+            tier.iter()
+                .map(|u| u.trim())
+                .filter(|u| !u.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|tier| !tier.is_empty())
+        .collect()
 }
 
 impl Summary {
@@ -211,9 +291,38 @@ pub fn summarize(
                 progress: None,
                 paused: d.paused,
                 error: None,
+                details: Details {
+                    private: false,
+                    limits: TorrentLimits {
+                        download_rate: d.max_download_rate.unwrap_or(0),
+                        upload_rate: d.max_upload_rate.unwrap_or(0),
+                        max_connections: d.max_connections,
+                    },
+                    stop_at_ratio: d.stop_at_ratio,
+                    skipped_files: 0,
+                    renamed_files: u32::try_from(d.renamed.len()).unwrap_or(u32::MAX),
+                    downloaded: d.total_downloaded,
+                    uploaded: d.total_uploaded,
+                    seeding_secs: d.seeding_secs,
+                    queue: d.queue,
+                    added_at: d.added_at.map(|s| s.saturating_mul(1000)),
+                    edited_trackers: false,
+                    not_carried: d.not_carried.clone(),
+                },
             };
             match Torrent::from_bytes(&d.torrent) {
                 Ok(t) => {
+                    out.details.private = t.info.private;
+                    out.details.edited_trackers = d
+                        .trackers
+                        .as_ref()
+                        .is_some_and(|mine| tiers(mine) != tiers(&t.trackers));
+                    let files = t.info.files.len();
+                    out.details.skipped_files = d
+                        .file_priorities
+                        .as_ref()
+                        .filter(|p| p.len() == files)
+                        .map_or(0, |p| p.iter().map(|&x| u32::from(x == 0)).sum());
                     out.id = t.info.info_hashes().id_string();
                     out.name.clone_from(&t.info.name);
                     out.size = t.info.content_length();
@@ -355,15 +464,26 @@ pub fn suggested_slug(config_dir: &Path) -> String {
 
 /// Plan importing what Deluge has into `t`'s space.
 pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
+    let o = t.options;
     let mut out = Plan::default();
     let mut position = t.first_position;
     let mut seen: HashSet<String> = HashSet::new();
-    for d in &state.torrents {
+    // Deluge's queue order (the order `load` gives), or the order they were added in.
+    let mut order: Vec<&apitorrent_deluge::DelugeTorrent> = state.torrents.iter().collect();
+    if !o.queue_order {
+        order.sort_by_key(|d| (d.added_at.is_none(), d.added_at.unwrap_or(0), d.id.clone()));
+    }
+    let added_at = |d: &apitorrent_deluge::DelugeTorrent| match d.added_at {
+        Some(s) if o.added_dates => s.saturating_mul(1000),
+        _ => now_ms(),
+    };
+    for d in order {
+        let label = o.label_for(d.label.as_deref());
         let bytes = match &d.trackers {
-            Some(tiers) => {
+            Some(tiers) if o.trackers => {
                 import::with_trackers(&d.torrent, tiers).unwrap_or_else(|| d.torrent.clone())
             }
-            None => d.torrent.clone(),
+            _ => d.torrent.clone(),
         };
         let torrent = match Torrent::from_bytes(&bytes) {
             Ok(parsed) => Arc::new(parsed),
@@ -417,8 +537,8 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
                     name: name.clone(),
                     torrent: Vec::new(),
                     save_path: save.to_string_lossy().into_owned(),
-                    label: d.label.clone(),
-                    added_at: d.added_at.map_or_else(now_ms, |s| s.saturating_mul(1000)),
+                    label: label.clone(),
+                    added_at: added_at(d),
                     paused: t.paused || d.paused,
                     have: None,
                     file_priorities: None,
@@ -471,21 +591,35 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             continue;
         }
         let files = torrent.info.files.len();
-        let prios = d
+        let mut prios = d
             .file_priorities
             .clone()
             .filter(|p| p.len() == files)
             .unwrap_or_else(|| vec![4; files]);
+        if !o.skipped_files {
+            for p in prios.iter_mut().filter(|p| **p == 0) {
+                *p = 4;
+            }
+        }
         let pieces = u32::try_from(torrent.info.piece_count()).unwrap_or(0);
         let have = d
             .pieces
             .as_deref()
             .and_then(|p| import::pieces_bitfield(p, pieces));
         let file_paths = import::file_layout(&torrent, &save_path, &d.renamed);
-        let limits = TorrentLimits {
-            download_rate: d.max_download_rate.unwrap_or(0),
-            upload_rate: d.max_upload_rate.unwrap_or(0),
-            max_connections: d.max_connections,
+        let limits = if o.torrent_limits {
+            TorrentLimits {
+                download_rate: d.max_download_rate.unwrap_or(0),
+                upload_rate: d.max_upload_rate.unwrap_or(0),
+                max_connections: d.max_connections,
+            }
+        } else {
+            TorrentLimits::default()
+        };
+        let (downloaded, uploaded, seeding_secs) = if o.totals {
+            (d.total_downloaded, d.total_uploaded, d.seeding_secs)
+        } else {
+            (0, 0, 0)
         };
         let hashes = torrent.info.info_hashes();
         let row = TorrentRow {
@@ -496,13 +630,13 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             name: name.clone(),
             torrent: bytes,
             save_path: save_path.to_string_lossy().into_owned(),
-            label: d.label.clone(),
-            added_at: d.added_at.map_or_else(now_ms, |s| s.saturating_mul(1000)),
+            label: label.clone(),
+            added_at: added_at(d),
             paused: t.paused || d.paused,
             have: have.as_ref().map(|h| h.as_bytes().to_vec()),
             file_priorities: Some(prios),
-            downloaded_total: d.total_downloaded,
-            uploaded_total: d.total_uploaded,
+            downloaded_total: downloaded,
+            uploaded_total: uploaded,
             placements: None,
             held_path: None,
             unwanted_policy: 0,
@@ -520,10 +654,14 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
         };
         position += 1;
         // Deluge copies its global "stop at ratio" into every torrent, so only a torrent
-        // that differs from the global setting gets limits of its own (or every one, where
-        // the global setting has nowhere to go).
-        let own = (t.ratio_per_torrent || d.stop_at_ratio != state.settings.stop_at_ratio)
-            .then(|| seed_limits(d.stop_at_ratio));
+        // that differs from the global setting gets limits of its own (or every one, the
+        // global setting's, where the global setting has nowhere to go).
+        let global = state.settings.stop_at_ratio;
+        let own = if o.seed_limits && d.stop_at_ratio != global {
+            Some(seed_limits(d.stop_at_ratio))
+        } else {
+            t.ratio_per_torrent.then(|| seed_limits(global))
+        };
         out.torrents.push(PlannedTorrent {
             name,
             deluge_id: d.id.to_ascii_lowercase(),
@@ -533,11 +671,11 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             file_paths,
             limits,
             seed: SeedState {
-                seed_ms: d.seeding_secs.saturating_mul(1000),
+                seed_ms: seeding_secs.saturating_mul(1000),
                 limits: own,
                 reached: false,
             },
-            label: d.label.clone(),
+            label,
             not_carried: d.not_carried.clone(),
         });
     }
@@ -638,6 +776,44 @@ pub fn private_tracker_hosts(plan: &Plan) -> Vec<String> {
     )
 }
 
+/// The private tracker hosts to give an identity rule, as `options` chooses; empty when
+/// it chooses none.
+#[must_use]
+pub fn identity_hosts(plan: &Plan, options: &DelugeImportOptions) -> Vec<String> {
+    if options.identity == apitorrent_types::ImportIdentity::None {
+        return Vec::new();
+    }
+    let mut out = private_tracker_hosts(plan);
+    out.retain(|h| {
+        !options
+            .identity_skip_hosts
+            .iter()
+            .any(|s| s.trim().eq_ignore_ascii_case(h))
+    });
+    out
+}
+
+/// Refuse options that can't be carried out: an identity the peer id can't hold.
+pub fn check_options(options: &DelugeImportOptions) -> Result<(), String> {
+    if let apitorrent_types::ImportIdentity::Other { identity } = &options.identity {
+        crate::settings::client_profile(identity)
+            .map_err(|e| format!("the identity for private trackers: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The identity those hosts get: Deluge's (asking its daemon for the versions) or the
+/// chosen one.
+pub async fn import_identity(
+    options: &DelugeImportOptions,
+    config_dir: &Path,
+) -> apitorrent_types::ClientIdentity {
+    match &options.identity {
+        apitorrent_types::ImportIdentity::Other { identity } => identity.clone(),
+        _ => crate::takeover::deluge_identity(config_dir).await,
+    }
+}
+
 /// Before an import starts any torrent here, pause Deluge's copies (see `takeover`).
 /// Returns when they were taken over (`None` when nothing starts). If Deluge runs but can't
 /// be made to stop them, everything is imported paused instead, with a warning.
@@ -698,6 +874,20 @@ fn count(n: Option<u32>) -> String {
     n.map_or_else(|| "no limit".to_owned(), |n| n.to_string())
 }
 
+fn identity_name(i: &apitorrent_types::ClientIdentity) -> String {
+    use apitorrent_types::ClientIdentity as C;
+    match i {
+        C::Apitorrent => "apitorrent".to_owned(),
+        C::Deluge {
+            version,
+            libtorrent,
+        } => format!("Deluge {version} (libtorrent {libtorrent})"),
+        C::QBittorrent { version } => format!("qBittorrent {version}"),
+        C::Transmission { version } => format!("Transmission {version}"),
+        C::Custom { user_agent, .. } => format!("{user_agent} (custom)"),
+    }
+}
+
 fn ratio(stop: Option<(f64, bool)>) -> String {
     match stop {
         None => "off".to_owned(),
@@ -715,7 +905,8 @@ pub struct ReportContext<'a> {
     pub creates_space: bool,
     pub roots: &'a [String],
     pub download_dir: &'a Path,
-    pub import_settings: bool,
+    /// What of each torrent, and of Deluge's settings, the import takes.
+    pub options: &'a DelugeImportOptions,
     pub dry_run: bool,
     /// After a real import: how many rows were written.
     pub written: Option<usize>,
@@ -881,18 +1072,92 @@ COUNTS"
         }
     );
     let _ = writeln!(out, "  stop seeding at ratio: {}", ratio(d.stop_at_ratio));
-    let where_to = if !c.import_settings {
-        "not taken (pass --settings to take them)".to_owned()
-    } else if c.slug == apitorrent_types::spaces::DEFAULT_SLUG {
-        "become the instance's settings".to_owned()
-    } else {
+    let pick = c.options.settings;
+    let default_space = c.slug == apitorrent_types::spaces::DEFAULT_SLUG;
+    let taken: Vec<&str> = [
+        (pick.download_rate, "download rate"),
+        (pick.upload_rate, "upload rate"),
+        (pick.max_connections, "connections"),
+        (pick.queue_slots, "active slots"),
+        (pick.ignore_slow && default_space, "slow torrents"),
+        (pick.stop_at_ratio, "stop at ratio"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    let where_to = if taken.is_empty() {
+        "not taken (pass --settings, or --setting NAME, to take them)".to_owned()
+    } else if default_space {
+        format!("{} become the instance's settings", taken.join(", "))
+    } else if pick.stop_at_ratio {
         format!(
-            "rates, connections and slots become space {}'s; the stop-at-ratio becomes \
-             each torrent's own seed limits",
+            "{} become space {}'s; the stop-at-ratio becomes each torrent's own seed limits",
+            taken.join(", "),
             c.slug
         )
+    } else {
+        format!("{} become space {}'s", taken.join(", "), c.slug)
     };
     let _ = writeln!(out, "  -> {where_to}");
+
+    let o = c.options;
+    let keep = |on: bool| if on { "kept" } else { "left out" };
+    let _ = writeln!(out, "\nPER-TORRENT OPTIONS");
+    let renames: Vec<String> = o
+        .label_renames
+        .iter()
+        .map(
+            |r| match r.to.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                Some(to) => format!("{} -> {to}", r.from),
+                None => format!("{} dropped", r.from),
+            },
+        )
+        .collect();
+    let renamed = if o.labels && !renames.is_empty() {
+        format!(" ({})", renames.join(", "))
+    } else {
+        String::new()
+    };
+    let _ = writeln!(out, "  labels:            {}{renamed}", keep(o.labels));
+    let _ = writeln!(
+        out,
+        "  queue order:       {}",
+        if o.queue_order {
+            "Deluge's"
+        } else {
+            "by date added"
+        }
+    );
+    let _ = writeln!(out, "  added dates:       {}", keep(o.added_dates));
+    let _ = writeln!(out, "  totals, seed time: {}", keep(o.totals));
+    let _ = writeln!(
+        out,
+        "  skipped files:     {}",
+        if o.skipped_files {
+            "stay skipped"
+        } else {
+            "downloaded"
+        }
+    );
+    let _ = writeln!(
+        out,
+        "  trackers:          {}",
+        if o.trackers {
+            "Deluge's lists"
+        } else {
+            "each .torrent's own"
+        }
+    );
+    let _ = writeln!(out, "  speed limits:      {}", keep(o.torrent_limits));
+    let _ = writeln!(out, "  stop at ratio:     {}", keep(o.seed_limits));
+    let identity = match &o.identity {
+        apitorrent_types::ImportIdentity::Deluge => "present as Deluge".to_owned(),
+        apitorrent_types::ImportIdentity::None => "no identity rules".to_owned(),
+        apitorrent_types::ImportIdentity::Other { identity } => {
+            format!("present as {}", identity_name(identity))
+        }
+    };
+    let _ = writeln!(out, "  private trackers:  {identity}");
 
     let limited: Vec<&PlannedTorrent> = plan
         .torrents
@@ -1000,9 +1265,9 @@ pub struct OfflineImport {
     pub dry_run: bool,
     /// Save path prefixes to rewrite.
     pub map: Vec<(String, String)>,
-    /// Take Deluge's limits too.
-    pub import_settings: bool,
     pub paused: bool,
+    /// What of each torrent, and of Deluge's settings, comes over.
+    pub options: DelugeImportOptions,
     /// Which torrents to take.
     pub filter: DelugeImportFilter,
 }
@@ -1021,6 +1286,7 @@ pub fn run_offline(
             req.space
         ));
     }
+    check_options(&req.options)?;
     let state = apitorrent_deluge::load(&req.config_dir).map_err(|e| e.to_string())?;
     let db_path = data_dir.join("apitorrent.db");
     let mut db = if req.dry_run {
@@ -1067,7 +1333,7 @@ pub fn run_offline(
             _ => SpaceId::MAX,
         },
     };
-    if req.import_settings
+    if req.options.settings.any()
         && !req.dry_run
         && let Some(db) = &db
     {
@@ -1080,12 +1346,12 @@ pub fn run_offline(
                 .unwrap_or_else(|| {
                     crate::settings::defaults(&apitorrent_engine::SessionConfig::default())
                 });
-            apply_instance_settings(&mut s, &state.settings);
+            apply_instance_settings(&mut s, &state.settings, req.options.settings);
             let json = serde_json::to_string(&s).expect("settings serialize");
             db.set_meta(crate::SETTINGS_KEY, &json)
                 .map_err(|e| e.to_string())?;
         } else {
-            apply_space_settings(&mut settings, &state.settings);
+            apply_space_settings(&mut settings, &state.settings, req.options.settings);
             let name = existing
                 .as_ref()
                 .map_or(req.space.as_str(), |s| s.name.as_str());
@@ -1113,19 +1379,20 @@ pub fn run_offline(
         present: &present,
         map: &req.map,
         paused: req.paused,
-        ratio_per_torrent: space_id != DEFAULT_SPACE && req.import_settings,
+        ratio_per_torrent: space_id != DEFAULT_SPACE && req.options.settings.stop_at_ratio,
+        options: &req.options,
         first_position,
     };
     let mut state = state;
     let not_selected = select(&mut state, &req.filter, &req.map, &download_dir);
     let mut plan = plan(&state, &target);
-    let private_hosts = private_tracker_hosts(&plan);
+    let private_hosts = identity_hosts(&plan, &req.options);
     let mut identity_hosts = Vec::new();
     let (written, failed) = if let (Some(db), false) = (&mut db, req.dry_run) {
         let taken_over_at = block_on(take_over_running(&mut plan, &req.config_dir, &mut warnings));
         let (n, failed) = write(db, &plan, &req.config_dir.to_string_lossy(), taken_over_at);
         if !private_hosts.is_empty() {
-            let identity = block_on(crate::takeover::deluge_identity(&req.config_dir));
+            let identity = block_on(import_identity(&req.options, &req.config_dir));
             match add_identity_rules(db, &private_hosts, &identity) {
                 Ok(added) => identity_hosts = added,
                 Err(e) => warnings.push(format!("couldn't add client identity rules: {e}")),
@@ -1153,7 +1420,7 @@ pub fn run_offline(
             creates_space,
             roots: &settings.storage_roots,
             download_dir: &download_dir,
-            import_settings: req.import_settings,
+            options: &req.options,
             dry_run: req.dry_run,
             written,
             failed: &failed,
@@ -1200,6 +1467,7 @@ mod tests {
             progress: Some(1.0),
             paused: false,
             error: None,
+            details: Details::default(),
         }
     }
 
@@ -1346,5 +1614,211 @@ mod tests {
         );
         assert_eq!(suggested_slug(Path::new("/srv/Deluge TV_2")), "deluge-tv-2");
         assert_eq!(suggested_slug(Path::new("/srv/...")), "deluge");
+    }
+
+    /// A Deluge state with two private torrents: `b` added first but queued second, `a`
+    /// labelled "tv" with limits, totals, an edited tracker and a skipped file.
+    fn two_torrents() -> DelugeState {
+        use apitorrent_metainfo::{FileSource, TorrentBuilder, Version};
+        let make = |name: &str, host: &str| {
+            let bytes = TorrentBuilder::new(name, Version::V1)
+                .piece_length(16 * 1024)
+                .file(FileSource::from_bytes(&["one"], vec![1u8; 100]))
+                .file(FileSource::from_bytes(&["two"], vec![2u8; 100]))
+                .tracker_tier(vec![format!("https://{host}/announce")])
+                .private(true)
+                .build()
+                .unwrap();
+            let id = Torrent::from_bytes(&bytes)
+                .unwrap()
+                .info
+                .info_hashes()
+                .get_v1()
+                .unwrap()
+                .to_hex();
+            apitorrent_deluge::DelugeTorrent {
+                id,
+                torrent: bytes,
+                save_path: Some("/srv/t".into()),
+                paused: false,
+                label: None,
+                queue: None,
+                file_priorities: None,
+                pieces: None,
+                renamed: std::collections::HashMap::new(),
+                added_at: None,
+                total_downloaded: 0,
+                total_uploaded: 0,
+                max_download_rate: None,
+                max_upload_rate: None,
+                max_connections: None,
+                trackers: None,
+                magnet: None,
+                stop_at_ratio: None,
+                seeding_secs: 0,
+                not_carried: Vec::new(),
+            }
+        };
+        let mut a = make("a", "a.example.org");
+        a.label = Some("TV".into());
+        a.queue = Some(0);
+        a.added_at = Some(2_000);
+        a.file_priorities = Some(vec![4, 0]);
+        a.total_downloaded = 10;
+        a.total_uploaded = 20;
+        a.seeding_secs = 30;
+        a.max_upload_rate = Some(1024);
+        a.stop_at_ratio = Some((3.0, false));
+        a.trackers = Some(vec![vec!["https://new.example.org/announce".into()]]);
+        let mut b = make("b", "b.example.org");
+        b.queue = Some(1);
+        b.added_at = Some(1_000);
+        DelugeState {
+            torrents: vec![a, b],
+            ..DelugeState::default()
+        }
+    }
+
+    fn plan_with(state: &DelugeState, options: &DelugeImportOptions) -> Plan {
+        let present = HashSet::new();
+        plan(
+            state,
+            &Target {
+                space: 1,
+                slug: "tv",
+                roots: &[],
+                download_dir: Path::new("/dl"),
+                present: &present,
+                map: &[],
+                paused: false,
+                ratio_per_torrent: false,
+                options,
+                first_position: 0,
+            },
+        )
+    }
+
+    #[test]
+    fn everything_comes_over_by_default() {
+        let state = two_torrents();
+        let p = plan_with(&state, &DelugeImportOptions::default());
+        let a = &p.torrents[0];
+        assert_eq!(a.name, "a", "Deluge's queue order");
+        assert_eq!(a.row.queue_position, 0);
+        assert_eq!(a.label.as_deref(), Some("TV"));
+        assert_eq!(a.row.added_at, 2_000_000);
+        assert_eq!((a.row.downloaded_total, a.row.uploaded_total), (10, 20));
+        assert_eq!(a.seed.seed_ms, 30_000);
+        assert_eq!(a.row.file_priorities.as_deref(), Some(&[4, 0][..]));
+        assert_eq!(a.limits.upload_rate, 1024);
+        assert_eq!(a.seed.limits.map(|l| l.ratio), Some(3.0));
+        assert_eq!(a.torrent.trackers, [["https://new.example.org/announce"]]);
+        assert_eq!(
+            identity_hosts(&p, &DelugeImportOptions::default()),
+            ["b.example.org", "new.example.org"]
+        );
+
+        // The preview sees the same options.
+        let s = summarize(&state, &[], Path::new("/dl"));
+        assert!(s[0].details.private);
+        assert!(s[0].details.edited_trackers);
+        assert!(!s[1].details.edited_trackers);
+        assert_eq!(s[0].details.skipped_files, 1);
+        assert_eq!(s[0].details.stop_at_ratio, Some((3.0, false)));
+    }
+
+    #[test]
+    fn options_leave_things_out() {
+        let state = two_torrents();
+        let o = DelugeImportOptions {
+            labels: true,
+            label_renames: vec![apitorrent_types::LabelRename {
+                from: "tv".into(),
+                to: Some("Shows".into()),
+            }],
+            queue_order: false,
+            added_dates: false,
+            totals: false,
+            skipped_files: false,
+            trackers: false,
+            torrent_limits: false,
+            seed_limits: false,
+            identity: apitorrent_types::ImportIdentity::Deluge,
+            identity_skip_hosts: vec!["B.example.org".into()],
+            settings: DelugeSettingsPick::default(),
+        };
+        let p = plan_with(&state, &o);
+        assert_eq!(p.torrents[0].name, "b", "in the order they were added");
+        let a = &p.torrents[1];
+        assert_eq!(a.row.queue_position, 1);
+        assert_eq!(a.label.as_deref(), Some("Shows"));
+        assert_eq!(a.row.label.as_deref(), Some("Shows"));
+        assert!(a.row.added_at > 2_000_000);
+        assert_eq!((a.row.downloaded_total, a.row.uploaded_total), (0, 0));
+        assert_eq!(a.seed.seed_ms, 0);
+        assert_eq!(a.row.file_priorities.as_deref(), Some(&[4, 4][..]));
+        assert_eq!(a.limits, TorrentLimits::default());
+        assert_eq!(a.seed.limits, None);
+        assert_eq!(a.torrent.trackers, [["https://a.example.org/announce"]]);
+        assert_eq!(identity_hosts(&p, &o), ["a.example.org"]);
+
+        let none = DelugeImportOptions {
+            labels: false,
+            identity: apitorrent_types::ImportIdentity::None,
+            ..o
+        };
+        let p = plan_with(&state, &none);
+        assert_eq!(p.torrents[1].label, None);
+        assert!(identity_hosts(&p, &none).is_empty());
+    }
+
+    #[test]
+    fn labels_dropped_or_renamed() {
+        let o = DelugeImportOptions {
+            label_renames: vec![
+                apitorrent_types::LabelRename {
+                    from: "Junk".into(),
+                    to: None,
+                },
+                apitorrent_types::LabelRename {
+                    from: "old".into(),
+                    to: Some("  ".into()),
+                },
+            ],
+            ..DelugeImportOptions::default()
+        };
+        assert_eq!(o.label_for(Some("junk")), None);
+        assert_eq!(o.label_for(Some("old")), None);
+        assert_eq!(o.label_for(Some("tv")).as_deref(), Some("tv"));
+        assert_eq!(o.label_for(None), None);
+    }
+
+    #[test]
+    fn settings_taken_one_by_one() {
+        let d = DelugeSettings {
+            max_download_rate: Some(100),
+            max_upload_rate: Some(200),
+            max_connections: Some(50),
+            max_active_downloading: Some(3),
+            ..DelugeSettings::default()
+        };
+        let mut s = SpaceSettings::default();
+        apply_space_settings(
+            &mut s,
+            &d,
+            DelugeSettingsPick {
+                upload_rate: true,
+                ..DelugeSettingsPick::default()
+            },
+        );
+        assert_eq!(
+            (s.download_rate, s.upload_rate, s.max_connections),
+            (0, 200, 0)
+        );
+        apply_space_settings(&mut s, &d, DelugeSettingsPick::all());
+        assert_eq!(
+            (s.download_rate, s.max_connections, s.max_active_downloads),
+            (100, 50, 3)
+        );
     }
 }

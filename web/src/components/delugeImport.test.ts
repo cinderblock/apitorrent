@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { DelugePreviewTorrent } from "../api/generated/DelugePreviewTorrent";
-import { NO_FILTER, hostMatches, importable, matches, rootsFor, validSlug, within } from "./delugeImport";
+import { DEFAULT_OPTIONS, NO_FILTER, carried, hostMatches, importable, labelAfter, matches, renameLabel, rootsFor, settingRows, validSlug, within } from "./delugeImport";
 
 const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
   id: "a".repeat(40),
@@ -14,6 +14,18 @@ const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
   paused: false,
   present: false,
   problem: null,
+  private: false,
+  limits: { downloadRate: 0, uploadRate: 0, maxConnections: null },
+  stopAtRatio: null,
+  skippedFiles: 0,
+  renamedFiles: 0,
+  downloaded: 0,
+  uploaded: 0,
+  seedingSecs: 0,
+  queue: null,
+  addedAt: null,
+  editedTrackers: false,
+  notCarried: [],
   ...over,
 });
 
@@ -59,5 +71,49 @@ describe("Deluge import wizard", () => {
     expect(validSlug("deluge-2")).toBe(true);
     expect(validSlug("-x")).toBe(false);
     expect(validSlug("X")).toBe(false);
+  });
+
+  test("what the ticked torrents carry", () => {
+    const c = carried(
+      [
+        t({ label: "tv", private: true, trackers: ["a.org", "b.org"], uploaded: 5, skippedFiles: 2, notCarried: ["sequential download"] }),
+        t({ label: null, private: true, trackers: ["a.org"], limits: { downloadRate: 0, uploadRate: 9, maxConnections: null }, paused: true }),
+        t({ label: "tv", stopAtRatio: { ratio: 2, remove: false }, editedTrackers: true, notCarried: ["sequential download"] }),
+      ],
+      { ratio: 2, remove: false },
+    );
+    expect(c.labels).toEqual([
+      ["", 1],
+      ["tv", 2],
+    ]);
+    expect(c.privateHosts).toEqual([
+      ["a.org", 2],
+      ["b.org", 1],
+    ]);
+    expect(c.notCarried).toEqual([["sequential download", 2]]);
+    expect([c.withTotals, c.withSkippedFiles, c.skippedFiles, c.withLimits, c.editedTrackers, c.running]).toEqual([1, 1, 2, 1, 1, 2]);
+    // Two have no ratio while the global is 2: their own differs.
+    expect(c.ownRatio).toBe(2);
+  });
+
+  test("labels renamed, dropped or left behind", () => {
+    let o = renameLabel(DEFAULT_OPTIONS, "tv", "Shows");
+    expect(labelAfter(o, "TV")).toBe("Shows");
+    o = renameLabel(o, "TV", "");
+    expect(o.labelRenames).toEqual([{ from: "TV", to: "" }]);
+    expect(labelAfter(o, "tv")).toBeNull();
+    o = renameLabel(o, "tv", "tv");
+    expect(o.labelRenames).toEqual([]);
+    expect(labelAfter({ ...o, labels: false }, "tv")).toBeNull();
+    expect(labelAfter(o, "")).toBeNull();
+  });
+
+  test("settings rows: slow torrents only for the default space", () => {
+    const s = { downloadRate: null, uploadRate: 1024, maxConnections: 200, maxActiveDownloading: 3, maxActiveSeeding: null, maxActive: 8, dontCountSlow: true, stopAtRatio: null };
+    expect(settingRows(s, false).map((r) => r.key)).toEqual(["downloadRate", "uploadRate", "maxConnections", "queueSlots", "stopAtRatio"]);
+    const rows = settingRows(s, true);
+    expect(rows.map((r) => r.key)).toContain("ignoreSlow");
+    expect(rows.find((r) => r.key === "downloadRate")?.value).toBe("no limit");
+    expect(rows.find((r) => r.key === "queueSlots")?.value).toBe("3 downloading, no limit seeding, 8 in all");
   });
 });

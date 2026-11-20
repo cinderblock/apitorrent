@@ -340,13 +340,27 @@ kind given, and any one value of a kind): `--label tv`, `--exclude-label music`,
 Deluge), `--name "words in the name"`, `--hash <info-hash>`. The report says how many
 the filter left out.
 
+Everything about each torrent comes over unless you leave it out: `--no-labels`,
+`--rename-label FROM=TO` (an empty TO drops that label), `--no-queue-order`,
+`--no-added-dates`, `--no-totals` (downloaded/uploaded and seeding time),
+`--download-skipped`, `--original-trackers` (the .torrent's, not Deluge's edited lists),
+`--no-limits`, `--no-seed-limits`. `--identity deluge|none|qbittorrent|transmission` sets
+what private trackers see (`--no-identity-for HOST` skips one). `--settings` takes all of
+Deluge's own settings; `--setting NAME` takes one (`download-rate`, `upload-rate`,
+`connections`, `slots`, `slow-torrents`, `stop-at-ratio`). The report lists each choice.
+
 With the daemon running, Settings → Deluge → "Import from Deluge…" does the same as a
 wizard. It starts with the Deluge installations it finds on the server (running
 `deluged`s and their `--config`, systemd units, `~/.config/deluge`, Debian's
 `/var/lib/deluged`), each a click away with a space of its own. It lists the chosen
 installation's torrents, with the same filters and a tick box each, then imports the
 ticked ones into a space you choose, or into a new one it creates (server admins), with
-the outermost save paths as its storage roots. Afterwards it offers to move them over
+the outermost save paths as its storage roots. Before importing, "What comes over" lists
+every option the ticked torrents carry (files and progress, labels, queue order, dates,
+totals, skipped files, edited trackers, limits, stop-at-ratio, the identity private
+trackers see, whether running ones start here, and each of Deluge's own settings), each
+with what it amounts to and a box to leave it out; labels can be renamed on the way in,
+and the tracker identity changed. What can't come over is listed too. Afterwards it offers to move them over
 from Deluge at once, and to go on to the next installation.
 
 Deluge can keep running while you move over. A torrent runs in only one client at a time:

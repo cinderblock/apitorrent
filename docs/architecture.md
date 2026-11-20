@@ -1265,10 +1265,21 @@ recheck. That is the onboarding path for existing Deluge users.
   equivalent here: move-completed, upload slots, sequential download, super-seeding,
   first/last piece priority, per-label limits). Logs go to stderr, so the report copies
   cleanly.
-- **Settings** (`--settings`): into `default`, Deluge's limits become the instance's; into
-  another space, its rates, connections and slots become the space's, and Deluge's global
-  stop-at-ratio becomes each imported torrent's own seed limits (seed limits have no space
-  level).
+- **Options** (`DelugeImportOptions` on the request; the CLI's `--no-…` flags). Each
+  per-torrent option is on by default and can be left out in `deluge_import::plan`:
+  labels (with `labelRenames`, rename or drop one), queue order (else by date added),
+  added dates, totals and seeding time, skipped files (else downloaded), Deluge's tracker
+  lists (else the `.torrent`'s), per-torrent limits and stop-at-ratio. `identity` is
+  Deluge, none, or another identity; `identitySkipHosts` leaves hosts out. Files, progress
+  and renamed files always come (the files are found through them). The preview carries
+  what the wizard needs to show each option for the ticked torrents (per torrent: private,
+  limits, stop-at-ratio, skipped and renamed files, totals, edited trackers, options with
+  no equivalent; per installation: Deluge's settings, label options, its identity, hosts a
+  rule already covers).
+- **Settings** (`options.settings`, one switch each; `--settings` takes all, `--setting
+  NAME` one): into `default`, the picked ones become the instance's; into another space,
+  its rates, connections and slots become the space's, and Deluge's global stop-at-ratio
+  becomes each imported torrent's own seed limits (seed limits have no space level).
 - **Twice is safe.** Torrents the space already has are listed and left alone.
 
 ### Client identity

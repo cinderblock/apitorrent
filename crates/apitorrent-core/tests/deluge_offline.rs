@@ -63,7 +63,7 @@ async fn offline_import_into_a_new_space() {
             deluge_save.to_owned(),
             real_save.to_string_lossy().into_owned(),
         )],
-        import_settings: false,
+        options: apitorrent_types::DelugeImportOptions::default(),
         paused: false,
         filter: apitorrent_types::DelugeImportFilter::default(),
     };

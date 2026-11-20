@@ -28,15 +28,144 @@ pub struct DelugeArgs {
     /// downloads mounted elsewhere). Repeatable: `--map /downloads=/srv/torrents`.
     #[arg(long = "map", value_name = "FROM=TO")]
     map: Vec<String>,
-    /// Also take Deluge's speed, connection and queue limits (into the space's settings, or
-    /// the instance's for `default`).
+    /// Also take all of Deluge's speed, connection and queue limits and its stop-at-ratio
+    /// (into the space's settings, or the instance's for `default`).
     #[arg(long)]
     settings: bool,
+    /// Take one of Deluge's settings. Repeatable.
+    #[arg(long = "setting", value_enum, value_name = "NAME")]
+    setting: Vec<SettingName>,
     /// Add everything paused, whatever its state in Deluge.
     #[arg(long)]
     paused: bool,
     #[command(flatten)]
     filter: FilterArgs,
+    #[command(flatten)]
+    options: OptionArgs,
+}
+
+/// One of Deluge's settings, for `--setting`.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum SettingName {
+    DownloadRate,
+    UploadRate,
+    Connections,
+    /// Active downloads, seeds and torrents in all.
+    Slots,
+    /// Don't count slow torrents against the slots (the default space only).
+    SlowTorrents,
+    StopAtRatio,
+}
+
+/// What of each torrent comes over. Everything does unless a flag leaves it out.
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+struct OptionArgs {
+    /// Leave Deluge's labels behind.
+    #[arg(long)]
+    no_labels: bool,
+    /// Give torrents labelled FROM in Deluge the label TO instead (no label when TO is
+    /// empty). Repeatable: `--rename-label tv=TV --rename-label junk=`.
+    #[arg(long = "rename-label", value_name = "FROM=TO")]
+    rename_label: Vec<String>,
+    /// Queue them in the order they were added, not Deluge's queue order.
+    #[arg(long)]
+    no_queue_order: bool,
+    /// Date them now, not when they were added to Deluge.
+    #[arg(long)]
+    no_added_dates: bool,
+    /// Start downloaded and uploaded totals and seeding time at zero.
+    #[arg(long)]
+    no_totals: bool,
+    /// Download the files Deluge skips.
+    #[arg(long)]
+    download_skipped: bool,
+    /// Use each .torrent file's own trackers, not Deluge's (possibly edited) lists.
+    #[arg(long)]
+    original_trackers: bool,
+    /// Leave each torrent's own speed and connection limits behind.
+    #[arg(long)]
+    no_limits: bool,
+    /// Leave each torrent's own stop-at-ratio behind.
+    #[arg(long)]
+    no_seed_limits: bool,
+    /// The client private trackers see for these torrents: `deluge` (as before),
+    /// `none` (apitorrent's own; adds no rules), `qbittorrent` or `transmission`.
+    #[arg(long, value_enum, default_value = "deluge")]
+    identity: IdentityName,
+    /// Add no identity rule for this tracker host. Repeatable.
+    #[arg(long = "no-identity-for", value_name = "HOST")]
+    no_identity_for: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum IdentityName {
+    Deluge,
+    None,
+    Qbittorrent,
+    Transmission,
+}
+
+impl DelugeArgs {
+    fn options(&self) -> Result<apitorrent_types::DelugeImportOptions, String> {
+        use apitorrent_types::{ClientIdentity, DelugeSettingsPick, ImportIdentity, LabelRename};
+        let o = &self.options;
+        let mut settings = if self.settings {
+            DelugeSettingsPick::all()
+        } else {
+            DelugeSettingsPick::default()
+        };
+        for s in &self.setting {
+            match s {
+                SettingName::DownloadRate => settings.download_rate = true,
+                SettingName::UploadRate => settings.upload_rate = true,
+                SettingName::Connections => settings.max_connections = true,
+                SettingName::Slots => settings.queue_slots = true,
+                SettingName::SlowTorrents => settings.ignore_slow = true,
+                SettingName::StopAtRatio => settings.stop_at_ratio = true,
+            }
+        }
+        let label_renames = o
+            .rename_label
+            .iter()
+            .map(|r| {
+                r.split_once('=')
+                    .map(|(from, to)| LabelRename {
+                        from: from.to_owned(),
+                        to: Some(to.to_owned()).filter(|t| !t.trim().is_empty()),
+                    })
+                    .ok_or_else(|| format!("--rename-label takes FROM=TO, not {r:?}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let identity = match o.identity {
+            IdentityName::Deluge => ImportIdentity::Deluge,
+            IdentityName::None => ImportIdentity::None,
+            IdentityName::Qbittorrent => ImportIdentity::Other {
+                identity: ClientIdentity::QBittorrent {
+                    version: "4.6.5".into(),
+                },
+            },
+            IdentityName::Transmission => ImportIdentity::Other {
+                identity: ClientIdentity::Transmission {
+                    version: "4.0.6".into(),
+                },
+            },
+        };
+        Ok(apitorrent_types::DelugeImportOptions {
+            labels: !o.no_labels,
+            label_renames,
+            queue_order: !o.no_queue_order,
+            added_dates: !o.no_added_dates,
+            totals: !o.no_totals,
+            skipped_files: !o.download_skipped,
+            trackers: !o.original_trackers,
+            torrent_limits: !o.no_limits,
+            seed_limits: !o.no_seed_limits,
+            identity,
+            identity_skip_hosts: o.no_identity_for.clone(),
+            settings,
+        })
+    }
 }
 
 /// Which torrents to take. Each kind of filter given must match; a repeated flag matches
@@ -116,9 +245,9 @@ pub fn run(cmd: &ImportCommand, data_dir: &Path, download_dir: &Path) -> Result<
             space: a.space.clone(),
             dry_run: a.dry_run,
             map,
-            import_settings: a.settings,
             paused: a.paused,
             filter: a.filter.filter(),
+            options: a.options()?,
         },
     )
 }

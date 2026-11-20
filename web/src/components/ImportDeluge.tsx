@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiRequestError, api } from "../api/client";
+import type { DelugeImportOptions } from "../api/generated/DelugeImportOptions";
 import type { DelugeInstall } from "../api/generated/DelugeInstall";
 import type { DelugePreview } from "../api/generated/DelugePreview";
 import type { ImportReport } from "../api/generated/ImportReport";
@@ -11,8 +12,9 @@ import { navigate } from "../router";
 import { spacesApi } from "../spaces/api";
 import { loadSpaceContext, useSpaceContext } from "../spaces/context";
 import { spaceHome } from "../spaces/prefix";
+import { ImportDelugeOptions } from "./ImportDelugeOptions";
 import { Tip } from "./Tip";
-import { NO_FILTER, importable, matches, rootsFor, validSlug, within, type WizardFilter } from "./delugeImport";
+import { DEFAULT_OPTIONS, NO_FILTER, importable, matches, rootsFor, validSlug, within, type WizardFilter } from "./delugeImport";
 
 /** The space to import into: one that exists (by slug), or a new one. */
 type Target = { kind: "existing"; slug: string } | { kind: "new" };
@@ -43,7 +45,7 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
   const [newRoots, setNewRoots] = useState("");
   // A space made by an earlier attempt that then failed to import: not made again.
   const [created, setCreated] = useState<string | null>(null);
-  const [importSettings, setImportSettings] = useState(false);
+  const [options, setOptions] = useState<DelugeImportOptions>(DEFAULT_OPTIONS);
   const [paused, setPaused] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +123,7 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
       const p = await api.previewDeluge({ configDir: configDir.trim(), pathMap: pathMap(), newSpace: chosen.kind === "new" }, chosenSlug);
       setPreview(p);
       setFilter(NO_FILTER);
+      setOptions(DEFAULT_OPTIONS);
       setTicked(new Set(p.torrents.filter(importable).map((t) => t.id)));
       if (chosen.kind === "new") {
         if (!newSlug) setNewSlug(p.suggestedSlug);
@@ -209,7 +212,7 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
         }
       }
       const filter = { labels: [], excludeLabels: [], trackers: [], savePaths: [], complete: null, paused: null, name: null, ids: [...ticked] };
-      setReport(await api.importDeluge({ configDir: configDir.trim(), pathMap: pathMap(), importSettings, paused, filter }, slug));
+      setReport(await api.importDeluge({ configDir: configDir.trim(), pathMap: pathMap(), paused, filter, options }, slug));
     } catch (err) {
       setError(message(err));
     } finally {
@@ -521,14 +524,15 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
               </label>
             </fieldset>
           )}
-          <label className="check">
-            <input type="checkbox" checked={importSettings} onChange={(e) => setImportSettings(e.target.checked)} />
-            Also use Deluge&apos;s speed, connection and queue limits
-          </label>
-          <label className="check">
-            <input type="checkbox" checked={paused} onChange={(e) => setPaused(e.target.checked)} />
-            Add them paused, and leave them running in Deluge (resuming one here takes it over then)
-          </label>
+          <ImportDelugeOptions
+            preview={preview}
+            ticked={tickedTorrents}
+            options={options}
+            setOptions={setOptions}
+            defaultSpace={chosen.kind === "existing" && chosen.slug === "default"}
+            paused={paused}
+            setPaused={setPaused}
+          />
           {newSpaceProblem && <p className="error-text">{newSpaceProblem}</p>}
           {error && <p className="error-text">{error}</p>}
           <div className="actions">

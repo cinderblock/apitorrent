@@ -1854,3 +1854,56 @@ button.link.danger-text {
 .import-why {
   font-size: 12px;
 }
+
+/* The import wizard's "What comes over". */
+.carry {
+  display: grid;
+  gap: 10px;
+}
+.carry-row {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.carry-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.carry-fixed {
+  display: inline-block;
+  width: 1rem;
+  text-align: center;
+  color: var(--ok);
+}
+.carry-fixed.carry-no {
+  color: var(--muted);
+}
+.carry-detail {
+  font-size: 13px;
+  padding-inline-start: calc(1rem + 6px);
+}
+.carry-row > :is(table, ul, .field) {
+  margin-inline-start: calc(1rem + 6px);
+}
+.carry-labels td,
+.carry-labels th {
+  padding: 2px 8px 2px 0;
+  text-align: start;
+}
+.carry-labels input {
+  width: 100%;
+  min-width: 8rem;
+}
+.carry-hosts,
+.carry-settings {
+  list-style: none;
+  margin-block: 2px 0;
+  padding: 0;
+}
+.carry-hosts .check,
+.carry-settings .check {
+  margin: 2px 0;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}

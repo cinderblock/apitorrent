@@ -1040,7 +1040,7 @@ async fn deluge_import() {
             apitorrent_types::ImportDelugeRequest {
                 config_dir: deluge.to_string_lossy().into_owned(),
                 path_map: Vec::new(),
-                import_settings: false,
+                options: apitorrent_types::DelugeImportOptions::default(),
                 paused: false,
                 filter: apitorrent_types::DelugeImportFilter {
                     exclude_labels: vec!["Music".into()],
@@ -1061,7 +1061,7 @@ async fn deluge_import() {
                     from: deluge_save.into(),
                     to: real_save.to_string_lossy().into_owned(),
                 }],
-                import_settings: false,
+                options: apitorrent_types::DelugeImportOptions::default(),
                 paused: false,
                 filter: apitorrent_types::DelugeImportFilter::default(),
             },
@@ -1089,7 +1089,7 @@ async fn deluge_import() {
             apitorrent_types::ImportDelugeRequest {
                 config_dir: deluge.to_string_lossy().into_owned(),
                 path_map: Vec::new(),
-                import_settings: false,
+                options: apitorrent_types::DelugeImportOptions::default(),
                 paused: false,
                 filter: apitorrent_types::DelugeImportFilter::default(),
             },
@@ -1181,7 +1181,7 @@ async fn deluge_take_over() {
             apitorrent_types::ImportDelugeRequest {
                 config_dir: deluge.to_string_lossy().into_owned(),
                 path_map: Vec::new(),
-                import_settings: false,
+                options: apitorrent_types::DelugeImportOptions::default(),
                 paused: false,
                 filter: apitorrent_types::DelugeImportFilter::default(),
             },

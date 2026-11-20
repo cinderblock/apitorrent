@@ -804,15 +804,188 @@ pub struct ImportDelugeRequest {
     /// Deluge ran elsewhere or saw the downloads under another path.
     #[serde(default)]
     pub path_map: Vec<PathMapping>,
-    /// Also take Deluge's speed, connection and queue limits.
-    #[serde(default)]
-    pub import_settings: bool,
     /// Add everything paused, whatever its state in Deluge.
     #[serde(default)]
     pub paused: bool,
     /// Which torrents to import; the default takes them all.
     #[serde(default)]
     pub filter: DelugeImportFilter,
+    /// What of each torrent, and of Deluge's settings, comes over; the default takes
+    /// everything per torrent and none of Deluge's settings.
+    #[serde(default)]
+    pub options: DelugeImportOptions,
+}
+
+/// What a Deluge import carries over besides each torrent's files and progress (which
+/// always come). The default carries everything per torrent and none of Deluge's own
+/// settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+#[allow(clippy::struct_excessive_bools, reason = "one switch per option")]
+pub struct DelugeImportOptions {
+    /// Keep Deluge's labels (then `labelRenames` changes some).
+    pub labels: bool,
+    /// Labels to change on the way in: `from` (a Deluge label, compared without regard to
+    /// case) becomes `to`, or no label when `to` is null or empty.
+    pub label_renames: Vec<LabelRename>,
+    /// Keep Deluge's queue order; otherwise they queue in the order they were added.
+    pub queue_order: bool,
+    /// Keep when each torrent was added to Deluge; otherwise now.
+    pub added_dates: bool,
+    /// Keep all-time downloaded and uploaded totals and seeding time (ratios and seed
+    /// limits count from them); otherwise they start at zero.
+    pub totals: bool,
+    /// Files Deluge skips stay skipped; otherwise every file is downloaded.
+    pub skipped_files: bool,
+    /// Use Deluge's tracker lists (edited there, say for a new passkey); otherwise each
+    /// `.torrent` file's own.
+    pub trackers: bool,
+    /// Keep each torrent's own speed and connection limits.
+    pub torrent_limits: bool,
+    /// Keep each torrent's own stop-at-ratio.
+    pub seed_limits: bool,
+    /// The client private trackers see for these torrents.
+    pub identity: ImportIdentity,
+    /// Tracker hosts to leave out of the identity rules.
+    pub identity_skip_hosts: Vec<String>,
+    /// Which of Deluge's own settings to take (into the space's settings, or the
+    /// instance's for the default space).
+    pub settings: DelugeSettingsPick,
+}
+
+impl Default for DelugeImportOptions {
+    fn default() -> Self {
+        Self {
+            labels: true,
+            label_renames: Vec::new(),
+            queue_order: true,
+            added_dates: true,
+            totals: true,
+            skipped_files: true,
+            trackers: true,
+            torrent_limits: true,
+            seed_limits: true,
+            identity: ImportIdentity::Deluge,
+            identity_skip_hosts: Vec::new(),
+            settings: DelugeSettingsPick::default(),
+        }
+    }
+}
+
+impl DelugeImportOptions {
+    /// The label a torrent labelled `label` in Deluge gets here.
+    #[must_use]
+    pub fn label_for(&self, label: Option<&str>) -> Option<String> {
+        let label = label.filter(|l| !l.is_empty())?;
+        if !self.labels {
+            return None;
+        }
+        match self
+            .label_renames
+            .iter()
+            .find(|r| r.from.eq_ignore_ascii_case(label))
+        {
+            Some(r) => {
+                r.to.as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_owned)
+            }
+            None => Some(label.to_owned()),
+        }
+    }
+}
+
+/// A Deluge label renamed (or dropped, with no `to`) on import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LabelRename {
+    pub from: String,
+    pub to: Option<String>,
+}
+
+/// The client private trackers see for imported torrents.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export)]
+pub enum ImportIdentity {
+    /// Deluge, at the versions its daemon reports (or the newest release when it isn't
+    /// running): what those trackers saw before.
+    #[default]
+    Deluge,
+    /// No rules: apitorrent's own identity (or whatever rules already exist).
+    None,
+    /// Another identity.
+    Other { identity: ClientIdentity },
+}
+
+/// Which of Deluge's settings an import takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+#[allow(clippy::struct_excessive_bools, reason = "one switch per setting")]
+pub struct DelugeSettingsPick {
+    pub download_rate: bool,
+    pub upload_rate: bool,
+    pub max_connections: bool,
+    /// Active downloads, seeds and torrents in all.
+    pub queue_slots: bool,
+    /// Don't count slow torrents against the slots (the default space only; spaces have
+    /// no such setting).
+    pub ignore_slow: bool,
+    /// Stop seeding at a ratio: the instance's seed limits for the default space; each
+    /// torrent's own for another space.
+    pub stop_at_ratio: bool,
+}
+
+impl DelugeSettingsPick {
+    /// Every setting.
+    #[must_use]
+    pub const fn all() -> Self {
+        Self {
+            download_rate: true,
+            upload_rate: true,
+            max_connections: true,
+            queue_slots: true,
+            ignore_slow: true,
+            stop_at_ratio: true,
+        }
+    }
+
+    #[must_use]
+    pub fn any(&self) -> bool {
+        *self != Self::default()
+    }
+}
+
+/// Deluge's own settings that an import can take, as Deluge has them.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DelugeSettingsView {
+    /// Bytes per second; null for no limit.
+    #[ts(type = "number | null")]
+    pub download_rate: Option<u64>,
+    #[ts(type = "number | null")]
+    pub upload_rate: Option<u64>,
+    pub max_connections: Option<u32>,
+    pub max_active_downloading: Option<u32>,
+    pub max_active_seeding: Option<u32>,
+    pub max_active: Option<u32>,
+    pub dont_count_slow: bool,
+    pub stop_at_ratio: Option<StopAtRatio>,
+}
+
+/// Deluge's "stop seeding at ratio".
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct StopAtRatio {
+    pub ratio: f64,
+    /// Remove the torrent then, rather than pause it.
+    pub remove: bool,
 }
 
 /// Which of a Deluge installation's torrents to import. Each list that isn't empty must
@@ -876,12 +1049,21 @@ pub struct DelugePreview {
     /// A space slug made from the config directory's name, for a new space.
     pub suggested_slug: String,
     pub warnings: Vec<String>,
+    /// Deluge's own settings, which the import can take.
+    pub settings: DelugeSettingsView,
+    /// Label plugin options that don't carry over, in plain words.
+    pub label_options: Vec<String>,
+    /// The identity Deluge presents (its daemon's versions when it answers).
+    pub deluge_identity: ClientIdentity,
+    /// Tracker hosts an identity rule already covers: the import leaves them alone.
+    pub covered_hosts: Vec<String>,
 }
 
 /// One torrent in a Deluge installation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+#[allow(clippy::struct_excessive_bools, reason = "facts about one torrent")]
 pub struct DelugePreviewTorrent {
     /// The info-hash id, as apitorrent will know it.
     pub id: String,
@@ -900,6 +1082,32 @@ pub struct DelugePreviewTorrent {
     pub present: bool,
     /// Why it can't be imported (outside the space's storage roots, unreadable).
     pub problem: Option<String>,
+    /// A private torrent (its trackers may allow only known clients).
+    pub private: bool,
+    /// Its own speed and connection limits (zero / null: none).
+    pub limits: TorrentLimits,
+    /// Its own stop-at-ratio (Deluge copies the global one into every torrent).
+    pub stop_at_ratio: Option<StopAtRatio>,
+    /// Files Deluge doesn't download.
+    pub skipped_files: u32,
+    /// Files renamed in Deluge.
+    pub renamed_files: u32,
+    /// All-time totals, in bytes.
+    #[ts(type = "number")]
+    pub downloaded: u64,
+    #[ts(type = "number")]
+    pub uploaded: u64,
+    #[ts(type = "number")]
+    pub seeding_secs: u64,
+    /// Deluge's queue position (0 first); null outside its queue.
+    pub queue: Option<u32>,
+    /// When it was added to Deluge, in milliseconds since the epoch.
+    #[ts(type = "number | null")]
+    pub added_at: Option<i64>,
+    /// Deluge's tracker list differs from the `.torrent` file's.
+    pub edited_trackers: bool,
+    /// Options set in Deluge that don't carry over, in plain words.
+    pub not_carried: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

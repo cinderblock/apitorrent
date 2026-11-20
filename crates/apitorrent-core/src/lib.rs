@@ -1343,6 +1343,34 @@ impl Core {
             &target_space.settings.storage_roots
         };
         let summaries = deluge_import::summarize(&state, &map, &download_dir);
+        // Hosts of private torrents an identity rule already covers: the import adds none.
+        let private: Vec<String> = {
+            let mut h: Vec<String> = summaries
+                .iter()
+                .filter(|s| s.details.private)
+                .flat_map(|s| s.hosts.clone())
+                .collect();
+            h.sort();
+            h.dedup();
+            h
+        };
+        let covered_hosts = {
+            let mut probe = self.settings().identity;
+            let added = settings::ensure_tracker_identities(
+                &mut probe,
+                &private,
+                &apitorrent_types::ClientIdentity::Apitorrent,
+            );
+            private.into_iter().filter(|h| !added.contains(h)).collect()
+        };
+        // Only for showing the choice: a slow daemon mustn't hold up the preview (the
+        // import asks again).
+        let deluge_identity = tokio::time::timeout(
+            Duration::from_secs(3),
+            takeover::deluge_identity(Path::new(&req.config_dir)),
+        )
+        .await
+        .unwrap_or_else(|_| apitorrent_types::ClientIdentity::deluge_default());
         let mut labels: Vec<String> = summaries.iter().filter_map(|s| s.label.clone()).collect();
         labels.sort();
         labels.dedup();
@@ -1363,6 +1391,7 @@ impl Core {
                         )
                     })
                 });
+                let d = s.details;
                 DelugePreviewTorrent {
                     present: present.contains(&s.id),
                     id: s.id,
@@ -1374,6 +1403,20 @@ impl Core {
                     progress: s.progress,
                     paused: s.paused,
                     problem,
+                    private: d.private,
+                    limits: d.limits,
+                    stop_at_ratio: d
+                        .stop_at_ratio
+                        .map(|(ratio, remove)| apitorrent_types::StopAtRatio { ratio, remove }),
+                    skipped_files: d.skipped_files,
+                    renamed_files: d.renamed_files,
+                    downloaded: d.downloaded,
+                    uploaded: d.uploaded,
+                    seeding_secs: d.seeding_secs,
+                    queue: d.queue,
+                    added_at: d.added_at,
+                    edited_trackers: d.edited_trackers,
+                    not_carried: d.not_carried,
                 }
             })
             .collect();
@@ -1387,7 +1430,11 @@ impl Core {
                 .as_deref()
                 .map(|p| import::remap(p, &map)),
             suggested_slug: deluge_import::suggested_slug(Path::new(&req.config_dir)),
+            settings: deluge_import::settings_view(&state.settings),
+            label_options: state.label_options,
             warnings: state.warnings,
+            deluge_identity,
+            covered_hosts,
         })
     }
 
@@ -1402,19 +1449,21 @@ impl Core {
     ) -> Result<apitorrent_types::ImportReport, CoreError> {
         use apitorrent_types::{ImportReport, ImportSkip};
         let target_space = self.space(space)?;
+        deluge_import::check_options(&req.options).map_err(CoreError::InvalidRequest)?;
         let dir = PathBuf::from(&req.config_dir);
         let mut state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
             .await
             .expect("Deluge reader panicked")
             .map_err(|e| CoreError::InvalidRequest(e.to_string()))?;
-        if req.import_settings {
+        let pick = req.options.settings;
+        if pick.any() {
             if space == DEFAULT_SPACE {
                 let mut s = self.settings();
-                deluge_import::apply_instance_settings(&mut s, &state.settings);
+                deluge_import::apply_instance_settings(&mut s, &state.settings, pick);
                 self.set_settings(s).await?;
             } else {
                 let mut s = target_space.settings.clone();
-                deluge_import::apply_space_settings(&mut s, &state.settings);
+                deluge_import::apply_space_settings(&mut s, &state.settings, pick);
                 self.update_space(
                     space,
                     apitorrent_types::spaces::UpdateSpaceRequest {
@@ -1451,7 +1500,8 @@ impl Core {
             present: &present,
             map: &map,
             paused: req.paused,
-            ratio_per_torrent: space != DEFAULT_SPACE && req.import_settings,
+            ratio_per_torrent: space != DEFAULT_SPACE && pick.stop_at_ratio,
+            options: &req.options,
             first_position: self.next_queue_position(space),
         };
         let mut plan = deluge_import::plan(&state, &target);
@@ -1461,11 +1511,12 @@ impl Core {
             deluge_import::take_over_running(&mut plan, Path::new(&req.config_dir), &mut warnings)
                 .await;
         // Private trackers knew these torrents as Deluge's: keep presenting as Deluge there.
-        let private_hosts = deluge_import::private_tracker_hosts(&plan);
+        let private_hosts = deluge_import::identity_hosts(&plan, &req.options);
         let identity_hosts = if private_hosts.is_empty() {
             Vec::new()
         } else {
-            let identity = takeover::deluge_identity(Path::new(&req.config_dir)).await;
+            let identity =
+                deluge_import::import_identity(&req.options, Path::new(&req.config_dir)).await;
             match self
                 .ensure_tracker_identities(&private_hosts, identity)
                 .await
