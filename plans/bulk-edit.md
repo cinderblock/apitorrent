@@ -162,4 +162,7 @@ User answers, 2026-11-20:
 - [x] Web dialog, checkbox column, selection setting, failure reporting (`ed2e9bb`)
 - [x] Recheck (`23a4926`): engine `Command::Recheck`, `POST /torrents/{id}/recheck`, More menu
 - [x] Move storage (`79523ce`): `PATCH /torrents` `savePath`, `TorrentState::Moving`, Location field
-- [x] README, ISSUES (`349b21a`)
+- [x] README, ISSUES (`ee100e6` after rebase)
+- [x] Rebased onto master, pushed `dd1f3fe`, deployed to pokol (2026-11-20 3:12 PM PST,
+  23:12Z), built on sentinel from a clean worktree (`embedded-ui,first-party-plugins`).
+  The live bundle has the new UI; `/api/v1/info` lists `bulk-edit` and `recheck`.
