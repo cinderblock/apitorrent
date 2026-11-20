@@ -111,9 +111,9 @@ User answers, 2026-11-20:
 4. [x] Web: checkbox column + header select-all; toolbar count; phone bar Edit… / Select all
 5. [x] Result reporting for bulk pause/resume/remove/queue
 6. [x] Typecheck, tests, cargo test/clippy, headless browser check (wide + phone)
-7. [ ] Recheck:  ← current engine + `POST /torrents/{id}/recheck` + bulk; UI button
-8. [ ] Move storage: engine + endpoint + bulk; UI (destination picker within storage roots)
-9. [ ] README / docs for the new endpoints
+7. [x] Recheck: engine + `POST /torrents/{id}/recheck` + bulk; UI button
+8. [x] Move storage: engine + endpoint + bulk; UI (destination picker within storage roots)
+9. [x] README (feature bullet), ISSUES entry for the qBittorrent plugin
 
 ## Findings / gotchas
 
@@ -133,6 +133,24 @@ User answers, 2026-11-20:
   from the server, the Highlight-only setting and the phone flow; no sideways scroll at
   1280 and 390 wide.
 
+- Recheck (engine): closes all connections (peers were told about pieces we may lose),
+  drops the picker and checks from disk like a first start; waits if files are moving or
+  library pieces are being taken in. `Command::Have` now answers nothing while checking,
+  so `save_resume` can't race a recheck into saving an empty bitfield.
+- Plugin events: progress reads 0 while checking, so a recheck looked like a new finish.
+  `plugin_api::remember` carries `finished` through `Checking`.
+- A paused torrent's summary says Paused even while it checks (the core's `paused` wins);
+  tests that wait for a check must wait on progress, not state.
+- Move storage design: checked up front (roots, collisions, other spaces' files), then a
+  background task per torrent serialised by `Inner::move_lock`. A primary stops its
+  engine torrent, moves files (+ held dir when `held_path_for` changes), and restarts via
+  `move_swarm(.., Some(SwarmResume))` with its have/placements/linked, so no recheck.
+  A secondary (another space's copy) only moves its own files. `handle()` and `remove()`
+  refuse a moving torrent. Failed moves roll back (`relocate::move_all`).
+- Known edge: a daemon killed mid-move leaves some files moved and the DB at the old
+  path; on restart the moved files' pieces are found missing and download again (the
+  moved copies are orphaned). Rename is per-file atomic, so nothing is half-written.
+
 ## Things not to do
 
 - No `title=` tooltips (use `Tip`); browser checks headless only.
@@ -142,5 +160,6 @@ User answers, 2026-11-20:
 - [x] 2026-11-20: surveyed UI and API, wrote this proposal
 - [x] Server bulk endpoints (`9f97302`)
 - [x] Web dialog, checkbox column, selection setting, failure reporting (`ed2e9bb`)
-- [ ] Recheck
-- [ ] Move storage
+- [x] Recheck (`23a4926`): engine `Command::Recheck`, `POST /torrents/{id}/recheck`, More menu
+- [x] Move storage (`79523ce`): `PATCH /torrents` `savePath`, `TorrentState::Moving`, Location field
+- [x] README, ISSUES (`349b21a`)
