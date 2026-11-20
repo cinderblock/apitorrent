@@ -1215,10 +1215,9 @@ async fn deluge_take_over() {
         matches!(refused, Err(apitorrent_core::CoreError::OtherOwner(_))),
         "{refused:?}"
     );
-    assert_eq!(
-        core.store().get(&k(&id)).unwrap().state,
-        TorrentState::Paused
-    );
+    let summary = core.store().get(&k(&id)).unwrap();
+    assert_eq!(summary.state, TorrentState::Paused);
+    assert!(summary.in_deluge.is_some(), "shown as still Deluge's");
 
     // Deluge stops; now it's ours.
     daemon.abort();
@@ -1226,6 +1225,7 @@ async fn deluge_take_over() {
     let r = core.take_over(DEFAULT_SPACE, &[]).await.unwrap();
     assert_eq!(r.taken_over, 1, "{r:?}");
     wait_for(&core, &id, TorrentState::Seeding).await;
+    assert_eq!(core.store().get(&k(&id)).unwrap().in_deluge, None);
     assert!(
         core.imports_not_taken_over(DEFAULT_SPACE)
             .await

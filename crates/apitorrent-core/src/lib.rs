@@ -169,6 +169,8 @@ struct Entry {
     group: Option<String>,
     naming: u8,
     superseded_by: Option<TorrentId>,
+    /// Imported from Deluge and not taken over yet: the Deluge config directory.
+    in_deluge: Option<String>,
     /// Per-file paths overriding the naming policy.
     file_paths: Option<Vec<Vec<String>>>,
 }
@@ -1269,9 +1271,37 @@ impl Core {
     /// Remember that a torrent came from another client (whose config directory is
     /// `source`), so dedupe leaves its files to an admin. Logged, not fatal, on failure.
     async fn record_imported(&self, row: db::ImportedRow) {
+        let (key, waiting) = (
+            row.key.clone(),
+            row.taken_over_at.is_none().then(|| row.source.clone()),
+        );
         if let Err(e) = self.db(move |db| db.set_imported(&row)).await {
             tracing::warn!(error = %e, "could not record an imported torrent");
+            return;
         }
+        self.set_in_deluge(&key, waiting);
+    }
+
+    /// Mark an imported torrent as taken over (Deluge has stopped it) at `at`.
+    async fn mark_taken_over(&self, key: &Key, at: i64) -> Result<(), CoreError> {
+        let k = key.clone();
+        self.db(move |db| db.set_taken_over(&k, at)).await?;
+        self.set_in_deluge(key, None);
+        Ok(())
+    }
+
+    /// Show, or stop showing, a torrent as still Deluge's (`TorrentSummary::in_deluge`).
+    fn set_in_deluge(&self, key: &Key, config_dir: Option<String>) {
+        if let Some(e) = self
+            .inner
+            .torrents
+            .write()
+            .expect("torrents lock poisoned")
+            .get_mut(key)
+        {
+            e.in_deluge = config_dir;
+        }
+        self.refresh_one(key);
     }
 
     /// What a Deluge installation holds, for choosing what to import into `space`: each
@@ -1852,11 +1882,17 @@ impl Core {
             }
         }
         let superseded = self.db(|db| db.superseded()).await?;
+        let imported = self.db(|db| db.imported()).await?;
         {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
             for (s, by) in superseded {
                 if let Some(e) = torrents.get_mut(&s) {
                     e.superseded_by = Some(by);
+                }
+            }
+            for r in imported.into_iter().filter(|r| r.taken_over_at.is_none()) {
+                if let Some(e) = torrents.get_mut(&r.key) {
+                    e.in_deluge = Some(r.source);
                 }
             }
         }
@@ -2304,6 +2340,7 @@ impl Core {
                     group,
                     naming,
                     superseded_by: None,
+                    in_deluge: None,
                     file_paths: custom_paths,
                 },
             );
@@ -2523,9 +2560,7 @@ impl Core {
         takeover::pause_in_deluge(Path::new(&row.source), &[row.source_id().to_owned()])
             .await
             .map_err(CoreError::OtherOwner)?;
-        let k = key.clone();
-        self.db(move |db| db.set_taken_over(&k, now_ms())).await?;
-        Ok(())
+        self.mark_taken_over(key, now_ms()).await
     }
 
     /// The Deluge installations on this machine (see `apitorrent_deluge::discover`), with
@@ -2639,8 +2674,7 @@ impl Core {
             }
             let at = now_ms();
             for r in rows {
-                let k = r.key.clone();
-                self.db(move |db| db.set_taken_over(&k, at)).await?;
+                self.mark_taken_over(&r.key, at).await?;
                 match self.resume(&r.key).await {
                     Ok(()) => report.taken_over += 1,
                     Err(e) => report.skipped.push(apitorrent_types::ImportSkip {
@@ -3619,6 +3653,7 @@ fn summarize(key: &Key, e: &Entry) -> TorrentSummary {
         queue_position: e.queue_position,
         group: e.group.clone(),
         superseded_by: e.superseded_by.clone(),
+        in_deluge: e.in_deluge.clone(),
     }
 }
 
@@ -3663,6 +3698,7 @@ fn summarize_pending(key: &Key, p: &Pending) -> TorrentSummary {
         queue_position: p.queue_position,
         group: None,
         superseded_by: None,
+        in_deluge: None,
     }
 }
 

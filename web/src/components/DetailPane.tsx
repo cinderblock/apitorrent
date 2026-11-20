@@ -71,6 +71,41 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+/**
+ * Above every tab while Deluge still has the torrent: it was imported, but stays paused here
+ * so the two clients don't both run it. Starting it here pauses it in Deluge first.
+ */
+function InDelugeBanner({ summary, readOnly }: { summary: TorrentSummary; readOnly: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function moveOver() {
+    setBusy(true);
+    setError(null);
+    try {
+      // Resuming an imported torrent pauses it in Deluge first, and refuses if it can't.
+      await api.resume(summary.id);
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="banner-deluge" role="status">
+      <p>
+        <strong>Still in Deluge.</strong> Imported from <code>{summary.inDeluge}</code>; Deluge keeps running it, so it stays paused here.
+        Starting it here pauses it in Deluge first.
+      </p>
+      {!readOnly && (
+        <button type="button" disabled={busy} onClick={() => void moveOver()}>
+          {busy ? "Pausing in Deluge…" : "Pause in Deluge, start here"}
+        </button>
+      )}
+      {error && <p className="error-text">{error}</p>}
+    </div>
+  );
+}
+
 /** A local time with UTC beside it in smaller text. */
 function When({ ms }: { ms: number }) {
   return (
@@ -576,10 +611,18 @@ export function DetailPane({
       </div>
       <div className="tab-body" role="tabpanel">
         {error && <p className="error-text">{error}</p>}
+        {summary.inDeluge && <InDelugeBanner key={summary.id} summary={summary} readOnly={readOnly} />}
         {tab === "general" && (
           <dl className="facts">
             <Row label="Name" value={summary.name} />
-            <Row label="Status" value={summary.error ? <span className="error-text">Error: {summary.error}</span> : STATE_LABEL[summary.state]} />
+            <Row
+              label="Status"
+              value={
+                summary.error ? <span className="error-text">Error: {summary.error}</span>
+                : summary.inDeluge ? `${STATE_LABEL[summary.state]} here, in Deluge`
+                : STATE_LABEL[summary.state]
+              }
+            />
             <Row label="Progress" value={`${formatPercent(summary.progress)} (${summary.piecesHave} of ${summary.piecesTotal} pieces)`} />
             <Row label="Size" value={formatBytes(summary.size)} />
             <Row label="Peers" value={`${summary.peers} connected, ${summary.seeds} of them seeds`} />

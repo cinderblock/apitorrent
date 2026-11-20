@@ -31,4 +31,10 @@ group: string | null,
 /**
  * Another torrent holds all of this one's files (a pack that replaced it).
  */
-supersededBy: string | null, };
+supersededBy: string | null, 
+/**
+ * Imported from Deluge, which may still run it: the Deluge config directory it came
+ * from. Starting it here pauses it in Deluge first. Daemons from before this don't
+ * send it.
+ */
+inDeluge: string | null, };

@@ -2,7 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useRef, type ReactNode } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
-import { formatBytes, formatEta, formatPercent, formatRate, STATE_LABEL } from "../format";
+import { formatBytes, formatEta, formatPercent, formatRate, stateClass, stateLabel } from "../format";
 import { etaSeconds, type Sort, type SortKey } from "../state/torrents";
 import { COLUMNS } from "./TorrentTable";
 
@@ -90,7 +90,7 @@ export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, on
                       <span className="progress-text">{formatPercent(t.progress)}</span>
                     </span>
                     <span className="card-meta">
-                      <span className={`state state-${t.state}`}>{STATE_LABEL[t.state]}</span>
+                      <span className={stateClass(t)}>{stateLabel(t)}</span>
                       <span>{formatBytes(t.size)}</span>
                       {t.downloadRate > 0 && <span>↓ {formatRate(t.downloadRate)}</span>}
                       {t.uploadRate > 0 && <span>↑ {formatRate(t.uploadRate)}</span>}

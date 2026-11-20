@@ -72,6 +72,7 @@ function app() {
         queuePosition: 0,
         group: null,
         supersededBy: null,
+        inDeluge: null,
       };
       host.torrents.push(summary);
       details[a.id] = {

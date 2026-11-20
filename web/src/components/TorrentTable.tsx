@@ -2,7 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
-import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio, STATE_LABEL } from "../format";
+import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio, stateClass, stateLabel } from "../format";
 import { loadColumnPrefs, placeColumn, saveColumnPrefs, visibleColumns, type ColumnInfo, type ColumnPrefs } from "../state/columns";
 import { etaSeconds, type Sort, type SortKey } from "../state/torrents";
 import { ColumnChooser } from "./ColumnChooser";
@@ -56,7 +56,7 @@ export const COLUMNS: Column[] = [
     label: "Status",
     width: "6rem",
     defaultVisible: true,
-    render: (t) => <span className={`state state-${t.state}`}>{STATE_LABEL[t.state]}</span>,
+    render: (t) => <span className={stateClass(t)}>{stateLabel(t)}</span>,
   },
   { id: "downloadRate", label: "Down", width: "5.25rem", align: "end", defaultVisible: true, render: (t) => formatRate(t.downloadRate) },
   { id: "uploadRate", label: "Up", width: "5.25rem", align: "end", defaultVisible: true, render: (t) => formatRate(t.uploadRate) },

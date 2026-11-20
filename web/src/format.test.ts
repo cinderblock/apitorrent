@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { formatBytes, formatEta, formatPercent, formatRatio, fromKiB, toKiB } from "./format";
+import { formatBytes, formatEta, formatPercent, formatRatio, fromKiB, stateClass, stateLabel, toKiB } from "./format";
 
 test("bytes", () => {
   expect(formatBytes(0)).toBe("0 B");
@@ -35,4 +35,11 @@ test("KiB conversions round-trip", () => {
   expect(fromKiB(500)).toBe(512000);
   expect(toKiB(fromKiB(1234))).toBe(1234);
   expect(fromKiB(-3)).toBe(0);
+});
+
+test("a torrent Deluge still has reads In Deluge, whatever its state here", () => {
+  expect(stateLabel({ state: "paused", inDeluge: "/var/lib/deluged" })).toBe("In Deluge");
+  expect(stateClass({ state: "paused", inDeluge: "/var/lib/deluged" })).toBe("state state-deluge");
+  expect(stateLabel({ state: "paused", inDeluge: null })).toBe("Paused");
+  expect(stateClass({ state: "seeding", inDeluge: null })).toBe("state state-seeding");
 });

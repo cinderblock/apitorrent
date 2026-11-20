@@ -563,6 +563,34 @@ code {
   font-weight: 600;
 }
 
+/* Imported from Deluge, which still has it (see format.ts `stateLabel`). */
+.state-deluge {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Detail pane: the torrent is still Deluge's. */
+.banner-deluge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+
+.banner-deluge p {
+  margin: 0;
+  flex: 1 1 18rem;
+}
+
 /* Detail pane */
 
 .detail {

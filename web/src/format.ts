@@ -14,6 +14,19 @@ export const STATE_LABEL: Record<TorrentSummary["state"], string> = {
   error: "Error",
 };
 
+/**
+ * A torrent's status as the list shows it. One imported from Deluge that Deluge still has
+ * reads "In Deluge", not "Paused": starting it here pauses it there first.
+ */
+export function stateLabel(t: Pick<TorrentSummary, "state" | "inDeluge">): string {
+  return t.inDeluge ? "In Deluge" : STATE_LABEL[t.state];
+}
+
+/** The CSS class for `stateLabel`'s text. */
+export function stateClass(t: Pick<TorrentSummary, "state" | "inDeluge">): string {
+  return t.inDeluge ? "state state-deluge" : `state state-${t.state}`;
+}
+
 const UNITS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
 export function formatBytes(bytes: number): string {

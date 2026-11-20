@@ -89,6 +89,11 @@ pub struct TorrentSummary {
     pub group: Option<String>,
     /// Another torrent holds all of this one's files (a pack that replaced it).
     pub superseded_by: Option<TorrentId>,
+    /// Imported from Deluge, which may still run it: the Deluge config directory it came
+    /// from. Starting it here pauses it in Deluge first. Daemons from before this don't
+    /// send it.
+    #[serde(default)]
+    pub in_deluge: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]

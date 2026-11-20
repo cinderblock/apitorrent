@@ -80,6 +80,7 @@ pub fn summary(id: &str, state: TorrentState) -> TorrentSummary {
         queue_position: 0,
         group: None,
         superseded_by: None,
+        in_deluge: None,
     }
 }
 

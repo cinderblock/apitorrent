@@ -148,6 +148,12 @@ export function App({ status: auth }: { status: AuthStatus }) {
     }));
   }
 
+  // Resuming a torrent Deluge still has pauses it there first: say so on the button.
+  const selectionInDeluge = selection.filter((id) => state.torrents.get(id)?.inDeluge).length;
+  const selectionRunning = selection.some((id) => state.torrents.get(id)?.state !== "paused");
+  const pauseResumeLabel =
+    selectionInDeluge > 0 && !selectionRunning ? `Resume, pausing ${selectionInDeluge === 1 ? "it" : selectionInDeluge} in Deluge` : "Pause / Resume";
+
   function onKey(e: KeyboardEvent) {
     if (e.key === "Escape" && (selection.length > 0 || focus !== null)) {
       e.preventDefault();
@@ -216,7 +222,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
               Add
             </button>
             <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => pauseOrResume(selection)}>
-              Pause / Resume
+              {pauseResumeLabel}
             </button>
             <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => setRemoving(selection)}>
               Remove
@@ -350,7 +356,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
         <div className="selection-bar" role="toolbar" aria-label={`${selection.length} selected`}>
           <span className="muted">{selection.length} selected</span>
           <button type="button" onClick={() => pauseOrResume(selection)}>
-            Pause / Resume
+            {pauseResumeLabel}
           </button>
           <button type="button" onClick={() => setRemoving(selection)}>
             Remove

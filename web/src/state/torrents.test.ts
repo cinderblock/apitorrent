@@ -29,6 +29,7 @@ function t(id: string, over: Partial<TorrentSummary> = {}): TorrentSummary {
     queuePosition: 0,
     group: null,
     supersededBy: null,
+    inDeluge: null,
     ...over,
   };
 }
