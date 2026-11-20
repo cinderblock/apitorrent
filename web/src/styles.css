@@ -1430,6 +1430,13 @@ button.auth-secondary {
   text-align: left;
 }
 
+.toolbar-more-menu.menu-up {
+  top: auto;
+  bottom: calc(100% + 4px);
+  left: auto;
+  right: 0;
+}
+
 .toolbar-more-theme {
   display: flex;
   align-items: center;

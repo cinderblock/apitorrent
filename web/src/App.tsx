@@ -13,7 +13,7 @@ import { StatusBar } from "./components/StatusBar";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
 import { ThemePicker } from "./components/ThemePicker";
-import { ToolbarMore } from "./components/ToolbarMore";
+import { MenuButton, ToolbarMore } from "./components/ToolbarMore";
 import { TorrentTable } from "./components/TorrentTable";
 import { UpdateButton } from "./components/Updates";
 import { DesktopMenu } from "./desktop/DesktopGate";
@@ -259,6 +259,14 @@ export function App({ status: auth }: { status: AuthStatus }) {
             <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => setEditing(selection)}>
               Edit…
             </button>
+            {selection.length > 0 && (
+              <MenuButton
+                className="wide-only"
+                label="More ▾"
+                name="More actions for the selection"
+                items={[{ label: "Recheck files", onSelect: () => runOnEach("recheck", selection, api.recheck) }]}
+              />
+            )}
             <div className="button-group wide-only" role="group" aria-label="Queue">
               <button type="button" disabled={selection.length === 0} aria-label="Move to the top of the queue" onClick={() => queueMove("top")}>
                 ⤒
@@ -405,12 +413,16 @@ export function App({ status: auth }: { status: AuthStatus }) {
           <button type="button" onClick={() => setEditing(selection)}>
             Edit…
           </button>
-          <button type="button" aria-label="Move up the queue" onClick={() => queueMove("up")}>
-            ↑
-          </button>
-          <button type="button" aria-label="Move down the queue" onClick={() => queueMove("down")}>
-            ↓
-          </button>
+          <MenuButton
+            label="⋯"
+            name="More actions for the selection"
+            up
+            items={[
+              { label: "Recheck files", onSelect: () => runOnEach("recheck", selection, api.recheck) },
+              { label: "Move up the queue", onSelect: () => queueMove("up") },
+              { label: "Move down the queue", onSelect: () => queueMove("down") },
+            ]}
+          />
         </div>
       )}
       <StatusBar rates={rates} />

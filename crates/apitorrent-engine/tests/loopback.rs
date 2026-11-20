@@ -1547,3 +1547,57 @@ async fn encryption_can_change_while_running() {
     assert!(leech.shutdown().await.unwrap().is_full());
     seed.shutdown().await;
 }
+
+/// A recheck reads every piece again: damage on disk shows up as missing pieces, and
+/// repairing it brings them back. A paused torrent stays paused through it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recheck_finds_damaged_and_repaired_pieces() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let fx = fixture(Version::V1);
+    let dir = tempfile::tempdir().unwrap();
+    let (_session, seed) = seed_fixture(&fx, dir.path()).await;
+    let total = seed.stats().pieces_total;
+    assert_eq!(seed.stats().pieces_have, total);
+    seed.pause().await;
+    wait_for("paused", || seed.stats().state == TorrentState::Paused).await;
+
+    let big = dir.path().join("pack").join("big.bin");
+    let damage = |byte: u8| {
+        let mut f = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
+        f.seek(SeekFrom::Start(200_000)).unwrap();
+        f.write_all(&[byte; 1000]).unwrap();
+    };
+    damage(0xAB);
+    seed.recheck().await;
+    wait_for("a short recheck", || {
+        let s = seed.stats();
+        s.state == TorrentState::Paused && s.pieces_have < total
+    })
+    .await;
+    assert_eq!(
+        seed.stats().pieces_have,
+        total - 1,
+        "one piece holds the damage"
+    );
+    assert!(seed.have().await.is_some_and(|h| !h.is_full()));
+
+    // Put the original bytes back.
+    let original = &fx.files[0].1[200_000..201_000];
+    {
+        let mut f = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
+        f.seek(SeekFrom::Start(200_000)).unwrap();
+        f.write_all(original).unwrap();
+    }
+    seed.recheck().await;
+    wait_for("a full recheck", || {
+        let s = seed.stats();
+        s.state == TorrentState::Paused && s.pieces_have == total
+    })
+    .await;
+    seed.resume().await;
+    wait_for("seeding again", || {
+        seed.stats().state == TorrentState::Seeding
+    })
+    .await;
+}

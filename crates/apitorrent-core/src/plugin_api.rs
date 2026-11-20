@@ -211,6 +211,19 @@ fn seen(s: &TorrentSummary) -> Seen {
     }
 }
 
+/// What to remember after `now`. While a torrent is (re)checked its progress reads 0, so
+/// whether it was finished carries over: a recheck that finds everything again isn't a
+/// new finish.
+fn remember(before: Option<Seen>, now: &TorrentSummary) -> Seen {
+    match before {
+        Some(b) if now.state == TorrentState::Checking => Seen {
+            state: now.state,
+            finished: b.finished,
+        },
+        _ => seen(now),
+    }
+}
+
 /// The events one updated summary means, given what was known before.
 fn events_for(before: Option<Seen>, now: &TorrentSummary) -> Vec<AppEvent> {
     let mut out = Vec::new();
@@ -227,7 +240,7 @@ fn events_for(before: Option<Seen>, now: &TorrentSummary) -> Vec<AppEvent> {
             }
             // A torrent that is checked on add and already complete isn't "finished" by
             // downloading; only the transition counts.
-            if !b.finished && now.progress >= 1.0 {
+            if !b.finished && now.state != TorrentState::Checking && now.progress >= 1.0 {
                 out.push(AppEvent::TorrentFinished {
                     torrent: now.clone(),
                 });
@@ -242,7 +255,8 @@ fn apply(known: &mut HashMap<TorrentId, Seen>, patch: &Patch, tx: &broadcast::Se
         for e in events_for(known.get(&s.id).copied(), s) {
             let _ = tx.send(e);
         }
-        known.insert(s.id.clone(), seen(s));
+        let before = known.get(&s.id).copied();
+        known.insert(s.id.clone(), remember(before, s));
     }
     for key in &patch.removed {
         if known.remove(&key.id).is_some() {
@@ -341,6 +355,25 @@ mod tests {
         assert_eq!(
             kinds(&events_for(done, &summary(TorrentState::Paused, 1.0))),
             ["state"]
+        );
+    }
+
+    #[test]
+    fn a_recheck_that_finds_everything_is_not_a_new_finish() {
+        let done = Some(seen(&summary(TorrentState::Seeding, 1.0)));
+        let checking = summary(TorrentState::Checking, 0.0);
+        assert_eq!(kinds(&events_for(done, &checking)), ["state"]);
+        let during = Some(remember(done, &checking));
+        assert_eq!(
+            kinds(&events_for(during, &summary(TorrentState::Seeding, 1.0))),
+            ["state"]
+        );
+        // One that wasn't finished, and turns out to be, is.
+        let partial = Some(seen(&summary(TorrentState::Paused, 0.4)));
+        let during = Some(remember(partial, &checking));
+        assert_eq!(
+            kinds(&events_for(during, &summary(TorrentState::Paused, 1.0))),
+            ["state", "finished"]
         );
     }
 

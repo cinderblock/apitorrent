@@ -3063,6 +3063,25 @@ impl Core {
         self.set_paused(key, false).await
     }
 
+    /// Verify the torrent's pieces on disk again. Its swarm is checked as a whole, so the
+    /// same torrent in other spaces shows as checking too. A magnet link still fetching
+    /// its metadata has nothing to check yet.
+    pub async fn recheck(&self, key: &Key) -> Result<(), CoreError> {
+        if self
+            .inner
+            .pending
+            .read()
+            .expect("pending lock poisoned")
+            .contains_key(key)
+        {
+            return Err(CoreError::InvalidRequest(
+                "it can be checked once its metadata has arrived".into(),
+            ));
+        }
+        self.handle(key)?.recheck().await;
+        Ok(())
+    }
+
     async fn set_paused(&self, key: &Key, paused: bool) -> Result<(), CoreError> {
         if !paused {
             self.ensure_taken_over(key).await?;

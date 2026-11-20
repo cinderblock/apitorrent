@@ -120,6 +120,8 @@ export const api = {
   add: (req: AddTorrentRequest) => request<AddTorrentResponse>("POST", "/torrents", req),
   pause: (id: string) => request<void>("POST", `/torrents/${enc(id)}/pause`),
   resume: (id: string) => request<void>("POST", `/torrents/${enc(id)}/resume`),
+  /** Verify its pieces on disk again; it shows as checking meanwhile. */
+  recheck: (id: string) => request<void>("POST", `/torrents/${enc(id)}/recheck`),
   remove: (id: string, deleteFiles: boolean) =>
     request<void>("DELETE", `/torrents/${enc(id)}?deleteFiles=${deleteFiles}`),
   setFilePriorities: (id: string, priorities: FilePriority[]) =>

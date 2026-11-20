@@ -234,6 +234,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/torrents/{id}", get(routes::detail).delete(routes::remove))
         .route("/torrents/{id}/pause", post(routes::pause))
         .route("/torrents/{id}/resume", post(routes::resume))
+        .route("/torrents/{id}/recheck", post(routes::recheck))
         .route(
             "/torrents/{id}/files/priorities",
             put(routes::set_priorities),

@@ -124,3 +124,33 @@ async fn bulk_edit_changes_each_torrent_and_reports_failures() {
     }
     core.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recheck_verifies_again() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let token = f.admin_token();
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let resp = send(
+        &app,
+        Req::post("/api/v1/torrents")
+            .bearer(&token)
+            .raw_json(torrent_json_named("c.txt")),
+    )
+    .await;
+    let id = resp.json()["id"].as_str().unwrap().to_owned();
+    let resp = send(
+        &app,
+        Req::post(format!("/api/v1/torrents/{id}/recheck")).bearer(&token),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::NO_CONTENT);
+    let resp = send(
+        &app,
+        Req::post("/api/v1/torrents/nope/recheck").bearer(&token),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::NOT_FOUND);
+    core.shutdown().await.unwrap();
+}

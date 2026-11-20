@@ -73,6 +73,8 @@ pub(crate) async fn info(State(s): State<AppState>) -> Json<ServerInfo> {
         "spaces",
         // `PATCH /torrents` and `POST /torrents/settings`.
         "bulk-edit",
+        // `POST /torrents/{id}/recheck`.
+        "recheck",
     ]
     .map(str::to_owned)
     .into();
@@ -179,6 +181,16 @@ pub(crate) async fn resume(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     s.core.resume(&here.key(id)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /torrents/{id}/recheck`: verify its pieces on disk again.
+pub(crate) async fn recheck(
+    State(s): State<AppState>,
+    here: Here,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    s.core.recheck(&here.key(id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
