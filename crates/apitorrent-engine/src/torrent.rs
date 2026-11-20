@@ -16,7 +16,7 @@ use apitorrent_wire::extended::{
 };
 use apitorrent_wire::{BlockRef, Decoder, Handshake, HashRequest, MAX_BLOCK_LEN, Message, PeerId};
 
-use crate::announce::{Announcer, Job, TrackerStatus};
+use crate::announce::{Announcer, Job, Totals, TrackerStatus};
 use crate::ban::BanReason;
 use crate::bitfield::Bitfield;
 use crate::hashreq::LayerShape;
@@ -826,6 +826,13 @@ impl Entry {
             uploaded: 0,
             last_downloaded: 0,
             last_uploaded: 0,
+        }
+    }
+
+    fn totals(&self) -> Totals {
+        Totals {
+            uploaded: self.uploaded,
+            downloaded: self.downloaded,
         }
     }
 }
@@ -1718,7 +1725,8 @@ impl TorrentActor {
                     let now = Instant::now();
                     let stops = self.entry_mut(key).map(|e| {
                         e.urls = tiers.iter().flatten().cloned().collect();
-                        e.announcer.retarget(&tiers, now)
+                        let totals = e.totals();
+                        e.announcer.retarget(&tiers, now, totals)
                     });
                     for job in stops.unwrap_or_default() {
                         self.spawn_announce(key, job, false);
@@ -1800,13 +1808,16 @@ impl TorrentActor {
 
     /// Choose the identity again if the session's rules changed (or `force`, when the
     /// torrent's trackers did). On a change, trackers that heard the old identity's
-    /// `started` are told `stopped` under it, so the next announce starts afresh with the
-    /// new peer id. Open connections keep the peer id they were made with.
+    /// `started` are told `stopped` under it, and the new identity's `started` waits for
+    /// that answer (see [`Announcer::stop`]). The new identity shares nothing a tracker
+    /// could tie to the old one: a fresh peer id and key (apitorrent's own too), no
+    /// `trackerid`, and stats counted from zero. Open peer connections keep the peer id
+    /// they were made with; trackers never see those.
     fn refresh_identity(&mut self, force: bool) {
         if !force && self.shared.identity_gen() == self.identity_gen {
             return;
         }
-        let (fresh, generation) = ActiveIdentity::resolve(
+        let (mut fresh, generation) = ActiveIdentity::resolve(
             &self.shared,
             self.entries
                 .iter()
@@ -1816,6 +1827,7 @@ impl TorrentActor {
         if fresh.profile == self.identity.profile {
             return;
         }
+        fresh.renew_native();
         tracing::info!(
             torrent = %self.short_hash,
             from = %self.identity.describe(),
@@ -1825,10 +1837,17 @@ impl TorrentActor {
         let now = Instant::now();
         let mut stops = Vec::new();
         for e in &mut self.entries {
-            stops.extend(e.announcer.stop(now).into_iter().map(|j| (e.key, j)));
+            let totals = e.totals();
+            stops.extend(
+                e.announcer
+                    .stop(now, totals)
+                    .into_iter()
+                    .map(|j| (e.key, j)),
+            );
         }
+        // Spawned before the switch, so they go out under the old identity.
         for (key, job) in stops {
-            self.spawn_announce(key, job, false);
+            self.spawn_announce(key, job, true);
         }
         self.identity = fresh;
     }
@@ -1846,7 +1865,11 @@ impl TorrentActor {
             if e.paused {
                 continue;
             }
-            for job in e.announcer.due_where(now, |url| !covered.contains(url)) {
+            let totals = e.totals();
+            for job in e
+                .announcer
+                .due_where(now, totals, |url| !covered.contains(url))
+            {
                 jobs.push((e.key, job));
             }
             covered.extend(e.urls.iter().cloned());
@@ -1883,16 +1906,13 @@ impl TorrentActor {
     }
 
     fn spawn_announce(&self, key: EntryKey, job: Job, report: bool) {
-        let (uploaded, downloaded) = self
-            .entry(key)
-            .map_or((0, 0), |e| (e.uploaded, e.downloaded));
         let id = &self.identity;
         let req = apitorrent_tracker::AnnounceRequest {
             info_hash: job.info_hash,
             peer_id: id.peer_id,
             port: self.shared.listen_port(),
-            uploaded,
-            downloaded,
+            uploaded: job.report.uploaded,
+            downloaded: job.report.downloaded,
             left: self.bytes_left(),
             event: job.event,
             num_want: Some(id.num_want(job.event, self.finished)),
@@ -1933,9 +1953,11 @@ impl TorrentActor {
         let Some(e) = self.entry_mut(key) else {
             return;
         };
-        let jobs = e.announcer.stop(Instant::now());
+        let totals = e.totals();
+        let jobs = e.announcer.stop(Instant::now(), totals);
+        // Reported, so a quick resume's `started` waits for the `stopped` to land.
         for job in jobs {
-            self.spawn_announce(key, job, false);
+            self.spawn_announce(key, job, true);
         }
     }
 

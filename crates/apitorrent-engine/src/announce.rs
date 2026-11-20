@@ -13,6 +13,12 @@
 //! - The tiers can change while running ([`Announcer::retarget`]). A tier that keeps one of
 //!   its trackers keeps its state, so a tracker that stays never sees `stopped` and
 //!   `started` again; a started tier whose trackers are all gone gets `stopped`.
+//! - A tier that was told `stopped` waits for that answer (or [`STOP_WAIT`]) before it
+//!   announces again, so a tracker never hears the next `started` first.
+//! - uploaded and downloaded are reported per tracker session, as BEP 3 defines them: the
+//!   bytes since that tier's `started`, never the torrent's totals. A `started` after a
+//!   stop therefore never repeats bytes the `stopped` already reported, which trackers
+//!   that credit a new peer's first announce would count twice.
 
 use std::time::{Duration, Instant};
 
@@ -27,6 +33,25 @@ const MIN_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_INTERVAL: Duration = Duration::from_secs(2 * 3600);
 const FIRST_BACKOFF: Duration = Duration::from_secs(60);
 pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
+/// How long a tier waits for the answer to its `stopped` before announcing again anyway.
+pub(crate) const STOP_WAIT: Duration = Duration::from_secs(20);
+
+/// An entry's transfer totals since it was loaded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Totals {
+    pub uploaded: u64,
+    pub downloaded: u64,
+}
+
+impl Totals {
+    /// The bytes since `base`.
+    fn since(self, base: Totals) -> Totals {
+        Totals {
+            uploaded: self.uploaded.saturating_sub(base.uploaded),
+            downloaded: self.downloaded.saturating_sub(base.downloaded),
+        }
+    }
+}
 
 /// One announce to run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +62,8 @@ pub(crate) struct Job {
     pub info_hash: Sha1Hash,
     pub event: AnnounceEvent,
     pub tracker_id: Option<String>,
+    /// What to report: the bytes since this tracker session's `started`.
+    pub report: Totals,
 }
 
 /// A tracker's latest status, for display.
@@ -53,6 +80,7 @@ pub struct TrackerStatus {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // independent states of one tracker session
 struct Tier {
     urls: Vec<String>,
     current: usize,
@@ -64,6 +92,12 @@ struct Tier {
     started: bool,
     completed_pending: bool,
     tracker_id: Option<String>,
+    /// The entry's totals when this tracker session began; what it reports is counted from
+    /// here. Set by the first `started`, or by the `stopped` that ended the last session.
+    base: Option<Totals>,
+    /// A `stopped` to `urls[current]` is under way; nothing else goes until it is answered
+    /// or `next` passes.
+    stopping: bool,
     status: Vec<TrackerStatus>,
 }
 
@@ -82,6 +116,8 @@ impl Tier {
             started: false,
             completed_pending: false,
             tracker_id: None,
+            base: None,
+            stopping: false,
             status,
         }
     }
@@ -101,16 +137,18 @@ impl Tier {
                 urls.push(u.clone());
             }
         }
-        // An announce still under way to a tracker that stays is this tier's to finish.
-        let flying = prev
-            .in_flight
+        // An announce (or a `stopped`) still under way to a tracker that stays is this
+        // tier's to finish.
+        let flying = (prev.in_flight || prev.stopping)
             .then(|| prev.urls[prev.current].clone())
             .filter(|u| urls.contains(u));
         self.current = flying
             .as_ref()
             .and_then(|f| urls.iter().position(|u| u == f))
             .unwrap_or(0);
-        self.in_flight = flying.is_some();
+        self.in_flight = flying.is_some() && prev.in_flight;
+        self.stopping = flying.is_some() && prev.stopping;
+        self.base = prev.base;
         self.status = urls
             .iter()
             .map(|u| {
@@ -175,16 +213,29 @@ impl Announcer {
 
     /// The announces that are due now. Each is marked in flight until its result comes back.
     #[cfg(test)]
-    pub(crate) fn due(&mut self, now: Instant) -> Vec<Job> {
-        self.due_where(now, |_| true)
+    pub(crate) fn due(&mut self, now: Instant, totals: Totals) -> Vec<Job> {
+        self.due_where(now, totals, |_| true)
     }
 
     /// The announces that are due now to trackers `allowed` accepts. A tier whose current
     /// tracker it refuses (another entry of the torrent announces there) waits, unchanged.
-    pub(crate) fn due_where(&mut self, now: Instant, allowed: impl Fn(&str) -> bool) -> Vec<Job> {
+    /// `totals` are the entry's, for the stats each announce reports.
+    pub(crate) fn due_where(
+        &mut self,
+        now: Instant,
+        totals: Totals,
+        allowed: impl Fn(&str) -> bool,
+    ) -> Vec<Job> {
         let mut jobs = Vec::new();
         for (lane_index, lane) in self.lanes.iter_mut().enumerate() {
             for (tier_index, tier) in lane.tiers.iter_mut().enumerate() {
+                if tier.stopping {
+                    if tier.next > now {
+                        continue;
+                    }
+                    // The `stopped` went unanswered: carry on without it.
+                    tier.stopping = false;
+                }
                 if tier.in_flight || tier.next > now || !allowed(&tier.urls[tier.current]) {
                     continue;
                 }
@@ -195,6 +246,7 @@ impl Announcer {
                 } else {
                     AnnounceEvent::None
                 };
+                let base = *tier.base.get_or_insert(totals);
                 tier.in_flight = true;
                 jobs.push(Job {
                     lane: lane_index,
@@ -203,6 +255,7 @@ impl Announcer {
                     info_hash: lane.info_hash,
                     event,
                     tracker_id: tier.tracker_id.clone(),
+                    report: totals.since(base),
                 });
             }
         }
@@ -211,6 +264,11 @@ impl Announcer {
 
     pub(crate) fn on_success(&mut self, job: &Job, resp: &AnnounceResponse, now: Instant) {
         let Some(tier) = self.tier(job) else { return };
+        if job.event == AnnounceEvent::Stopped {
+            tier.stopping = false;
+            tier.next = now;
+            return;
+        }
         tier.in_flight = false;
         tier.misses = 0;
         tier.failures = 0;
@@ -244,6 +302,12 @@ impl Announcer {
 
     pub(crate) fn on_failure(&mut self, job: &Job, error: &str, now: Instant) {
         let Some(tier) = self.tier(job) else { return };
+        if job.event == AnnounceEvent::Stopped {
+            // The tracker drops the old session when it times out; carry on.
+            tier.stopping = false;
+            tier.next = now;
+            return;
+        }
         tier.in_flight = false;
         if let Some(s) = tier.status.iter_mut().find(|s| s.url == job.url) {
             s.error = Some(error.to_owned());
@@ -274,13 +338,18 @@ impl Announcer {
         }
     }
 
-    /// `stopped` announces for the tiers that had started, and a reset so a later resume
-    /// starts afresh.
-    pub(crate) fn stop(&mut self, now: Instant) -> Vec<Job> {
+    /// `stopped` announces for the tiers that had started (or have a `started` under way),
+    /// and a reset so a later resume starts a new tracker session: its `started` waits for
+    /// the `stopped` to be answered, carries no `trackerid`, and counts bytes from
+    /// `totals`. Pass each job's result to [`Announcer::on_success`] or
+    /// [`Announcer::on_failure`].
+    pub(crate) fn stop(&mut self, now: Instant, totals: Totals) -> Vec<Job> {
         let mut jobs = Vec::new();
         for (lane_index, lane) in self.lanes.iter_mut().enumerate() {
             for (tier_index, tier) in lane.tiers.iter_mut().enumerate() {
-                if tier.started {
+                if tier.stopping {
+                    // Already stopped, and waiting for that answer.
+                } else if tier.started || tier.in_flight {
                     jobs.push(Job {
                         lane: lane_index,
                         tier: tier_index,
@@ -288,12 +357,18 @@ impl Announcer {
                         info_hash: lane.info_hash,
                         event: AnnounceEvent::Stopped,
                         tracker_id: tier.tracker_id.clone(),
+                        report: totals.since(tier.base.unwrap_or(totals)),
                     });
+                    tier.stopping = true;
+                    tier.next = now + STOP_WAIT;
+                } else {
+                    tier.next = now;
                 }
                 tier.started = false;
                 tier.completed_pending = false;
                 tier.in_flight = false;
-                tier.next = now;
+                tier.tracker_id = None;
+                tier.base = Some(totals);
             }
         }
         jobs
@@ -316,7 +391,12 @@ impl Announcer {
     /// tier's state (started, tracker id, schedule, an announce under way, the statuses of
     /// the trackers it keeps). Returns `stopped` announces for the old tiers that had
     /// started and whose trackers are all gone; nothing waits for their results.
-    pub(crate) fn retarget(&mut self, trackers: &[Vec<String>], now: Instant) -> Vec<Job> {
+    pub(crate) fn retarget(
+        &mut self,
+        trackers: &[Vec<String>],
+        now: Instant,
+        totals: Totals,
+    ) -> Vec<Job> {
         let mut rng = rand::rng();
         let mut stops = Vec::new();
         for (lane_index, lane) in self.lanes.iter_mut().enumerate() {
@@ -339,7 +419,7 @@ impl Announcer {
                 lane.tiers.push(tier);
             }
             for (tier_index, t) in old.into_iter().enumerate() {
-                let Some(t) = t.filter(|t| t.started) else {
+                let Some(t) = t.filter(|t| (t.started || t.in_flight) && !t.stopping) else {
                     continue;
                 };
                 stops.push(Job {
@@ -349,6 +429,7 @@ impl Announcer {
                     info_hash: lane.info_hash,
                     event: AnnounceEvent::Stopped,
                     tracker_id: t.tracker_id,
+                    report: totals.since(t.base.unwrap_or(totals)),
                 });
             }
         }
@@ -360,7 +441,10 @@ impl Announcer {
     /// index; an answer nothing waits for is ignored.
     fn tier(&mut self, job: &Job) -> Option<&mut Tier> {
         let lane = self.lanes.get_mut(job.lane)?;
-        let waiting = |t: &Tier| t.in_flight && t.urls[t.current] == job.url;
+        let stop = job.event == AnnounceEvent::Stopped;
+        let waiting = |t: &Tier| {
+            (if stop { t.stopping } else { t.in_flight }) && t.urls[t.current] == job.url
+        };
         let at = if lane.tiers.get(job.tier).is_some_and(waiting) {
             job.tier
         } else {
@@ -373,6 +457,11 @@ impl Announcer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NONE: Totals = Totals {
+        uploaded: 0,
+        downloaded: 0,
+    };
 
     fn response(interval: u64) -> AnnounceResponse {
         AnnounceResponse {
@@ -394,36 +483,123 @@ mod tests {
             &[Sha1Hash([1; 20])],
             t0,
         );
-        let jobs = a.due(t0);
+        let jobs = a.due(t0, NONE);
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].event, AnnounceEvent::Started);
-        assert!(a.due(t0).is_empty(), "in flight");
+        assert!(a.due(t0, NONE).is_empty(), "in flight");
         a.on_success(&jobs[0], &response(1800), t0);
-        assert!(a.due(t0 + Duration::from_secs(1799)).is_empty());
-        let jobs = a.due(t0 + Duration::from_secs(1800));
+        assert!(a.due(t0 + Duration::from_secs(1799), NONE).is_empty());
+        let jobs = a.due(t0 + Duration::from_secs(1800), NONE);
         assert_eq!(jobs[0].event, AnnounceEvent::None);
         a.on_success(&jobs[0], &response(1800), t0);
 
         a.completed(t0);
-        let jobs = a.due(t0);
+        let jobs = a.due(t0, NONE);
         assert_eq!(jobs[0].event, AnnounceEvent::Completed);
         a.on_success(&jobs[0], &response(1800), t0);
 
-        let stops = a.stop(t0);
+        let stops = a.stop(t0, NONE);
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].event, AnnounceEvent::Stopped);
-        // After a stop, the next announce starts again.
-        assert_eq!(a.due(t0)[0].event, AnnounceEvent::Started);
+        // After a stop, the next announce starts again, once the stop is answered.
+        assert!(a.due(t0, NONE).is_empty(), "waits for the stop's answer");
+        a.on_success(&stops[0], &response(1800), t0);
+        assert_eq!(a.due(t0, NONE)[0].event, AnnounceEvent::Started);
+    }
+
+    fn totals(uploaded: u64, downloaded: u64) -> Totals {
+        Totals {
+            uploaded,
+            downloaded,
+        }
+    }
+
+    #[test]
+    fn a_started_waits_for_the_stopped_before_it() {
+        let t0 = Instant::now();
+        let mut a = Announcer::new(&[urls(&["http://a"])], &[Sha1Hash([1; 20])], t0);
+        let start = a.due(t0, NONE).remove(0);
+        a.on_success(&start, &response(1800), t0);
+        let stop = a.stop(t0, NONE).remove(0);
+        assert!(a.stop(t0, NONE).is_empty(), "one stop is enough");
+        // A failed stop releases the tier too.
+        a.on_failure(&stop, "refused", t0);
+        assert_eq!(a.due(t0, NONE)[0].event, AnnounceEvent::Started);
+
+        // An unanswered stop holds the tier for STOP_WAIT, then gives up.
+        let mut b = Announcer::new(&[urls(&["http://a"])], &[Sha1Hash([1; 20])], t0);
+        let start = b.due(t0, NONE).remove(0);
+        b.on_success(&start, &response(1800), t0);
+        let stop = b.stop(t0, NONE).remove(0);
+        assert!(
+            b.due(t0 + STOP_WAIT.saturating_sub(Duration::from_secs(1)), NONE)
+                .is_empty()
+        );
+        let late = b.due(t0 + STOP_WAIT, NONE).remove(0);
+        assert_eq!(late.event, AnnounceEvent::Started);
+        // The stop's late answer then changes nothing.
+        b.on_success(&stop, &response(1800), t0 + STOP_WAIT);
+        assert!(
+            b.due(t0 + STOP_WAIT, NONE).is_empty(),
+            "the start is in flight"
+        );
+
+        // A `started` still under way when stopping gets a `stopped` too, and its own
+        // late answer is ignored.
+        let mut c = Announcer::new(&[urls(&["http://a"])], &[Sha1Hash([1; 20])], t0);
+        let start = c.due(t0, NONE).remove(0);
+        let stop = c.stop(t0, NONE).remove(0);
+        c.on_success(&start, &response(1800), t0);
+        assert!(c.due(t0, NONE).is_empty());
+        c.on_success(&stop, &response(1800), t0);
+        assert_eq!(c.due(t0, NONE)[0].event, AnnounceEvent::Started);
+    }
+
+    #[test]
+    fn stats_are_per_tracker_session() {
+        let t0 = Instant::now();
+        let mut a = Announcer::new(&[urls(&["http://a"])], &[Sha1Hash([1; 20])], t0);
+        // Bytes before the first `started` aren't this session's.
+        let start = a.due(t0, totals(100, 50)).remove(0);
+        assert_eq!(start.report, NONE);
+        a.on_success(&start, &response(60), t0);
+        let regular = a.due(t0 + MIN_INTERVAL, totals(400, 80)).remove(0);
+        assert_eq!(regular.report, totals(300, 30));
+        a.on_success(&regular, &response(60), t0);
+        let stop = a.stop(t0, totals(1000, 90)).remove(0);
+        assert_eq!(stop.report, totals(900, 40));
+        a.on_success(&stop, &response(60), t0);
+        // The next session counts from the stop: nothing is reported twice, and bytes
+        // between the stop and the next `started` are the new session's.
+        let restart = a.due(t0, totals(1010, 90)).remove(0);
+        assert_eq!(restart.event, AnnounceEvent::Started);
+        assert_eq!(restart.report, totals(10, 0));
+    }
+
+    #[test]
+    fn a_stop_forgets_the_tracker_id() {
+        let t0 = Instant::now();
+        let mut a = Announcer::new(&[urls(&["http://a"])], &[Sha1Hash([1; 20])], t0);
+        let start = a.due(t0, NONE).remove(0);
+        let resp = AnnounceResponse {
+            tracker_id: Some("abc".into()),
+            ..response(60)
+        };
+        a.on_success(&start, &resp, t0);
+        let stop = a.stop(t0, NONE).remove(0);
+        assert_eq!(stop.tracker_id.as_deref(), Some("abc"), "the old session's");
+        a.on_success(&stop, &response(60), t0);
+        assert_eq!(a.due(t0, NONE)[0].tracker_id, None);
     }
 
     #[test]
     fn tiny_intervals_are_clamped() {
         let t0 = Instant::now();
         let mut a = Announcer::new(&[vec!["http://a".into()]], &[Sha1Hash([1; 20])], t0);
-        let jobs = a.due(t0);
+        let jobs = a.due(t0, NONE);
         a.on_success(&jobs[0], &response(1), t0);
-        assert!(a.due(t0 + Duration::from_secs(59)).is_empty());
-        assert_eq!(a.due(t0 + MIN_INTERVAL).len(), 1);
+        assert!(a.due(t0 + Duration::from_secs(59), NONE).is_empty());
+        assert_eq!(a.due(t0 + MIN_INTERVAL, NONE).len(), 1);
     }
 
     #[test]
@@ -431,15 +607,15 @@ mod tests {
         let t0 = Instant::now();
         let urls = vec!["http://a".to_owned(), "http://b".to_owned()];
         let mut a = Announcer::new(&[urls], &[Sha1Hash([1; 20])], t0);
-        let first = a.due(t0).remove(0);
+        let first = a.due(t0, NONE).remove(0);
         a.on_failure(&first, "refused", t0);
         // The other tracker is tried immediately.
-        let second = a.due(t0).remove(0);
+        let second = a.due(t0, NONE).remove(0);
         assert_ne!(second.url, first.url);
         a.on_failure(&second, "refused", t0);
         // Both failed: wait.
-        assert!(a.due(t0).is_empty());
-        assert_eq!(a.due(t0 + FIRST_BACKOFF).len(), 1);
+        assert!(a.due(t0, NONE).is_empty());
+        assert_eq!(a.due(t0 + FIRST_BACKOFF, NONE).len(), 1);
         let status = a.status();
         assert!(status.iter().all(|s| s.error.is_some()));
     }
@@ -449,11 +625,11 @@ mod tests {
         let t0 = Instant::now();
         let urls = vec!["http://a".to_owned(), "http://b".to_owned()];
         let mut a = Announcer::new(&[urls], &[Sha1Hash([1; 20])], t0);
-        let first = a.due(t0).remove(0);
+        let first = a.due(t0, NONE).remove(0);
         a.on_failure(&first, "down", t0);
-        let second = a.due(t0).remove(0);
+        let second = a.due(t0, NONE).remove(0);
         a.on_success(&second, &response(60), t0);
-        let next = a.due(t0 + MIN_INTERVAL).remove(0);
+        let next = a.due(t0 + MIN_INTERVAL, NONE).remove(0);
         assert_eq!(next.url, second.url);
     }
 
@@ -469,23 +645,23 @@ mod tests {
             &[Sha1Hash([1; 20])],
             t0,
         );
-        let jobs = a.due(t0);
+        let jobs = a.due(t0, NONE);
         for j in &jobs {
             a.on_success(j, &response(1800), t0);
         }
         // Drop b, keep a (now the second tier), add c in front.
-        let stops = a.retarget(&[urls(&["udp://c"]), urls(&["http://a"])], t0);
+        let stops = a.retarget(&[urls(&["udp://c"]), urls(&["http://a"])], t0, NONE);
         assert_eq!(stops.len(), 1);
         assert_eq!(stops[0].url, "http://b");
         assert_eq!(stops[0].event, AnnounceEvent::Stopped);
         // c starts now; a waits for its interval, and isn't `started` again.
-        let due = a.due(t0);
+        let due = a.due(t0, NONE);
         assert_eq!(due.len(), 1);
         assert_eq!(
             (due[0].url.as_str(), due[0].event),
             ("udp://c", AnnounceEvent::Started)
         );
-        let later = a.due(t0 + Duration::from_secs(1800));
+        let later = a.due(t0 + Duration::from_secs(1800), NONE);
         assert_eq!(later.len(), 1);
         assert_eq!(
             (later[0].url.as_str(), later[0].event),
@@ -501,13 +677,13 @@ mod tests {
     fn an_answer_under_way_survives_retargeting() {
         let t0 = Instant::now();
         let mut a = Announcer::new(&[urls(&["http://a"])], &[Sha1Hash([1; 20])], t0);
-        let job = a.due(t0).remove(0);
+        let job = a.due(t0, NONE).remove(0);
         // a moves to the second tier while its announce is under way.
         assert!(
-            a.retarget(&[urls(&["http://z"]), urls(&["http://a"])], t0)
+            a.retarget(&[urls(&["http://z"]), urls(&["http://a"])], t0, NONE)
                 .is_empty()
         );
-        let due = a.due(t0);
+        let due = a.due(t0, NONE);
         assert_eq!(due.len(), 1, "only z: a is still in flight");
         a.on_success(&job, &response(1800), t0);
         assert_eq!(
@@ -535,7 +711,7 @@ mod tests {
             &[Sha1Hash([1; 20]), Sha1Hash([2; 20])],
             t0,
         );
-        let jobs = a.due(t0);
+        let jobs = a.due(t0, NONE);
         assert_eq!(jobs.len(), 4);
         assert_eq!(
             jobs.iter()

@@ -376,9 +376,10 @@ impl Session {
         self.shared.peer_id
     }
 
-    /// Choose which client each torrent presents as. Torrents pick it up on their next
-    /// announce or connection: a torrent whose identity changes gets a new peer id, which
-    /// its trackers see on the next announce; connections already open keep the old one.
+    /// Choose which client each torrent presents as. Torrents pick it up within a second:
+    /// a torrent whose identity changes tells its trackers `stopped` under the old one, then
+    /// `started` under the new one with a new peer id and key; connections already open
+    /// keep the old peer id.
     pub fn set_identity_rules(&self, rules: IdentityRules) {
         let mut current = self
             .shared

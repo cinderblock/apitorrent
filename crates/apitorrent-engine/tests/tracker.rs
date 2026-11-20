@@ -189,6 +189,7 @@ struct Seen {
     user_agent: String,
     event: String,
     numwant: String,
+    uploaded: u64,
 }
 
 fn parse_heads(heads: &[String]) -> Vec<Seen> {
@@ -215,6 +216,7 @@ fn parse_heads(heads: &[String]) -> Vec<Seen> {
                 user_agent,
                 event: param("event"),
                 numwant: param("numwant"),
+                uploaded: param("uploaded").parse().unwrap_or(0),
             }
         })
         .collect()
@@ -315,8 +317,10 @@ async fn a_torrent_presents_as_its_trackers_identity() {
         "{peers:?}"
     );
 
-    // Taking the rule away applies live: the tracker hears `stopped` from the Deluge
-    // identity, then `started` from apitorrent's.
+    // Taking the rule away applies live, and looks like one client quitting and another
+    // starting: `stopped` from the Deluge identity first, then `started` from apitorrent,
+    // under a peer id the tracker hasn't seen (not even the session's), with the upload
+    // reported once, by the `stopped`.
     let before = heads.lock().unwrap().len();
     seeder.set_identity_rules(IdentityRules::default());
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
@@ -324,11 +328,19 @@ async fn a_torrent_presents_as_its_trackers_identity() {
         let after = parse_heads(&heads.lock().unwrap()[before..]);
         let stopped = after
             .iter()
-            .any(|s| s.peer_id == deluge_id && s.event == "stopped");
-        let restarted = after.iter().any(|s| {
-            s.peer_id == seeder.peer_id().0 && s.event == "started" && s.user_agent == ours
+            .position(|s| s.peer_id == deluge_id && s.event == "stopped");
+        let restarted = after.iter().position(|s| {
+            s.peer_id.starts_with(b"-AT")
+                && s.peer_id != leecher.peer_id().0
+                && s.event == "started"
         });
-        if stopped && restarted {
+        if let (Some(stop), Some(start)) = (stopped, restarted) {
+            assert!(stop < start, "`started` before `stopped`: {after:?}");
+            let (stop, start) = (&after[stop], &after[start]);
+            assert_eq!(start.user_agent, ours);
+            assert_ne!(start.peer_id, seeder.peer_id().0, "a fresh peer id");
+            assert!(stop.uploaded >= data.len() as u64, "{stop:?}");
+            assert_eq!(start.uploaded, 0, "nothing reported twice: {start:?}");
             break;
         }
         assert!(

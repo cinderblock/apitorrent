@@ -261,25 +261,32 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Connection ids by tracker address, each valid for [`CONNECTION_ID_TTL`].
+/// Which connection id a request may use: the tracker's address, and the announce `key`
+/// of the client identity asking (`None` for scrapes). A tracker hands out a connection id
+/// to whoever connected, so two identities sharing one would tie them together; each gets
+/// its own, as two separate clients would.
+pub type ConnectionScope = (SocketAddr, Option<u32>);
+
+/// Connection ids by [`ConnectionScope`], each valid for [`CONNECTION_ID_TTL`].
 ///
 /// Time is passed in, so this is deterministic in tests.
 #[derive(Debug, Default)]
 pub struct ConnectionCache {
-    entries: HashMap<SocketAddr, (u64, Instant)>,
+    entries: HashMap<ConnectionScope, (u64, Instant)>,
 }
 
 impl ConnectionCache {
-    /// The most trackers remembered. A session rarely talks to more than a few hundred.
+    /// The most entries remembered. A session rarely talks to more than a few hundred
+    /// trackers.
     pub const CAPACITY: usize = 1024;
 
-    pub fn get(&self, addr: &SocketAddr, now: Instant) -> Option<u64> {
-        let &(id, received) = self.entries.get(addr)?;
+    pub fn get(&self, scope: &ConnectionScope, now: Instant) -> Option<u64> {
+        let &(id, received) = self.entries.get(scope)?;
         (now.saturating_duration_since(received) < CONNECTION_ID_TTL).then_some(id)
     }
 
-    pub fn insert(&mut self, addr: SocketAddr, id: u64, now: Instant) {
-        if self.entries.len() >= Self::CAPACITY && !self.entries.contains_key(&addr) {
+    pub fn insert(&mut self, scope: ConnectionScope, id: u64, now: Instant) {
+        if self.entries.len() >= Self::CAPACITY && !self.entries.contains_key(&scope) {
             self.entries
                 .retain(|_, (_, t)| now.saturating_duration_since(*t) < CONNECTION_ID_TTL);
             if self.entries.len() >= Self::CAPACITY
@@ -292,11 +299,11 @@ impl ConnectionCache {
                 self.entries.remove(&oldest);
             }
         }
-        self.entries.insert(addr, (id, now));
+        self.entries.insert(scope, (id, now));
     }
 
-    pub fn remove(&mut self, addr: &SocketAddr) {
-        self.entries.remove(addr);
+    pub fn remove(&mut self, scope: &ConnectionScope) {
+        self.entries.remove(scope);
     }
 
     pub fn len(&self) -> usize {
@@ -483,10 +490,12 @@ mod tests {
     #[test]
     fn connection_ids_expire() {
         let mut cache = ConnectionCache::default();
-        let a: SocketAddr = "1.2.3.4:80".parse().unwrap();
+        let a: ConnectionScope = ("1.2.3.4:80".parse().unwrap(), Some(7));
         let t0 = Instant::now();
         cache.insert(a, 42, t0);
         assert_eq!(cache.get(&a, t0 + Duration::from_secs(59)), Some(42));
+        assert_eq!(cache.get(&(a.0, Some(8)), t0), None, "another identity's");
+        assert_eq!(cache.get(&(a.0, None), t0), None);
         assert_eq!(cache.get(&a, t0 + CONNECTION_ID_TTL), None);
         cache.remove(&a);
         assert!(cache.is_empty());
@@ -499,11 +508,11 @@ mod tests {
         for i in 0..=ConnectionCache::CAPACITY {
             let port = u16::try_from(i + 1).unwrap();
             let t = t0 + Duration::from_millis(u64::from(port));
-            cache.insert(SocketAddr::from(([127, 0, 0, 1], port)), 1, t);
+            cache.insert((SocketAddr::from(([127, 0, 0, 1], port)), None), 1, t);
         }
         assert_eq!(cache.len(), ConnectionCache::CAPACITY);
         // The oldest entry made room.
-        let first = SocketAddr::from(([127, 0, 0, 1], 1));
+        let first = (SocketAddr::from(([127, 0, 0, 1], 1)), None);
         assert_eq!(cache.get(&first, t0), None);
     }
 }

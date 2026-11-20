@@ -11,7 +11,7 @@ use url::{Host, Url};
 
 use crate::error::TrackerError;
 use crate::types::{AnnounceRequest, AnnounceResponse, ScrapeResponse};
-use crate::udp::{self, ConnectionCache, PeerFamily, RetryPolicy};
+use crate::udp::{self, ConnectionCache, ConnectionScope, PeerFamily, RetryPolicy};
 use crate::{http, tls};
 
 /// Settings for a [`TrackerClient`].
@@ -142,8 +142,15 @@ impl TrackerClient {
     }
 
     pub fn with_config(config: TrackerConfig) -> Result<Self, TrackerError> {
+        // No TLS session resumption and no kept-alive connections: either would let a
+        // tracker tie a client identity's announces to the previous identity's after a
+        // switch. libtorrent doesn't reuse them either (it sends `Connection: close`), and
+        // announces are minutes apart, so this costs a handshake nobody would have saved.
+        let mut tls = tls::client_config()?;
+        tls.resumption = rustls::client::Resumption::disabled();
         let http = reqwest::Client::builder()
-            .tls_backend_preconfigured(tls::client_config()?)
+            .tls_backend_preconfigured(tls)
+            .pool_max_idle_per_host(0)
             .redirect(redirect_policy(config.max_redirects))
             // The announce URL can hold a private tracker's passkey; don't hand it to
             // wherever a redirect points.
@@ -186,7 +193,7 @@ impl TrackerClient {
                 let addr = self.resolve_udp(&parsed).await?;
                 let family = PeerFamily::of(&addr);
                 self.udp_exchange(
-                    addr,
+                    (addr, Some(req.key)),
                     |conn, tx| udp::encode_announce(conn, tx, req).to_vec(),
                     |buf, tx| udp::decode_announce(buf, tx, family),
                 )
@@ -230,7 +237,7 @@ impl TrackerClient {
             Scheme::Udp => {
                 let addr = self.resolve_udp(&parsed).await?;
                 self.udp_exchange(
-                    addr,
+                    (addr, None),
                     |conn, tx| udp::encode_scrape(conn, tx, hashes).expect("hashes checked"),
                     |buf, tx| udp::decode_scrape(buf, tx, hashes),
                 )
@@ -295,8 +302,8 @@ impl TrackerClient {
         }
     }
 
-    fn cached_connection(&self, addr: &SocketAddr) -> Option<u64> {
-        self.connections().get(addr, Instant::now().into_std())
+    fn cached_connection(&self, scope: &ConnectionScope) -> Option<u64> {
+        self.connections().get(scope, Instant::now().into_std())
     }
 
     fn connections(&self) -> std::sync::MutexGuard<'_, ConnectionCache> {
@@ -306,13 +313,14 @@ impl TrackerClient {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Connect (or reuse a cached connection id), then send one request.
+    /// Connect (or reuse a cached connection id for `scope`), then send one request.
     async fn udp_exchange<T>(
         &self,
-        addr: SocketAddr,
+        scope: ConnectionScope,
         encode: impl Fn(u64, u32) -> Vec<u8>,
         decode: impl Fn(&[u8], u32) -> Result<T, TrackerError>,
     ) -> Result<T, TrackerError> {
+        let addr = scope.0;
         let bind: SocketAddr = if addr.is_ipv4() {
             (Ipv4Addr::UNSPECIFIED, 0).into()
         } else {
@@ -323,7 +331,7 @@ impl TrackerClient {
         socket.connect(addr).await.map_err(TrackerError::network)?;
         let mut buf = vec![0u8; udp::MAX_DATAGRAM];
 
-        let mut used_cached = self.cached_connection(&addr);
+        let mut used_cached = self.cached_connection(&scope);
         loop {
             let connection_id = if let Some(id) = used_cached {
                 id
@@ -335,7 +343,7 @@ impl TrackerClient {
                     })
                     .await?;
                 self.connections()
-                    .insert(addr, id, Instant::now().into_std());
+                    .insert(scope, id, Instant::now().into_std());
                 id
             };
 
@@ -349,7 +357,7 @@ impl TrackerClient {
                 Err(e @ (TrackerError::Failure(_) | TrackerError::Timeout)) => {
                     // The tracker may have restarted and forgotten our connection id; many
                     // report that as an error packet. Retry once with a fresh one.
-                    self.connections().remove(&addr);
+                    self.connections().remove(&scope);
                     if used_cached.take().is_some() && matches!(e, TrackerError::Failure(_)) {
                         continue;
                     }

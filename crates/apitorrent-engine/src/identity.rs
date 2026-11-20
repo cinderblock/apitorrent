@@ -13,7 +13,12 @@
 //! [`IdentityRules`] pick a profile per torrent: the first rule whose host pattern matches
 //! the host of any of the torrent's trackers, or else the default. A torrent with no
 //! profile is apitorrent itself and uses the session's own peer id and key, so nothing
-//! changes for it. The DHT always speaks as apitorrent.
+//! changes for it (unless it switched back from another profile: then it gets its own). The
+//! DHT always speaks as apitorrent.
+//!
+//! A switch looks to a tracker like one client quitting and another starting: `stopped`
+//! under the old identity, answered before the new one's `started`, and nothing shared
+//! between them (peer id, key, `trackerid`, UDP connection id, HTTP connection, stats).
 //!
 //! The formats come from the clients' sources: Deluge 2.1.1 (`deluge/core/core.py`,
 //! `_create_peer_id` and the `user_agent` setting), libtorrent 2.0.10
@@ -429,6 +434,18 @@ impl ActiveIdentity {
         )
     }
 
+    /// For a torrent switching back to apitorrent from another client: its own peer id and
+    /// key, in place of the session's. The session's are the ones the trackers saw before
+    /// the earlier switch, and a tracker that saw the other client stop must not see them
+    /// start again. Other profiles always get fresh ones.
+    pub(crate) fn renew_native(&mut self) {
+        if self.profile.is_none() {
+            // Keep `-ATxxxx-`; replace the random part, as the session made it.
+            self.peer_id.0[8..].copy_from_slice(&rand::random::<[u8; 12]>());
+            self.key = rand::random();
+        }
+    }
+
     /// The `v` of our extension handshake.
     pub(crate) fn client_name(&self, native: &str) -> String {
         self.profile
@@ -641,6 +658,10 @@ mod tests {
         assert_eq!(a.user_agent(), None);
         assert_eq!(a.num_want(AnnounceEvent::None, false), 50);
         assert_eq!(a.num_want(AnnounceEvent::None, true), 0);
+        let mut renewed = a.clone();
+        renewed.renew_native();
+        assert_eq!(&renewed.peer_id.0[..8], b"-AT0120-");
+        assert_ne!(renewed.peer_id, native);
         let d = ActiveIdentity::new(
             Some(Arc::new(
                 ClientProfile::deluge("2.1.1", "2.0.10.0").unwrap(),
