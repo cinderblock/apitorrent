@@ -12,6 +12,7 @@ const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
   size: 1,
   progress: 1,
   paused: false,
+  leftover: false,
   present: false,
   problem: null,
   private: false,
@@ -78,7 +79,7 @@ describe("Deluge import wizard", () => {
       [
         t({ label: "tv", private: true, trackers: ["a.org", "b.org"], uploaded: 5, skippedFiles: 2, notCarried: ["sequential download"] }),
         t({ label: null, private: true, trackers: ["a.org"], limits: { downloadRate: 0, uploadRate: 9, maxConnections: null }, paused: true }),
-        t({ label: "tv", stopAtRatio: { ratio: 2, remove: false }, editedTrackers: true, notCarried: ["sequential download"] }),
+        t({ label: "tv", stopAtRatio: { ratio: 2, remove: false }, editedTrackers: true, notCarried: ["sequential download"], leftover: true }),
       ],
       { ratio: 2, remove: false },
     );
@@ -94,6 +95,7 @@ describe("Deluge import wizard", () => {
     expect([c.withTotals, c.withSkippedFiles, c.skippedFiles, c.withLimits, c.editedTrackers, c.running]).toEqual([1, 1, 2, 1, 1, 2]);
     // Two have no ratio while the global is 2: their own differs.
     expect(c.ownRatio).toBe(2);
+    expect(c.leftovers).toBe(1);
   });
 
   test("labels renamed, dropped or left behind", () => {

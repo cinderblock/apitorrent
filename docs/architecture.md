@@ -1292,6 +1292,12 @@ recheck. That is the onboarding path for existing Deluge users.
   NAME` one): into `default`, the picked ones become the instance's; into another space,
   its rates, connections and slots become the space's, and Deluge's global stop-at-ratio
   becomes each imported torrent's own seed limits (seed limits have no space level).
+- **Leftover `.torrent` files.** Every `<id>.torrent` in `state/` is read, but one that
+  neither `torrents.state` nor `torrents.fastresume` lists is a leftover: Deluge never
+  runs it. The preview flags it (`leftover`); it imports paused, dated by the file's
+  modified time (the fallback for any torrent without libtorrent's `added_time`), with
+  nothing to take over, and `imported.leftover` keeps the provenance, shown as
+  `TorrentSummary::leftover_from` ("Deluge leftover" in the list and detail pane).
 - **Twice is safe.** Torrents the space already has are listed and left alone.
 
 ### Client identity

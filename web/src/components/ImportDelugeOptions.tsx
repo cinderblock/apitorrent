@@ -171,7 +171,12 @@ export function ImportDelugeOptions({
         title="Dates added"
         on={o.addedDates}
         set={set("addedDates")}
-        detail={o.addedDates ? "Each keeps the date it was added to Deluge." : "Each is dated now."}
+        detail={
+          (o.addedDates ? "Each keeps the date it was added to Deluge." : "Each is dated now.") +
+          (c.leftovers > 0
+            ? ` ${plural(c.leftovers, "leftover .torrent file")} Deluge doesn't list ${verb(c.leftovers, "comes", "come")} over paused${o.addedDates ? ", dated when the file was written" : ""}.`
+            : "")
+        }
       />
 
       <Row

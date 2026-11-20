@@ -48,8 +48,12 @@ pub struct DelugeTorrent {
     /// Files renamed in Deluge: file index to its path relative to the save path, with `/`
     /// separators.
     pub renamed: HashMap<usize, String>,
-    /// Seconds since the Unix epoch.
+    /// Seconds since the Unix epoch: libtorrent's `added_time`, or, without resume data,
+    /// when the `.torrent` file was last modified.
     pub added_at: Option<i64>,
+    /// A `.torrent` file left in `state/` that Deluge doesn't list: neither
+    /// `torrents.state` nor `torrents.fastresume` has it, so Deluge never runs it.
+    pub leftover: bool,
     pub total_downloaded: u64,
     pub total_uploaded: u64,
     /// Bytes per second; `None` for no limit.
@@ -188,6 +192,12 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
 
     for id in ids {
         let path = state_dir.join(format!("{id}.torrent"));
+        // When Deluge saved it there: the added time of last resort.
+        let modified = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_secs()).ok());
         let torrent = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
@@ -210,6 +220,7 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
             pieces: None,
             renamed: HashMap::new(),
             added_at: None,
+            leftover: !resume.contains_key(&id) && !deluge.contains_key(&id),
             total_downloaded: 0,
             total_uploaded: 0,
             max_download_rate: None,
@@ -228,6 +239,9 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
         }
         if let Some(d) = deluge.get(&id) {
             apply_deluge_state(&mut t, d);
+        }
+        if t.added_at.is_none() {
+            t.added_at = modified;
         }
         out.torrents.push(t);
     }

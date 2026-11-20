@@ -68,6 +68,10 @@ pub struct PlannedTorrent {
     pub label: Option<String>,
     /// Deluge options that don't carry over.
     pub not_carried: Vec<String>,
+    /// Only a `.torrent` file left in Deluge's state directory (see
+    /// [`apitorrent_deluge::DelugeTorrent::leftover`]): imported paused, with nothing to
+    /// take over.
+    pub leftover: bool,
 }
 
 /// A magnet link Deluge never got the metadata for.
@@ -199,7 +203,10 @@ pub struct Summary {
     pub size: u64,
     /// Done, 0 to 1, from the resume data.
     pub progress: Option<f64>,
+    /// Not running in Deluge (paused there, or a leftover).
     pub paused: bool,
+    /// A `.torrent` file left in Deluge's state directory that Deluge doesn't list.
+    pub leftover: bool,
     /// Why it can't be read.
     pub error: Option<String>,
     /// What else it has that an import may carry over.
@@ -289,7 +296,8 @@ pub fn summarize(
                 save_path,
                 size: 0,
                 progress: None,
-                paused: d.paused,
+                paused: d.paused || d.leftover,
+                leftover: d.leftover,
                 error: None,
                 details: Details {
                     private: false,
@@ -632,7 +640,8 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             save_path: save_path.to_string_lossy().into_owned(),
             label: label.clone(),
             added_at: added_at(d),
-            paused: t.paused || d.paused,
+            // A leftover never ran in Deluge; it waits here to be looked at.
+            paused: t.paused || d.paused || d.leftover,
             have: have.as_ref().map(|h| h.as_bytes().to_vec()),
             file_priorities: Some(prios),
             downloaded_total: downloaded,
@@ -677,6 +686,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             },
             label,
             not_carried: d.not_carried.clone(),
+            leftover: d.leftover,
         });
     }
     out
@@ -694,8 +704,8 @@ pub fn write(
 ) -> (usize, Vec<ImportSkip>) {
     let mut written = 0;
     let mut failed = Vec::new();
-    let imported = |db: &Database, row: &TorrentRow, deluge_id: &str| {
-        let r = imported_row(row, deluge_id, source, taken_over_at);
+    let imported = |db: &Database, row: &TorrentRow, deluge_id: &str, leftover: bool| {
+        let r = imported_row(row, deluge_id, source, taken_over_at, leftover);
         if let Err(e) = db.set_imported(&r) {
             tracing::warn!(torrent = %row.name, error = %e, "could not record it as imported");
         }
@@ -707,7 +717,7 @@ pub fn write(
                 if let Err(e) = db.save_seed_states(&[(key, t.seed)]) {
                     tracing::warn!(torrent = %t.name, error = %e, "could not store seeding time");
                 }
-                imported(db, &t.row, &t.deluge_id);
+                imported(db, &t.row, &t.deluge_id, t.leftover);
                 written += 1;
             }
             Err(e) => failed.push(ImportSkip {
@@ -719,7 +729,7 @@ pub fn write(
     for m in &plan.magnets {
         match db.insert_torrent(&m.row) {
             Ok(()) => {
-                imported(db, &m.row, &m.deluge_id);
+                imported(db, &m.row, &m.deluge_id, false);
                 written += 1;
             }
             Err(e) => failed.push(ImportSkip {
@@ -732,19 +742,29 @@ pub fn write(
 }
 
 /// The record of one imported torrent: taken over at `taken_over_at` if it starts running,
-/// waiting to be if it is added paused.
+/// waiting to be if it is added paused. A `leftover` (a `.torrent` file Deluge doesn't
+/// list) has nothing to take over, so it counts as taken over at once.
 pub fn imported_row(
     row: &TorrentRow,
     deluge_id: &str,
     source: &str,
     taken_over_at: Option<i64>,
+    leftover: bool,
 ) -> crate::db::ImportedRow {
+    let now = now_ms();
     crate::db::ImportedRow {
         key: Key::new(row.space, row.id.clone()),
         source: source.to_owned(),
-        imported_at: now_ms(),
-        taken_over_at: if row.paused { None } else { taken_over_at },
+        imported_at: now,
+        taken_over_at: if leftover {
+            Some(now)
+        } else if row.paused {
+            None
+        } else {
+            taken_over_at
+        },
         source_id: (deluge_id != row.id).then(|| deluge_id.to_owned()),
+        leftover,
     }
 }
 
@@ -1466,6 +1486,7 @@ mod tests {
             size: 10,
             progress: Some(1.0),
             paused: false,
+            leftover: false,
             error: None,
             details: Details::default(),
         }
@@ -1647,6 +1668,7 @@ mod tests {
                 pieces: None,
                 renamed: std::collections::HashMap::new(),
                 added_at: None,
+                leftover: false,
                 total_downloaded: 0,
                 total_uploaded: 0,
                 max_download_rate: None,
@@ -1696,6 +1718,33 @@ mod tests {
                 first_position: 0,
             },
         )
+    }
+
+    /// A `.torrent` file Deluge left but doesn't list comes over paused, keeps its file's
+    /// date, and is recorded as a leftover with nothing to take over.
+    #[test]
+    fn leftovers_come_over_paused() {
+        let mut state = two_torrents();
+        state.torrents[1].leftover = true;
+        let summaries = summarize(&state, &[], Path::new("/dl"));
+        assert!(summaries[1].leftover && summaries[1].paused);
+        assert!(!summaries[0].leftover);
+
+        let p = plan_with(&state, &DelugeImportOptions::default());
+        let b = p.torrents.iter().find(|t| t.name == "b").unwrap();
+        assert!(b.leftover && b.row.paused);
+        assert_eq!(b.row.added_at, 1_000_000);
+        let r = imported_row(&b.row, &b.deluge_id, "/deluge", None, true);
+        assert!(r.leftover);
+        assert!(
+            r.taken_over_at.is_some(),
+            "Deluge never had it: nothing to take over"
+        );
+
+        let a = p.torrents.iter().find(|t| t.name == "a").unwrap();
+        assert!(!a.leftover && !a.row.paused);
+        let r = imported_row(&a.row, &a.deluge_id, "/deluge", None, false);
+        assert!(!r.leftover && r.taken_over_at.is_none());
     }
 
     #[test]

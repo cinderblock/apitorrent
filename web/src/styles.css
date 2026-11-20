@@ -842,6 +842,11 @@ code {
   color: var(--accent);
 }
 
+.chip-leftover {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: var(--text);
+}
+
 .tiers {
   margin: 0;
   padding-left: 0;
@@ -1853,6 +1858,13 @@ button.link.danger-text {
 
 .import-why {
   font-size: 12px;
+}
+
+.import-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
 }
 
 /* The import wizard's "What comes over". */

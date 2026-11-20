@@ -136,6 +136,39 @@ fn reads_a_deluge_directory() {
     assert_eq!(s.stop_at_ratio, Some((1.5, false)));
 }
 
+/// A `.torrent` file Deluge doesn't list (no resume data, not in `torrents.state`) still
+/// comes back, marked as a leftover, added when the file was written.
+#[test]
+fn leftover_torrent_files() {
+    let dir = fake_deluge();
+    let state_dir = dir.path().join("state");
+    let c = "cccccccccccccccccccccccccccccccccccccccc";
+    let path = state_dir.join(format!("{c}.torrent"));
+    std::fs::copy(state_dir.join(format!("{A}.torrent")), &path).unwrap();
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_778_744_594);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+
+    let state = apitorrent_deluge::load(dir.path()).unwrap();
+    let get = |id: &str| state.torrents.iter().find(|t| t.id == id).unwrap();
+    assert!(get(c).leftover);
+    assert_eq!(get(c).added_at, Some(1_778_744_594));
+    assert!(!get(A).leftover);
+    assert!(
+        !get(B).leftover,
+        "resume data alone is enough to be Deluge's"
+    );
+    assert_eq!(
+        get(A).added_at,
+        Some(1_700_000_000),
+        "resume data's time wins"
+    );
+}
+
 #[test]
 fn missing_pieces_are_warnings_not_failures() {
     let dir = fake_deluge();

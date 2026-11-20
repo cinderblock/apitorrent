@@ -234,6 +234,11 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE imported ADD COLUMN source_id TEXT;
     ",
+    // 16: an imported torrent that was only a `.torrent` file left in the other client's
+    // state directory, which the client itself didn't list.
+    "
+    ALTER TABLE imported ADD COLUMN leftover INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// A torrent imported from another client.
@@ -247,6 +252,9 @@ pub struct ImportedRow {
     pub taken_over_at: Option<i64>,
     /// The other client's id for it, when that isn't `key.id`.
     pub source_id: Option<String>,
+    /// Only a `.torrent` file left in the other client's state directory: the client
+    /// didn't list it, so there was nothing to take over.
+    pub leftover: bool,
 }
 
 impl ImportedRow {
@@ -264,6 +272,7 @@ fn imported_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ImportedRow> {
         imported_at: r.get(3)?,
         taken_over_at: r.get(4)?,
         source_id: r.get(5)?,
+        leftover: r.get(6)?,
     })
 }
 
@@ -735,18 +744,19 @@ impl Database {
     pub fn set_imported(&self, row: &ImportedRow) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO imported
-                 (space_id, torrent, source, imported_at, taken_over_at, source_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 (space_id, torrent, source, imported_at, taken_over_at, source_id, leftover)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(space_id, torrent) DO UPDATE SET source = excluded.source,
                  imported_at = excluded.imported_at, taken_over_at = excluded.taken_over_at,
-                 source_id = excluded.source_id",
+                 source_id = excluded.source_id, leftover = excluded.leftover",
             params![
                 row.key.space,
                 row.key.id,
                 row.source,
                 row.imported_at,
                 row.taken_over_at,
-                row.source_id
+                row.source_id,
+                row.leftover
             ],
         )?;
         Ok(())
@@ -764,7 +774,7 @@ impl Database {
     /// Every imported torrent.
     pub fn imported(&self) -> rusqlite::Result<Vec<ImportedRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id
+            "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id, leftover
              FROM imported",
         )?;
         stmt.query_map([], imported_row)?.collect()
@@ -774,7 +784,8 @@ impl Database {
     pub fn imported_one(&self, key: &Key) -> rusqlite::Result<Option<ImportedRow>> {
         self.conn
             .query_row(
-                "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id
+                "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id,
+                     leftover
                  FROM imported WHERE space_id = ?1 AND torrent = ?2",
                 params![key.space, key.id],
                 imported_row,
@@ -1119,9 +1130,11 @@ mod tests {
             imported_at: 5,
             taken_over_at: None,
             source_id: None,
+            leftover: true,
         })
         .unwrap();
         assert_eq!(db.imported().unwrap()[0].taken_over_at, None);
+        assert!(db.imported().unwrap()[0].leftover);
         db.set_taken_over(&a, 9).unwrap();
         assert_eq!(db.imported().unwrap()[0].taken_over_at, Some(9));
         db.remove_torrent(&a).unwrap();

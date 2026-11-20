@@ -30,6 +30,7 @@ function t(id: string, over: Partial<TorrentSummary> = {}): TorrentSummary {
     group: null,
     supersededBy: null,
     inDeluge: null,
+    leftoverFrom: null,
     ...over,
   };
 }

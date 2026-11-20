@@ -651,7 +651,26 @@ export function DetailPane({
             {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} readOnly={readOnly} />} />}
             {detail && <Row label="Seeding limits" value={<SeedLimitsEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />} />}
             {detail && detail.seedingSecs > 0 && <Row label="Seeding time" value={formatSeedingTime(detail.seedingSecs)} />}
-            <Row label="Added" value={<When ms={summary.addedAt} />} />
+            <Row
+              label="Added"
+              value={
+                <>
+                  <When ms={summary.addedAt} />
+                  {summary.leftoverFrom && <span className="muted"> (when Deluge saved its .torrent file)</span>}
+                </>
+              }
+            />
+            {summary.leftoverFrom && (
+              <Row
+                label="Imported from"
+                value={
+                  <>
+                    <span className="chip chip-leftover">Deluge leftover</span> A .torrent file left in <code>{summary.leftoverFrom}</code>. Deluge didn&apos;t
+                    list it and never ran it.
+                  </>
+                }
+              />
+            )}
             {summary.infoHashV1 && <Row label="Info-hash v1" value={<code>{summary.infoHashV1}</code>} />}
             {summary.infoHashV2 && <Row label="Info-hash v2" value={<code>{summary.infoHashV2}</code>} />}
             {summary.private && <Row label="Private" value="Yes: trackers only" />}

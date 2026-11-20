@@ -81,6 +81,7 @@ pub fn summary(id: &str, state: TorrentState) -> TorrentSummary {
         group: None,
         superseded_by: None,
         in_deluge: None,
+        leftover_from: None,
     }
 }
 

@@ -1235,6 +1235,83 @@ async fn deluge_take_over() {
     core.shutdown().await.unwrap();
 }
 
+/// A `.torrent` file Deluge left in `state/` but doesn't list comes over paused, dated
+/// when the file was written, not shown as still Deluge's, and marked as a leftover, also
+/// after a restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deluge_leftover_import() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let deluge = root.path().join("deluge");
+    let state = deluge.join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let bytes = TorrentBuilder::new("leftover", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&[], vec![7; 20_000]))
+        .build()
+        .unwrap();
+    let t = apitorrent_metainfo::Torrent::from_bytes(&bytes).unwrap();
+    let id = t.info.info_hashes().get_v1().unwrap().to_hex();
+    let path = state.join(format!("{id}.torrent"));
+    std::fs::write(&path, &bytes).unwrap();
+    let written = std::time::UNIX_EPOCH + Duration::from_secs(1_778_744_594);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(written)
+        .unwrap();
+    let dir = deluge.to_string_lossy().into_owned();
+
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let preview = core
+        .preview_deluge(
+            DEFAULT_SPACE,
+            apitorrent_types::DelugePreviewRequest {
+                config_dir: dir.clone(),
+                path_map: Vec::new(),
+                new_space: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(preview.torrents[0].leftover, "{preview:?}");
+    assert_eq!(preview.torrents[0].added_at, Some(1_778_744_594_000));
+    let report = core
+        .import_deluge(
+            DEFAULT_SPACE,
+            apitorrent_types::ImportDelugeRequest {
+                config_dir: dir.clone(),
+                path_map: Vec::new(),
+                options: apitorrent_types::DelugeImportOptions::default(),
+                paused: false,
+                filter: apitorrent_types::DelugeImportFilter::default(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.imported, ["leftover"], "{report:?}");
+    wait_for(&core, &id, TorrentState::Paused).await;
+    let check = |s: apitorrent_types::TorrentSummary| {
+        assert_eq!(s.added_at, 1_778_744_594_000);
+        assert_eq!(s.leftover_from.as_deref(), Some(dir.as_str()));
+        assert_eq!(s.in_deluge, None, "Deluge never had it");
+    };
+    check(core.store().get(&k(&id)).unwrap());
+    assert!(
+        core.imports_not_taken_over(DEFAULT_SPACE)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    core.shutdown().await.unwrap();
+
+    let core = Core::start(cfg).await.unwrap();
+    wait_for(&core, &id, TorrentState::Paused).await;
+    check(core.store().get(&k(&id)).unwrap());
+    core.shutdown().await.unwrap();
+}
+
 /// A torrent in the default space.
 #[allow(dead_code)]
 fn k(id: &str) -> Key {

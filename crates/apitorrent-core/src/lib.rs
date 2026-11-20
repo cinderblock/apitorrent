@@ -178,6 +178,8 @@ struct Entry {
     superseded_by: Option<TorrentId>,
     /// Imported from Deluge and not taken over yet: the Deluge config directory.
     in_deluge: Option<String>,
+    /// Imported from a `.torrent` file Deluge left but didn't list: its config directory.
+    leftover_from: Option<String>,
     /// Per-file paths overriding the naming policy.
     file_paths: Option<Vec<Vec<String>>>,
 }
@@ -1314,6 +1316,21 @@ impl Core {
         self.refresh_one(key);
     }
 
+    /// Show a torrent as imported from a `.torrent` file Deluge left but didn't list
+    /// (`TorrentSummary::leftover_from`).
+    fn set_leftover_from(&self, key: &Key, config_dir: String) {
+        if let Some(e) = self
+            .inner
+            .torrents
+            .write()
+            .expect("torrents lock poisoned")
+            .get_mut(key)
+        {
+            e.leftover_from = Some(config_dir);
+        }
+        self.refresh_one(key);
+    }
+
     /// What a Deluge installation holds, for choosing what to import into `space`: each
     /// torrent with its label, trackers, path and progress, whether the space has it
     /// already, and why it couldn't be imported. Reads only.
@@ -1412,6 +1429,7 @@ impl Core {
                     size: s.size,
                     progress: s.progress,
                     paused: s.paused,
+                    leftover: s.leftover,
                     problem,
                     private: d.private,
                     limits: d.limits,
@@ -1682,6 +1700,7 @@ impl Core {
                         &m.deluge_id,
                         &req.config_dir,
                         taken_over_at,
+                        false,
                     ))
                     .await;
                     report.imported.push(m.name);
@@ -1735,6 +1754,7 @@ impl Core {
                             &t.deluge_id,
                             &req.config_dir,
                             taken_over_at,
+                            t.leftover,
                         ),
                     )
                 })
@@ -1784,10 +1804,14 @@ impl Core {
                             .lock()
                             .expect("seeding lock poisoned")
                             .insert(key.clone(), t.seed);
-                        // Still Deluge's until taken over (as `record_imported` shows it).
-                        let waiting =
-                            (paused || taken_over_at.is_none()).then(|| req.config_dir.clone());
+                        // Still Deluge's until taken over (as `record_imported` shows it);
+                        // a leftover never was.
+                        let waiting = (!t.leftover && (paused || taken_over_at.is_none()))
+                            .then(|| req.config_dir.clone());
                         self.set_in_deluge(&key, waiting);
+                        if t.leftover {
+                            self.set_leftover_from(&key, req.config_dir.clone());
+                        }
                         report.imported.push(t.name);
                     }
                     Err(e) => {
@@ -2096,9 +2120,14 @@ impl Core {
                     e.superseded_by = Some(by);
                 }
             }
-            for r in imported.into_iter().filter(|r| r.taken_over_at.is_none()) {
+            for r in imported {
                 if let Some(e) = torrents.get_mut(&r.key) {
-                    e.in_deluge = Some(r.source);
+                    if r.leftover {
+                        e.leftover_from = Some(r.source.clone());
+                    }
+                    if r.taken_over_at.is_none() {
+                        e.in_deluge = Some(r.source);
+                    }
                 }
             }
         }
@@ -2547,6 +2576,7 @@ impl Core {
                     naming,
                     superseded_by: None,
                     in_deluge: None,
+                    leftover_from: None,
                     file_paths: custom_paths,
                 },
             );
@@ -3875,6 +3905,7 @@ fn summarize(key: &Key, e: &Entry) -> TorrentSummary {
         group: e.group.clone(),
         superseded_by: e.superseded_by.clone(),
         in_deluge: e.in_deluge.clone(),
+        leftover_from: e.leftover_from.clone(),
     }
 }
 
@@ -3920,6 +3951,7 @@ fn summarize_pending(key: &Key, p: &Pending) -> TorrentSummary {
         group: None,
         superseded_by: None,
         in_deluge: None,
+        leftover_from: None,
     }
 }
 

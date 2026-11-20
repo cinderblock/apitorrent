@@ -21,7 +21,16 @@ savePath: string, size: number,
 /**
  * Done, 0 to 1, from Deluge's resume data (`None`: Deluge never saved any).
  */
-progress: number | null, paused: boolean, 
+progress: number | null, 
+/**
+ * Not running in Deluge: paused there, or a leftover.
+ */
+paused: boolean, 
+/**
+ * A `.torrent` file left in Deluge's state folder that Deluge doesn't list, so it
+ * never runs there. Imported paused; `added_at` is when the file was written.
+ */
+leftover: boolean, 
 /**
  * The space already has it; importing leaves it alone.
  */

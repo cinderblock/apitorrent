@@ -36,7 +36,11 @@ export const COLUMNS: Column[] = [
     width: "minmax(8rem, 1fr)",
     defaultVisible: true,
     required: true,
-    render: (t) => <span className="cell-name">{t.name}</span>,
+    render: (t) => (
+      <span className="cell-name">
+        {t.leftoverFrom && <span className="chip chip-leftover">Deluge leftover</span>} {t.name}
+      </span>
+    ),
   },
   { id: "size", label: "Size", width: "5.5rem", align: "end", defaultVisible: true, render: (t) => formatBytes(t.size) },
   {

@@ -512,8 +512,23 @@ export function ImportDeluge({ onClose, job: openOn = null }: { onClose: () => v
                           onChange={(e) => tick(t.id, e.target.checked)}
                         />
                       </td>
-                      <td title={`${t.savePath}${t.trackers.length ? `\n${t.trackers.join(", ")}` : ""}`}>
-                        <div className="import-name">{t.name}</div>
+                      <td>
+                        <div className="import-name-row">
+                          <span className="import-name">{t.name}</span>
+                          <Tip label={`Where ${t.name} is`}>
+                            <code>{t.savePath}</code>
+                            {t.trackers.length > 0 && <> · {t.trackers.join(", ")}</>}
+                          </Tip>
+                        </div>
+                        {t.leftover && (
+                          <div className="import-why">
+                            <span className="chip chip-leftover">Not in Deluge&apos;s list</span>{" "}
+                            <Tip label="What is a leftover .torrent file?">
+                              Only its .torrent file is in Deluge&apos;s state folder: Deluge doesn&apos;t list it and never ran it. It comes over paused, dated
+                              when that file was written, and marked as a Deluge leftover.
+                            </Tip>
+                          </div>
+                        )}
                         {why && <div className="import-why">{why}</div>}
                       </td>
                       <td>{t.label ?? ""}</td>

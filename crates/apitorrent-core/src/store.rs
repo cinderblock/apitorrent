@@ -193,6 +193,7 @@ mod tests {
             group: None,
             superseded_by: None,
             in_deluge: None,
+            leftover_from: None,
         }
     }
 

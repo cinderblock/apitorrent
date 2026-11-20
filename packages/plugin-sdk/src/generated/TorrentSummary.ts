@@ -37,4 +37,9 @@ supersededBy: string | null,
  * from. Starting it here pauses it in Deluge first. Daemons from before this don't
  * send it.
  */
-inDeluge: string | null, };
+inDeluge: string | null, 
+/**
+ * Imported from a `.torrent` file left in this Deluge config directory's state
+ * folder, which Deluge itself didn't list (so it never ran there).
+ */
+leftoverFrom: string | null, };

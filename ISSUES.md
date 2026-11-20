@@ -6,8 +6,15 @@ Problems found while working on something else. Each entry is enough to start a 
 
 Found 2026-11-20. The browser's own tooltips are slow, look out of place and never show on
 touch screens. Still there: `web/src/components/DetailPane.tsx` (the pop-out and close
-buttons) and `web/src/components/ImportDeluge.tsx` (the preview table's save path and
-trackers cell). Replace them with `components/Tip.tsx` or visible text.
+buttons). Replace them with `components/Tip.tsx` or visible text.
+
+## Deluge discovery tests fail on Windows
+
+Found 2026-11-20. `cargo test -p apitorrent-deluge --lib discover` on Windows:
+`discover::tests::config_arguments` (discover.rs:664, `left: None, right: Some("/x")`) and
+`discover::tests::a_daemon_without_config_uses_its_users_home` (discover.rs:654,
+`left: 0, right: 1`). They read a fake `/proc`; likely path handling that only works on
+Unix. Why it matters: the workspace test run is red on Windows.
 
 ## Desktop app: a release build without `tauri/custom-protocol` is a black window
 

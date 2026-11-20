@@ -121,6 +121,8 @@ export interface Carried {
   notCarried: [string, number][];
   /** Torrents running in Deluge. */
   running: number;
+  /** `.torrent` files Deluge left but doesn't list. */
+  leftovers: number;
 }
 
 export function carried(torrents: DelugePreviewTorrent[], global: StopAtRatio | null): Carried {
@@ -145,6 +147,7 @@ export function carried(torrents: DelugePreviewTorrent[], global: StopAtRatio | 
     privateHosts: [],
     notCarried: [],
     running: 0,
+    leftovers: 0,
   };
   for (const t of torrents) {
     c.size += t.size;
@@ -162,6 +165,7 @@ export function carried(torrents: DelugePreviewTorrent[], global: StopAtRatio | 
     if (t.private) for (const h of t.trackers) count(hosts, h);
     for (const n of t.notCarried) count(notes, n);
     if (!t.paused) c.running++;
+    if (t.leftover) c.leftovers++;
   }
   const byKey = <V>(m: Map<string, V>) => [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
   c.labels = byKey(labels);

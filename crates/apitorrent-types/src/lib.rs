@@ -94,6 +94,10 @@ pub struct TorrentSummary {
     /// send it.
     #[serde(default)]
     pub in_deluge: Option<String>,
+    /// Imported from a `.torrent` file left in this Deluge config directory's state
+    /// folder, which Deluge itself didn't list (so it never ran there).
+    #[serde(default)]
+    pub leftover_from: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -1077,7 +1081,12 @@ pub struct DelugePreviewTorrent {
     pub size: u64,
     /// Done, 0 to 1, from Deluge's resume data (`None`: Deluge never saved any).
     pub progress: Option<f64>,
+    /// Not running in Deluge: paused there, or a leftover.
     pub paused: bool,
+    /// A `.torrent` file left in Deluge's state folder that Deluge doesn't list, so it
+    /// never runs there. Imported paused; `added_at` is when the file was written.
+    #[serde(default)]
+    pub leftover: bool,
     /// The space already has it; importing leaves it alone.
     pub present: bool,
     /// Why it can't be imported (outside the space's storage roots, unreadable).
