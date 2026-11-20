@@ -164,6 +164,14 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
     f. Later, with the user's per-change yes: stop and disable `deluged`/`delugex` and
        `http-endpoints` (ops repo).
 
+12. [x] "Still in Deluge" shown on each torrent (asked 2026-11-20), `9f38e36`.
+    `TorrentSummary.inDeluge` (the config dir) while an import isn't taken over. The list
+    and cards read "In Deluge" (warn-coloured chip) instead of "Paused"; the detail pane
+    has a banner on every tab, "Starting it here pauses it in Deluge first", with a
+    "Pause in Deluge, start here" button (plain resume, which already takes over);
+    Pause / Resume reads "Resume, pausing it in Deluge" for such a selection. Not yet
+    deployed to pokol.
+
 ## Findings / gotchas
 
 - The web import today imports into the *request's* space only; a second instance needs
