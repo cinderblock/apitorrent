@@ -85,23 +85,23 @@ reporting (no more silent `void`).
 
 ## Decisions already made (don't re-ask)
 
-- (none yet; see open questions)
+User answers, 2026-11-20:
+
+- **Dialog** for the edit surface (matches Add and Remove).
+- **Server bulk endpoints**, not a client loop.
+- v1 scope: label, transfer limits, seed limits, **trackers add/remove**, **tracker
+  find/replace**, **unwanted-files policy**, and **recheck + move storage** (both new
+  engine features; built in this thread, as later phases).
 
 ## Open questions for the user
 
-1. Edit surface: a dialog (recommended, matches Add and Remove) or a "bulk details" panel
-   that replaces the details pane when several are selected?
-2. Server bulk endpoint (recommended) or client loop?
-3. Trackers in bulk: add + remove (recommended), also find-and-replace a URL, or leave
-   trackers out of v1?
-4. Recheck and move storage don't exist on the server at all. Log them in ISSUES.md as
-   separate features (recommended), or build them in this thread?
-5. Checkbox column always visible for writers (recommended), or only after a "Select"
-   toggle?
+1. Checkbox style for the wide table: (A) always-on column (recommended), (B) select-mode
+   toggle, (C) no checkboxes, only a visible count. User asked for a visual comparison;
+   mockup shown in the thread 2026-11-20, waiting on the pick.
 
 ## Plan / steps
 
-1. [ ] User answers the questions above  ← current
+1. [x] User answers the first four questions
 2. [ ] Server: types in `apitorrent-types`, `PATCH /torrents`, `POST /torrents/settings`,
        tests; regenerate TS bindings
 3. [ ] Web: `api.bulkEdit`, `api.bulkSettings`; `BulkEdit.tsx` dialog with mixed-value
@@ -109,7 +109,9 @@ reporting (no more silent `void`).
 4. [ ] Web: checkbox column + header select-all; toolbar count; phone bar Edit… / Select all
 5. [ ] Result reporting for bulk pause/resume/remove/queue
 6. [ ] Typecheck, tests, cargo test/clippy, headless browser check (wide + phone)
-7. [ ] README / docs for the new endpoints
+7. [ ] Recheck: engine + `POST /torrents/{id}/recheck` + bulk; UI button
+8. [ ] Move storage: engine + endpoint + bulk; UI (destination picker within storage roots)
+9. [ ] README / docs for the new endpoints
 
 ## Findings / gotchas
 
