@@ -5,6 +5,9 @@
 import type { AddPasskeyFinishRequest } from "./generated/AddPasskeyFinishRequest";
 import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
 import type { Ban } from "./generated/Ban";
+import type { BulkEdit } from "./generated/BulkEdit";
+import type { BulkReport } from "./generated/BulkReport";
+import type { TorrentSettings } from "./generated/TorrentSettings";
 import type { DedupeStatus } from "./generated/DedupeStatus";
 import type { LibraryFolder } from "./generated/LibraryFolder";
 import type { LibraryStatus } from "./generated/LibraryStatus";
@@ -157,6 +160,10 @@ export const api = {
   tls: () => request<TlsStatus>("GET", "/tls"),
   /** A torrent's own seed limits; null follows its group's or the instance's. */
   setSeedLimits: (id: string, limits: SeedLimits | null) => request<void>("PUT", `/torrents/${enc(id)}/seed-limits`, { limits }),
+  /** Change settings on many torrents at once; answers per torrent. */
+  bulkEdit: (edit: BulkEdit) => request<BulkReport>("PATCH", "/torrents", edit),
+  /** The settings a bulk edit changes, for each of `ids` in the space. */
+  torrentSettings: (ids: string[]) => request<TorrentSettings[]>("POST", "/torrents/settings", { ids }),
   queueMove: (id: string, to: QueueMove) => request<void>("POST", `/torrents/${enc(id)}/queue`, { to }),
   setUnwantedPolicy: (id: string, policy: UnwantedPolicy) =>
     request<void>("PUT", `/torrents/${enc(id)}/unwanted-policy`, { policy }),

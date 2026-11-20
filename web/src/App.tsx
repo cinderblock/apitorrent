@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type K
 import { api } from "./api/client";
 import type { AuthStatus } from "./api/generated/AuthStatus";
 import { SyncClient } from "./api/sync";
+import type { BulkReport } from "./api/generated/BulkReport";
 import { AddTorrent } from "./components/AddTorrent";
+import { BulkEdit, BulkResult } from "./components/BulkEdit";
 import { ConfirmRemove } from "./components/ConfirmRemove";
 import { DetailPane } from "./components/DetailPane";
 import { EmptyStart, loadingCount, loadingText } from "./components/EmptyStart";
@@ -20,7 +22,9 @@ import { useIncomingLinks } from "./desktop/links";
 import { formatRate } from "./format";
 import { navigate } from "./router";
 import { openDelugeImport } from "./settings/SettingsPage";
+import { eachOf } from "./state/bulkEdit";
 import { openTorrentWindow, useDetailsMode } from "./state/details";
+import { useSelectionStyle } from "./state/selectionStyle";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
 import { SpaceSwitcher } from "./spaces/SpaceSwitcher";
 import { atLeast, useSpaceContext } from "./spaces/context";
@@ -64,6 +68,10 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const [adding, setAdding] = useState<File[] | null>(null);
   const [addingMagnet, setAddingMagnet] = useState("");
   const [removing, setRemoving] = useState<string[] | null>(null);
+  const [editing, setEditing] = useState<string[] | null>(null);
+  // A bulk action that failed on some torrents: which, and why.
+  const [failures, setFailures] = useState<{ title: string; report: BulkReport } | null>(null);
+  const selectionStyle = useSelectionStyle();
   const [dragging, setDragging] = useState(false);
   const narrow = useNarrow();
   const detailsMode = useDetailsMode();
@@ -95,6 +103,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
     );
   const counts = useMemo(() => countByFilter(state.torrents), [state.torrents]);
   const labels = useMemo(() => labelCounts(state.torrents), [state.torrents]);
+  const names = useMemo(() => new Map([...state.torrents.values()].map((t) => [t.id, t.name])), [state.torrents]);
   const totals = useMemo(() => {
     let down = 0;
     let up = 0;
@@ -130,21 +139,35 @@ export function App({ status: auth }: { status: AuthStatus }) {
     setFocus(null);
   }
 
+  /** Run an action on each torrent, and show the ones it failed on. */
+  const runOnEach = useCallback((verb: string, ids: string[], action: (id: string) => Promise<unknown>, parallel?: number) => {
+    void eachOf(ids, action, parallel).then((report) => {
+      if (report.failed.length > 0) {
+        const n = report.failed.length;
+        setFailures({ title: `Couldn't ${verb} ${n === 1 ? "1 torrent" : `${n} torrents`}`, report });
+      }
+    });
+  }, []);
+
   const pauseOrResume = useCallback(
     (ids: string[]) => {
       const anyRunning = ids.some((id) => state.torrents.get(id)?.state !== "paused");
-      for (const id of ids) void (anyRunning ? api.pause(id) : api.resume(id));
+      runOnEach(anyRunning ? "pause" : "resume", ids, anyRunning ? api.pause : api.resume);
     },
-    [state.torrents],
+    [state.torrents, runOnEach],
   );
 
   /** Move the selection in the queue, keeping its order: going up, the top one moves first. */
   function queueMove(to: "top" | "up" | "down" | "bottom") {
     const ids = [...selection].sort((a, b) => (state.torrents.get(a)?.queuePosition ?? 0) - (state.torrents.get(b)?.queuePosition ?? 0));
     const ordered = to === "down" || to === "top" ? ids.reverse() : ids;
-    void (async () => {
-      for (const id of ordered) await api.queueMove(id, to);
-    })();
+    // One at a time: each move depends on where the previous one left the queue.
+    runOnEach("move", ordered, (id) => api.queueMove(id, to), 1);
+  }
+
+  function selectOnly(ids: string[]) {
+    setSelected(new Set(ids));
+    setFocus(null);
   }
 
   function onSort(key: SortKey) {
@@ -233,6 +256,9 @@ export function App({ status: auth }: { status: AuthStatus }) {
             <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => setRemoving(selection)}>
               Remove
             </button>
+            <button type="button" className="wide-only" disabled={selection.length === 0} onClick={() => setEditing(selection)}>
+              Edit…
+            </button>
             <div className="button-group wide-only" role="group" aria-label="Queue">
               <button type="button" disabled={selection.length === 0} aria-label="Move to the top of the queue" onClick={() => queueMove("top")}>
                 ⤒
@@ -247,6 +273,14 @@ export function App({ status: auth }: { status: AuthStatus }) {
                 ⤓
               </button>
             </div>
+            {selection.length > 0 && (
+              <span className="selection-count wide-only" aria-live="polite">
+                <span className="muted">{selection.length} selected</span>
+                <button type="button" className="link" onClick={clearSelection}>
+                  Clear
+                </button>
+              </span>
+            )}
           </>
         )}
         {!mayWrite && <span className="badge">Read only</span>}
@@ -348,6 +382,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
             onOpen={openTorrentWindow}
             onClear={clearSelection}
             onKey={onKey}
+            checkboxes={mayWrite && selectionStyle === "boxes"}
             empty={empty}
           />
         )}
@@ -360,12 +395,15 @@ export function App({ status: auth }: { status: AuthStatus }) {
       </main>
       {narrow && mayWrite && selection.length > 0 && (
         <div className="selection-bar" role="toolbar" aria-label={`${selection.length} selected`}>
-          <span className="muted">{selection.length} selected</span>
+          {/* The count shows above the list ("Clear 5 selected"), so the bar is all buttons. */}
           <button type="button" onClick={() => pauseOrResume(selection)}>
             {pauseResumeLabel}
           </button>
           <button type="button" onClick={() => setRemoving(selection)}>
             Remove
+          </button>
+          <button type="button" onClick={() => setEditing(selection)}>
+            Edit…
           </button>
           <button type="button" aria-label="Move up the queue" onClick={() => queueMove("up")}>
             ↑
@@ -392,10 +430,22 @@ export function App({ status: auth }: { status: AuthStatus }) {
           count={removing.length}
           onClose={() => setRemoving(null)}
           onConfirm={(deleteFiles) => {
-            for (const id of removing) void api.remove(id, deleteFiles);
+            runOnEach("remove", removing, (id) => api.remove(id, deleteFiles));
             setRemoving(null);
           }}
         />
+      )}
+      {editing && (
+        <BulkEdit
+          ids={editing}
+          names={names}
+          labels={labels.map(([l]) => l)}
+          onClose={() => setEditing(null)}
+          onSelect={selectOnly}
+        />
+      )}
+      {failures && (
+        <BulkResult title={failures.title} report={failures.report} names={names} onClose={() => setFailures(null)} onSelect={selectOnly} />
       )}
     </div>
   );
