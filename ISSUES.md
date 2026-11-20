@@ -2,6 +2,16 @@
 
 Problems found while working on something else. Each entry is enough to start a fix.
 
+## qBittorrent plugin: recheck does nothing, no set location
+
+Found 2026-11-20. `plugins/qbittorrent-api/src/index.ts` answers `torrents/recheck` with
+`ok()` and has no `torrents/setLocation`; the README says recheck "succeeds without doing
+anything". The daemon now has both (`POST /torrents/{id}/recheck`, and `PATCH /torrents`
+with `savePath`), but the plugin API (`apitorrent-plugin-api`, `torrents:control`) has no
+way to call them. Why it matters: Sonarr/Radarr and other qBittorrent clients can't
+recheck or relocate. To start: expose recheck and move in the plugin API, then wire the
+two endpoints and update the README's list of differences.
+
 ## Web: native `title=` tooltips left over
 
 Found 2026-11-20. The browser's own tooltips are slow, look out of place and never show on

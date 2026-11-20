@@ -41,6 +41,11 @@ Most of this is built.
   how many torrents download and seed at once, and can let slow torrents stop holding a
   slot. Seeding stops at a ratio or a seeding time (for everything, a group or one
   torrent), then pauses or removes the torrent.
+- **Edit many torrents at once.** Select torrents (a checkbox per row, or Ctrl- and
+  Shift-click) and Edit sets their label, rate and connection limits, seed limits,
+  trackers (add, remove, replace a URL), deselected-file policy and location for all of
+  them, showing where they differ. Moving files runs in the background, one torrent at a
+  time, and keeps what was downloaded. Recheck verifies the files on disk again.
 - **Bad peers are banned on evidence.** Corrupt data is traced to the peer that sent it,
   block by block, before anyone is banned. IP blocklists load from common formats.
 - **A content library.** A new torrent reuses files other torrents already have (hard
