@@ -1340,3 +1340,66 @@ pub struct TakeOverReport {
     /// Torrents left as they were, and why (Deluge couldn't be reached, say).
     pub skipped: Vec<ImportSkip>,
 }
+
+/// Work the server does in the background, so no request waits on it: a Deluge import, a
+/// take-over. Started by a `POST …/jobs` that answers at once; `GET /api/v1/jobs/{id}`
+/// reports its progress, then its outcome.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Job {
+    #[ts(type = "number")]
+    pub id: u64,
+    pub kind: JobKind,
+    /// The space it works in.
+    #[ts(type = "number")]
+    pub space: spaces::SpaceId,
+    /// Unix milliseconds.
+    #[ts(type = "number")]
+    pub started_at: i64,
+    #[ts(type = "number | null")]
+    pub finished_at: Option<i64>,
+    pub progress: JobProgress,
+    /// `None` while it runs.
+    pub outcome: Option<JobOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum JobKind {
+    DelugeImport,
+    TakeOver,
+}
+
+/// How far a job has got.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct JobProgress {
+    /// What it is doing now, in a few words ("Reading Deluge's state").
+    pub phase: String,
+    /// Steps done of `total`, across the whole job.
+    pub done: u32,
+    /// 0 while the size of the work isn't known yet.
+    pub total: u32,
+    /// The item being worked on (a torrent's name), if any.
+    pub current: Option<String>,
+}
+
+/// How a job ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+#[ts(export)]
+pub enum JobOutcome {
+    DelugeImport {
+        report: ImportReport,
+    },
+    TakeOver {
+        report: TakeOverReport,
+    },
+    /// It stopped with an error; whatever it finished before that stays done.
+    Failed {
+        message: String,
+    },
+}

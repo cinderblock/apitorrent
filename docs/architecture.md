@@ -1249,6 +1249,18 @@ recheck. That is the onboarding path for existing Deluge users.
   (`discover::running_daemon`, from `/proc`); one that does is an error. A running
   daemon's `--port` and `--ui-interface` override `core.conf` when connecting. The
   offline CLI import does the same before writing its rows.
+- **In the background.** An import of thousands of torrents takes seconds, so the web UI
+  never waits on a request for it: `POST …/import/deluge/jobs` and
+  `POST …/import/deluge/take-over/jobs` start a job (`apitorrent_core::jobs`) and answer
+  `202` with it at once; `GET …/jobs/{id}` (and `GET …/jobs`, the space's) report its
+  phase, steps done of the total and the torrent it's on, then its outcome (the same
+  report the waiting endpoints return, or a failure). One import and one take-over per
+  space run at a time (`busy`, 409). Jobs live in the daemon's memory: a restart forgets
+  them, not the work they finished. The wizard shows the progress and can be closed while
+  it runs; a tray in the corner of every page (`web/src/components/Jobs.tsx`) keeps
+  running and finished jobs in view. The import writes its rows 64 torrents to a
+  transaction and probes each save path's volume once, rather than several commits and a
+  probe per torrent.
 - **Identity on import.** The tracker hosts of the imported private torrents get a Deluge
   identity rule (`ensure_tracker_identities`: only hosts no rule covers, so the user's
   rules win), before the torrents announce. The versions are the daemon's own

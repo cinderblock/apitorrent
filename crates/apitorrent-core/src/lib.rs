@@ -12,6 +12,7 @@ pub mod deluge_import;
 pub mod fingerprint;
 pub mod folders;
 pub mod import;
+mod jobs;
 pub mod library;
 mod library_index;
 pub mod passkeys;
@@ -24,6 +25,8 @@ mod share;
 pub mod spaces;
 pub mod store;
 pub mod takeover;
+
+pub use jobs::Progress;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
@@ -119,6 +122,9 @@ pub enum CoreError {
     /// The client it was imported from still runs it, and couldn't be made to stop.
     #[error("{0}")]
     OtherOwner(String),
+    /// The same work is already running (an import into the space, say).
+    #[error("{0}")]
+    Busy(String),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("I/O error: {0}")]
@@ -135,6 +141,7 @@ impl CoreError {
             CoreError::Unsupported(_) => "unsupported",
             CoreError::InvalidRequest(_) => "invalid_request",
             CoreError::OtherOwner(_) => "other_owner",
+            CoreError::Busy(_) => "busy",
             CoreError::Database(_) | CoreError::Io(_) => "internal",
         }
     }
@@ -282,6 +289,8 @@ struct Inner {
     library: library_index::LibraryState,
     /// Where the content library supplied files' bytes from (see `share`).
     reuse: share::ReuseBook,
+    /// Long work running in the background, such as a Deluge import (see `jobs`).
+    jobs: Arc<jobs::Jobs>,
 }
 
 pub(crate) const SETTINGS_KEY: &str = "settings";
@@ -358,6 +367,7 @@ impl Core {
                 adapters: adapters::AdapterState::default(),
                 library: library_index::LibraryState::default(),
                 reuse: share::ReuseBook::default(),
+                jobs: Arc::default(),
             }),
         };
         core.apply_session_settings();
@@ -1442,14 +1452,100 @@ impl Core {
     /// progress from its resume data (validated against the files on disk, so nothing is
     /// rehashed), labels, queue order, per-torrent limits and all-time totals. Torrents the
     /// space already has are left alone, so importing twice is safe. See `deluge_import`.
+    /// Waits until it's done; [`Core::start_import_deluge`] runs it in the background.
     pub async fn import_deluge(
         &self,
         space: SpaceId,
         req: apitorrent_types::ImportDelugeRequest,
     ) -> Result<apitorrent_types::ImportReport, CoreError> {
+        self.import_deluge_with(space, req, &Progress::none()).await
+    }
+
+    /// Start [`Core::import_deluge`] as a background job, and return it at once. Refused
+    /// while another import into the space runs.
+    pub fn start_import_deluge(
+        &self,
+        space: SpaceId,
+        req: apitorrent_types::ImportDelugeRequest,
+    ) -> Result<apitorrent_types::Job, CoreError> {
+        self.space(space)?;
+        let progress = self
+            .inner
+            .jobs
+            .start(apitorrent_types::JobKind::DelugeImport, space)
+            .ok_or_else(|| {
+                CoreError::Busy("an import into this space is already running".into())
+            })?;
+        let job = self.inner.jobs.get(progress.id()).expect("just started");
+        let core = self.clone();
+        tokio::spawn(async move {
+            let outcome = match core.import_deluge_with(space, req, &progress).await {
+                Ok(report) => apitorrent_types::JobOutcome::DelugeImport { report },
+                Err(e) => apitorrent_types::JobOutcome::Failed {
+                    message: e.to_string(),
+                },
+            };
+            progress.finish(outcome);
+        });
+        Ok(job)
+    }
+
+    /// Start [`Core::take_over`] as a background job, and return it at once. Refused while
+    /// another take-over in the space runs.
+    pub fn start_take_over(
+        &self,
+        space: SpaceId,
+        ids: Vec<String>,
+    ) -> Result<apitorrent_types::Job, CoreError> {
+        self.space(space)?;
+        let progress = self
+            .inner
+            .jobs
+            .start(apitorrent_types::JobKind::TakeOver, space)
+            .ok_or_else(|| {
+                CoreError::Busy("a take-over in this space is already running".into())
+            })?;
+        let job = self.inner.jobs.get(progress.id()).expect("just started");
+        let core = self.clone();
+        tokio::spawn(async move {
+            let outcome = match core.take_over_with(space, &ids, &progress).await {
+                Ok(report) => apitorrent_types::JobOutcome::TakeOver { report },
+                Err(e) => apitorrent_types::JobOutcome::Failed {
+                    message: e.to_string(),
+                },
+            };
+            progress.finish(outcome);
+        });
+        Ok(job)
+    }
+
+    /// One of `space`'s background jobs.
+    pub fn job(&self, space: SpaceId, id: u64) -> Result<apitorrent_types::Job, CoreError> {
+        self.inner
+            .jobs
+            .get(id)
+            .filter(|j| j.space == space)
+            .ok_or(CoreError::NotFound)
+    }
+
+    /// `space`'s background jobs, running and recently finished, oldest first.
+    pub fn jobs(&self, space: SpaceId) -> Vec<apitorrent_types::Job> {
+        self.inner.jobs.in_space(space)
+    }
+
+    async fn import_deluge_with(
+        &self,
+        space: SpaceId,
+        req: apitorrent_types::ImportDelugeRequest,
+        progress: &Progress,
+    ) -> Result<apitorrent_types::ImportReport, CoreError> {
         use apitorrent_types::{ImportReport, ImportSkip};
+        /// Torrents written to the database per transaction: few commits, and the database
+        /// isn't held long at a time.
+        const BATCH: usize = 64;
         let target_space = self.space(space)?;
         deluge_import::check_options(&req.options).map_err(CoreError::InvalidRequest)?;
+        progress.phase("Reading Deluge's state", 0);
         let dir = PathBuf::from(&req.config_dir);
         let mut state = tokio::task::spawn_blocking(move || apitorrent_deluge::load(&dir))
             .await
@@ -1480,7 +1576,7 @@ impl Core {
             .iter()
             .map(|m| (m.from.clone(), m.to.clone()))
             .collect();
-        let present: std::collections::HashSet<String> = {
+        let present: HashSet<String> = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let pending = self.inner.pending.read().expect("pending lock poisoned");
             torrents
@@ -1491,22 +1587,41 @@ impl Core {
                 .collect()
         };
         let download_dir = self.download_dir(space);
-        let not_selected = deluge_import::select(&mut state, &req.filter, &map, &download_dir);
-        let target = deluge_import::Target {
-            space,
-            slug: &target_space.slug,
-            roots: &target_space.settings.storage_roots,
-            download_dir: &download_dir,
-            present: &present,
-            map: &map,
-            paused: req.paused,
-            ratio_per_torrent: space != DEFAULT_SPACE && pick.stop_at_ratio,
-            options: &req.options,
-            first_position: self.next_queue_position(space),
+        let first_position = self.next_queue_position(space);
+        progress.phase("Reading the torrents", 0);
+        // Parsing every .torrent is CPU work: off the async runtime.
+        let (state, not_selected, mut plan) = {
+            let slug = target_space.slug.clone();
+            let roots = target_space.settings.storage_roots.clone();
+            let (filter, paused, options) = (req.filter.clone(), req.paused, req.options.clone());
+            let ratio_per_torrent = space != DEFAULT_SPACE && pick.stop_at_ratio;
+            tokio::task::spawn_blocking(move || {
+                let not_selected = deluge_import::select(&mut state, &filter, &map, &download_dir);
+                let plan = deluge_import::plan(
+                    &state,
+                    &deluge_import::Target {
+                        space,
+                        slug: &slug,
+                        roots: &roots,
+                        download_dir: &download_dir,
+                        present: &present,
+                        map: &map,
+                        paused,
+                        ratio_per_torrent,
+                        options: &options,
+                        first_position,
+                    },
+                );
+                (state, not_selected, plan)
+            })
+            .await
+            .expect("import planner panicked")
         };
-        let mut plan = deluge_import::plan(&state, &target);
         let mut warnings = state.warnings.clone();
         // Nothing starts here while Deluge still runs it.
+        if !deluge_import::running_ids(&plan).is_empty() {
+            progress.phase("Pausing them in Deluge", 0);
+        }
         let taken_over_at =
             deluge_import::take_over_running(&mut plan, Path::new(&req.config_dir), &mut warnings)
                 .await;
@@ -1541,7 +1656,10 @@ impl Core {
                 name: name.clone(),
                 reason: "already in this space".into(),
             }));
+        let total = u32::try_from(plan.torrents.len() + plan.magnets.len()).unwrap_or(u32::MAX);
+        progress.phase("Adding torrents", total);
         for m in plan.magnets {
+            progress.working_on(&m.name);
             let added = self
                 .add(
                     space,
@@ -1573,81 +1691,117 @@ impl Core {
                     reason: e.to_string(),
                 }),
             }
+            progress.step(None);
         }
-        for t in plan.torrents {
-            let key = Key::new(space, t.row.id.clone());
-            let save_path = PathBuf::from(&t.row.save_path);
-            let held_path = {
-                let (data, save, id) = (
-                    self.inner.config.data_dir.clone(),
-                    save_path.clone(),
-                    key.id.clone(),
-                );
-                tokio::task::spawn_blocking(move || held_path_for(&data, &save, &id))
-                    .await
-                    .expect("held path probe panicked")
-            };
-            let mut row = t.row.clone();
-            row.held_path = Some(held_path.to_string_lossy().into_owned());
-            let (added_at, queue_position, paused) = (row.added_at, row.queue_position, row.paused);
-            if let Err(e) = self.db(move |db| db.insert_torrent(&row)).await {
-                report.skipped.push(ImportSkip {
-                    name: t.name,
-                    reason: e.to_string(),
-                });
-                continue;
+        // Where a torrent keeps held files depends only on its save path's volume: probe
+        // each save path once, not once per torrent.
+        let held_dirs: HashMap<PathBuf, PathBuf> = {
+            let data = self.inner.config.data_dir.clone();
+            let saves: HashSet<PathBuf> = plan
+                .torrents
+                .iter()
+                .map(|t| PathBuf::from(&t.row.save_path))
+                .collect();
+            tokio::task::spawn_blocking(move || {
+                saves
+                    .into_iter()
+                    .map(|save| {
+                        let dir = held_dir_for(&data, &save);
+                        (save, dir)
+                    })
+                    .collect()
+            })
+            .await
+            .expect("held path probe panicked")
+        };
+        let mut torrents = plan.torrents.into_iter().peekable();
+        while torrents.peek().is_some() {
+            let mut batch: Vec<deluge_import::PlannedTorrent> =
+                torrents.by_ref().take(BATCH).collect();
+            for t in &mut batch {
+                let held = held_dirs[Path::new(&t.row.save_path)].join(&t.row.id);
+                t.row.held_path = Some(held.to_string_lossy().into_owned());
             }
-            let spawned = self
-                .spawn_entry(Spawn {
-                    key: key.clone(),
-                    peers: Vec::new(),
-                    trackers: t.torrent.trackers.clone(),
-                    torrent: t.torrent.clone(),
-                    save_path,
-                    held_path,
-                    have: t.have.clone(),
-                    placements: None,
-                    paused,
-                    file_priorities: t.row.file_priorities.clone().unwrap_or_default(),
-                    unwanted: UnwantedPolicy::Hold,
-                    label: t.label.clone(),
-                    added_at,
-                    totals: (t.row.downloaded_total, t.row.uploaded_total),
-                    queue_position,
-                    limits: t.limits,
-                    queued: !paused && self.queue_limited(),
-                    naming: 0,
-                    linked: Vec::new(),
-                    file_paths: t.file_paths.clone(),
+            progress.working_on(&batch[0].name);
+            // One transaction for the batch's rows, seeding times and import records.
+            let rows: Vec<_> = batch
+                .iter()
+                .map(|t| {
+                    (
+                        t.row.clone(),
+                        t.seed,
+                        deluge_import::imported_row(
+                            &t.row,
+                            &t.deluge_id,
+                            &req.config_dir,
+                            taken_over_at,
+                        ),
+                    )
                 })
-                .await;
-            match spawned {
-                Ok(_) => {
-                    self.inner
-                        .seeding
-                        .lock()
-                        .expect("seeding lock poisoned")
-                        .insert(key.clone(), t.seed);
-                    let (k, seed) = (key.clone(), t.seed);
-                    let _ = self.db(move |db| db.save_seed_states(&[(k, seed)])).await;
-                    self.record_imported(deluge_import::imported_row(
-                        &t.row,
-                        &t.deluge_id,
-                        &req.config_dir,
-                        taken_over_at,
-                    ))
-                    .await;
-                    report.imported.push(t.name);
-                }
-                Err(e) => {
-                    let k = key.clone();
-                    let _ = self.db(move |db| db.remove_torrent(&k)).await;
+                .collect();
+            let written = self.db(move |db| db.insert_imported(&rows)).await?;
+            for (t, stored) in batch.into_iter().zip(written) {
+                if let Err(e) = stored {
                     report.skipped.push(ImportSkip {
                         name: t.name,
                         reason: e.to_string(),
                     });
+                    progress.step(None);
+                    continue;
                 }
+                let key = Key::new(space, t.row.id.clone());
+                let held_path = PathBuf::from(t.row.held_path.as_deref().expect("set above"));
+                let (added_at, queue_position, paused) =
+                    (t.row.added_at, t.row.queue_position, t.row.paused);
+                let spawned = self
+                    .spawn_entry(Spawn {
+                        key: key.clone(),
+                        peers: Vec::new(),
+                        trackers: t.torrent.trackers.clone(),
+                        torrent: t.torrent.clone(),
+                        save_path: PathBuf::from(&t.row.save_path),
+                        held_path,
+                        have: t.have.clone(),
+                        placements: None,
+                        paused,
+                        file_priorities: t.row.file_priorities.clone().unwrap_or_default(),
+                        unwanted: UnwantedPolicy::Hold,
+                        label: t.label.clone(),
+                        added_at,
+                        totals: (t.row.downloaded_total, t.row.uploaded_total),
+                        queue_position,
+                        limits: t.limits,
+                        queued: !paused && self.queue_limited(),
+                        naming: 0,
+                        linked: Vec::new(),
+                        file_paths: t.file_paths.clone(),
+                    })
+                    .await;
+                match spawned {
+                    Ok(_) => {
+                        self.inner
+                            .seeding
+                            .lock()
+                            .expect("seeding lock poisoned")
+                            .insert(key.clone(), t.seed);
+                        // Still Deluge's until taken over (as `record_imported` shows it).
+                        let waiting =
+                            (paused || taken_over_at.is_none()).then(|| req.config_dir.clone());
+                        self.set_in_deluge(&key, waiting);
+                        report.imported.push(t.name);
+                    }
+                    Err(e) => {
+                        let _ = self.db(move |db| db.remove_torrent(&key)).await;
+                        report.skipped.push(ImportSkip {
+                            name: t.name,
+                            reason: e.to_string(),
+                        });
+                    }
+                }
+                progress.step(None);
             }
+            // Show what has arrived so far, rather than everything at the end.
+            self.refresh();
         }
         tracing::info!(
             space = %target_space.slug,
@@ -1655,6 +1809,7 @@ impl Core {
             skipped = report.skipped.len(),
             "Deluge import finished"
         );
+        progress.phase("Starting them", total);
         self.apply_queue().await;
         self.refresh();
         Ok(report)
@@ -2693,6 +2848,15 @@ impl Core {
         space: SpaceId,
         ids: &[String],
     ) -> Result<apitorrent_types::TakeOverReport, CoreError> {
+        self.take_over_with(space, ids, &Progress::none()).await
+    }
+
+    async fn take_over_with(
+        &self,
+        space: SpaceId,
+        ids: &[String],
+        progress: &Progress,
+    ) -> Result<apitorrent_types::TakeOverReport, CoreError> {
         let rows = self.db(|db| db.imported()).await?;
         let mut groups: std::collections::BTreeMap<String, Vec<db::ImportedRow>> =
             std::collections::BTreeMap::new();
@@ -2712,7 +2876,9 @@ impl Core {
                 .map_or_else(|| key.id.clone(), |e| e.torrent.info.name.clone())
         };
         let mut report = apitorrent_types::TakeOverReport::default();
+        let total = u32::try_from(groups.values().map(Vec::len).sum::<usize>()).unwrap_or(u32::MAX);
         for (source, rows) in groups {
+            progress.phase("Pausing them in Deluge", total);
             let deluge_ids: Vec<String> = rows.iter().map(|r| r.source_id().to_owned()).collect();
             if let Err(e) = takeover::pause_in_deluge(Path::new(&source), &deluge_ids).await {
                 report
@@ -2721,10 +2887,13 @@ impl Core {
                         name: name(&r.key),
                         reason: e.clone(),
                     }));
+                progress.steps(u32::try_from(rows.len()).unwrap_or(u32::MAX), None);
                 continue;
             }
+            progress.phase("Starting them here", total);
             let at = now_ms();
             for r in rows {
+                progress.working_on(&name(&r.key));
                 self.mark_taken_over(&r.key, at).await?;
                 match self.resume(&r.key).await {
                     Ok(()) => report.taken_over += 1,
@@ -2733,6 +2902,7 @@ impl Core {
                         reason: e.to_string(),
                     }),
                 }
+                progress.step(None);
             }
         }
         Ok(report)
@@ -3942,12 +4112,22 @@ fn engine_policy(p: UnwantedPolicy) -> EnginePolicy {
 /// save path. The volume test is a real rename, which is the only check that works the same
 /// on every platform and filesystem (mount points, junctions, network shares).
 fn held_path_for(data_dir: &std::path::Path, save_path: &std::path::Path, id: &str) -> PathBuf {
-    let preferred = data_dir.join("held").join(id);
-    let fallback = save_path.join(".apitorrent-held").join(id);
+    held_dir_for(data_dir, save_path).join(id)
+}
+
+/// The folder a torrent saved under `save_path` keeps held files in: under the data
+/// directory when that is on the same volume (so a rename moves them), else beside the data.
+fn held_dir_for(data_dir: &std::path::Path, save_path: &std::path::Path) -> PathBuf {
+    let preferred = data_dir.join("held");
+    let fallback = save_path.join(".apitorrent-held");
     let probe = || -> std::io::Result<bool> {
         std::fs::create_dir_all(data_dir.join("held"))?;
         std::fs::create_dir_all(save_path)?;
-        let name = format!(".apitorrent-probe-{id}");
+        let name = format!(
+            ".apitorrent-probe-{}-{}",
+            std::process::id(),
+            PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         let from = save_path.join(&name);
         let to = data_dir.join("held").join(&name);
         std::fs::write(&from, b"")?;
@@ -3964,6 +4144,9 @@ fn held_path_for(data_dir: &std::path::Path, save_path: &std::path::Path, id: &s
         }
     }
 }
+
+/// Makes concurrent probes' file names unique.
+static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Most trackers one entry may list.
 const MAX_TRACKERS: usize = 200;

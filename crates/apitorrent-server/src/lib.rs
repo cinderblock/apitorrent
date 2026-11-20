@@ -260,6 +260,13 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/import/deluge/found", get(routes::find_deluge))
         .route("/import/deluge/waiting", get(routes::deluge_waiting))
         .route("/import/deluge/take-over", post(routes::take_over))
+        .route("/import/deluge/jobs", post(routes::start_import_deluge))
+        .route(
+            "/import/deluge/take-over/jobs",
+            post(routes::start_take_over),
+        )
+        .route("/jobs", get(routes::jobs))
+        .route("/jobs/{id}", get(routes::job))
         .route("/tracker-passkeys", get(routes::tracker_passkeys))
         .route(
             "/tracker-passkeys/replace",

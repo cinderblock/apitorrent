@@ -676,6 +676,61 @@ impl Database {
 
     // ----- imported torrents ------------------------------------------------------------
 
+    /// Store imported torrents in one transaction (one commit for many torrents): each
+    /// one's row, seeding state and import record. A torrent that fails leaves nothing
+    /// behind and doesn't stop the rest; the result says how each went, in order.
+    pub fn insert_imported(
+        &self,
+        rows: &[(TorrentRow, crate::seeding::SeedState, ImportedRow)],
+    ) -> rusqlite::Result<Vec<rusqlite::Result<()>>> {
+        // Plain statements rather than rusqlite's transaction types, so the row methods
+        // here can run inside it.
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let mut out = Vec::with_capacity(rows.len());
+        for (row, seed, imported) in rows {
+            let one = || -> rusqlite::Result<()> {
+                self.insert_torrent(row)?;
+                let limits = seed
+                    .limits
+                    .map(|l| serde_json::to_string(&l).expect("limits serialize"));
+                self.conn.execute(
+                    "INSERT INTO seeding (torrent, seed_secs, limits, reached, space_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(space_id, torrent) DO UPDATE SET seed_secs = excluded.seed_secs,
+                         limits = excluded.limits, reached = excluded.reached",
+                    params![
+                        row.id,
+                        to_i64(seed.seed_ms / 1000),
+                        limits,
+                        i64::from(seed.reached),
+                        row.space
+                    ],
+                )?;
+                self.set_imported(imported)
+            };
+            let done = self
+                .conn
+                .execute_batch("SAVEPOINT imported")
+                .and_then(|()| one());
+            let ended = match &done {
+                Ok(()) => self.conn.execute_batch("RELEASE imported"),
+                Err(_) => self
+                    .conn
+                    .execute_batch("ROLLBACK TO imported; RELEASE imported"),
+            };
+            if let Err(e) = ended {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
+            out.push(done);
+        }
+        if let Err(e) = self.conn.execute_batch("COMMIT") {
+            let _ = self.conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+        Ok(out)
+    }
+
     /// Record a torrent as imported from another client (replacing an older record).
     pub fn set_imported(&self, row: &ImportedRow) -> rusqlite::Result<()> {
         self.conn.execute(

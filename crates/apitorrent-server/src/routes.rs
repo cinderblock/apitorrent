@@ -42,7 +42,9 @@ impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let status = match &self.0 {
             CoreError::InvalidTorrent(_) | CoreError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            CoreError::Duplicate | CoreError::OtherOwner(_) => StatusCode::CONFLICT,
+            CoreError::Duplicate | CoreError::OtherOwner(_) | CoreError::Busy(_) => {
+                StatusCode::CONFLICT
+            }
             CoreError::NotFound => StatusCode::NOT_FOUND,
             CoreError::Unsupported(_) => StatusCode::NOT_IMPLEMENTED,
             CoreError::Database(_) | CoreError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -296,6 +298,57 @@ pub(crate) async fn import_deluge(
     }
     match s.core.import_deluge(here.id(), req).await {
         Ok(r) => Json::<ImportReport>(r).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
+/// Start importing into the request's space in the background (its admins only). Answers
+/// at once with the job; `GET /jobs/{id}` follows it.
+pub(crate) async fn start_import_deluge(
+    State(s): State<AppState>,
+    here: Here,
+    Json(req): Json<ImportDelugeRequest>,
+) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.start_import_deluge(here.id(), req) {
+        Ok(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
+/// Start a take-over in the background (the space's admins).
+pub(crate) async fn start_take_over(
+    State(s): State<AppState>,
+    here: Here,
+    Json(req): Json<apitorrent_types::TakeOverRequest>,
+) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.start_take_over(here.id(), req.ids) {
+        Ok(job) => (StatusCode::ACCEPTED, Json(job)).into_response(),
+        Err(e) => Failure(e).into_response(),
+    }
+}
+
+/// The space's background jobs, running and recently finished (its admins: only they
+/// start them).
+pub(crate) async fn jobs(State(s): State<AppState>, here: Here) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    Json(s.core.jobs(here.id())).into_response()
+}
+
+/// One of the space's background jobs: its progress, then its outcome.
+pub(crate) async fn job(State(s): State<AppState>, here: Here, Path(id): Path<u64>) -> Response {
+    if let Err(e) = here.require(SpaceRole::Admin) {
+        return e.into_response();
+    }
+    match s.core.job(here.id(), id) {
+        Ok(job) => Json(job).into_response(),
         Err(e) => Failure(e).into_response(),
     }
 }
