@@ -5,10 +5,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { ApiRequestError, request } from "../api/client";
+import { ApiRequestError, api, request } from "../api/client";
 import type { ImportSource } from "../api/generated/ImportSource";
-import type { TakeOverReport } from "../api/generated/TakeOverReport";
+import { trackJob, useJob } from "../jobs";
 import { Empty, SettingCard } from "../settings/controls";
+import { useSpaceContext } from "../spaces/context";
+import type { JobRef } from "./importDialog";
+import { JobProgress } from "./JobProgress";
 
 function message(e: unknown): string {
   return e instanceof ApiRequestError ? e.message : String(e);
@@ -19,18 +22,29 @@ export function DelugeTakeOverSection() {
   const [waiting, setWaiting] = useState<ImportSource[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<TakeOverReport | null>(null);
+  // The take-over started here: it runs in the background (the jobs tray shows it too).
+  const [jobRef, setJobRef] = useState<JobRef | null>(null);
+  const slug = useSpaceContext()?.current.slug ?? null;
+  const tracked = useJob(jobRef?.slug ?? null, jobRef?.id ?? null);
+  const outcome = tracked?.job.outcome ?? null;
+  const report = outcome?.kind === "takeOver" ? outcome.report : null;
+  const running = tracked !== undefined && outcome === null;
   const load = useCallback(() => {
     request<ImportSource[]>("GET", "/import/deluge/waiting").then(setWaiting, (e: unknown) => setError(message(e)));
   }, []);
   useEffect(load, [load]);
+  // What's still waiting changes once the take-over ends.
+  useEffect(() => {
+    if (outcome !== null) load();
+  }, [outcome, load]);
 
   async function takeOver() {
     setBusy(true);
     setError(null);
     try {
-      setReport(await request<TakeOverReport>("POST", "/import/deluge/take-over", { ids: [] }));
-      load();
+      const job = await api.startTakeOver(slug);
+      trackJob(slug, job);
+      setJobRef({ slug, id: job.id });
     } catch (e) {
       setError(message(e));
     } finally {
@@ -54,13 +68,15 @@ export function DelugeTakeOverSection() {
           ))}
         </ul>
       )}
-      {total > 0 && (
+      {total > 0 && !running && (
         <div>
           <button type="button" disabled={busy} onClick={() => void takeOver()}>
-            {busy ? "Taking over…" : `Take over all ${total}`}
+            {busy ? "Starting…" : `Take over all ${total}`}
           </button>
         </div>
       )}
+      {running && tracked && <JobProgress job={tracked.job} />}
+      {outcome?.kind === "failed" && <p className="error-text">{outcome.message}</p>}
       {report && (
         <p className={report.skipped.length > 0 ? "error-text" : "ok-text"}>
           Took over {report.takenOver} torrent{report.takenOver === 1 ? "" : "s"}.

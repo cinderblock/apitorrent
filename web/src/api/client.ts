@@ -28,6 +28,7 @@ import type { DelugePreview } from "./generated/DelugePreview";
 import type { DelugePreviewRequest } from "./generated/DelugePreviewRequest";
 import type { ImportDelugeRequest } from "./generated/ImportDelugeRequest";
 import type { ImportReport } from "./generated/ImportReport";
+import type { Job } from "./generated/Job";
 import type { QueueMove } from "./generated/QueueMove";
 import type { ReplacePasskeyReport } from "./generated/ReplacePasskeyReport";
 import type { ReplacePasskeyRequest } from "./generated/ReplacePasskeyRequest";
@@ -131,8 +132,10 @@ export const api = {
   bans: () => request<Ban[]>("GET", "/bans"),
   ban: (ip: string) => request<void>("POST", "/bans", { ip }),
   unban: (ip: string) => request<void>("DELETE", `/bans/${enc(ip)}`),
-  /** Import into the page's space, or the space `slug`. */
+  /** Import into the page's space, or the space `slug`, waiting until it's done. */
   importDeluge: (req: ImportDelugeRequest, slug: string | null = null) => requestIn<ImportReport>(slug, "POST", "/import/deluge", req),
+  /** Start importing in the background (see `jobs.ts`): answers at once with the job. */
+  startImportDeluge: (req: ImportDelugeRequest, slug: string | null = null) => requestIn<Job>(slug, "POST", "/import/deluge/jobs", req),
   /** The space's tracker passkeys, masked (the space's admins). */
   trackerPasskeys: () => request<TrackerPasskey[]>("GET", "/tracker-passkeys"),
   /** Change one passkey on every torrent in the space that uses it. */
@@ -141,6 +144,8 @@ export const api = {
   findDeluge: () => request<DelugeInstall[]>("GET", "/import/deluge/found"),
   /** Pause the space's imported torrents still waiting in Deluge, and run them here. */
   takeOver: (slug: string | null = null) => requestIn<TakeOverReport>(slug, "POST", "/import/deluge/take-over", { ids: [] }),
+  /** The same, in the background: answers at once with the job. */
+  startTakeOver: (slug: string | null = null) => requestIn<Job>(slug, "POST", "/import/deluge/take-over/jobs", { ids: [] }),
   /** What a Deluge installation holds, as the space `slug` (or the page's) would import it. */
   previewDeluge: (req: DelugePreviewRequest, slug: string | null = null) => requestIn<DelugePreview>(slug, "POST", "/import/deluge/preview", req),
   saveSettings: (s: Settings) => request<void>("PUT", "/settings", s),

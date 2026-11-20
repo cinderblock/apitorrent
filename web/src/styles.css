@@ -1907,3 +1907,80 @@ button.link.danger-text {
   flex-wrap: wrap;
   overflow-wrap: anywhere;
 }
+
+/* Background jobs: their progress, and the tray that keeps them in view on every page. */
+.job-progress {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+}
+
+.job-progress .progress-fill {
+  opacity: 0.6;
+  transition: width 0.3s ease;
+}
+
+.job-progress-line {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.job-progress-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The size of the work isn't known yet: a band sweeps across instead. */
+.progress-indeterminate .progress-fill {
+  width: 30%;
+  animation: progress-sweep 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(340%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-indeterminate .progress-fill {
+    width: 100%;
+    animation: none;
+    opacity: 0.2;
+  }
+}
+
+.jobs-tray {
+  position: fixed;
+  right: 16px;
+  bottom: 40px;
+  z-index: 20;
+  display: grid;
+  gap: 8px;
+  width: min(22rem, calc(100vw - 32px));
+}
+
+.jobs-tray-item {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.jobs-tray-item p {
+  margin: 6px 0;
+}
+
+.jobs-tray-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}

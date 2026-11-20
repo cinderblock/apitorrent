@@ -12,7 +12,7 @@ import { ApiRequestError, api } from "../api/client";
 import type { AuthStatus } from "../api/generated/AuthStatus";
 import type { Settings } from "../api/generated/Settings";
 import { ClientIdentitySection } from "../components/ClientIdentitySection";
-import { ImportDeluge } from "../components/ImportDeluge";
+import { showDelugeImport, type JobRef } from "../components/importDialog";
 import { TlsSection } from "../components/TlsSection";
 import { TrackerPasskeysSection } from "../components/TrackerPasskeysSection";
 import { UpdatesSection } from "../components/Updates";
@@ -46,13 +46,13 @@ function onAppLink(e: MouseEvent, go: () => void) {
   go();
 }
 
-/** Set by [`openDelugeImport`]: the next Settings page opens with the Deluge import. */
-let importOnOpen = false;
-
-/** Go to Settings → Deluge with the import wizard open (from the empty torrent list). */
-export function openDelugeImport(): void {
-  importOnOpen = true;
-  navigate(settingsPath("deluge"));
+/**
+ * Open the Deluge import wizard. With a job (from the jobs tray): on that job, over the page
+ * already showing. Without (from the empty torrent list): at its start, over Settings → Deluge.
+ */
+export function openDelugeImport(job?: JobRef): void {
+  if (!job) navigate(settingsPath("deluge"));
+  showDelugeImport(job ?? null);
 }
 
 export function SettingsPage({ status }: { status: AuthStatus }) {
@@ -158,11 +158,6 @@ export function SettingsPage({ status }: { status: AuthStatus }) {
     else navigate(to);
   };
 
-  const [importing, setImporting] = useState(() => {
-    const open = importOnOpen;
-    importOnOpen = false;
-    return open;
-  });
   const [query, setQuery] = useState("");
   const shown = filterSections(sections, query);
 
@@ -284,7 +279,7 @@ export function SettingsPage({ status }: { status: AuthStatus }) {
               loadError={loadError}
               update={update}
               serverAdmin={serverAdmin}
-              onImport={() => setImporting(true)}
+              onImport={() => showDelugeImport()}
             />
           </main>
         )}
@@ -327,7 +322,6 @@ export function SettingsPage({ status }: { status: AuthStatus }) {
           }}
         />
       )}
-      {importing && <ImportDeluge onClose={() => setImporting(false)} />}
     </div>
   );
 }

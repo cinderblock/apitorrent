@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ApiRequestError, api } from "../api/client";
 import type { DelugeImportOptions } from "../api/generated/DelugeImportOptions";
 import type { DelugeInstall } from "../api/generated/DelugeInstall";
 import type { DelugePreview } from "../api/generated/DelugePreview";
-import type { ImportReport } from "../api/generated/ImportReport";
 import type { PathMapping } from "../api/generated/PathMapping";
 import type { TakeOverReport } from "../api/generated/TakeOverReport";
 import { formatBytes, formatPercent } from "../format";
@@ -12,7 +11,10 @@ import { navigate } from "../router";
 import { spacesApi } from "../spaces/api";
 import { loadSpaceContext, useSpaceContext } from "../spaces/context";
 import { spaceHome } from "../spaces/prefix";
+import { trackJob, useJob } from "../jobs";
+import type { JobRef } from "./importDialog";
 import { ImportDelugeOptions } from "./ImportDelugeOptions";
+import { JobProgress } from "./JobProgress";
 import { Tip } from "./Tip";
 import { DEFAULT_OPTIONS, NO_FILTER, importable, matches, rootsFor, validSlug, within, type WizardFilter } from "./delugeImport";
 
@@ -27,9 +29,12 @@ function message(err: unknown): string {
 
 /**
  * Bring in a Deluge installation's torrents, from a directory on the server: choose the
- * installation and the space, look at what it holds, tick what to take, import.
+ * installation and the space, look at what it holds, tick what to take, import. The import
+ * and the move-over run on the server as background jobs: this shows their progress, and
+ * closing it leaves them running (the jobs tray keeps them in view). With `job`, it opens on
+ * that job.
  */
-export function ImportDeluge({ onClose }: { onClose: () => void }) {
+export function ImportDeluge({ onClose, job: openOn = null }: { onClose: () => void; job?: JobRef | null }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const ctx = useSpaceContext();
   const [configDir, setConfigDir] = useState("");
@@ -49,10 +54,24 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
   const [paused, setPaused] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [report, setReport] = useState<ImportReport | null>(null);
-  const [takeOver, setTakeOver] = useState<TakeOverReport | null>(null);
+  // The import job this shows, once started (or the job it was opened on).
+  const [jobRef, setJobRef] = useState<JobRef | null>(openOn);
+  // The move-over job started from here.
+  const [moveRef, setMoveRef] = useState<JobRef | null>(null);
   // The Deluge installations the server found; `null` until it answers (or if it can't).
   const [found, setFound] = useState<DelugeInstall[] | null>(null);
+
+  const opened = useJob(jobRef?.slug ?? null, jobRef?.id ?? null);
+  const importJob = opened?.job.kind === "delugeImport" ? opened : undefined;
+  const moveJob = useJob(moveRef?.slug ?? null, moveRef?.id ?? null) ?? (opened?.job.kind === "takeOver" ? opened : undefined);
+  const importOutcome = importJob?.job.outcome ?? null;
+  const report = importOutcome?.kind === "delugeImport" ? importOutcome.report : null;
+  const moveOutcome = moveJob?.job.outcome ?? null;
+  const takeOver = moveOutcome?.kind === "takeOver" ? moveOutcome.report : null;
+  // Whether the import added its torrents paused (so there is something to move over).
+  const addedPaused = importJob?.paused ?? paused;
+  // The space the job works in.
+  const jobSlug = (importJob ?? moveJob)?.slug ?? null;
 
   useEffect(() => {
     dialog.current?.showModal();
@@ -87,8 +106,8 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
 
   /** Back to the start, for the next installation. */
   function again() {
-    setReport(null);
-    setTakeOver(null);
+    setJobRef(null);
+    setMoveRef(null);
     setPreview(null);
     setConfigDir("");
     setTarget(null);
@@ -105,7 +124,9 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      setTakeOver(await api.takeOver(elsewhere));
+      const job = await api.startTakeOver(jobSlug);
+      trackJob(jobSlug, job);
+      setMoveRef({ slug: jobSlug, id: job.id });
     } catch (err) {
       setError(message(err));
     } finally {
@@ -212,7 +233,11 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
         }
       }
       const filter = { labels: [], excludeLabels: [], trackers: [], savePaths: [], complete: null, paused: null, name: null, ids: [...ticked] };
-      setReport(await api.importDeluge({ configDir: configDir.trim(), pathMap: pathMap(), paused, filter, options }, slug));
+      // Name the space even when it's the page's, so the job stays tied to it if the page moves on.
+      const where = slug ?? ctx?.current.slug ?? null;
+      const job = await api.startImportDeluge({ configDir: configDir.trim(), pathMap: pathMap(), paused, filter, options }, where);
+      trackJob(where, job, { paused });
+      setJobRef({ slug: where, id: job.id });
     } catch (err) {
       setError(message(err));
     } finally {
@@ -221,12 +246,25 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
   }
 
   // Where the imported torrents ended up, when that isn't this page's space.
-  const elsewhere = chosen.kind === "new" ? created : chosenSlug;
+  const elsewhere = jobSlug !== null && jobSlug !== (ctx?.current.slug ?? null) ? jobSlug : null;
+  const importFailed = importOutcome?.kind === "failed" ? importOutcome.message : null;
+  const moveFailed = moveOutcome?.kind === "failed" ? moveOutcome.message : null;
+  const moving = moveJob !== undefined && moveOutcome === null;
 
   return (
     <dialog ref={dialog} className="dialog wide" onClose={onClose} aria-labelledby="import-title">
       <h2 id="import-title">Import from Deluge</h2>
-      {report ? (
+      {(importJob && !report) || (moveJob && !importJob) ? (
+        // Running, failed, or a move-over opened from the jobs tray.
+        <JobView
+          title={importJob ? "Importing" : "Moving torrents over from Deluge"}
+          running={importJob ? importOutcome === null : moving}
+          failed={importJob ? importFailed : moveFailed}
+          progress={importJob ? <JobProgress job={importJob.job} /> : moveJob ? <JobProgress job={moveJob.job} /> : null}
+          done={takeOver && <TakeOverResult report={takeOver} />}
+          onClose={onClose}
+        />
+      ) : report ? (
         <>
           <p>
             Imported {report.imported.length} torrent{report.imported.length === 1 ? "" : "s"}
@@ -254,34 +292,20 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
               ))}
             </ul>
           )}
-          {paused && report.imported.length > 0 && !takeOver && (
+          {addedPaused && report.imported.length > 0 && !moveJob && (
             <p className="hint">
               They are paused here and still running in Deluge. Move them over now: apitorrent pauses each one in Deluge, waits until Deluge has stopped it,
               then starts it here. Or do it later, from Settings → Deluge, or by resuming one torrent at a time.
             </p>
           )}
-          {takeOver && (
-            <>
-              <p className={takeOver.skipped.length > 0 ? "error-text" : "ok-text"}>
-                Moved over {takeOver.takenOver} torrent{takeOver.takenOver === 1 ? "" : "s"}: paused in Deluge, running here.
-                {takeOver.skipped.length > 0 && ` ${takeOver.skipped.length} stayed paused:`}
-              </p>
-              {takeOver.skipped.length > 0 && (
-                <ul className="outcomes">
-                  {takeOver.skipped.map((s) => (
-                    <li key={s.name}>
-                      {s.name}: <span className="muted">{s.reason}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
+          {moveJob && moveOutcome === null && <JobProgress job={moveJob.job} />}
+          {takeOver && <TakeOverResult report={takeOver} />}
+          {moveFailed && <p className="error-text">{moveFailed}</p>}
           {error && <p className="error-text">{error}</p>}
           <div className="actions">
-            {paused && report.imported.length > 0 && !takeOver && (
+            {addedPaused && report.imported.length > 0 && (!moveJob || moveFailed) && (
               <button type="button" className="actions-start" disabled={busy} onClick={() => void moveOver()}>
-                {busy ? "Moving over…" : `Move ${report.imported.length} over from Deluge now`}
+                {busy ? "Starting…" : `Move ${report.imported.length} over from Deluge now`}
               </button>
             )}
             {found !== null && found.length > 1 && (
@@ -301,7 +325,7 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
               </button>
             )}
             <button type="button" className="primary" onClick={onClose}>
-              Done
+              {moving ? "Keep working" : "Done"}
             </button>
           </div>
         </>
@@ -543,11 +567,63 @@ export function ImportDeluge({ onClose }: { onClose: () => void }) {
               Cancel
             </button>
             <button type="button" className="primary" disabled={busy || ticked.size === 0 || newSpaceProblem !== null} onClick={() => void runImport()}>
-              {busy ? "Importing…" : `Import ${ticked.size} (${formatBytes(tickedSize)})`}
+              {busy ? "Starting…" : `Import ${ticked.size} (${formatBytes(tickedSize)})`}
             </button>
           </div>
         </div>
       )}
     </dialog>
+  );
+}
+
+/** A background job in the dialog: its progress while it runs (closing leaves it running), then how it ended. */
+function JobView({
+  title,
+  running,
+  failed,
+  progress,
+  done,
+  onClose,
+}: {
+  title: string;
+  running: boolean;
+  failed: string | null;
+  progress: ReactNode;
+  done: ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <p>{title}</p>
+      {running && progress}
+      {running && <p className="hint muted">This runs on the server: close this and keep working. Its progress stays in the corner of the page.</p>}
+      {failed && <p className="error-text">{failed}</p>}
+      {!running && done}
+      <div className="actions">
+        <button type="button" className="primary" onClick={onClose}>
+          {running ? "Keep working" : "Done"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function TakeOverResult({ report }: { report: TakeOverReport }) {
+  return (
+    <>
+      <p className={report.skipped.length > 0 ? "error-text" : "ok-text"}>
+        Moved over {report.takenOver} torrent{report.takenOver === 1 ? "" : "s"}: paused in Deluge, running here.
+        {report.skipped.length > 0 && ` ${report.skipped.length} stayed paused:`}
+      </p>
+      {report.skipped.length > 0 && (
+        <ul className="outcomes">
+          {report.skipped.map((s) => (
+            <li key={s.name}>
+              {s.name}: <span className="muted">{s.reason}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }

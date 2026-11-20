@@ -4,6 +4,7 @@ import { App } from "../App";
 import { TorrentWindow } from "../components/TorrentWindow";
 import { authApi, onAuthLost } from "../api/client";
 import type { AuthStatus } from "../api/generated/AuthStatus";
+import { BackgroundWork } from "../components/Jobs";
 import { isDesktop } from "../desktop/bridge";
 import { DesktopProblem } from "../desktop/DesktopProblem";
 import { navigate, usePath } from "../router";
@@ -72,6 +73,16 @@ export function AuthGate() {
   if (path === "/enroll" && !status.authDisabled) return <EnrollPage status={status} onSignedIn={setStatus} />;
   if (view === "login" || view === "secondFactor") return <LoginPage status={status} onSignedIn={setStatus} />;
   // `/pair` is the Account page with a device's code to approve (from the desktop app).
+  return (
+    <>
+      <SignedIn path={path} status={status} setStatus={setStatus} refresh={refresh} />
+      <BackgroundWork />
+    </>
+  );
+}
+
+/** The page for `path`, once signed in. */
+function SignedIn({ path, status, setStatus, refresh }: { path: string; status: AuthStatus; setStatus: (s: AuthStatus) => void; refresh: () => Promise<void> }) {
   if (path === "/account" || path === "/pair") return <AccountPage status={status} onStatus={setStatus} refresh={refresh} />;
   if (path === "/plugins") return <PluginsPage status={status} onStatus={setStatus} />;
   if (path === "/rules") return <RulesPage status={status} />;
