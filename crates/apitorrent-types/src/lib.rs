@@ -12,6 +12,7 @@ use ts_rs::TS;
 
 pub mod auth;
 pub mod automation;
+pub mod bulk;
 pub mod library;
 pub mod plugins;
 pub mod share;

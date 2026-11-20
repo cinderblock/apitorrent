@@ -47,6 +47,7 @@ use apitorrent_engine::{
 };
 use apitorrent_metainfo::sanitize::Naming;
 use apitorrent_metainfo::{Magnet, Torrent};
+use apitorrent_types::bulk::{BulkEdit, BulkFailure, BulkReport, TorrentSettings};
 use apitorrent_types::spaces::{DEFAULT_SPACE, Space, SpaceId};
 use apitorrent_types::{
     AddSource, AddTorrentRequest, FilePlacement, FilePriority, QueueMove, Settings, TorrentDetail,
@@ -755,6 +756,15 @@ impl Core {
 
     /// Change a torrent's label, which also picks its group.
     pub async fn set_label(&self, key: &Key, label: Option<String>) -> Result<(), CoreError> {
+        self.store_label(key, label).await?;
+        self.regroup().await;
+        self.refresh();
+        Ok(())
+    }
+
+    /// Change a torrent's label without regrouping: [`Self::set_label`], or many of them
+    /// followed by one regroup.
+    async fn store_label(&self, key: &Key, label: Option<String>) -> Result<(), CoreError> {
         let label = label.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
         if let Some(p) = self
             .inner
@@ -780,9 +790,116 @@ impl Core {
         {
             e.label = label;
         }
-        self.regroup().await;
-        self.refresh();
         Ok(())
+    }
+
+    /// Change settings on several of a space's torrents (see [`BulkEdit`]). Each torrent
+    /// is changed on its own, and one failing leaves the others changed.
+    pub async fn bulk_edit(&self, space: SpaceId, edit: BulkEdit) -> BulkReport {
+        let mut report = BulkReport::default();
+        let mut relabelled = false;
+        for id in &edit.ids {
+            let key = Key::new(space, id.as_str());
+            let outcome = self.bulk_edit_one(&key, &edit, &mut relabelled).await;
+            match outcome {
+                Ok(()) => report.updated.push(id.clone()),
+                Err(e) => report.failed.push(BulkFailure {
+                    id: id.clone(),
+                    code: e.code().to_owned(),
+                    message: match e {
+                        CoreError::Database(_) | CoreError::Io(_) => {
+                            tracing::error!(torrent = %id, error = %e, "bulk edit failed");
+                            "internal error".to_owned()
+                        }
+                        e => e.to_string(),
+                    },
+                }),
+            }
+        }
+        if relabelled {
+            self.regroup().await;
+        }
+        self.refresh();
+        report
+    }
+
+    async fn bulk_edit_one(
+        &self,
+        key: &Key,
+        edit: &BulkEdit,
+        relabelled: &mut bool,
+    ) -> Result<(), CoreError> {
+        if let Some(label) = &edit.label {
+            self.store_label(key, Some(label.clone())).await?;
+            *relabelled = true;
+        }
+        if let Some(limits) = &edit.limits {
+            let current = self
+                .inner
+                .torrents
+                .read()
+                .expect("torrents lock poisoned")
+                .get(key)
+                .map(|e| e.limits)
+                .ok_or(CoreError::NotFound)?;
+            self.set_torrent_limits(key, limits.apply(current)).await?;
+        }
+        if let Some(seed) = &edit.seed_limits {
+            self.set_seed_limits(key, seed.limits).await?;
+        }
+        if let Some(trackers) = edit.trackers.as_ref().filter(|t| !t.is_empty()) {
+            let current = self.torrent_settings_of(key)?.trackers;
+            let next = trackers.apply(&current);
+            if next != current {
+                self.set_trackers(key, next).await?;
+            }
+        }
+        if let Some(policy) = edit.unwanted_policy {
+            self.set_unwanted_policy(key, policy).await?;
+        }
+        Ok(())
+    }
+
+    /// The settings a [`BulkEdit`] changes, for each of `ids` in the space. Torrents not
+    /// in the space are left out.
+    #[must_use]
+    pub fn torrent_settings(&self, space: SpaceId, ids: &[String]) -> Vec<TorrentSettings> {
+        ids.iter()
+            .filter_map(|id| self.torrent_settings_of(&Key::new(space, id.as_str())).ok())
+            .collect()
+    }
+
+    fn torrent_settings_of(&self, key: &Key) -> Result<TorrentSettings, CoreError> {
+        let summary = self.inner.store.get(key).ok_or(CoreError::NotFound)?;
+        if let Some(p) = self
+            .inner
+            .pending
+            .read()
+            .expect("pending lock poisoned")
+            .get(key)
+        {
+            return Ok(TorrentSettings {
+                id: key.id.clone(),
+                label: summary.label,
+                limits: TorrentLimits::default(),
+                seed_limits: None,
+                trackers: p.magnet.trackers.iter().map(|t| vec![t.clone()]).collect(),
+                unwanted_policy: p.unwanted,
+            });
+        }
+        let (limits, trackers, unwanted_policy) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let e = torrents.get(key).ok_or(CoreError::NotFound)?;
+            (e.limits, e.trackers.clone(), e.unwanted)
+        };
+        Ok(TorrentSettings {
+            id: key.id.clone(),
+            label: summary.label,
+            limits,
+            seed_limits: self.seed_state(key).limits,
+            trackers,
+            unwanted_policy,
+        })
     }
 
     /// Move a torrent in its space's queue. Positions are renumbered from 0.

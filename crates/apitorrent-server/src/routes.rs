@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use apitorrent_core::CoreError;
+use apitorrent_types::bulk::{BulkEdit, BulkReport, TorrentSettings, TorrentSettingsRequest};
 use apitorrent_types::{
     API_VERSION, AddTorrentRequest, AddTorrentResponse, ApiError, Ban, BanRequest,
     ImportDelugeRequest, ImportReport, QueueMoveRequest, ReleaseHeldRequest, ServerInfo,
@@ -70,6 +71,8 @@ pub(crate) async fn info(State(s): State<AppState>) -> Json<ServerInfo> {
         "storage-roots",
         "automation",
         "spaces",
+        // `PATCH /torrents` and `POST /torrents/settings`.
+        "bulk-edit",
     ]
     .map(str::to_owned)
     .into();
@@ -275,6 +278,25 @@ pub(crate) async fn set_trackers(
 ) -> ApiResult<StatusCode> {
     s.core.set_trackers(&here.key(id), req.tiers).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PATCH /torrents`: change settings on several of the space's torrents. Answers with
+/// what changed and what didn't, per torrent; refused ids don't fail the request.
+pub(crate) async fn bulk_edit(
+    State(s): State<AppState>,
+    here: Here,
+    Json(req): Json<BulkEdit>,
+) -> Json<BulkReport> {
+    Json(s.core.bulk_edit(here.id(), req).await)
+}
+
+/// `POST /torrents/settings`: the settings a bulk edit changes, for each torrent asked.
+pub(crate) async fn torrent_settings(
+    State(s): State<AppState>,
+    here: Here,
+    Json(req): Json<TorrentSettingsRequest>,
+) -> Json<Vec<TorrentSettings>> {
+    Json(s.core.torrent_settings(here.id(), &req.ids))
 }
 
 pub(crate) async fn queue_move(

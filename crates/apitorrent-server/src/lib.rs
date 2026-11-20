@@ -226,7 +226,11 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
     };
     let api = Router::new()
         .route("/info", get(routes::info))
-        .route("/torrents", get(routes::list).post(routes::add))
+        .route(
+            "/torrents",
+            get(routes::list).post(routes::add).patch(routes::bulk_edit),
+        )
+        .route("/torrents/settings", post(routes::torrent_settings))
         .route("/torrents/{id}", get(routes::detail).delete(routes::remove))
         .route("/torrents/{id}/pause", post(routes::pause))
         .route("/torrents/{id}/resume", post(routes::resume))
