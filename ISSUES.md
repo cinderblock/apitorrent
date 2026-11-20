@@ -63,3 +63,20 @@ Why it matters: the load was extreme, but CI runners are slow too, and wall-cloc
 CPU-bound work (debug-build hashing) are the likely next flakes. To start: reproduce by
 running several suites at once at idle priority, then decide whether those limits should
 scale or wait on progress instead of time.
+
+## Magnet metadata fetch leaves a ghost peer on trackers
+
+`crates/apitorrent-engine/src/metadata.rs` `announce()` sends `started` under the fetch's
+own identity (a fresh peer id when a client profile applies), repeats `started` every
+announce, and never sends `stopped`. Once the metadata arrives, `torrent.rs` resolves a new
+identity and starts again under another peer id. A private tracker sees two peers from one
+client, the first left to time out. No stats are reported by it (always 0/0), so ratios
+are safe, but it breaks "one client, one session".
+
+## Hybrid torrents report the same bytes under both info hashes
+
+`crates/apitorrent-engine/src/announce.rs`: a v1+v2 hybrid announces in two lanes (v1 hash
+and truncated v2 hash), and both lanes report the entry's whole uploaded/downloaded. A
+tracker that tracks both hashes and credits them to one account counts every byte twice.
+Most private trackers register only the v1 hash, so the v2 announce fails there, but this
+should be checked before it matters: ratios must never be double-counted.
