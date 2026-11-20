@@ -92,30 +92,46 @@ User answers, 2026-11-20:
 - v1 scope: label, transfer limits, seed limits, **trackers add/remove**, **tracker
   find/replace**, **unwanted-files policy**, and **recheck + move storage** (both new
   engine features; built in this thread, as later phases).
+- Wide-table selection: **(A) always-on checkbox column by default**, with **(C) no
+  checkboxes, visible count only** as a per-device option in Settings → This device →
+  Appearance (localStorage, like the details mode). The "N selected · Clear" count shows
+  in both.
 
 ## Open questions for the user
 
-1. Checkbox style for the wide table: (A) always-on column (recommended), (B) select-mode
-   toggle, (C) no checkboxes, only a visible count. User asked for a visual comparison;
-   mockup shown in the thread 2026-11-20, waiting on the pick.
+- (none)
 
 ## Plan / steps
 
 1. [x] User answers the first four questions
-2. [ ] Server: types in `apitorrent-types`, `PATCH /torrents`, `POST /torrents/settings`,
+2. [x] Server: types in `apitorrent-types`, `PATCH /torrents`, `POST /torrents/settings`,
        tests; regenerate TS bindings
-3. [ ] Web: `api.bulkEdit`, `api.bulkSettings`; `BulkEdit.tsx` dialog with mixed-value
+3. [x] Web: `api.bulkEdit`, `api.bulkSettings`; `BulkEdit.tsx` dialog with mixed-value
        logic in a tested pure module
-4. [ ] Web: checkbox column + header select-all; toolbar count; phone bar Edit… / Select all
-5. [ ] Result reporting for bulk pause/resume/remove/queue
-6. [ ] Typecheck, tests, cargo test/clippy, headless browser check (wide + phone)
-7. [ ] Recheck: engine + `POST /torrents/{id}/recheck` + bulk; UI button
+4. [x] Web: checkbox column + header select-all; toolbar count; phone bar Edit… / Select all
+5. [x] Result reporting for bulk pause/resume/remove/queue
+6. [x] Typecheck, tests, cargo test/clippy, headless browser check (wide + phone)
+7. [ ] Recheck:  ← current engine + `POST /torrents/{id}/recheck` + bulk; UI button
 8. [ ] Move storage: engine + endpoint + bulk; UI (destination picker within storage roots)
 9. [ ] README / docs for the new endpoints
 
 ## Findings / gotchas
 
-- Bulk actions today swallow errors (`void api.pause(id)` in `App.tsx`).
+- Bulk actions swallowed errors (`void api.pause(id)` in `App.tsx`); now they go through
+  `eachOf` and failures show in a dialog.
+- `PATCH /torrents` regroups once at the end (`Core::store_label` skips the regroup that
+  `set_label` does), so relabelling hundreds of torrents doesn't regroup hundreds of times.
+- Limits in a bulk edit are per field (`BulkLimits`): the server merges onto each torrent's
+  own limits, so the browser never does read-modify-write.
+- `POST /torrents/settings` is a POST (it takes a list of ids), so viewers are refused by
+  the write guard. Fine: viewers can't edit anyway.
+- The `GET /system/update` 503s in the headless console come from `--no-update-check`, not
+  from this work.
+- Headless check: `scratchpad/bulk/check.py` against a loopback daemon
+  (`--insecure-no-auth-loopback --web-root web/dist`) seeded by `seed.py`. Asserts the
+  checkbox column, select-all indeterminate state, the dialog's applied values read back
+  from the server, the Highlight-only setting and the phone flow; no sideways scroll at
+  1280 and 390 wide.
 
 ## Things not to do
 
@@ -124,3 +140,7 @@ User answers, 2026-11-20:
 ## Progress log
 
 - [x] 2026-11-20: surveyed UI and API, wrote this proposal
+- [x] Server bulk endpoints (`9f97302`)
+- [x] Web dialog, checkbox column, selection setting, failure reporting (`ed2e9bb`)
+- [ ] Recheck
+- [ ] Move storage
