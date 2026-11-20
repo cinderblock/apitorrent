@@ -169,8 +169,9 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
     and cards read "In Deluge" (warn-coloured chip) instead of "Paused"; the detail pane
     has a banner on every tab, "Starting it here pauses it in Deluge first", with a
     "Pause in Deluge, start here" button (plain resume, which already takes over);
-    Pause / Resume reads "Resume, pausing it in Deluge" for such a selection. Not yet
-    deployed to pokol.
+    Pause / Resume reads "Resume, pausing it in Deluge" for such a selection. Deployed
+    to pokol as part of `105a06d` (2026-11-20 1:43 PM PST, 21:43Z; schema 16), built on
+    sentinel from a clean worktree (`embedded-ui,first-party-plugins`).
 
 ## Findings / gotchas
 
