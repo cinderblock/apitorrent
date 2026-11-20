@@ -221,6 +221,11 @@ export const desktop = {
   pathAvailable: (savePath: string) => call<string | null>("path_available", { savePath }),
   /** The OS's folder picker; null when cancelled. Opens at `start` when it exists. */
   pickFolder: (title: string, start?: string) => call<string | null>("pick_folder", { title, start: start ?? null }),
+  /**
+   * Open an app page (a space-prefixed path such as `/torrent/<id>`) in a window of its
+   * own, or bring that page's window forward if it's open already.
+   */
+  openWindow: (path: string) => call<void>("window_open", { path }),
   /** The window's own theme (title bar, background), kept in step with the page's. */
   setTheme: (theme: ThemePreference) => call<void>("theme_set", { theme }),
   /** The last update check (at most a day old), or a fresh one with `force`. */

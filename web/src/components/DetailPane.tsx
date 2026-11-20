@@ -523,16 +523,29 @@ function FilesTab({ summary, detail, refetch, readOnly }: { summary: TorrentSumm
 }
 
 /**
- * `onClose` is given on a phone, where the details cover the screen. `readOnly`: the caller
- * is a viewer here, so values show as text without their editors.
+ * `sheet`: on a phone, where the details cover the screen and `onClose` goes back. Otherwise
+ * `onClose` and `onPopOut` add close and open-in-a-window buttons to the tab bar. `readOnly`:
+ * the caller is a viewer here, so values show as text without their editors.
  */
-export function DetailPane({ summary, onClose, readOnly = false }: { summary: TorrentSummary; onClose?: () => void; readOnly?: boolean }) {
+export function DetailPane({
+  summary,
+  sheet = false,
+  onClose,
+  onPopOut,
+  readOnly = false,
+}: {
+  summary: TorrentSummary;
+  sheet?: boolean;
+  onClose?: () => void;
+  onPopOut?: () => void;
+  readOnly?: boolean;
+}) {
   const [tab, setTab] = useState<Tab>("general");
   const { detail, error, refetch } = useDetail(summary.id, summary);
 
   return (
-    <section className={`detail ${onClose ? "detail-sheet" : ""}`} aria-label={`Details of ${summary.name}`}>
-      {onClose && (
+    <section className={`detail ${sheet ? "detail-sheet" : ""}`} aria-label={`Details of ${summary.name}`}>
+      {sheet && onClose && (
         <div className="sheet-head">
           <button type="button" onClick={onClose}>
             ← Back
@@ -546,6 +559,20 @@ export function DetailPane({ summary, onClose, readOnly = false }: { summary: To
             {TAB_NAMES[t]}
           </button>
         ))}
+        {!sheet && (onPopOut || onClose) && (
+          <span className="tabs-actions">
+            {onPopOut && (
+              <button type="button" className="tabs-action" onClick={onPopOut}>
+                ⧉ Window
+              </button>
+            )}
+            {onClose && (
+              <button type="button" className="tabs-action" aria-label="Close details" onClick={onClose}>
+                ✕
+              </button>
+            )}
+          </span>
+        )}
       </div>
       <div className="tab-body" role="tabpanel">
         {error && <p className="error-text">{error}</p>}

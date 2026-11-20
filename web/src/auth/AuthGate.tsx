@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { App } from "../App";
+import { TorrentWindow } from "../components/TorrentWindow";
 import { authApi, onAuthLost } from "../api/client";
 import type { AuthStatus } from "../api/generated/AuthStatus";
 import { isDesktop } from "../desktop/bridge";
 import { DesktopProblem } from "../desktop/DesktopProblem";
 import { navigate, usePath } from "../router";
+import { torrentIdOf } from "../state/details";
 import { PluginsPage } from "../plugins/PluginsPage";
 import { RulesPage } from "../rules/RulesPage";
 import { SettingsPage } from "../settings/SettingsPage";
@@ -76,5 +78,7 @@ export function AuthGate() {
   if (path === "/settings" || path.startsWith("/settings/")) return <SettingsPage status={status} />;
   if (path === "/spaces") return <SpacesPage status={status} onStatus={setStatus} />;
   if (path === "/users") return <UsersPage status={status} onStatus={setStatus} />;
+  const torrent = torrentIdOf(path);
+  if (torrent !== null) return <TorrentWindow key={torrent} id={torrent} status={status} />;
   return <App status={status} />;
 }

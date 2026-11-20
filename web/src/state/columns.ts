@@ -67,18 +67,56 @@ export function moveColumn(all: readonly ColumnInfo[], prefs: ColumnPrefs | null
   return { order, hidden: p.hidden };
 }
 
-const KEY = "apitorrent.columns.v1";
+/**
+ * Move a column so it sits just before `before` (or last, for null), as dropped there by a
+ * drag. Hidden columns keep their places among the others.
+ */
+export function placeColumn(all: readonly ColumnInfo[], prefs: ColumnPrefs | null, id: string, before: string | null): ColumnPrefs {
+  const p = normalize(all, prefs);
+  if (id === before || !p.order.includes(id) || (before !== null && !p.order.includes(before))) return p;
+  const order = p.order.filter((x) => x !== id);
+  const at = before === null ? order.length : order.indexOf(before);
+  order.splice(at, 0, id);
+  return { order, hidden: order.filter((x) => p.hidden.includes(x)) };
+}
 
-/** Saved prefs, or null. Storage can be missing or blocked (private windows). */
-export function loadColumnPrefs(): ColumnPrefs | null {
+const KEY = "apitorrent.columns.v2";
+const V1_KEY = "apitorrent.columns.v1";
+
+/** Columns shown by default in v1 and hidden by default since; v1 prefs hide them once. */
+const HIDDEN_SINCE_V2 = ["queuePosition"];
+
+/** Prefs from storage, if they parse. */
+export function parsePrefs(raw: string | null): ColumnPrefs | null {
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
     const v = JSON.parse(raw) as Partial<ColumnPrefs> | null;
     const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every((s) => typeof s === "string");
     if (v && strings(v.order) && strings(v.hidden)) return { order: v.order, hidden: v.hidden };
   } catch {
-    // Unreadable or blocked: use the defaults.
+    // Unreadable: the defaults.
+  }
+  return null;
+}
+
+/** v1 prefs, brought up to v2: the columns v2 hides by default are hidden here too. */
+export function migrateV1(prefs: ColumnPrefs): ColumnPrefs {
+  return { order: prefs.order, hidden: [...new Set([...prefs.hidden, ...HIDDEN_SINCE_V2.filter((id) => prefs.order.includes(id))])] };
+}
+
+/** Saved prefs, or null. Storage can be missing or blocked (private windows). */
+export function loadColumnPrefs(): ColumnPrefs | null {
+  try {
+    const current = parsePrefs(localStorage.getItem(KEY));
+    if (current) return current;
+    const v1 = parsePrefs(localStorage.getItem(V1_KEY));
+    if (!v1) return null;
+    const migrated = migrateV1(v1);
+    localStorage.setItem(KEY, JSON.stringify(migrated));
+    localStorage.removeItem(V1_KEY);
+    return migrated;
+  } catch {
+    // Blocked: use the defaults.
   }
   return null;
 }
@@ -87,7 +125,10 @@ export function loadColumnPrefs(): ColumnPrefs | null {
 export function saveColumnPrefs(prefs: ColumnPrefs | null): void {
   try {
     if (prefs) localStorage.setItem(KEY, JSON.stringify(prefs));
-    else localStorage.removeItem(KEY);
+    else {
+      localStorage.removeItem(KEY);
+      localStorage.removeItem(V1_KEY);
+    }
   } catch {
     // Not remembered; the choice still applies until the page reloads.
   }

@@ -7,6 +7,7 @@ import { api } from "../api/client";
 import type { Ban } from "../api/generated/Ban";
 import { DelugeTakeOverSection } from "../components/DelugeTakeOverSection";
 import { formatDateTime } from "../format";
+import { setDetailsMode, useDetailsMode, type DetailsMode } from "../state/details";
 import { THEME_PREFERENCES, setTheme, useTheme, type ThemePreference } from "../theme";
 import { ChoiceCards, Empty, SettingCard, type Choice } from "./controls";
 
@@ -107,11 +108,25 @@ const THEMES: readonly Choice<ThemePreference>[] = [
   { value: "dark", label: "☾ Dark" },
 ];
 
+const DETAILS: readonly Choice<DetailsMode>[] = [
+  { value: "panel", label: "Panel under the list", description: "Click a torrent to show its details below the list. Double-click still opens a window." },
+  { value: "window", label: "Separate windows", description: "Click only selects. Double-click opens the torrent in a window of its own." },
+];
+
 export function AppearanceSection() {
   const theme = useTheme();
+  const details = useDetailsMode();
   return (
-    <SettingCard title="Theme" description="Only for this browser or app; applies at once.">
-      <ChoiceCards label="Theme" columns={3} value={theme} options={THEMES.filter((t) => THEME_PREFERENCES.includes(t.value))} onChange={setTheme} />
-    </SettingCard>
+    <>
+      <SettingCard title="Theme" description="Only for this browser or app; applies at once.">
+        <ChoiceCards label="Theme" columns={3} value={theme} options={THEMES.filter((t) => THEME_PREFERENCES.includes(t.value))} onChange={setTheme} />
+      </SettingCard>
+      <SettingCard
+        title="Torrent details"
+        description="Where a torrent's details show on a wide screen. Torrent windows stay open after the list's window closes. Only for this browser or app."
+      >
+        <ChoiceCards label="Torrent details" columns={2} value={details} options={DETAILS} onChange={setDetailsMode} />
+      </SettingCard>
+    </>
   );
 }

@@ -88,7 +88,7 @@ pub fn follow<R: Runtime>(window: &WebviewWindow<R>, theme: Theme) {
     }
 }
 
-/// The web UI's theme changed: remember it, and bring the window along.
+/// The web UI's theme changed: remember it, and bring every window along.
 // Tauri hands commands their arguments by value.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -100,8 +100,8 @@ pub fn theme_set<R: Runtime>(
     if load(&state.dirs.config) != theme {
         save(&state.dirs.config, theme).map_err(|e| format!("couldn't save the theme: {e}"))?;
     }
-    if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) {
-        apply(&window, theme).map_err(|e| e.to_string())?;
+    for window in app.webview_windows().values() {
+        apply(window, theme).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

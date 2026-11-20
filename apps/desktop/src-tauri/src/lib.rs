@@ -23,7 +23,9 @@ use std::sync::Arc;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager as _, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+};
 
 use crate::state::{AppState, Dirs};
 
@@ -80,6 +82,96 @@ fn automation_args<R: Runtime, M: tauri::Manager<R>>(
     builder: WebviewWindowBuilder<'_, R, M>,
 ) -> WebviewWindowBuilder<'_, R, M> {
     builder
+}
+
+/// Open one of the app's pages in a window: hidden until it has the saved theme (never a
+/// white flash), and with links to anywhere else sent to the default browser.
+fn app_window<R: Runtime, M: Manager<R>>(
+    manager: &M,
+    label: &str,
+    url: WebviewUrl,
+    title: &str,
+    size: (f64, f64),
+    min_size: (f64, f64),
+) -> tauri::Result<WebviewWindow<R>> {
+    let theme = theme::load(&manager.state::<AppState>().dirs.config);
+    let builder = automation_args(WebviewWindowBuilder::new(manager, label, url));
+    let window = builder
+        .title(title)
+        .inner_size(size.0, size.1)
+        .min_inner_size(min_size.0, min_size.1)
+        .theme(theme.window_theme())
+        .visible(false)
+        .on_navigation(|url| {
+            if is_app_url(url) {
+                return true;
+            }
+            if matches!(url.scheme(), "http" | "https" | "mailto") {
+                let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+            }
+            false
+        })
+        .build()?;
+    if let Err(e) = theme::apply(&window, theme) {
+        tracing::warn!(error = %e, "couldn't apply the window theme");
+    }
+    window.show()?;
+    Ok(window)
+}
+
+/// Labels of the windows opened by [`window_open`] start with this. The capability file
+/// grants them the same as the main window.
+const PAGE_WINDOW_PREFIX: &str = "page";
+
+/// An app path a page window may open (`/torrent/<id>`, `/s/<slug>/torrent/<id>`): absolute,
+/// no `..`, nothing but URL-safe path characters. Returns the window label for it: one
+/// window per page.
+fn page_window_label(path: &str) -> Option<String> {
+    let ok = path.starts_with('/')
+        && !path.starts_with("//")
+        && path.len() <= 512
+        && !path.split('/').any(|s| s == "." || s == "..")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-_.~%".contains(&b));
+    ok.then(|| {
+        let tail: String = path
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        format!("{PAGE_WINDOW_PREFIX}{tail}")
+    })
+}
+
+/// Open an app page (a torrent's details) in a window of its own, or bring its window
+/// forward. These windows don't depend on the main one: closing the main window (which only
+/// hides it) leaves them open. Async, as Windows deadlocks building a window in a sync command.
+#[tauri::command]
+async fn window_open<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+    let label = page_window_label(&path).ok_or("not one of the app's pages")?;
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url = WebviewUrl::App(path.trim_start_matches('/').into());
+    app_window(
+        &app,
+        &label,
+        url,
+        "apitorrent",
+        (900.0, 680.0),
+        (480.0, 360.0),
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn dirs() -> Dirs {
@@ -175,37 +267,21 @@ pub fn run() {
             commands::device_pair_cancel,
             commands::browser_sign_in,
             theme::theme_set,
+            window_open,
             app_update::app_update_check,
             app_update::app_update_install,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            // Open in the saved theme, never a white flash: the window starts hidden, takes
-            // the theme (resolving System against the OS) and its background, then shows.
-            let theme = theme::load(&app.state::<AppState>().dirs.config);
-            let builder =
-                WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("index.html".into()));
-            let builder = automation_args(builder);
-            let window = builder
-                .title("apitorrent")
-                .inner_size(1280.0, 800.0)
-                .min_inner_size(720.0, 480.0)
-                .theme(theme.window_theme())
-                .visible(false)
-                .on_navigation(move |url| {
-                    if is_app_url(url) {
-                        return true;
-                    }
-                    if matches!(url.scheme(), "http" | "https" | "mailto") {
-                        let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
-                    }
-                    false
-                })
-                .build()?;
-            if let Err(e) = theme::apply(&window, theme) {
-                tracing::warn!(error = %e, "couldn't apply the window theme");
-            }
-            window.show()?;
+            app_window(
+                app,
+                MAIN_WINDOW,
+                WebviewUrl::App("index.html".into()),
+                "apitorrent",
+                (1280.0, 800.0),
+                (720.0, 480.0),
+            )?;
+
             tray(app)?;
 
             // magnet: links while running: from macOS open events, or from a second launch
@@ -293,5 +369,23 @@ mod tests {
         assert!(!ok("file:///C:/x.html"));
         assert_eq!(ok("http://localhost:5173/"), cfg!(debug_assertions));
         assert!(!ok("http://localhost:8742/"));
+    }
+
+    #[test]
+    fn page_windows_open_only_app_paths() {
+        assert_eq!(
+            page_window_label("/torrent/ab12").as_deref(),
+            Some("page_torrent_ab12")
+        );
+        assert_eq!(
+            page_window_label("/s/tv/torrent/ab12").as_deref(),
+            Some("page_s_tv_torrent_ab12")
+        );
+        assert!(page_window_label("torrent/ab12").is_none());
+        assert!(page_window_label("//evil.example/x").is_none());
+        assert!(page_window_label("/torrent/../../x").is_none());
+        assert!(page_window_label("/torrent/a?b").is_none());
+        assert!(page_window_label(r"/torrent/a\b").is_none());
+        assert!(page_window_label("https://evil.example/").is_none());
     }
 }

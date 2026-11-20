@@ -336,6 +336,19 @@ code {
   padding-right: calc(12px + 1.75rem);
 }
 
+/* Moving a column by dragging its header: the line shows where it will land. */
+.th-dragged {
+  opacity: 0.5;
+}
+
+.th.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.th.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
+
 .th-columns:hover,
 .th-columns[aria-expanded="true"] {
   color: var(--text);
@@ -575,6 +588,42 @@ code {
   background: none;
   padding: 6px 12px;
   color: var(--muted);
+}
+
+/* A torrent's details in a window of their own. */
+.torrent-window {
+  height: 100vh;
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--surface);
+}
+
+.torrent-window-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.torrent-window-head h1 {
+  margin: 0;
+  font-size: 1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.torrent-window .detail {
+  height: auto;
+  border-top: none;
+}
+
+.torrent-window-gone {
+  padding: 24px;
 }
 
 /* Pop-out and close, at the tab bar's right end. */

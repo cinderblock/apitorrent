@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { moveColumn, normalize, toggleColumn, visibleColumns, type ColumnInfo } from "./columns";
+import { migrateV1, moveColumn, normalize, parsePrefs, placeColumn, toggleColumn, visibleColumns, type ColumnInfo } from "./columns";
 
 const ALL: ColumnInfo[] = [
   { id: "name", defaultVisible: true, required: true },
@@ -38,5 +38,25 @@ describe("columns", () => {
     expect(p.order).toEqual(["rate", "name", "size", "label"]);
     expect(p.hidden).toEqual(["size", "label"]);
     expect(visibleColumns(ALL, saved)).toEqual(["rate", "name"]);
+  });
+
+  test("place drops a column before another, or last", () => {
+    expect(visibleColumns(ALL, placeColumn(ALL, null, "rate", "name"))).toEqual(["rate", "name", "size"]);
+    expect(visibleColumns(ALL, placeColumn(ALL, null, "name", null))).toEqual(["size", "rate", "name"]);
+    // Onto itself, or an unknown column: no change.
+    expect(placeColumn(ALL, null, "size", "size")).toEqual(normalize(ALL, null));
+    expect(placeColumn(ALL, null, "size", "gone")).toEqual(normalize(ALL, null));
+    // Hidden columns stay hidden, wherever they end up.
+    const p = placeColumn(ALL, null, "label", "name");
+    expect(p.order).toEqual(["label", "name", "size", "rate"]);
+    expect(p.hidden).toEqual(["label"]);
+  });
+
+  test("v1 prefs hide the queue column once", () => {
+    const v1 = parsePrefs(JSON.stringify({ order: ["queuePosition", "name"], hidden: [] }))!;
+    expect(migrateV1(v1)).toEqual({ order: ["queuePosition", "name"], hidden: ["queuePosition"] });
+    expect(migrateV1({ order: ["name"], hidden: [] })).toEqual({ order: ["name"], hidden: [] });
+    expect(parsePrefs("not json")).toBeNull();
+    expect(parsePrefs(null)).toBeNull();
   });
 });

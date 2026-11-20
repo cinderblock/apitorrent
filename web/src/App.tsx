@@ -20,6 +20,7 @@ import { useIncomingLinks } from "./desktop/links";
 import { formatRate } from "./format";
 import { navigate } from "./router";
 import { openDelugeImport } from "./settings/SettingsPage";
+import { openTorrentWindow, useDetailsMode } from "./state/details";
 import { countByFilter, labels as labelCounts, visibleTorrents, type SortKey, type View } from "./state/torrents";
 import { SpaceSwitcher } from "./spaces/SpaceSwitcher";
 import { atLeast, useSpaceContext } from "./spaces/context";
@@ -65,6 +66,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
   const [removing, setRemoving] = useState<string[] | null>(null);
   const [dragging, setDragging] = useState(false);
   const narrow = useNarrow();
+  const detailsMode = useDetailsMode();
   // The filters drawer, on a phone.
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -113,6 +115,14 @@ export function App({ status: auth }: { status: AuthStatus }) {
 
   const focused = focus ? state.torrents.get(focus) : undefined;
   const selection = [...selected];
+  // The bottom panel shows the focused torrent while it's selected, unless details open in
+  // windows only. A phone shows it as a sheet, opened by tapping the card.
+  const detailShown = narrow ? focused : detailsMode === "panel" && focus && selected.has(focus) ? focused : undefined;
+
+  function clearSelection() {
+    setSelected(new Set());
+    setFocus(null);
+  }
 
   const pauseOrResume = useCallback(
     (ids: string[]) => {
@@ -139,6 +149,11 @@ export function App({ status: auth }: { status: AuthStatus }) {
   }
 
   function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && (selection.length > 0 || focus !== null)) {
+      e.preventDefault();
+      clearSelection();
+      return;
+    }
     if (selection.length === 0) return;
     if (!mayWrite && e.key !== "a") return;
     if (e.key === "Delete") {
@@ -318,12 +333,18 @@ export function App({ status: auth }: { status: AuthStatus }) {
               setSelected(ids);
               setFocus(f);
             }}
-            onOpen={(id) => setFocus(id)}
+            onOpen={openTorrentWindow}
+            onClear={clearSelection}
             onKey={onKey}
             empty={empty}
           />
         )}
-        {focused && <DetailPane summary={focused} onClose={narrow ? () => setFocus(null) : undefined} readOnly={!mayWrite} />}
+        {detailShown &&
+          (narrow ? (
+            <DetailPane summary={detailShown} sheet onClose={() => setFocus(null)} readOnly={!mayWrite} />
+          ) : (
+            <DetailPane summary={detailShown} onClose={clearSelection} onPopOut={() => openTorrentWindow(detailShown.id)} readOnly={!mayWrite} />
+          ))}
       </main>
       {narrow && mayWrite && selection.length > 0 && (
         <div className="selection-bar" role="toolbar" aria-label={`${selection.length} selected`}>

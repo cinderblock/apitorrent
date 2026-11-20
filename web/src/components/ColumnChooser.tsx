@@ -48,7 +48,7 @@ export function ColumnChooser({
 
   return (
     <div className="column-chooser" role="dialog" aria-label="Columns" ref={panel}>
-      <p className="hint muted">Shown columns, left to right. Right-click the header to open this too.</p>
+      <p className="hint muted">Shown columns, left to right. Right-click the header to open this too, or drag a header to move its column.</p>
       <ul>
         {p.order.map((id) => {
           const c = label.get(id)!;

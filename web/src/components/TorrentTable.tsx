@@ -1,13 +1,16 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio, STATE_LABEL } from "../format";
-import { loadColumnPrefs, saveColumnPrefs, visibleColumns, type ColumnInfo, type ColumnPrefs } from "../state/columns";
+import { loadColumnPrefs, placeColumn, saveColumnPrefs, visibleColumns, type ColumnInfo, type ColumnPrefs } from "../state/columns";
 import { etaSeconds, type Sort, type SortKey } from "../state/torrents";
 import { ColumnChooser } from "./ColumnChooser";
 
 const ROW_HEIGHT = 30;
+
+/** The drag data type of a column header being moved. */
+const COLUMN_DRAG = "application/x-apitorrent-column";
 
 export interface Column extends ColumnInfo {
   id: SortKey;
@@ -24,8 +27,9 @@ function eta(t: TorrentSummary): string {
 }
 
 export const COLUMNS: Column[] = [
-  // Queue order: lower numbers get the free slots first.
-  { id: "queuePosition", label: "#", width: "2.5rem", align: "end", defaultVisible: true, render: (t) => `${t.queuePosition + 1}` },
+  // Queue order: lower numbers get the free slots first. It only matters for finished
+  // torrents when a seeding or total limit is set, so it's off until someone wants it.
+  { id: "queuePosition", label: "#", width: "2.5rem", align: "end", defaultVisible: false, render: (t) => `${t.queuePosition + 1}` },
   {
     id: "name",
     label: "Name",
@@ -96,15 +100,21 @@ interface Props {
   onSelect: (ids: Set<string>, focus: string | null) => void;
   focus: string | null;
   onOpen: (id: string) => void;
+  /** A click on the empty space under the rows: select nothing. */
+  onClear: () => void;
   onKey: (e: KeyboardEvent) => void;
   /** What to show when there are no rows. */
   empty: ReactNode;
 }
 
-export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, onOpen, onKey, empty }: Props) {
+export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, onOpen, onClear, onKey, empty }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [prefs, setPrefs] = useState<ColumnPrefs | null>(loadColumnPrefs);
   const [choosing, setChoosing] = useState(false);
+  // A header being dragged to a new place, and where it would land (before that column, or
+  // last for null).
+  const [dragged, setDragged] = useState<string | null>(null);
+  const [dropBefore, setDropBefore] = useState<string | null | undefined>(undefined);
   const columns = useMemo(() => visibleColumns(COLUMNS, prefs).map((id) => BY_ID.get(id)!), [prefs]);
   const template = columns.map((c) => c.width).join(" ");
   const virtualizer = useVirtualizer({
@@ -117,6 +127,18 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
   function changePrefs(next: ColumnPrefs | null) {
     setPrefs(next);
     saveColumnPrefs(next);
+  }
+
+  function endDrag() {
+    setDragged(null);
+    setDropBefore(undefined);
+  }
+
+  /** Where a drop over header `index` would land: before it, or before the next one. */
+  function dropTarget(e: DragEvent, index: number): string | null {
+    const box = e.currentTarget.getBoundingClientRect();
+    const after = e.clientX > box.left + box.width / 2;
+    return after ? (columns[index + 1]?.id ?? null) : columns[index]!.id;
   }
 
   function click(e: MouseEvent, index: number) {
@@ -165,14 +187,40 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
           setChoosing(true);
         }}
       >
-        {columns.map((c) => (
+        {columns.map((c, i) => (
           <button
             key={c.id}
             type="button"
             role="columnheader"
-            className={`th ${c.align === "end" ? "end" : ""}`}
+            className={[
+              "th",
+              c.align === "end" ? "end" : "",
+              dragged === c.id ? "th-dragged" : "",
+              dragged !== null && dropBefore === c.id ? "drop-before" : "",
+              dragged !== null && dropBefore === null && i === columns.length - 1 ? "drop-after" : "",
+            ].join(" ")}
             aria-sort={sort.key === c.id ? (sort.descending ? "descending" : "ascending") : "none"}
             onClick={() => onSort(c.id)}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData(COLUMN_DRAG, c.id);
+              setDragged(c.id);
+            }}
+            onDragOver={(e) => {
+              if (dragged === null) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              setDropBefore(dropTarget(e, i));
+            }}
+            onDrop={(e) => {
+              if (dragged === null) return;
+              e.preventDefault();
+              e.stopPropagation();
+              changePrefs(placeColumn(COLUMNS, prefs, dragged, dropTarget(e, i)));
+              endDrag();
+            }}
+            onDragEnd={endDrag}
           >
             {c.label}
             {sort.key === c.id && <span className="sort-arrow">{sort.descending ? "▾" : "▴"}</span>}
@@ -190,7 +238,15 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
         </button>
       </div>
       {choosing && <ColumnChooser columns={COLUMNS} prefs={prefs} onChange={changePrefs} onClose={() => setChoosing(false)} />}
-      <div className="table-body" ref={scroller} tabIndex={0} onKeyDown={move}>
+      <div
+        className="table-body"
+        ref={scroller}
+        tabIndex={0}
+        onKeyDown={move}
+        onClick={(e) => {
+          if (!(e.target as Element).closest(".tr")) onClear();
+        }}
+      >
         {rows.length === 0 ? (
           <div className="empty">{empty}</div>
         ) : (
