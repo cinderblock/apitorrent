@@ -21,7 +21,7 @@ From the user's report (2026-11-20):
   bottom panel shows for the focused selection.
 - Window route is `/torrent/<id>` (space-prefixed like every route). Browser: `window.open`
   with a per-torrent name, so a second double-click focuses the same window. Desktop: a
-  Tauri command builds a `torrent-<id>` webview window (focus it if it exists).
+  Tauri command (`window_open`) builds a `page_*` webview window per path (focus it if it exists).
 - Main desktop window already hides to the tray on close, so torrent windows stay open.
 - Queue position matters for seeding torrents only when a seed or total active limit is
   set, so the column stays available but is hidden by default. Saved column prefs are
@@ -29,17 +29,27 @@ From the user's report (2026-11-20):
 
 ## Progress
 
-- [ ] Panel: close button, Escape and empty-area click clear selection; panel shows only
+- [x] Panel: close button, Escape and empty-area click clear selection; panel shows only
       for a focused torrent that is still selected
-- [ ] Details preference + Appearance card
-- [ ] `/torrent/<id>` page
-- [ ] Desktop: `torrent_window_open` command, capability for `torrent-*` windows
-- [ ] "#" hidden by default, prefs migration
-- [ ] Header drag reorder (`placeColumn` + tests)
-- [ ] typecheck, tests, cargo check/clippy for desktop
-- [ ] Bulk edit thread launched
+- [x] Details preference + Appearance card
+- [x] `/torrent/<id>` page (own sync connection)
+- [x] Desktop: `window_open` command (labels `page_*`), capability `page*`, theme_set
+      applies to every window
+- [x] "#" hidden by default, prefs migration (columns.v1 -> v2)
+- [x] Header drag reorder (`placeColumn` + tests)
+- [x] Checks: web typecheck + 106 tests (staged tree alone), desktop clippy + 39 tests,
+      17 headless Playwright checks against a local daemon (scratchpad `check.py`)
+- [x] Committed `9adb71a` (not pushed)
+- [x] Bulk edit thread launched (worktree off local master)
+- [ ] Desktop app not run by hand: the Tauri window path is covered by unit tests and
+      clippy only
 
 ## Findings
 
 - Desktop main window: `on_window_event` hides `main` on close (tray app), so nothing
   needed for "close main, keep torrent window".
+- Tauri 2.12 `get_asset` falls back to `index.html`, so `WebviewUrl::App("torrent/<id>")`
+  loads the SPA.
+- Queue position applies to finished torrents only when `maxActiveSeeds` or `maxActive`
+  is set (settings.rs `under(seeds, q.max_active_seeds)`).
+- Browser: `window.open("", name)` finds an open window by name without reloading it.
