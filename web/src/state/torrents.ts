@@ -9,29 +9,56 @@ export type TorrentMap = ReadonlyMap<string, TorrentSummary>;
 export interface SyncState {
   /** `null` until the first snapshot arrives. */
   revision: number | null;
+  /** What the list shows. While a snapshot arrives in parts, the parts so far, laid over
+   * whatever was shown before (so a resync doesn't empty the list). */
   torrents: TorrentMap;
+  /** While a snapshot arrives in parts: how many torrents of how many have come. */
+  loading: { received: number; total: number } | null;
+  /** The snapshot being assembled, exactly; it replaces `torrents` when complete. */
+  pending: TorrentMap | null;
 }
 
-export const initialSyncState: SyncState = { revision: null, torrents: new Map() };
+export const initialSyncState: SyncState = { revision: null, torrents: new Map(), loading: null, pending: null };
 
 export type ApplyResult =
   | { ok: true; state: SyncState }
   /** A gap in revisions: the caller must reconnect to get a fresh snapshot. */
   | { ok: false; reason: string };
 
+/** Lay a snapshot's part over the list and the snapshot so far; done once `total` came.
+ * Rows are counted as they come, not by id, so ids repeated across spaces can't stall it. */
+function snapshotPart(
+  state: SyncState,
+  revision: number,
+  before: TorrentMap,
+  received: number,
+  part: readonly TorrentSummary[],
+  total: number,
+): SyncState {
+  const pending = new Map(before);
+  for (const t of part) pending.set(t.id, t);
+  const now = received + part.length;
+  if (now >= total) return { revision, torrents: pending, loading: null, pending: null };
+  const shown = new Map(state.torrents);
+  for (const t of part) shown.set(t.id, t);
+  return { revision, torrents: shown, loading: { received: now, total }, pending };
+}
+
 export function applySync(state: SyncState, msg: SyncMessage): ApplyResult {
   switch (msg.type) {
     case "snapshot":
-      return {
-        ok: true,
-        state: {
-          revision: msg.revision,
-          torrents: new Map(msg.torrents.map((t) => [t.id, t])),
-        },
-      };
+      return { ok: true, state: snapshotPart(state, msg.revision, new Map(), 0, msg.torrents, msg.total ?? 0) };
+    case "snapshotPart":
+      if (state.pending === null || state.loading === null || state.revision === null) {
+        return { ok: false, reason: "snapshot part without a snapshot" };
+      }
+      return { ok: true, state: snapshotPart(state, state.revision, state.pending, state.loading.received, msg.torrents, state.loading.total) };
     case "patch": {
       if (state.revision === null) {
         return { ok: false, reason: "patch before snapshot" };
+      }
+      if (state.pending !== null) {
+        return { ok: false, reason: "patch before the snapshot's last part" };
       }
       if (msg.revision !== state.revision + 1) {
         return {
@@ -42,7 +69,7 @@ export function applySync(state: SyncState, msg: SyncMessage): ApplyResult {
       const torrents = new Map(state.torrents);
       for (const t of msg.upserted) torrents.set(t.id, t);
       for (const id of msg.removed) torrents.delete(id);
-      return { ok: true, state: { revision: msg.revision, torrents } };
+      return { ok: true, state: { revision: msg.revision, torrents, loading: null, pending: null } };
     }
   }
 }

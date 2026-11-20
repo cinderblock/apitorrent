@@ -23,7 +23,7 @@ pub fn watch<R: Runtime>(app: &AppHandle<R>, state: &AppState, backend: Backend)
         let mut watcher = FinishWatcher::default();
         let mut backoff = Duration::from_secs(1);
         loop {
-            match backend.sync().await {
+            match backend.sync(false).await {
                 Ok(mut socket) => {
                     backoff = Duration::from_secs(1);
                     while let Some(Ok(msg)) = socket.next().await {

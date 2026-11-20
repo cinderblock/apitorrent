@@ -290,7 +290,10 @@ async fn sync_websocket() {
         .headers_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
     let (mut ws, _) = tokio_tungstenite::connect_async(request).await.unwrap();
-    let SyncMessage::Snapshot { revision, torrents } = next_sync(&mut ws).await else {
+    let SyncMessage::Snapshot {
+        revision, torrents, ..
+    } = next_sync(&mut ws).await
+    else {
         panic!("expected a snapshot first");
     };
     assert_eq!(torrents, [] as [TorrentSummary; 0]);

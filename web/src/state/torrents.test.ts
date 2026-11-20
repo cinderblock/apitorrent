@@ -59,6 +59,42 @@ describe("applySync", () => {
   });
 });
 
+describe("applySync in parts", () => {
+  test("parts show as they come; the last one completes the snapshot", () => {
+    let r = applySync(initialSyncState, { type: "snapshot", revision: 4, torrents: [t("a")], total: 3 });
+    if (!r.ok) throw new Error(r.reason);
+    expect([...r.state.torrents.keys()]).toEqual(["a"]);
+    expect(r.state.loading).toEqual({ received: 1, total: 3 });
+    r = applySync(r.state, { type: "snapshotPart", torrents: [t("b"), t("c")] });
+    if (!r.ok) throw new Error(r.reason);
+    expect([...r.state.torrents.keys()]).toEqual(["a", "b", "c"]);
+    expect(r.state.loading).toBeNull();
+    r = applySync(r.state, { type: "patch", revision: 5, upserted: [], removed: ["b"] });
+    if (!r.ok) throw new Error(r.reason);
+    expect([...r.state.torrents.keys()]).toEqual(["a", "c"]);
+  });
+
+  test("a resync keeps the old list up until the new snapshot is complete", () => {
+    let r = applySync(initialSyncState, { type: "snapshot", revision: 1, torrents: [t("old"), t("a")] });
+    if (!r.ok) throw new Error(r.reason);
+    r = applySync(r.state, { type: "snapshot", revision: 9, torrents: [t("a", { progress: 1 })], total: 2 });
+    if (!r.ok) throw new Error(r.reason);
+    expect([...r.state.torrents.keys()].sort()).toEqual(["a", "old"]);
+    expect(r.state.torrents.get("a")?.progress).toBe(1);
+    r = applySync(r.state, { type: "snapshotPart", torrents: [t("new")] });
+    if (!r.ok) throw new Error(r.reason);
+    expect([...r.state.torrents.keys()].sort()).toEqual(["a", "new"]);
+  });
+
+  test("a patch or a part out of order asks for a resync", () => {
+    const stray = applySync(initialSyncState, { type: "snapshotPart", torrents: [t("a")] });
+    expect(stray.ok).toBe(false);
+    const r = applySync(initialSyncState, { type: "snapshot", revision: 1, torrents: [t("a")], total: 2 });
+    if (!r.ok) throw new Error(r.reason);
+    expect(applySync(r.state, { type: "patch", revision: 2, upserted: [], removed: [] }).ok).toBe(false);
+  });
+});
+
 describe("visibleTorrents", () => {
   const all = new Map(
     [

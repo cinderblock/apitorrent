@@ -21,3 +21,13 @@ export function EmptyStart({ mayWrite, mayImport, narrow, onAdd, onImport }: { m
     </div>
   );
 }
+
+/** "Loading 1,200 of 9,800 torrents…", while a snapshot arrives in parts. */
+export function loadingText({ received, total }: { received: number; total: number }): string {
+  return `Loading ${received.toLocaleString()} of ${total.toLocaleString()} torrents…`;
+}
+
+/** The status chip's short form: "Loading 12%". */
+export function loadingCount({ received, total }: { received: number; total: number }): string {
+  return `Loading ${Math.floor((100 * received) / Math.max(total, 1))}%`;
+}

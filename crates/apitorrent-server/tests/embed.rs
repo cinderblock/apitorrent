@@ -68,7 +68,7 @@ async fn in_process_callers_are_the_owner() {
     let first = ws.next().await.unwrap().unwrap().into_text().unwrap();
     match serde_json::from_str::<SyncMessage>(first.as_str()).unwrap() {
         SyncMessage::Snapshot { torrents, .. } => assert_eq!(torrents.len(), 1),
-        other @ SyncMessage::Patch { .. } => panic!("expected a snapshot, got {other:?}"),
+        other => panic!("expected a snapshot, got {other:?}"),
     }
 
     // Requests that aren't paths are refused before reaching the router.

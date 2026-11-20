@@ -207,6 +207,11 @@ Resume state is a versioned, serialisable struct that the core stores.
   list view or the full detail of the selected torrent, so 10,000 torrents cost only what
   the UI shows. After reconnecting, a client resumes from its last revision, or gets a
   fresh snapshot if that revision has been compacted away.
+  A client that asks with `?chunks=1` gets a large snapshot in parts, newest-added first
+  (100 torrents, then 1,000 per part): the `snapshot` message carries `total`, and
+  `snapshotPart` messages follow until that many have come, before any patch. The web UI
+  shows the parts as they land; during a resync it keeps the old list up and swaps in the
+  exact new one at the last part. Older clients, which don't ask, get one message.
 - **Versioning**: `/api/v1` stays stable once released, and capabilities are negotiated in
   the hello message (`server_capabilities`).
 - An **OpenAPI** document is generated for the HTTP surface.

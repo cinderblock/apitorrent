@@ -14,9 +14,10 @@ pub enum Backend {
     Local(Arc<LocalNode>),
 }
 
-/// The URL used for the sync socket over the in-process connection; only its path matters,
-/// and its host passes the server's loopback check.
+/// The URL used for the sync socket over the in-process connection; only its path and
+/// query matter, and its host passes the server's loopback check.
 const LOCAL_SYNC_URL: &str = "ws://localhost/api/v1/sync";
+const LOCAL_SYNC_URL_CHUNKS: &str = "ws://localhost/api/v1/sync?chunks=1";
 
 impl Backend {
     pub async fn request(
@@ -49,12 +50,18 @@ impl Backend {
         }
     }
 
-    pub async fn sync(&self) -> Result<SyncSocket, String> {
+    /// The sync socket; with `chunks`, a large snapshot comes in parts.
+    pub async fn sync(&self, chunks: bool) -> Result<SyncSocket, String> {
         match self {
-            Self::Remote(r) => r.sync().await.map_err(|e| e.to_string()),
+            Self::Remote(r) => r.sync_with(chunks).await.map_err(|e| e.to_string()),
             Self::Local(node) => {
                 let io = node.embedded.connect().map_err(|e| e.to_string())?;
-                apitorrent_client::remote::websocket_over(Box::new(io), LOCAL_SYNC_URL, None)
+                let url = if chunks {
+                    LOCAL_SYNC_URL_CHUNKS
+                } else {
+                    LOCAL_SYNC_URL
+                };
+                apitorrent_client::remote::websocket_over(Box::new(io), url, None)
                     .await
                     .map_err(|e| e.to_string())
             }

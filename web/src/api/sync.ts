@@ -18,6 +18,10 @@ type Listener = () => void;
 
 const MAX_BACKOFF_MS = 10_000;
 
+/** How long the socket stays open after the last page using it goes (a trip to Settings),
+ * so coming back shows live data at once instead of waiting for a fresh snapshot. */
+const LINGER_MS = 2 * 60_000;
+
 /** The server closed the socket because its credential ended (signed out, revoked, expired). */
 export const CLOSE_UNAUTHORIZED = 4401;
 
@@ -27,28 +31,57 @@ export class SyncClient {
   private socket: SocketLike | null = null;
   private retries = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private stopped = false;
+  private stopped = true;
+  private users = 0;
+  private linger: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly url: string) {}
 
   static forCurrentPage(): SyncClient {
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
     // The first snapshot is large (about 6 MiB of JSON for 10,000 torrents), and WebSockets
-    // here have no compression of their own: ask for big messages gzipped, as binary.
-    const compress = typeof DecompressionStream === "function" ? "?compress=gzip" : "";
-    return new SyncClient(`${scheme}//${location.host}${currentPrefix()}/api/v1/sync${compress}`);
+    // here have no compression of their own: ask for big messages gzipped, as binary. And
+    // ask for it in parts, so the list fills in as it arrives.
+    const query = new URLSearchParams({ chunks: "1" });
+    if (typeof DecompressionStream === "function") query.set("compress", "gzip");
+    return new SyncClient(`${scheme}//${location.host}${currentPrefix()}/api/v1/sync?${query}`);
+  }
+
+  /** A page needs live torrents: connect, or keep a lingering connection. Pair with `release`. */
+  acquire(): void {
+    this.users++;
+    if (this.linger) {
+      clearTimeout(this.linger);
+      this.linger = null;
+    }
+    if (this.stopped) this.start();
+  }
+
+  /** The page is done; the connection lingers a while in case it comes back. */
+  release(): void {
+    this.users = Math.max(0, this.users - 1);
+    if (this.users > 0 || this.stopped) return;
+    this.linger = setTimeout(() => {
+      this.linger = null;
+      this.stop();
+    }, LINGER_MS);
   }
 
   start(): void {
+    if (!this.stopped) return;
     this.stopped = false;
+    // Whatever is shown is from before: say so until a fresh snapshot arrives.
+    if (this.snapshot.status !== "connecting") this.set({ status: "connecting" });
     this.connect();
   }
 
   stop(): void {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
-    this.socket?.close();
+    this.timer = null;
+    const ws = this.socket;
     this.socket = null;
+    ws?.close();
   }
 
   /** For `useSyncExternalStore`. */

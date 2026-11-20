@@ -6,7 +6,7 @@ import { SyncClient } from "./api/sync";
 import { AddTorrent } from "./components/AddTorrent";
 import { ConfirmRemove } from "./components/ConfirmRemove";
 import { DetailPane } from "./components/DetailPane";
-import { EmptyStart } from "./components/EmptyStart";
+import { EmptyStart, loadingCount, loadingText } from "./components/EmptyStart";
 import { StatusBar } from "./components/StatusBar";
 import { Sidebar } from "./components/Sidebar";
 import { TorrentCards } from "./components/TorrentCards";
@@ -41,8 +41,8 @@ const DESCENDING_FIRST: ReadonlySet<SortKey> = new Set([
 
 export function App({ status: auth }: { status: AuthStatus }) {
   useEffect(() => {
-    sync.start();
-    return () => sync.stop();
+    sync.acquire();
+    return () => sync.release();
   }, []);
   const { state, status } = useSyncExternalStore(sync.subscribe, sync.getSnapshot);
   const space = useSpaceContext();
@@ -78,11 +78,17 @@ export function App({ status: auth }: { status: AuthStatus }) {
 
   const rows = useMemo(() => visibleTorrents(state.torrents, view), [state.torrents, view]);
 
-  // What the list shows with no rows: why, and how to add some.
+  // What the list shows with no rows: why, and how to add some. "No torrents" only once a
+  // complete, current snapshot says so; until then it's loading.
+  const loading = state.loading ? loadingText(state.loading) : null;
   const empty =
     state.torrents.size > 0 ? (
-      <>No torrents match this view.</>
-    ) : status === "connecting" ? (
+      <>{loading ? `No torrents match this view yet. ${loading}` : "No torrents match this view."}</>
+    ) : loading ? (
+      <>{loading}</>
+    ) : status === "reconnecting" ? (
+      <>Can&apos;t reach the daemon. Trying again…</>
+    ) : status === "connecting" || state.revision === null ? (
       <>Loading…</>
     ) : (
       <EmptyStart mayWrite={mayWrite} mayImport={spaceAdmin} narrow={narrow} onAdd={() => setAdding([])} onImport={openDelugeImport} />
@@ -282,7 +288,7 @@ export function App({ status: auth }: { status: AuthStatus }) {
             {rates}
           </div>
           <span className={`conn conn-${status}`} role="status">
-            {status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Reconnecting…"}
+            {status === "live" ? (state.loading ? loadingCount(state.loading) : "Live") : status === "connecting" ? "Connecting…" : "Reconnecting…"}
           </span>
           {auth.authDisabled && (
             <span className="badge badge-warn">No sign-in (development mode)</span>

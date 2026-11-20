@@ -115,6 +115,7 @@ describe("the desktop transport", () => {
     expect(messages).toHaveLength(1);
     expect(closes).toEqual([4401]);
     expect(calls.map((c) => c.cmd)).toEqual(["sync_open"]);
+    expect(calls[0]!.args.chunks).toBe(true);
   });
 
   test("closing from the page closes the app's side", async () => {

@@ -11,6 +11,8 @@ use apitorrent_types::{SyncMessage, TorrentState, TorrentSummary};
 pub struct FinishWatcher {
     /// Last known "finished" per torrent. Absent until first seen in a settled state.
     known: HashMap<String, bool>,
+    /// What was known before the latest snapshot, while its parts are still arriving.
+    before_snapshot: HashMap<String, bool>,
 }
 
 /// `None` while the state says nothing either way (fetching metadata, checking files).
@@ -23,30 +25,35 @@ fn finished(t: &TorrentSummary) -> Option<bool> {
 }
 
 impl FinishWatcher {
+    fn snapshot_part(&mut self, torrents: &[TorrentSummary]) -> Vec<String> {
+        let mut done = Vec::new();
+        for t in torrents {
+            let before = self.before_snapshot.get(&t.id).copied();
+            let now = finished(t).or(before);
+            if before == Some(false) && now == Some(true) {
+                done.push(t.name.clone());
+            }
+            if let Some(now) = now {
+                self.known.insert(t.id.clone(), now);
+            }
+        }
+        done
+    }
+
     /// Feed one sync message; returns the names of torrents that just finished.
     pub fn feed(&mut self, msg: &SyncMessage) -> Vec<String> {
         match msg {
             SyncMessage::Snapshot { torrents, .. } => {
                 // A snapshot after a reconnect: compare with what we knew, then start over
                 // from it, so torrents removed in the gap are forgotten.
-                let mut done = Vec::new();
-                let mut next = HashMap::with_capacity(torrents.len());
-                for t in torrents {
-                    let before = self.known.get(&t.id).copied();
-                    let now = finished(t).or(before);
-                    if before == Some(false) && now == Some(true) {
-                        done.push(t.name.clone());
-                    }
-                    if let Some(now) = now {
-                        next.insert(t.id.clone(), now);
-                    }
-                }
-                self.known = next;
-                done
+                self.before_snapshot = std::mem::take(&mut self.known);
+                self.snapshot_part(torrents)
             }
+            SyncMessage::SnapshotPart { torrents } => self.snapshot_part(torrents),
             SyncMessage::Patch {
                 upserted, removed, ..
             } => {
+                self.before_snapshot.clear();
                 for id in removed {
                     self.known.remove(id);
                 }
@@ -94,6 +101,7 @@ mod tests {
         let mut w = FinishWatcher::default();
         let snap = SyncMessage::Snapshot {
             revision: 0,
+            total: None,
             torrents: vec![
                 t("a", TorrentState::Downloading, 0.5),
                 t("b", TorrentState::Seeding, 1.0),
@@ -123,6 +131,7 @@ mod tests {
         let mut w = FinishWatcher::default();
         w.feed(&SyncMessage::Snapshot {
             revision: 0,
+            total: None,
             torrents: vec![t("a", TorrentState::Seeding, 1.0)],
         });
         // A recheck shows progress climbing from zero; that isn't a new download.
@@ -152,13 +161,45 @@ mod tests {
         let mut w = FinishWatcher::default();
         w.feed(&SyncMessage::Snapshot {
             revision: 0,
+            total: None,
             torrents: vec![t("a", TorrentState::Downloading, 0.2)],
         });
         let done = w.feed(&SyncMessage::Snapshot {
             revision: 9,
+            total: None,
             torrents: vec![t("a", TorrentState::Seeding, 1.0)],
         });
         assert_eq!(done, ["name-a"]);
+    }
+
+    #[test]
+    fn a_snapshot_in_parts_compares_every_part_with_before() {
+        let mut w = FinishWatcher::default();
+        w.feed(&SyncMessage::Snapshot {
+            revision: 0,
+            total: None,
+            torrents: vec![
+                t("a", TorrentState::Downloading, 0.2),
+                t("b", TorrentState::Downloading, 0.2),
+                t("gone", TorrentState::Downloading, 0.2),
+            ],
+        });
+        assert!(
+            w.feed(&SyncMessage::Snapshot {
+                revision: 9,
+                total: Some(2),
+                torrents: vec![t("a", TorrentState::Downloading, 0.5)],
+            })
+            .is_empty()
+        );
+        let done = w.feed(&SyncMessage::SnapshotPart {
+            torrents: vec![t("b", TorrentState::Seeding, 1.0)],
+        });
+        assert_eq!(done, ["name-b"]);
+        assert!(
+            !w.known.contains_key("gone"),
+            "forgotten after the snapshot"
+        );
     }
 
     #[test]

@@ -7,8 +7,16 @@ import type { TorrentSummary } from "./TorrentSummary";
  * The server keeps a revisioned store. A client first gets a `snapshot` at some revision,
  * then `patch`es that each advance the revision by one. If a client falls behind, the
  * server sends a fresh snapshot instead.
+ *
+ * A client that asks with `?chunks=1` may get a large snapshot in parts: the `snapshot`
+ * carries the first torrents and `total`, then `snapshotPart`s follow until `total`
+ * torrents have arrived. Patches come only after the last part.
  */
-export type SyncMessage = { "type": "snapshot", revision: number, torrents: Array<TorrentSummary>, } | { "type": "patch", revision: number, upserted: Array<TorrentSummary>, removed: Array<string>, 
+export type SyncMessage = { "type": "snapshot", revision: number, torrents: Array<TorrentSummary>, 
+/**
+ * How many torrents the whole snapshot holds, when it comes in parts.
+ */
+total?: number, } | { "type": "snapshotPart", torrents: Array<TorrentSummary>, } | { "type": "patch", revision: number, upserted: Array<TorrentSummary>, removed: Array<string>, 
 /**
  * The space of each removed torrent, in the same order. Sent only to a socket that
  * watches every space (`?space=all`), where ids alone are ambiguous.

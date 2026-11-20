@@ -210,7 +210,8 @@ export const desktop = {
   pair: (baseUrl: string, code: string) => call<Trust>("trust_pair", { baseUrl, code }),
   request: (method: string, path: string, body: string | null, contentType: string | null) =>
     call<ApiResponse>("api_request", { method, path, body, contentType }),
-  syncOpen: (channel: Channel<SyncEvent>) => call<number>("sync_open", { channel }),
+  /** The sync socket; a large snapshot comes in parts. */
+  syncOpen: (channel: Channel<SyncEvent>) => call<number>("sync_open", { channel, chunks: true }),
   syncClose: (id: number) => call<void>("sync_close", { id }),
   takeLinks: () => call<IncomingLink[]>("take_pending_links"),
   checkMappings: (mappings?: PathMapping[]) => call<MappingStatus[]>("mappings_check", { mappings: mappings ?? null }),

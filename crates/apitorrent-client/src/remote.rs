@@ -292,7 +292,16 @@ impl Remote {
 
     /// Open the sync WebSocket (`/api/v1/sync`).
     pub async fn sync(&self) -> Result<SyncSocket, ClientError> {
+        self.sync_with(false).await
+    }
+
+    /// Open the sync WebSocket; with `chunks`, a large snapshot comes in parts
+    /// (`SyncMessage::SnapshotPart`). An older daemon ignores the ask and sends it whole.
+    pub async fn sync_with(&self, chunks: bool) -> Result<SyncSocket, ClientError> {
         let mut url = self.api_url("/api/v1/sync")?;
+        if chunks {
+            url.query_pairs_mut().append_pair("chunks", "1");
+        }
         let ws_scheme = if url.scheme() == "https" { "wss" } else { "ws" };
         url.set_scheme(ws_scheme)
             .map_err(|()| ClientError::Url("could not build the WebSocket URL".into()))?;

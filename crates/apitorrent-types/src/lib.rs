@@ -975,6 +975,10 @@ pub struct BanRequest {
 /// The server keeps a revisioned store. A client first gets a `snapshot` at some revision,
 /// then `patch`es that each advance the revision by one. If a client falls behind, the
 /// server sends a fresh snapshot instead.
+///
+/// A client that asks with `?chunks=1` may get a large snapshot in parts: the `snapshot`
+/// carries the first torrents and `total`, then `snapshotPart`s follow until `total`
+/// torrents have arrived. Patches come only after the last part.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(export)]
@@ -984,7 +988,14 @@ pub enum SyncMessage {
         #[ts(type = "number")]
         revision: u64,
         torrents: Vec<TorrentSummary>,
+        /// How many torrents the whole snapshot holds, when it comes in parts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        total: Option<u32>,
     },
+    /// More of the snapshot before it (only to a client that asked for parts).
+    #[serde(rename_all = "camelCase")]
+    SnapshotPart { torrents: Vec<TorrentSummary> },
     #[serde(rename_all = "camelCase")]
     Patch {
         #[ts(type = "number")]

@@ -337,13 +337,18 @@ pub enum SyncEvent {
     Close { code: u16, reason: String },
 }
 
-/// Open the sync socket through the active connection; events arrive on `channel`.
+/// Open the sync socket through the active connection; events arrive on `channel`. With
+/// `chunks`, a large snapshot comes in parts (a page from before parts sends nothing).
 #[tauri::command]
-pub async fn sync_open(state: State<'_, AppState>, channel: Channel<SyncEvent>) -> CmdResult<u32> {
+pub async fn sync_open(
+    state: State<'_, AppState>,
+    channel: Channel<SyncEvent>,
+    chunks: Option<bool>,
+) -> CmdResult<u32> {
     let backend = state.backend().await?;
     let id = state.next_sync_id();
     let task = tokio::spawn(async move {
-        let mut socket = match backend.sync().await {
+        let mut socket = match backend.sync(chunks.unwrap_or(false)).await {
             Ok(s) => s,
             Err(e) => {
                 let _ = channel.send(SyncEvent::Close {
