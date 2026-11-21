@@ -42,12 +42,10 @@ torrent). Correct the 8 already imported on pokol.
 5. ✅ pokol `added_at` fixed (2026-11-20 1:40 PM PST, 21:40Z): stopped `apitorrentd`,
    backed up the DB to `/var/lib/apitorrent/backup-2026-11-20/apitorrent.db`, set the 8
    rows' `added_at` to their file mtimes, restarted (672 restored).
-6. ← current: **after the next pokol deploy** (schema 16), mark the 8 as leftovers, with
-   the daemon stopped, as `debian-deluged`:
-   `UPDATE imported SET leftover = 1, taken_over_at = COALESCE(taken_over_at, imported_at)
-   WHERE space_id = 1 AND source = '/var/lib/deluged' AND torrent IN (<the 8 ids>)`.
-   Until then they show "Still in Deluge" (harmless: Deluge skips ids it doesn't have).
-   The deploy itself waits on the user (master carries other threads' unpushed work).
+6. ✅ Leftover marking (2026-11-20 5:19 PM PST, 01:19Z Nov 21): another thread had
+   deployed `105a06d` (schema 16) to pokol. Stopped `apitorrentd`, backed up the DB to
+   `/var/lib/apitorrent/backup-2026-11-20/apitorrent-before-leftover.db`, set
+   `imported.leftover = 1` and `taken_over_at` on the 8, restarted (672 restored).
 
 ## Findings / gotchas
 
@@ -62,4 +60,4 @@ torrent). Correct the 8 already imported on pokol.
   tests (Rust unit + lifecycle, web). Landed inside `d658044` (another thread's commit
   swept up the staged files; the message doesn't mention it).
 - [x] pokol `added_at` fix
-- [ ] pokol leftover marking (after deploy)
+- [x] pokol leftover marking (2026-11-20 5:19 PM PST)
