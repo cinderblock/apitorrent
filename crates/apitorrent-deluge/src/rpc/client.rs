@@ -195,6 +195,10 @@ pub struct TorrentStatus {
     pub tracker_host: String,
     pub total_size: u64,
     pub is_finished: bool,
+    /// Deluge's last tracker event for this torrent: `Announce Sent` while an announce
+    /// (a `stopped` too) waits for its answer, then `Announce OK`, `Error: …` or
+    /// `Warning: …`. Empty before the first announce.
+    pub tracker_status: String,
 }
 
 impl TorrentStatus {
@@ -202,6 +206,11 @@ impl TorrentStatus {
     /// stopped by an error.
     pub fn is_stopped(&self) -> bool {
         matches!(self.state, TorrentState::Paused | TorrentState::Error)
+    }
+
+    /// An announce to a tracker is out and not answered yet.
+    pub fn is_announcing(&self) -> bool {
+        self.tracker_status == "Announce Sent"
     }
 }
 
@@ -217,6 +226,7 @@ const STATUS_KEYS: &[&str] = &[
     "tracker_host",
     "total_size",
     "is_finished",
+    "tracker_status",
 ];
 
 /// A logged-in connection to one Deluge daemon.
@@ -563,6 +573,47 @@ impl DelugeClient {
         }
     }
 
+    /// After a pause, poll until the trackers have answered (or failed) the `stopped` of
+    /// every torrent in `ids`, or `timeout` passes. Returns the ones still waiting then.
+    ///
+    /// Deluge reports `Paused` before libtorrent's `stopped` reaches the tracker. Measured
+    /// on Deluge 2.1.1 / libtorrent 2.1.1 against a tracker holding its reply for 5 s: the
+    /// `stopped` went out 4 ms after the pause, the state read `Paused` 0.3 s later, and
+    /// `tracker_status` read `Announce Sent` until the reply, then `Announce OK`.
+    ///
+    /// A torrent is done once it has shown `Announce Sent` and then something else, or
+    /// hasn't shown it at all for `settle` (answered before the first poll, no tracker,
+    /// or paused long ago).
+    pub async fn wait_until_announced<S: AsRef<str>>(
+        &mut self,
+        ids: &[S],
+        settle: Duration,
+        timeout: Duration,
+    ) -> Result<Vec<TorrentStatus>, RpcError> {
+        let start = tokio::time::Instant::now();
+        let mut sent = std::collections::HashSet::new();
+        loop {
+            let settled = start.elapsed() >= settle;
+            let waiting: Vec<TorrentStatus> = self
+                .torrents(Some(ids))
+                .await?
+                .into_iter()
+                .filter(|t| {
+                    if t.is_announcing() {
+                        sent.insert(t.id.clone());
+                        true
+                    } else {
+                        !settled && !sent.contains(&t.id)
+                    }
+                })
+                .collect();
+            if waiting.is_empty() || start.elapsed() >= timeout {
+                return Ok(waiting);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// Remove a torrent from Deluge, leaving its downloaded files where they are
     /// (`core.remove_torrent(id, False)`). An unknown id is an `InvalidTorrentError`.
     pub async fn remove_keep_data(&mut self, id: &str) -> Result<(), RpcError> {
@@ -645,6 +696,7 @@ fn parse_status(id: &str, s: &Value) -> TorrentStatus {
             .get("is_finished")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        tracker_status: text("tracker_status"),
     }
 }
 

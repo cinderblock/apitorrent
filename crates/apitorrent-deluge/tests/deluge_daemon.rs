@@ -26,7 +26,7 @@ fn config_dir() -> Option<PathBuf> {
 }
 
 /// A one-piece torrent of `data`, named uniquely so its info-hash is new each run.
-fn make_torrent(name: &str, data: &[u8]) -> Vec<u8> {
+fn make_torrent(name: &str, data: &[u8], announce: &str) -> Vec<u8> {
     let info = OwnedValue::dict()
         .insert("name", OwnedValue::Bytes(name.as_bytes().to_vec()))
         .insert("piece length", OwnedValue::Int(16384))
@@ -36,10 +36,7 @@ fn make_torrent(name: &str, data: &[u8]) -> Vec<u8> {
         )
         .insert("pieces", OwnedValue::Bytes(Sha1::digest(data).to_vec()));
     OwnedValue::dict()
-        .insert(
-            "announce",
-            OwnedValue::Bytes(b"http://tracker.invalid/announce".to_vec()),
-        )
+        .insert("announce", OwnedValue::Bytes(announce.as_bytes().to_vec()))
         .insert("info", info)
         .to_bytes()
 }
@@ -101,7 +98,7 @@ async fn real_daemon() {
     let name = format!("apitorrent-deluge-test-{nonce}");
     let data: Vec<u8> = (0..16384u32).map(|i| (i % 251) as u8).collect();
     std::fs::write(data_dir.path().join(&name), &data).unwrap();
-    let torrent = make_torrent(&name, &data);
+    let torrent = make_torrent(&name, &data, "http://tracker.invalid/announce");
     let save_path = data_dir.path().to_string_lossy().into_owned();
     let id = c
         .call(
@@ -254,4 +251,134 @@ async fn real_daemon() {
     let e = DelugeClient::connect(&opts, &other).await.unwrap_err();
     println!("another certificate: {e}");
     assert!(matches!(e, RpcError::Tls { .. }));
+}
+
+/// What [`slow_tracker`] saw: each event as it arrived, and when it answered a `stopped`.
+#[derive(Default)]
+struct TrackerLog {
+    events: Vec<String>,
+    stopped_answered: Option<std::time::Instant>,
+}
+
+/// An HTTP tracker on 127.0.0.1 that holds each `stopped` for `hold` before answering.
+async fn slow_tracker(hold: Duration) -> (String, std::sync::Arc<std::sync::Mutex<TrackerLog>>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/announce", listener.local_addr().unwrap());
+    let log = std::sync::Arc::new(std::sync::Mutex::new(TrackerLog::default()));
+    let l = log.clone();
+    tokio::spawn(async move {
+        loop {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let l = l.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let line = req.lines().next().unwrap_or_default();
+                let event = line
+                    .split(['?', '&', ' '])
+                    .find_map(|p| p.strip_prefix("event="))
+                    .unwrap_or("-")
+                    .to_owned();
+                l.lock().unwrap().events.push(event.clone());
+                if event == "stopped" {
+                    tokio::time::sleep(hold).await;
+                }
+                let body = b"d8:intervali1800e5:peers0:e";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(head.as_bytes()).await;
+                let _ = s.write_all(body).await;
+                let _ = s.shutdown().await;
+                if event == "stopped" {
+                    l.lock().unwrap().stopped_answered = Some(std::time::Instant::now());
+                }
+            });
+        }
+    });
+    (url, log)
+}
+
+/// Deluge reads `Paused` before its `stopped` reaches the tracker; `wait_until_announced`
+/// returns only once the tracker has answered it.
+#[tokio::test]
+#[ignore = "needs a running Deluge daemon: set APITORRENT_DELUGE_TEST_CONFIG"]
+async fn waits_for_the_trackers_answer_to_the_stop() {
+    let Some(dir) = config_dir() else {
+        eprintln!("APITORRENT_DELUGE_TEST_CONFIG is not set; skipping");
+        return;
+    };
+    let hold = Duration::from_secs(3);
+    let (announce, log) = slow_tracker(hold).await;
+    let mut c = DelugeClient::connect_config_dir(&dir).await.unwrap();
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let name = format!("apitorrent-deluge-stop-test-{nonce}");
+    let data: Vec<u8> = (0..16384u32).map(|i| (i % 241) as u8).collect();
+    std::fs::write(data_dir.path().join(&name), &data).unwrap();
+    let torrent = make_torrent(&name, &data, &announce);
+    let id = c
+        .call(
+            "core.add_torrent_file",
+            vec![
+                format!("{name}.torrent").into(),
+                base64::engine::general_purpose::STANDARD
+                    .encode(&torrent)
+                    .into(),
+                Value::dict([(
+                    "download_location",
+                    data_dir.path().to_string_lossy().into_owned().into(),
+                )]),
+            ],
+            vec![],
+        )
+        .await
+        .unwrap();
+    let id = id.as_str().unwrap().to_owned();
+    assert_eq!(
+        wait_for_state(&mut c, &id, |s| *s == TorrentState::Seeding).await,
+        TorrentState::Seeding
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !log.lock().unwrap().events.iter().any(|e| e == "started") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no started announce"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let paused = c.pause(&[id.as_str()]).await.unwrap();
+    assert!(
+        c.wait_until_stopped(&paused, Duration::from_secs(30))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    println!(
+        "Paused; tracker answered the stop yet: {}",
+        log.lock().unwrap().stopped_answered.is_some()
+    );
+    let waiting = c
+        .wait_until_announced(&paused, Duration::from_secs(2), Duration::from_secs(20))
+        .await
+        .unwrap();
+    let returned = std::time::Instant::now();
+    assert!(waiting.is_empty(), "{waiting:?}");
+    let answered = log
+        .lock()
+        .unwrap()
+        .stopped_answered
+        .expect("returned before the tracker answered the stop");
+    assert!(answered <= returned);
+    println!("tracker saw {:?}", log.lock().unwrap().events);
+
+    c.remove_keep_data(&id).await.unwrap();
 }

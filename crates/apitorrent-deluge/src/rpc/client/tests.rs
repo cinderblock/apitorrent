@@ -206,6 +206,7 @@ async fn lists_torrents() {
             ("tracker_host", "example".into()),
             ("total_size", Value::Int(5_000_000_000)),
             ("is_finished", true.into()),
+            ("tracker_status", "Announce Sent".into()),
         ]);
         let unlabelled = Value::dict([
             ("state", "Weird".into()),
@@ -229,7 +230,9 @@ async fn lists_torrents() {
     assert_eq!(a.trackers[0].url, "https://t.example/announce");
     assert_eq!(a.total_size, 5_000_000_000);
     assert!(a.is_finished);
+    assert!(a.is_announcing());
     let b = &ts[1];
+    assert!(!b.is_announcing());
     assert_eq!(b.state, TorrentState::Other("Weird".into()));
     assert_eq!(b.label, None);
     assert!((b.progress - 3.0).abs() < f64::EPSILON);
@@ -276,6 +279,68 @@ async fn pause_and_resume_send_only_known_ids() {
             "core.resume_torrent"
         ]
     );
+}
+
+/// A daemon whose torrent `aa` shows `statuses` as its `tracker_status` on successive
+/// polls (the last one repeating), and `bb` never announces.
+async fn announcing_daemon(statuses: &'static [&'static str]) -> ConnectOptions {
+    let mut polls = 0;
+    let (opts, _) = fake_daemon(Box::new(move |id, _, _| {
+        let now = statuses[polls.min(statuses.len() - 1)];
+        polls += 1;
+        let t = |s: &str| Value::dict([("state", "Paused".into()), ("tracker_status", s.into())]);
+        vec![response(
+            id,
+            Value::Dict(vec![("aa".into(), t(now)), ("bb".into(), t(""))]),
+        )]
+    }))
+    .await;
+    opts
+}
+
+#[tokio::test]
+async fn waits_for_the_stopped_to_be_answered() {
+    // The first poll still shows the answer to the last regular announce.
+    let opts = announcing_daemon(&[
+        "Announce OK",
+        "Announce Sent",
+        "Announce Sent",
+        "Announce OK",
+    ])
+    .await;
+    let mut c = DelugeClient::connect(&opts, &pin()).await.unwrap();
+    let start = std::time::Instant::now();
+    let waiting = c
+        .wait_until_announced(
+            &["aa", "bb"],
+            Duration::from_millis(100),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert!(waiting.is_empty());
+    // Three polls 200 ms apart: it waited for the answer, not just the settle time.
+    assert!(
+        start.elapsed() >= Duration::from_millis(600),
+        "{:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn an_unanswered_stopped_is_given_up_on() {
+    let opts = announcing_daemon(&["Announce Sent"]).await;
+    let mut c = DelugeClient::connect(&opts, &pin()).await.unwrap();
+    let waiting = c
+        .wait_until_announced(
+            &["aa", "bb"],
+            Duration::from_millis(100),
+            Duration::from_millis(500),
+        )
+        .await
+        .unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].id, "aa");
 }
 
 #[tokio::test]

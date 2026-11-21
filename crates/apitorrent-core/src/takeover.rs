@@ -14,6 +14,9 @@
 //!
 //! "Stopped" is Deluge's own answer, polled after the pause: every torrent must report
 //! `Paused` (or `Error`, which Deluge won't restart by itself). Asking is not enough.
+//! Then the trackers must have answered Deluge's `stopped` (or 20 s passed), so the tracker
+//! sees one client quit before another starts. Deluge's totals stay out of announces: the
+//! engine reports only bytes moved since its own `started`.
 //! "Not running" needs two things: nothing answers, *and* no `deluged` process uses that
 //! config directory. A daemon that runs but can't be reached is an error, never a
 //! take-over.
@@ -26,6 +29,13 @@ use apitorrent_deluge::rpc::{AuthFileError, CertError, ConnectOptions, DelugeCli
 
 /// How long Deluge gets to stop the torrents it was asked to pause.
 const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long Deluge's trackers get to answer its `stopped` before apitorrent starts anyway:
+/// the engine's own wait between a `stopped` and the next `started` (`announce::STOP_WAIT`).
+const ANNOUNCE_WAIT: Duration = Duration::from_secs(20);
+
+/// How long a torrent that never showed an announce in flight is watched for one.
+const ANNOUNCE_SETTLE: Duration = Duration::from_secs(2);
 
 /// How taking over went.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +100,24 @@ async fn pause_in_deluge_on(
             t.state,
             STOP_TIMEOUT.as_secs()
         ));
+    }
+    // Deluge's `stopped` goes before apitorrent's `started`: one client quits, then
+    // another starts. A tracker that never answers only delays the take-over.
+    match client
+        .wait_until_announced(&paused, ANNOUNCE_SETTLE, ANNOUNCE_WAIT)
+        .await
+    {
+        Ok(waiting) if !waiting.is_empty() => tracing::warn!(
+            dir = %config_dir.display(),
+            waiting = waiting.len(),
+            "Deluge's trackers didn't answer its stop in {}s; taking over anyway",
+            ANNOUNCE_WAIT.as_secs()
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            dir = %config_dir.display(),
+            "couldn't check that Deluge told its trackers it stopped ({e}); taking over anyway"
+        ),
     }
     tracing::info!(
         dir = %config_dir.display(),
