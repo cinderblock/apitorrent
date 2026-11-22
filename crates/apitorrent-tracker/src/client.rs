@@ -1,8 +1,9 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use apitorrent_metainfo::Sha1Hash;
+use apitorrent_proxy::{Proxy, Target, UdpAssociation};
 use reqwest::StatusCode;
 use reqwest::redirect;
 use tokio::net::UdpSocket;
@@ -59,9 +60,13 @@ pub struct TrackerClient {
 
 #[derive(Debug)]
 struct Inner {
-    http: reqwest::Client,
+    /// Rebuilt when the proxy changes; requests in flight keep the client they started
+    /// with.
+    http: RwLock<reqwest::Client>,
     config: TrackerConfig,
     connections: Mutex<ConnectionCache>,
+    /// Where tracker connections go: straight to the tracker, or through this proxy.
+    proxy: RwLock<Option<Arc<Proxy>>>,
 }
 
 enum Scheme {
@@ -135,6 +140,81 @@ pub fn strict_http_client_builder(
         .connect_timeout(connect_timeout))
 }
 
+/// [`strict_http_client`], with every request going through `proxy`. The proxy is the
+/// only one used: there is no fallback to a direct connection.
+pub fn strict_http_client_via(
+    user_agent: &str,
+    timeout: std::time::Duration,
+    connect_timeout: std::time::Duration,
+    proxy: Option<&Proxy>,
+) -> Result<reqwest::Client, TrackerError> {
+    with_proxy(
+        strict_http_client_builder(user_agent, timeout, connect_timeout)?,
+        proxy,
+    )?
+    .build()
+    .map_err(TrackerError::network)
+}
+
+/// Route a client's requests through `proxy`. The builder must already have had
+/// `no_proxy()`, so nothing from the environment is mixed in.
+fn with_proxy(
+    builder: reqwest::ClientBuilder,
+    proxy: Option<&Proxy>,
+) -> Result<reqwest::ClientBuilder, TrackerError> {
+    let Some(proxy) = proxy else {
+        return Ok(builder);
+    };
+    // The URL holds the password: errors about it must not quote it.
+    let mut url = proxy
+        .url()
+        .map_err(|e| TrackerError::network(format!("bad proxy address: {e}")))?;
+    // An HTTP proxy's credentials go in as Basic authentication; left in the URL, they
+    // would reach the proxy still percent-encoded.
+    let http_auth = match (&proxy.credentials, proxy.kind) {
+        (Some(c), apitorrent_proxy::ProxyKind::Http) => {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            Some(c)
+        }
+        _ => None,
+    };
+    let mut reqwest_proxy = reqwest::Proxy::all(url.as_str())
+        .map_err(|_| TrackerError::network("bad proxy address"))?;
+    if let Some(c) = http_auth {
+        reqwest_proxy = reqwest_proxy.basic_auth(&c.username, &c.password);
+    }
+    Ok(builder.proxy(reqwest_proxy))
+}
+
+/// The tracker HTTP client, direct or through `proxy`.
+fn build_http(
+    config: &TrackerConfig,
+    proxy: Option<&Proxy>,
+) -> Result<reqwest::Client, TrackerError> {
+    // No TLS session resumption and no kept-alive connections: either would let a
+    // tracker tie a client identity's announces to the previous identity's after a
+    // switch. libtorrent doesn't reuse them either (it sends `Connection: close`), and
+    // announces are minutes apart, so this costs a handshake nobody would have saved.
+    let mut tls = tls::client_config()?;
+    tls.resumption = rustls::client::Resumption::disabled();
+    let builder = reqwest::Client::builder()
+        .tls_backend_preconfigured(tls)
+        .pool_max_idle_per_host(0)
+        .redirect(redirect_policy(config.max_redirects))
+        // The announce URL can hold a private tracker's passkey; don't hand it to
+        // wherever a redirect points.
+        .referer(false)
+        // The proxy is an explicit setting, never picked up from the environment.
+        .no_proxy()
+        .user_agent(config.user_agent.clone())
+        .timeout(config.http_timeout)
+        .connect_timeout(config.connect_timeout);
+    with_proxy(builder, proxy)?
+        .build()
+        .map_err(TrackerError::network)
+}
+
 impl TrackerClient {
     /// A client with the default [`TrackerConfig`].
     pub fn new() -> Result<Self, TrackerError> {
@@ -142,37 +222,46 @@ impl TrackerClient {
     }
 
     pub fn with_config(config: TrackerConfig) -> Result<Self, TrackerError> {
-        // No TLS session resumption and no kept-alive connections: either would let a
-        // tracker tie a client identity's announces to the previous identity's after a
-        // switch. libtorrent doesn't reuse them either (it sends `Connection: close`), and
-        // announces are minutes apart, so this costs a handshake nobody would have saved.
-        let mut tls = tls::client_config()?;
-        tls.resumption = rustls::client::Resumption::disabled();
-        let http = reqwest::Client::builder()
-            .tls_backend_preconfigured(tls)
-            .pool_max_idle_per_host(0)
-            .redirect(redirect_policy(config.max_redirects))
-            // The announce URL can hold a private tracker's passkey; don't hand it to
-            // wherever a redirect points.
-            .referer(false)
-            // Proxies will be explicit settings, never picked up from the environment.
-            .no_proxy()
-            .user_agent(config.user_agent.clone())
-            .timeout(config.http_timeout)
-            .connect_timeout(config.connect_timeout)
-            .build()
-            .map_err(TrackerError::network)?;
+        let http = build_http(&config, None)?;
         Ok(Self {
             inner: Arc::new(Inner {
-                http,
+                http: RwLock::new(http),
                 config,
                 connections: Mutex::new(ConnectionCache::default()),
+                proxy: RwLock::new(None),
             }),
         })
     }
 
     pub fn config(&self) -> &TrackerConfig {
         &self.inner.config
+    }
+
+    /// Send every tracker request through `proxy` from now on, or straight to the tracker
+    /// with `None`. HTTP(S) trackers go through any kind of proxy; UDP trackers only
+    /// through SOCKS5 (a UDP association). Through an HTTP or SOCKS4 proxy, UDP trackers
+    /// fail with [`TrackerError::UdpNotProxied`] rather than going around the proxy.
+    pub fn set_proxy(&self, proxy: Option<Proxy>) -> Result<(), TrackerError> {
+        let http = build_http(&self.inner.config, proxy.as_ref())?;
+        *self
+            .inner
+            .http
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = http;
+        *self
+            .inner
+            .proxy
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = proxy.map(Arc::new);
+        Ok(())
+    }
+
+    fn proxy(&self) -> Option<Arc<Proxy>> {
+        self.inner
+            .proxy
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Announce to the tracker at `url` (`http://`, `https://` or `udp://`).
@@ -190,12 +279,11 @@ impl TrackerClient {
                 interpret(status, &body, http::parse_announce)
             }
             Scheme::Udp => {
-                let addr = self.resolve_udp(&parsed).await?;
-                let family = PeerFamily::of(&addr);
-                self.udp_exchange(
-                    (addr, Some(req.key)),
+                self.udp_request(
+                    &parsed,
+                    Some(req.key),
                     |conn, tx| udp::encode_announce(conn, tx, req).to_vec(),
-                    |buf, tx| udp::decode_announce(buf, tx, family),
+                    udp::decode_announce,
                 )
                 .await
             }
@@ -235,11 +323,11 @@ impl TrackerClient {
                 interpret(status, &body, |b| http::parse_scrape(b, hashes))
             }
             Scheme::Udp => {
-                let addr = self.resolve_udp(&parsed).await?;
-                self.udp_exchange(
-                    (addr, None),
+                self.udp_request(
+                    &parsed,
+                    None,
                     |conn, tx| udp::encode_scrape(conn, tx, hashes).expect("hashes checked"),
-                    |buf, tx| udp::decode_scrape(buf, tx, hashes),
+                    |buf, tx, _| udp::decode_scrape(buf, tx, hashes),
                 )
                 .await
             }
@@ -254,7 +342,13 @@ impl TrackerClient {
         user_agent: Option<&str>,
     ) -> Result<(StatusCode, Vec<u8>), TrackerError> {
         let limit = self.inner.config.max_response_size;
-        let mut request = self.inner.http.get(url);
+        let http = self
+            .inner
+            .http
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let mut request = http.get(url);
         if let Some(agent) = user_agent {
             let value = reqwest::header::HeaderValue::from_str(agent).map_err(|_| {
                 TrackerError::InvalidRequest("the user agent is not a valid header")
@@ -277,6 +371,65 @@ impl TrackerClient {
             body.extend_from_slice(&chunk);
         }
         Ok((status, body))
+    }
+
+    /// One UDP tracker request: straight to the tracker, or through the proxy when there
+    /// is one. `key` is the announce key, part of the connection id's scope.
+    async fn udp_request<T>(
+        &self,
+        url: &Url,
+        key: Option<u32>,
+        encode: impl Fn(u64, u32) -> Vec<u8>,
+        decode: impl Fn(&[u8], u32, PeerFamily) -> Result<T, TrackerError>,
+    ) -> Result<T, TrackerError> {
+        if let Some(proxy) = self.proxy() {
+            return self.udp_proxied(&proxy, url, encode, decode).await;
+        }
+        let addr = self.resolve_udp(url).await?;
+        self.udp_exchange((addr, key), encode, decode).await
+    }
+
+    /// A UDP tracker request through a SOCKS5 UDP association, with a fresh connection id
+    /// each time: the tracker's address may be a name only the proxy resolves, so there
+    /// is no address to cache the id under.
+    async fn udp_proxied<T>(
+        &self,
+        proxy: &Proxy,
+        url: &Url,
+        encode: impl Fn(u64, u32) -> Vec<u8>,
+        decode: impl Fn(&[u8], u32, PeerFamily) -> Result<T, TrackerError>,
+    ) -> Result<T, TrackerError> {
+        if !proxy.kind.carries_udp() {
+            return Err(TrackerError::UdpNotProxied);
+        }
+        let port = url
+            .port()
+            .ok_or_else(|| TrackerError::InvalidUrl("a UDP tracker URL needs a port".into()))?;
+        let target = match url.host() {
+            Some(Host::Ipv4(ip)) => Target::Addr(SocketAddr::new(ip.into(), port)),
+            Some(Host::Ipv6(ip)) => Target::Addr(SocketAddr::new(ip.into(), port)),
+            Some(Host::Domain(name)) if !name.is_empty() => Target::Name(name.to_owned(), port),
+            _ => return Err(TrackerError::InvalidUrl("missing host".into())),
+        };
+        let association =
+            tokio::time::timeout(self.inner.config.connect_timeout, proxy.udp_associate())
+                .await
+                .map_err(|_| TrackerError::Timeout)?
+                .map_err(TrackerError::network)?;
+        let path = UdpPath::Proxied(&association, &target);
+        let mut buf = vec![0u8; udp::MAX_DATAGRAM];
+        let tx = rand::random::<u32>();
+        let connection_id = self
+            .transact(&path, &udp::encode_connect(tx), tx, &mut buf, |b, _| {
+                udp::decode_connect(b, tx)
+            })
+            .await?;
+        let tx = rand::random::<u32>();
+        let packet = encode(connection_id, tx);
+        self.transact(&path, &packet, tx, &mut buf, |b, family| {
+            decode(b, tx, family)
+        })
+        .await
     }
 
     async fn resolve_udp(&self, url: &Url) -> Result<SocketAddr, TrackerError> {
@@ -318,7 +471,7 @@ impl TrackerClient {
         &self,
         scope: ConnectionScope,
         encode: impl Fn(u64, u32) -> Vec<u8>,
-        decode: impl Fn(&[u8], u32) -> Result<T, TrackerError>,
+        decode: impl Fn(&[u8], u32, PeerFamily) -> Result<T, TrackerError>,
     ) -> Result<T, TrackerError> {
         let addr = scope.0;
         let bind: SocketAddr = if addr.is_ipv4() {
@@ -329,6 +482,7 @@ impl TrackerClient {
         let socket = UdpSocket::bind(bind).await.map_err(TrackerError::network)?;
         // A connected socket only receives datagrams from the tracker's address.
         socket.connect(addr).await.map_err(TrackerError::network)?;
+        let path = UdpPath::Direct(&socket, PeerFamily::of(&addr));
         let mut buf = vec![0u8; udp::MAX_DATAGRAM];
 
         let mut used_cached = self.cached_connection(&scope);
@@ -338,7 +492,7 @@ impl TrackerClient {
             } else {
                 let tx = rand::random::<u32>();
                 let id = self
-                    .transact(&socket, &udp::encode_connect(tx), tx, &mut buf, |b| {
+                    .transact(&path, &udp::encode_connect(tx), tx, &mut buf, |b, _| {
                         udp::decode_connect(b, tx)
                     })
                     .await?;
@@ -350,7 +504,9 @@ impl TrackerClient {
             let tx = rand::random::<u32>();
             let packet = encode(connection_id, tx);
             match self
-                .transact(&socket, &packet, tx, &mut buf, |b| decode(b, tx))
+                .transact(&path, &packet, tx, &mut buf, |b, family| {
+                    decode(b, tx, family)
+                })
                 .await
             {
                 Ok(v) => return Ok(v),
@@ -370,33 +526,64 @@ impl TrackerClient {
 
     /// Send `packet` and wait for the response with transaction id `tx`, retransmitting on
     /// the configured schedule. The same transaction id is kept across retransmissions, so
-    /// a late answer to an earlier copy still counts.
+    /// a late answer to an earlier copy still counts. `decode` gets the family of the
+    /// address the answer came from, which says how its peers are encoded.
     async fn transact<T>(
         &self,
-        socket: &UdpSocket,
+        path: &UdpPath<'_>,
         packet: &[u8],
         tx: u32,
         buf: &mut [u8],
-        decode: impl Fn(&[u8]) -> Result<T, TrackerError>,
+        decode: impl Fn(&[u8], PeerFamily) -> Result<T, TrackerError>,
     ) -> Result<T, TrackerError> {
         let policy = self.inner.config.udp_retry;
         for attempt in 0..policy.attempts.max(1) {
-            socket.send(packet).await.map_err(TrackerError::network)?;
+            path.send(packet).await.map_err(TrackerError::network)?;
             let deadline = Instant::now() + policy.timeout(attempt);
             loop {
-                let Ok(received) = tokio::time::timeout_at(deadline, socket.recv(buf)).await else {
+                let Ok(received) = tokio::time::timeout_at(deadline, path.recv(buf)).await else {
                     break;
                 };
-                let n = received.map_err(TrackerError::network)?;
+                let (n, family) = received.map_err(TrackerError::network)?;
                 let datagram = &buf[..n];
                 match udp::response_header(datagram) {
-                    Some((_, got)) if got == tx => return decode(datagram),
+                    Some((_, got)) if got == tx => return decode(datagram, family),
                     // Not an answer to this request: stale, or forged.
                     _ => {}
                 }
             }
         }
         Err(TrackerError::Timeout)
+    }
+}
+
+/// Where UDP tracker datagrams go: a socket connected to the tracker, or a SOCKS5 UDP
+/// association with the tracker's address.
+enum UdpPath<'a> {
+    Direct(&'a UdpSocket, PeerFamily),
+    Proxied(&'a UdpAssociation, &'a Target),
+}
+
+impl UdpPath<'_> {
+    async fn send(&self, packet: &[u8]) -> std::io::Result<()> {
+        match self {
+            UdpPath::Direct(socket, _) => socket.send(packet).await.map(drop),
+            UdpPath::Proxied(association, target) => association.send_to(packet, target).await,
+        }
+    }
+
+    /// The next datagram's length, and the family of the address it came from.
+    async fn recv(&self, buf: &mut [u8]) -> std::io::Result<(usize, PeerFamily)> {
+        match self {
+            UdpPath::Direct(socket, family) => Ok((socket.recv(buf).await?, *family)),
+            UdpPath::Proxied(association, _) => loop {
+                // The relay names the sender; a name (which no relay sends back) can't
+                // say how peers are encoded, so such a datagram is skipped.
+                if let (n, Target::Addr(from)) = association.recv_from(buf).await? {
+                    return Ok((n, PeerFamily::of(&from)));
+                }
+            },
+        }
     }
 }
 

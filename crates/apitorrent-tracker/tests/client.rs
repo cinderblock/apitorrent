@@ -725,3 +725,100 @@ async fn udp_url_needs_port() {
         .unwrap_err();
     assert!(matches!(err, TrackerError::InvalidUrl(_)), "{err:?}");
 }
+
+// ---------------------------------------------------------------------------------------
+// Through a proxy
+
+use apitorrent_proxy::testing::TestProxy;
+
+#[tokio::test]
+async fn http_announce_through_each_kind_of_proxy() {
+    let (addr, seen) = http_tracker(Reply::ok(compact_body())).await;
+    let url = format!("http://{addr}/announce?passkey=s3cr3t");
+    for proxy in [
+        TestProxy::socks5(None).await.unwrap(),
+        TestProxy::socks5(Some(("me", "pa:ss"))).await.unwrap(),
+        TestProxy::socks4().await.unwrap(),
+        TestProxy::http(None).await.unwrap(),
+        TestProxy::http(Some(("me", "pa:ss"))).await.unwrap(),
+    ] {
+        let client = client();
+        client.set_proxy(Some(proxy.proxy())).unwrap();
+        let r = client.announce(&url, &request(HASH)).await.unwrap();
+        assert_eq!(r.seeders, Some(3));
+        let log = proxy.requests();
+        let kind = proxy.proxy().kind;
+        assert_eq!(log.len(), 1, "{kind:?}: {log:?}");
+        // SOCKS tunnels; an HTTP proxy is handed plain HTTP requests whole.
+        let want = if kind == apitorrent_proxy::ProxyKind::Http {
+            format!("GET http://{addr}/announce?passkey=s3cr3t&")
+        } else {
+            format!("CONNECT {addr}")
+        };
+        assert!(log[0].starts_with(&want), "{kind:?}: {log:?}");
+    }
+    assert_eq!(seen.lock().unwrap().len(), 5);
+}
+
+#[tokio::test]
+async fn udp_announce_through_socks5() {
+    let (addr, stats) = udp_tracker("127.0.0.1:0", 0).await.unwrap();
+    let proxy = TestProxy::socks5(Some(("me", "secret"))).await.unwrap();
+    let client = client();
+    client.set_proxy(Some(proxy.proxy())).unwrap();
+    let url = format!("udp://{addr}/announce");
+    let r = client.announce(&url, &request(HASH)).await.unwrap();
+    assert_eq!(r.peers, ["192.0.2.1:6881".parse::<SocketAddr>().unwrap()]);
+    let s = client.scrape(&url, &[HASH]).await.unwrap();
+    assert_eq!(s.files[&HASH].complete, 100);
+    // Each request is its own association, with its own connect.
+    assert_eq!(stats.connects.load(Ordering::SeqCst), 2);
+    assert_eq!(proxy.requests().len(), 4, "{:?}", proxy.requests());
+    assert!(proxy.requests().iter().all(|r| *r == format!("UDP {addr}")));
+
+    // Back to direct.
+    client.set_proxy(None).unwrap();
+    client.announce(&url, &request(HASH)).await.unwrap();
+    assert_eq!(proxy.requests().len(), 4);
+}
+
+#[tokio::test]
+async fn udp_trackers_are_not_reached_around_a_proxy_without_udp() {
+    let (addr, stats) = udp_tracker("127.0.0.1:0", 0).await.unwrap();
+    for proxy in [
+        TestProxy::http(None).await.unwrap(),
+        TestProxy::socks4().await.unwrap(),
+    ] {
+        let client = client();
+        client.set_proxy(Some(proxy.proxy())).unwrap();
+        let err = client
+            .announce(&format!("udp://{addr}/announce"), &request(HASH))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TrackerError::UdpNotProxied), "{err}");
+    }
+    assert_eq!(stats.connects.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn a_dead_proxy_is_not_bypassed() {
+    let (addr, _) = http_tracker(Reply::ok(compact_body())).await;
+    let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = dead.local_addr().unwrap().port();
+    drop(dead);
+    let client = client();
+    client
+        .set_proxy(Some(apitorrent_proxy::Proxy {
+            kind: apitorrent_proxy::ProxyKind::Socks5,
+            host: "127.0.0.1".into(),
+            port,
+            credentials: None,
+            remote_dns: true,
+        }))
+        .unwrap();
+    let err = client
+        .announce(&format!("http://{addr}/announce"), &request(HASH))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, TrackerError::Network(_)), "{err}");
+}

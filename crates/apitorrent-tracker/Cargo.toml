@@ -12,9 +12,10 @@ repository.workspace = true
 apitorrent-bencode.workspace = true
 apitorrent-metainfo.workspace = true
 apitorrent-wire.workspace = true
+apitorrent-proxy.workspace = true
 percent-encoding.workspace = true
 rand.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["socks"] }
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
 thiserror.workspace = true
@@ -23,6 +24,7 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+apitorrent-proxy = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 rcgen.workspace = true
 tokio-rustls.workspace = true

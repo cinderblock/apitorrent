@@ -10,8 +10,12 @@
 //! HTTPS certificates are always verified against the operating system's trust store, and
 //! nothing can turn that off (see the `tls` module).
 //!
+//! [`TrackerClient::set_proxy`] sends every request through a proxy: HTTP(S) trackers
+//! through any kind, UDP trackers through a SOCKS5 UDP association. Proxies are never
+//! picked up from the environment.
+//!
 //! Not yet supported: BEP 41 UDP URL options (the path and query of a `udp://` URL are
-//! ignored), and announcing through a proxy.
+//! ignored).
 //!
 //! [BEP 3]: https://www.bittorrent.org/beps/bep_0003.html
 //! [BEP 7]: https://www.bittorrent.org/beps/bep_0007.html
@@ -27,7 +31,10 @@ mod tls;
 mod types;
 pub mod udp;
 
-pub use client::{TrackerClient, TrackerConfig, strict_http_client, strict_http_client_builder};
+pub use client::{
+    TrackerClient, TrackerConfig, strict_http_client, strict_http_client_builder,
+    strict_http_client_via,
+};
 pub use error::TrackerError;
 /// Re-exported so users of [`strict_http_client`] share the exact same version.
 pub use reqwest;

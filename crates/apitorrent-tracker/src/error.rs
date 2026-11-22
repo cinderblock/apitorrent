@@ -41,6 +41,10 @@ pub enum TrackerError {
     /// The request itself is not valid, such as a scrape with no info-hashes.
     #[error("invalid tracker request: {0}")]
     InvalidRequest(&'static str),
+    /// A UDP tracker, while tracker connections go through a proxy that can't carry UDP
+    /// (HTTP or SOCKS4). It isn't reached around the proxy.
+    #[error("UDP trackers can't be reached through an HTTP or SOCKS4 proxy")]
+    UdpNotProxied,
 }
 
 impl TrackerError {

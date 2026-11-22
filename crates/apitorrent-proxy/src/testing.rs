@@ -94,8 +94,9 @@ impl TestProxy {
         }
     }
 
-    /// What the proxy was asked to do so far: `CONNECT <target>` for each tunnel and
-    /// `UDP <target>` for each datagram relayed to a target.
+    /// What the proxy was asked to do so far: `CONNECT <target>` for each tunnel, `UDP
+    /// <target>` for each datagram relayed to a target, and `GET <url>` (or another
+    /// method) for each plain HTTP request an HTTP proxy forwarded.
     pub fn requests(&self) -> Vec<String> {
         self.log
             .lock()
@@ -263,33 +264,75 @@ async fn http(mut s: TcpStream, credentials: Option<Credentials>, log: Log) -> i
     let mut lines = head.split("\r\n");
     let request = lines.next().unwrap_or_default();
     let mut parts = request.split(' ');
-    let (Some("CONNECT"), Some(authority)) = (parts.next(), parts.next()) else {
-        s.write_all(b"HTTP/1.1 405 Method Not Allowed\r\n\r\n")
-            .await?;
+    let (Some(method), Some(uri)) = (parts.next(), parts.next()) else {
+        s.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await?;
         return Ok(());
     };
     if let Some(c) = &credentials {
         let want = format!(
-            "Proxy-Authorization: Basic {}",
+            "basic {}",
             base64::engine::general_purpose::STANDARD
                 .encode(format!("{}:{}", c.username, c.password))
         );
-        if !lines.any(|l| l == want) {
+        let given = lines.find_map(|l| {
+            let (name, value) = l.split_once(':')?;
+            name.eq_ignore_ascii_case("proxy-authorization")
+                .then(|| value.trim().to_owned())
+        });
+        // The scheme name is case-insensitive; the credentials are not.
+        if !given.is_some_and(|g| {
+            g.len() == want.len() && g[..6].eq_ignore_ascii_case("basic ") && g[6..] == want[6..]
+        }) {
             s.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
                 .await?;
             return Ok(());
         }
     }
-    let target = if let Ok(a) = authority.parse::<SocketAddr>() {
-        Target::Addr(a)
-    } else {
-        let (host, port) = authority.rsplit_once(':').unwrap_or((authority, "80"));
-        Target::Name(host.to_owned(), port.parse().unwrap_or(80))
-    };
+    if method != "CONNECT" {
+        return forward(s, &head, method, uri, log).await;
+    }
+    let target = authority_target(uri);
     record(&log, format!("CONNECT {target}"));
     s.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
         .await?;
     tunnel(s, &target).await
+}
+
+fn authority_target(authority: &str) -> Target {
+    if let Ok(a) = authority.parse::<SocketAddr>() {
+        Target::Addr(a)
+    } else {
+        let (host, port) = authority.rsplit_once(':').unwrap_or((authority, "80"));
+        Target::Name(host.to_owned(), port.parse().unwrap_or(80))
+    }
+}
+
+/// A plain HTTP request through the proxy (`GET http://host/path`): sent on to the
+/// origin server in origin form, and its response sent back.
+async fn forward(s: TcpStream, head: &str, method: &str, uri: &str, log: Log) -> io::Result<()> {
+    let Some(rest) = uri.strip_prefix("http://") else {
+        let mut s = s;
+        s.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n").await?;
+        return Ok(());
+    };
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let target = authority_target(authority);
+    record(&log, format!("{method} {uri}"));
+    let mut upstream = TcpStream::connect(resolve(&target).await?).await?;
+    let path = if path.is_empty() { "/" } else { path };
+    let mut out = format!("{method} {path} HTTP/1.1\r\n");
+    for line in head.split("\r\n").skip(1) {
+        if !line.to_ascii_lowercase().starts_with("proxy-") {
+            out.push_str(line);
+            out.push_str("\r\n");
+        }
+    }
+    // `head` ended with the blank line, which the loop above copied as two empty lines.
+    let out = out.trim_end_matches("\r\n").to_owned() + "\r\n\r\n";
+    upstream.write_all(out.as_bytes()).await?;
+    let mut s = s;
+    let _ = tokio::io::copy_bidirectional(&mut s, &mut upstream).await;
+    Ok(())
 }
 
 #[cfg(test)]
