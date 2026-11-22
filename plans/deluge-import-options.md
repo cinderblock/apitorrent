@@ -50,6 +50,27 @@ the CLI report.
 6. [ ] ← Click through the wizard against a real Deluge dir (with the rest of
        `plans/deluge-coexistence.md` step 11, on pokol).
 
+### Round 2: what still can't come over (asked 2026-11-22)
+
+The user went through the "can't come over" list. Status of each:
+
+- Move completed and sequential download: already come over (`dc20978`, another thread).
+- Per-torrent upload slots: **add** (engine has only a session-wide `upload_slots`, 8).
+- First and last pieces first: **add** (to the picker, next to file order).
+- Super-seeding (BEP 16): explained, awaiting a yes/no.
+- Ports: keep apitorrent's own; nothing to do.
+- Encryption: **import** Deluge's `enc_in_policy`/`enc_out_policy`/`enc_level` into
+  `Settings::encryption`, and highlight Deluge settings that differ from Deluge's defaults.
+- Proxy: user wants it offered; apitorrent has no peer/tracker proxy yet, so it needs the
+  feature first. Awaiting go-ahead on scope.
+- DHT, LSD and UPnP: DHT and LSD are daemon flags (`--no-dht`, `--no-lsd`), not settings;
+  UPnP/NAT-PMP don't exist. Importing them needs them as settings first.
+- Active downloads/seeds limits: already come over (the "active slots" setting); the
+  earlier reply listing them as not read was wrong.
+- Cache: Deluge's `cache_size`/`cache_expiry` are global (not per torrent, as said
+  earlier); apitorrent has no disk-cache knob to map them onto.
+- Plugins (AutoAdd, Scheduler, Execute, Blocklist, Notifications): out of scope.
+
 ## Findings / gotchas
 
 - The preview asks Deluge's daemon for its versions (for the identity choice's label),
