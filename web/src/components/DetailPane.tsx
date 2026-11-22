@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../api/client";
+import type { FileOrder } from "../api/generated/FileOrder";
+import type { MoveCompleted } from "../api/generated/MoveCompleted";
 import type { TorrentDetail } from "../api/generated/TorrentDetail";
 import type { TorrentLimits } from "../api/generated/TorrentLimits";
 import type { TorrentFile } from "../api/generated/TorrentFile";
@@ -11,6 +13,9 @@ import { PathActions } from "../desktop/PathActions";
 import { describeReuse } from "../library";
 import { formatBytes, formatDateTime, formatPercent, formatRate, formatRatio, formatUtc, fromKiB, STATE_LABEL, toKiB } from "../format";
 import { describeSeedLimits, formatSeedingTime, SeedLimitsFields } from "./SeedLimitsFields";
+import { FILE_ORDERS, NO_MOVE, describeFileOrder, describeMove, fileOrderOf, moveProblems, splitMovedPath, trimMove, type FileOrderBy } from "./fileSettings";
+import { MoveCompletedFields } from "./MoveCompletedFields";
+import { Tip } from "./Tip";
 import { WebLink } from "./WebLink";
 import { badUrls, duplicateUrls, fromDrafts, moveTier, newTier, sameTiers, toDrafts, type TierDraft } from "./trackerTiers";
 
@@ -121,6 +126,9 @@ function copy(text: string) {
 
 /** What the location column says about a file that isn't simply in the save directory. */
 function location(f: TorrentFile): React.ReactNode {
+  if (f.movedTo !== null) {
+    return <span className="chip">Moved</span>;
+  }
   if (f.placement === "held") {
     return <span className="chip chip-held">Held</span>;
   }
@@ -128,6 +136,20 @@ function location(f: TorrentFile): React.ReactNode {
     return <span className="chip">Not in folder</span>;
   }
   return null;
+}
+
+/** Where a completed file was moved; it seeds from there. */
+function MovedTo({ path }: { path: string }) {
+  const { dir, name } = splitMovedPath(path);
+  return (
+    <div className="file-note muted">
+      Moved to <code>{path}</code>, seeding from there
+      <PathActions savePath={dir} file={name} />
+      <WebLink savePath={dir} path={name}>
+        Download
+      </WebLink>
+    </div>
+  );
 }
 
 /** Names the torrent that took over this one's files. */
@@ -266,6 +288,149 @@ function SeedLimitsEditor({ id, detail, refetch, readOnly }: { id: string; detai
           Cancel
         </button>
       </span>
+    </form>
+  );
+}
+
+/** "(its own)" or "(from its group or the settings)", after a setting a torrent may override. */
+function whose(own: boolean) {
+  return <span className="muted"> ({own ? "its own" : "from its group or the settings"})</span>;
+}
+
+/** The torrent's file order: its own, or its group's or the settings'. Saved on change. */
+function FileOrderEditor({ id, detail, refetch, readOnly }: { id: string; detail: TorrentDetail; refetch: () => void; readOnly: boolean }) {
+  const [error, setError] = useState<string | null>(null);
+  const own = detail.fileOrder;
+  const tip = (
+    <Tip label="About download order">
+      Which files are downloaded first. A preference, not a rule: peers that don&apos;t have the earlier files still send later ones, and a file&apos;s
+      priority comes first. To watch a file while it downloads, tick <strong>Download in order</strong> on it under Files.
+    </Tip>
+  );
+  if (readOnly) {
+    return (
+      <span>
+        {describeFileOrder(detail.effectiveFileOrder)}
+        {whose(own !== null)}
+        {tip}
+      </span>
+    );
+  }
+  const set = async (order: FileOrder | null) => {
+    setError(null);
+    try {
+      await api.setFileOrder(id, order);
+      refetch();
+    } catch (e) {
+      setError(describeError(e));
+    }
+  };
+  return (
+    <span className="inline-edit">
+      <select
+        aria-label="Download order"
+        value={own?.by ?? "inherit"}
+        onChange={(e) => void set(e.target.value === "inherit" ? null : fileOrderOf(e.target.value as FileOrderBy, own))}
+      >
+        <option value="inherit">
+          Like its group or the settings{own === null ? ` (${describeFileOrder(detail.effectiveFileOrder).toLowerCase()})` : ""}
+        </option>
+        {FILE_ORDERS.map(([by, words]) => (
+          <option key={by} value={by}>
+            {words}
+          </option>
+        ))}
+        {own?.by === "manual" && <option value="manual">{describeFileOrder(own)}</option>}
+      </select>
+      {tip}
+      {error && <span className="error-text">{error}</span>}
+    </span>
+  );
+}
+
+type MoveMode = "inherit" | "off" | "own";
+
+/** Moving the torrent's completed files: like its group or the settings, never, or its own way. */
+function MoveCompletedEditor({ id, detail, refetch, readOnly }: { id: string; detail: TorrentDetail; refetch: () => void; readOnly: boolean }) {
+  const [editing, setEditing] = useState(false);
+  const [mode, setMode] = useState<MoveMode>("inherit");
+  const [value, setValue] = useState<MoveCompleted>(NO_MOVE);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!editing) {
+    return (
+      <span className="inline-edit">
+        <span>
+          {describeMove(detail.effectiveMoveCompleted)}
+          {whose(detail.moveCompleted !== null)}
+        </span>
+        {!readOnly && (
+          <button
+            type="button"
+            className="link"
+            onClick={() => {
+              const own = detail.moveCompleted;
+              setMode(own === null ? "inherit" : own.enabled ? "own" : "off");
+              setValue({ ...(own ?? detail.effectiveMoveCompleted), enabled: true });
+              setError(null);
+              setEditing(true);
+            }}
+          >
+            Change
+          </button>
+        )}
+      </span>
+    );
+  }
+  const problems = mode === "own" ? moveProblems(value) : [];
+  const save = async () => {
+    // "Leave in place" keeps what was typed for next time, unless the daemon would refuse it.
+    const settings =
+      mode === "inherit" ? null
+      : mode === "off" ? (moveProblems(value).length === 0 ? { ...trimMove(value), enabled: false } : NO_MOVE)
+      : trimMove(value);
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setMoveCompleted(id, settings);
+      setEditing(false);
+      refetch();
+    } catch (e) {
+      setError(describeError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="move-editor"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <select aria-label="Moving completed files" value={mode} onChange={(e) => setMode(e.target.value as MoveMode)}>
+        <option value="inherit">Like its group or the settings</option>
+        <option value="off">Leave its files where they are</option>
+        <option value="own">Its own setting</option>
+      </select>
+      {mode === "own" && (
+        <MoveCompletedFields
+          idPrefix="torrent-move"
+          value={value}
+          onChange={setValue}
+          note="For one torrent, destinations must be inside one of the space's storage roots."
+        />
+      )}
+      <span className="inline-edit">
+        <button type="submit" disabled={busy || problems.length > 0}>
+          Save
+        </button>
+        <button type="button" onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+      </span>
+      {error && <p className="error-text">{error}</p>}
     </form>
   );
 }
@@ -474,8 +639,19 @@ function FilesTab({ summary, detail, refetch, readOnly }: { summary: TorrentSumm
   const held = detail.files.filter((f) => f.placement === "held");
   const heldBytes = held.reduce((n, f) => n + f.length, 0);
   const anyNotInFolder = detail.files.some((f) => f.placement !== "save");
+  const [error, setError] = useState<string | null>(null);
   const setPolicy = (policy: UnwantedPolicy) => {
     void api.setUnwantedPolicy(summary.id, policy).then(refetch);
+  };
+  const setSequential = async (f: TorrentFile, sequential: boolean) => {
+    setError(null);
+    try {
+      // From the start: a player reading the file on disk asks for its own bytes.
+      await api.setSequential(summary.id, [{ index: f.index, sequential, from: 0 }]);
+      refetch();
+    } catch (e) {
+      setError(describeError(e));
+    }
   };
   return (
     <>
@@ -505,10 +681,19 @@ function FilesTab({ summary, detail, refetch, readOnly }: { summary: TorrentSumm
           <strong>Not in folder</strong> files keep only the bytes they share with wanted files.
         </p>
       )}
+      {error && <p className="error-text">{error}</p>}
       <table className="files">
         <thead>
           <tr>
-            <th>File</th>
+            <th>
+              File
+              {!readOnly && (
+                <Tip label="About downloading in order">
+                  <strong>Download in order</strong> fetches a file front to back, so you can watch or read it while it downloads. Its first and last parts
+                  come first, since players need them. The rest of the torrent keeps downloading around it.
+                </Tip>
+              )}
+            </th>
             <th className="end">Size</th>
             <th>Progress</th>
             <th>Location</th>
@@ -520,14 +705,26 @@ function FilesTab({ summary, detail, refetch, readOnly }: { summary: TorrentSumm
             <tr key={f.index}>
               <td className="cell-path">
                 {f.path}
-                {f.placement === "save" && <PathActions savePath={summary.savePath} file={f.path} />}
+                {f.placement === "save" && f.movedTo === null && <PathActions savePath={summary.savePath} file={f.path} />}
                 {/* Only whole files: a partial one would download with holes. */}
-                {f.placement === "save" && f.progress >= 1 && (
+                {f.placement === "save" && f.progress >= 1 && f.movedTo === null && (
                   <WebLink savePath={summary.savePath} path={f.path}>
                     Download
                   </WebLink>
                 )}
                 {f.reused && <div className="file-reuse muted">{describeReuse(f.reused, f.length)}</div>}
+                {f.movedTo !== null && <MovedTo path={f.movedTo} />}
+                {f.moveError && <div className="file-note error-text">Couldn&apos;t move it: {f.moveError}</div>}
+                {readOnly && f.sequential && <div className="file-note muted">Downloading in order</div>}
+                {/* Only while it matters: a finished file has nothing left to fetch in order. */}
+                {!readOnly && f.priority > 0 && (f.progress < 1 || f.sequential) && (
+                  <div>
+                    <label className="file-sequential">
+                      <input type="checkbox" checked={f.sequential} onChange={(e) => void setSequential(f, e.target.checked)} />
+                      Download in order
+                    </label>
+                  </div>
+                )}
               </td>
               <td className="end">{formatBytes(f.length)}</td>
               <td>{formatPercent(f.progress)}</td>
@@ -651,6 +848,13 @@ export function DetailPane({
             {detail && <Row label="Limits" value={<LimitsEditor id={summary.id} limits={detail.limits} refetch={refetch} readOnly={readOnly} />} />}
             {detail && <Row label="Seeding limits" value={<SeedLimitsEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />} />}
             {detail && detail.seedingSecs > 0 && <Row label="Seeding time" value={formatSeedingTime(detail.seedingSecs)} />}
+            {detail && <Row label="Download order" value={<FileOrderEditor id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />} />}
+            {detail && (
+              <Row
+                label="Completed files"
+                value={<MoveCompletedEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />}
+              />
+            )}
             <Row
               label="Added"
               value={

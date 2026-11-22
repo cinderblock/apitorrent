@@ -3,6 +3,7 @@
 
 import type { Settings } from "../api/generated/Settings";
 import { identityProblems } from "../components/clientIdentity";
+import { moveProblems, trimMove } from "../components/fileSettings";
 
 export type SectionId =
   | "transfers"
@@ -207,21 +208,26 @@ export function draftProblems(draft: Settings): Problem[] {
     if (name === "") out.push({ section: "groups", message: `Group ${i + 1} needs a name.` });
     else if (names.has(name)) out.push({ section: "groups", message: `Two groups are called "${name}".` });
     names.add(name);
+    if (g.moveCompleted) {
+      for (const p of moveProblems(g.moveCompleted)) out.push({ section: "groups", message: `${name || `Group ${i + 1}`}: ${p}` });
+    }
     for (const l of g.labels) {
       const other = labels.get(l);
       if (other !== undefined) out.push({ section: "groups", message: `Label "${l}" is in two groups (${other} and ${name || `group ${i + 1}`}).` });
       else labels.set(l, name || `group ${i + 1}`);
     }
   });
+  for (const p of moveProblems(draft.moveCompleted)) out.push({ section: "files", message: p });
   for (const p of identityProblems(draft.identity)) out.push({ section: "identity", message: p });
   return out;
 }
 
-/** The draft as it is sent: names and hosts trimmed. */
+/** The draft as it is sent: names, hosts, paths and patterns trimmed. */
 export function forSaving(draft: Settings): Settings {
   return {
     ...draft,
-    groups: draft.groups.map((g) => ({ ...g, name: g.name.trim() })),
+    groups: draft.groups.map((g) => ({ ...g, name: g.name.trim(), moveCompleted: g.moveCompleted && trimMove(g.moveCompleted) })),
+    moveCompleted: trimMove(draft.moveCompleted),
     identity: { ...draft.identity, rules: draft.identity.rules.map((r) => ({ ...r, host: r.host.trim() })) },
   };
 }

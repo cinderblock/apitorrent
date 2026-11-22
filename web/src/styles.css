@@ -1805,6 +1805,101 @@ button.link.danger-text {
   gap: 6px;
 }
 
+/* Moving completed files (components/MoveCompletedFields.tsx): settings, groups, a torrent. */
+
+.move-fields {
+  display: grid;
+  gap: 6px;
+  max-width: 48rem;
+  min-width: 0;
+}
+
+.move-fields .field,
+.move-fields .hint {
+  margin-bottom: 0;
+}
+
+.move-rules {
+  display: grid;
+  gap: 6px;
+}
+
+.move-rules-head {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.move-rule-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.move-rule {
+  display: grid;
+  grid-template-columns: minmax(6rem, 1fr) auto minmax(8rem, 2fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.move-rule input {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.move-rule-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* On a phone the pattern and destination stack, the buttons under them. */
+@media (max-width: 480px) {
+  .move-rule {
+    grid-template-columns: minmax(0, 1fr);
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .move-rule > span[aria-hidden] {
+    display: none;
+  }
+}
+
+.move-problems {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.move-editor {
+  display: grid;
+  gap: 8px;
+}
+
+/* A file's own lines under its path: reused, moved, why a move failed, sequential. */
+.file-note {
+  font-size: 0.85em;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.file-sequential {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.file-sequential input {
+  margin: 0;
+}
+
 /* The Deluge import's torrent list: scrolls inside the dialog. */
 /* Import wizard: the Deluge installations found on the server, one button each. */
 .found-deluge {

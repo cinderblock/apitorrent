@@ -3,11 +3,15 @@
 
 import { useEffect, useState } from "react";
 
+import type { FileOrder } from "../api/generated/FileOrder";
 import type { GroupSettings } from "../api/generated/GroupSettings";
+import type { MoveCompleted } from "../api/generated/MoveCompleted";
 import type { SeedLimitAction } from "../api/generated/SeedLimitAction";
 import type { SeedLimits } from "../api/generated/SeedLimits";
 import type { Settings } from "../api/generated/Settings";
+import { FILE_ORDERS, describeFileOrder, describeMove, fileOrderOf, type FileOrderBy } from "../components/fileSettings";
 import { DedupeStatus, LibraryFolders } from "../components/LibrarySection";
+import { MoveCompletedFields } from "../components/MoveCompletedFields";
 import { describeSeedLimits } from "../components/SeedLimitsFields";
 import { StorageRoots } from "../components/StorageRootsSection";
 import { AmountInput, ChoiceCards, Note, RateInput, SettingCard, SettingRow, ToggleRow, rateWords, type Choice } from "./controls";
@@ -151,6 +155,8 @@ function groupSummary(g: GroupSettings): string {
   if (g.uploadRate > 0) parts.push(`↑ ${rateWords(g.uploadRate, "")}`);
   if (g.maxConnections > 0) parts.push(`${g.maxConnections} connections`);
   if (g.seedLimits) parts.push(describeSeedLimits(g.seedLimits));
+  if (g.fileOrder) parts.push(`order: ${describeFileOrder(g.fileOrder).toLowerCase()}`);
+  if (g.moveCompleted) parts.push(`move: ${describeMove(g.moveCompleted).toLowerCase()}`);
   return parts.length > 0 ? parts.join(" · ") : "No limits of its own yet";
 }
 
@@ -169,7 +175,8 @@ function GroupCard({
   onToggle: () => void;
   onChange: (patch: Partial<GroupSettings>) => void;
   onRemove: () => void;
-  defaults: SeedLimits;
+  /** The instance's settings these override. */
+  defaults: Pick<Settings, "seedLimits" | "fileOrder" | "moveCompleted">;
 }) {
   const p = `s-group-${i}`;
   return (
@@ -213,11 +220,31 @@ function GroupCard({
           </SettingRow>
           <ToggleRow
             label="Its own seeding limits"
-            description={g.seedLimits ? undefined : `Off: follows the default (${describeSeedLimits(defaults).toLowerCase()})`}
+            description={g.seedLimits ? undefined : `Off: follows the default (${describeSeedLimits(defaults.seedLimits).toLowerCase()})`}
             checked={g.seedLimits !== null}
-            onChange={(on) => onChange({ seedLimits: on ? { ...defaults } : null })}
+            onChange={(on) => onChange({ seedLimits: on ? { ...defaults.seedLimits } : null })}
           >
             {g.seedLimits && <SeedLimitRows idPrefix={`${p}-seed`} value={g.seedLimits} onChange={(seedLimits) => onChange({ seedLimits })} />}
+          </ToggleRow>
+          <ToggleRow
+            label="Its own download order"
+            description={g.fileOrder ? undefined : `Off: follows the default (${describeFileOrder(defaults.fileOrder).toLowerCase()})`}
+            checked={g.fileOrder !== null}
+            onChange={(on) => onChange({ fileOrder: on ? { ...defaults.fileOrder } : null })}
+          >
+            {g.fileOrder && (
+              <SettingRow label="Order" htmlFor={`${p}-order`}>
+                <FileOrderSelect id={`${p}-order`} value={g.fileOrder} onChange={(fileOrder) => onChange({ fileOrder })} />
+              </SettingRow>
+            )}
+          </ToggleRow>
+          <ToggleRow
+            label="Its own moving of completed files"
+            description={g.moveCompleted ? undefined : `Off: follows the default (${describeMove(defaults.moveCompleted).toLowerCase()})`}
+            checked={g.moveCompleted !== null}
+            onChange={(on) => onChange({ moveCompleted: on ? structuredClone(defaults.moveCompleted) : null })}
+          >
+            {g.moveCompleted && <MoveRows idPrefix={`${p}-move`} value={g.moveCompleted} onChange={(moveCompleted) => onChange({ moveCompleted })} />}
           </ToggleRow>
           <div className="s-card-foot">
             <button type="button" className="danger-outline" onClick={onRemove}>
@@ -252,7 +279,7 @@ export function GroupsSection({ draft, update }: DraftProps) {
           group={g}
           index={i}
           open={open.has(i)}
-          defaults={draft.seedLimits}
+          defaults={draft}
           onToggle={() => setOpen((s) => (s.has(i) ? new Set([...s].filter((x) => x !== i)) : new Set([...s, i])))}
           onChange={(patch) => setGroup(i, patch)}
           onRemove={() => {
@@ -345,11 +372,50 @@ const NAMING: readonly Choice<Settings["naming"]>[] = [
   },
 ];
 
+/** The orders anyone can pick, plus a torrent's own list when that is what's set. */
+export function FileOrderSelect({ id, value, onChange }: { id?: string; value: FileOrder; onChange: (v: FileOrder) => void }) {
+  return (
+    <select id={id} value={value.by} onChange={(e) => onChange(fileOrderOf(e.target.value as FileOrderBy, value))}>
+      {FILE_ORDERS.map(([by, words]) => (
+        <option key={by} value={by}>
+          {words}
+        </option>
+      ))}
+      {value.by === "manual" && <option value="manual">{describeFileOrder(value)}</option>}
+    </select>
+  );
+}
+
+/** Whether completed files move, and where: the instance's default, or a group's own. */
+function MoveRows({ value, onChange, idPrefix }: { value: MoveCompleted; onChange: (v: MoveCompleted) => void; idPrefix: string }) {
+  return (
+    <ToggleRow label="Move completed files" description={value.enabled ? undefined : "Off: files stay in the save folder"} checked={value.enabled} onChange={(enabled) => onChange({ ...value, enabled })}>
+      <div className="s-row s-row-wide">
+        <MoveCompletedFields idPrefix={idPrefix} value={value} onChange={onChange} />
+      </div>
+    </ToggleRow>
+  );
+}
+
 export function FilesSection({ draft, update, serverAdmin }: DraftProps) {
   return (
     <>
       <SettingCard title="File names" description="For new torrents. Torrents already added keep their names.">
         <ChoiceCards label="File names" columns={2} value={draft.naming} options={NAMING} onChange={(naming) => update({ naming })} />
+      </SettingCard>
+      <SettingCard
+        title="Download order"
+        description="Which of a torrent's files to download first. A preference, not a rule: peers that don't have the earlier files still send later ones, and a file's priority comes first. A group, or a torrent in its details, can set its own."
+      >
+        <SettingRow label="Order" htmlFor="s-file-order">
+          <FileOrderSelect id="s-file-order" value={draft.fileOrder} onChange={(fileOrder) => update({ fileOrder })} />
+        </SettingRow>
+      </SettingCard>
+      <SettingCard
+        title="Moving completed files"
+        description="Move files out of the save folder when they finish, into a shared folder say. Moved files keep seeding from their new place. A group, or a torrent in its details, can set its own."
+      >
+        <MoveRows idPrefix="s-move" value={draft.moveCompleted} onChange={(moveCompleted) => update({ moveCompleted })} />
       </SettingCard>
       {serverAdmin && (
         <SettingCard

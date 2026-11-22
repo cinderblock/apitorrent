@@ -22,7 +22,10 @@ import type { CreateTokenRequest } from "./generated/CreateTokenRequest";
 import type { ApproveDeviceRequest } from "./generated/ApproveDeviceRequest";
 import type { DeviceInfo } from "./generated/DeviceInfo";
 import type { DeviceRequestInfo } from "./generated/DeviceRequestInfo";
+import type { FileOrder } from "./generated/FileOrder";
 import type { FilePriority } from "./generated/FilePriority";
+import type { MoveCompleted } from "./generated/MoveCompleted";
+import type { SequentialFile } from "./generated/SequentialFile";
 import type { DelugeInstall } from "./generated/DelugeInstall";
 import type { DelugePreview } from "./generated/DelugePreview";
 import type { DelugePreviewRequest } from "./generated/DelugePreviewRequest";
@@ -157,6 +160,12 @@ export const api = {
   tls: () => request<TlsStatus>("GET", "/tls"),
   /** A torrent's own seed limits; null follows its group's or the instance's. */
   setSeedLimits: (id: string, limits: SeedLimits | null) => request<void>("PUT", `/torrents/${enc(id)}/seed-limits`, { limits }),
+  /** A torrent's own file order; null follows its group's or the instance's. */
+  setFileOrder: (id: string, order: FileOrder | null) => request<void>("PUT", `/torrents/${enc(id)}/file-order`, { order }),
+  /** Download these files front to back (others keep their setting); `from` is the byte a reader needs next. */
+  setSequential: (id: string, files: SequentialFile[]) => request<void>("PUT", `/torrents/${enc(id)}/sequential`, { files }),
+  /** A torrent's own move-when-complete setting; null follows its group's or the instance's. */
+  setMoveCompleted: (id: string, settings: MoveCompleted | null) => request<void>("PUT", `/torrents/${enc(id)}/move-completed`, { settings }),
   queueMove: (id: string, to: QueueMove) => request<void>("POST", `/torrents/${enc(id)}/queue`, { to }),
   setUnwantedPolicy: (id: string, policy: UnwantedPolicy) =>
     request<void>("PUT", `/torrents/${enc(id)}/unwanted-policy`, { policy }),

@@ -17,7 +17,7 @@ import {
   rateIn,
   visibleSections,
 } from "./model";
-import { GroupsSection, NetworkSection, TransfersSection } from "./ServerSections";
+import { FilesSection, GroupsSection, NetworkSection, TransfersSection } from "./ServerSections";
 
 const BASE: Settings = {
   downloadRate: 0,
@@ -82,6 +82,16 @@ describe("settings page model", () => {
     expect(draftProblems({ ...BASE, identity })[0]?.section).toBe("identity");
   });
 
+  test("move destinations must be full paths, in the settings and in groups", () => {
+    const moveCompleted = { enabled: true, to: "public", when: "eachFile" as const, rules: [] };
+    expect(draftProblems({ ...BASE, moveCompleted })).toEqual([{ section: "files", message: "The destination must be a full path: public" }]);
+    // Checked even while off: the daemon refuses it either way.
+    expect(draftProblems({ ...BASE, moveCompleted: { ...moveCompleted, enabled: false } })).toHaveLength(1);
+    expect(draftProblems({ ...BASE, groups: [{ ...group("TV", ["tv"]), moveCompleted }] })).toEqual([
+      { section: "groups", message: "TV: The destination must be a full path: public" },
+    ]);
+  });
+
   test("saving trims group names and tracker hosts", () => {
     const s = forSaving({
       ...BASE,
@@ -89,6 +99,7 @@ describe("settings page model", () => {
       identity: { default: presetIdentity("apitorrent"), rules: [{ host: " t.example ", identity: presetIdentity("deluge") }] },
     });
     expect(s.groups[0]?.name).toBe("TV");
+    expect(forSaving({ ...BASE, moveCompleted: { ...BASE.moveCompleted, to: " /srv/public " } }).moveCompleted.to).toBe("/srv/public");
     expect(s.identity.rules[0]?.host).toBe("t.example");
   });
 
@@ -164,5 +175,23 @@ describe("settings sections render", () => {
     expect(html).toContain('aria-expanded="false"');
     expect(html).toContain('<span class="chip">anime</span>');
     expect(html).toContain("↑ 2.00 MiB/s");
+    const own = renderToStaticMarkup(
+      <GroupsSection {...props} draft={{ ...BASE, groups: [{ ...group("TV", ["tv"]), fileOrder: { by: "name" }, moveCompleted: { ...BASE.moveCompleted, enabled: true, to: "/srv/tv" } }] }} />,
+    );
+    expect(own).toContain("order: by name");
+    expect(own).toContain("move: to /srv/tv as each file finishes");
+  });
+
+  test("files: download order and moving, the move fields only while it is on", () => {
+    const html = renderToStaticMarkup(<FilesSection {...props} />);
+    expect(html).toContain("Download order");
+    expect(html).toMatch(/<option value="off" selected="">No preference<\/option>/);
+    expect(html).not.toContain("Move to");
+    const on = renderToStaticMarkup(
+      <FilesSection {...props} draft={{ ...BASE, moveCompleted: { enabled: true, to: "/srv/public", when: "wholeTorrent", rules: [{ pattern: "*.mkv", to: "" }] } }} />,
+    );
+    expect(on).toContain('value="/srv/public"');
+    expect(on).toContain('aria-label="Rule 1 pattern"');
+    expect(on).toMatch(/<option value="wholeTorrent" selected="">/);
   });
 });
