@@ -355,7 +355,7 @@ Everything about each torrent comes over unless you leave it out: `--no-labels`,
 `--rename-label FROM=TO` (an empty TO drops that label), `--no-queue-order`,
 `--no-added-dates`, `--no-totals` (downloaded/uploaded and seeding time),
 `--download-skipped`, `--original-trackers` (the .torrent's, not Deluge's edited lists),
-`--no-limits`, `--no-seed-limits`. `--identity deluge|none|qbittorrent|transmission` sets
+`--no-limits`, `--no-seed-limits`, `--no-move-completed`, `--no-sequential`. `--identity deluge|none|qbittorrent|transmission` sets
 what private trackers see (`--no-identity-for HOST` skips one). `--settings` takes all of
 Deluge's own settings; `--setting NAME` takes one (`download-rate`, `upload-rate`,
 `connections`, `slots`, `slow-torrents`, `stop-at-ratio`). The report lists each choice.

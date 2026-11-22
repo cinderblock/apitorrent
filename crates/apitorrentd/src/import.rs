@@ -89,6 +89,12 @@ struct OptionArgs {
     /// Leave each torrent's own stop-at-ratio behind.
     #[arg(long)]
     no_seed_limits: bool,
+    /// Leave Deluge's "move completed" behind: files stay where they download.
+    #[arg(long)]
+    no_move_completed: bool,
+    /// Leave Deluge's sequential download behind: rarest pieces first, as usual.
+    #[arg(long)]
+    no_sequential: bool,
     /// The client private trackers see for these torrents: `deluge` (as before),
     /// `none` (apitorrent's own; adds no rules), `qbittorrent` or `transmission`.
     #[arg(long, value_enum, default_value = "deluge")]
@@ -161,6 +167,8 @@ impl DelugeArgs {
             trackers: !o.original_trackers,
             torrent_limits: !o.no_limits,
             seed_limits: !o.no_seed_limits,
+            move_completed: !o.no_move_completed,
+            sequential: !o.no_sequential,
             identity,
             identity_skip_hosts: o.no_identity_for.clone(),
             settings,
