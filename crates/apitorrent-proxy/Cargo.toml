@@ -1,0 +1,25 @@
+[package]
+name = "apitorrent-proxy"
+description = "Outgoing connections through SOCKS4, SOCKS5 and HTTP CONNECT proxies"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+# Small SOCKS4, SOCKS5 and HTTP CONNECT servers for other crates' tests.
+testing = []
+
+[dependencies]
+base64.workspace = true
+tokio.workspace = true
+tokio-socks.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

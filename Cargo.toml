@@ -35,6 +35,7 @@ apitorrent-client = { path = "crates/apitorrent-client" }
 apitorrent-plugin-api = { path = "crates/apitorrent-plugin-api" }
 apitorrent-plugins = { path = "crates/apitorrent-plugins" }
 apitorrent-update = { path = "crates/apitorrent-update" }
+apitorrent-proxy = { path = "crates/apitorrent-proxy" }
 
 # Core, server and daemon.
 axum = { version = "0.8", features = ["ws"] }
@@ -63,6 +64,8 @@ proptest = "1"
 rand = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "fs"] }
 tracing = "0.1"
+# Proxies: SOCKS4/4a and SOCKS5 client handshakes.
+tokio-socks = "0.5"
 # Transport: MSE crypto. crypto-bigint gives a constant-time, fixed-width modpow.
 crypto-bigint = { version = "0.7", default-features = false }
 rc4 = "0.2"
