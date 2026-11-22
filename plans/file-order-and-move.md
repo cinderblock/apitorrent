@@ -104,6 +104,9 @@ arbitrary rules.
 - A per-torrent destination must be inside the space's storage roots
   (`check_save_path`), else any member could make the daemon write anywhere. Instance and
   group settings are admin-only and not checked.
+- The first pokol build failed: `apitorrentd`'s import CLI builds `DelugeImportOptions`
+  too, and only the library crates had been checked. Fixed in `93993c4`. Check with
+  plain `cargo clippy --all-targets` (default members), not just `-p` the touched crates.
 - `discover::tests::{config_arguments, a_daemon_without_config_uses_its_users_home}` fail
   on Windows before this work too (ISSUES.md).
 
@@ -117,11 +120,19 @@ arbitrary rules.
 - [x] Core policy + Deluge mapping
 - [x] Web UI (`84d56f4`; manual order not editable in the UI yet)
 - [x] Tests + README
+- [x] Deployed `93993c4` to pokol (2026-11-21 9:01 PM PST, 05:01Z Nov 22), asked for by
+  the user. Built on sentinel from a clean worktree (`embedded-ui,first-party-plugins`),
+  installed with `install.sh --binary`. Database backed up first to
+  `/var/lib/apitorrent/backup-2026-11-21/`; migration 17 ran, 672 torrents restored,
+  `https://apitorrent.isozilla.com/` answers 200.
+- [x] Desktop app rebuilt (`24db1b5`, `tauri/custom-protocol`) and copied to
+  `target/desktop-app/run/apitorrent-desktop.exe` (9:00 PM PST); the old one is
+  `.bak-20261121-2059`. The running copy needs a restart.
 - [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
 
-1. Deploy to the seedbox (pokol) to try it? Not done; deploys are yours to call.
+(none)
 
 ## Things not to do
 
