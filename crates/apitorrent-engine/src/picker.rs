@@ -5,11 +5,14 @@
 //!
 //! Order of preference:
 //!
-//! 1. Blocks of pieces already in progress (most complete first), to finish pieces quickly.
-//!    A finished piece can be verified, written and shared, and frees its buffer.
-//! 2. New pieces, highest priority first, then rarest first. Within equal rarity the order
-//!    is random, so peers spread out over the swarm. Sequential mode replaces this with
-//!    index order, for streaming.
+//! 1. Blocks of pieces already in progress, to finish pieces quickly. A finished piece can
+//!    be verified, written and shared, and frees its buffer. The piece a stream's reader
+//!    is waiting for goes first, then the most complete.
+//! 2. New pieces, highest priority first. Within a priority, files in order (when a file
+//!    order is set): the first unfinished file's pieces, then the second's, and so on.
+//!    Then rarest first; within equal rarity the order is random, so peers spread out over
+//!    the swarm. A stream (a file read while it downloads) takes its pieces in read order
+//!    instead of rarest first.
 //! 3. Endgame: once every missing block is requested, blocks already requested from slow
 //!    peers are requested again from others, at most [`ENDGAME_DUPLICATES`] times.
 //!
@@ -17,8 +20,13 @@
 //! whole pieces that nobody else downloads, so if one fails it is clear who sent it.
 //!
 //! New pieces come from `order`, which holds every wanted piece that is neither complete
-//! nor in progress, sorted by `(priority, availability)`. It is split into buckets per key,
-//! so an availability change moves a piece one bucket with a single swap.
+//! nor in progress, sorted by `(priority, tier, availability)`. It is split into buckets per
+//! key, so an availability change moves a piece one bucket with a single swap. A piece's
+//! tier is the place of its earliest file among the unfinished files of the file order,
+//! capped at `TIERS - 1`; without a file order every tier is 0.
+//!
+//! The file order is a strong preference, not a rule: a peer that has none of the first
+//! file's missing pieces is still asked for the next file's, and so on.
 
 use std::collections::HashMap;
 
@@ -44,9 +52,31 @@ pub const ENDGAME_DUPLICATES: usize = 2;
 /// Availability above this value is ordered as if equal. Rarity only matters at the low
 /// end, and the cap keeps the bucket count small.
 const AVAILABILITY_CAP: u32 = 255;
-const KEYS_PER_PRIORITY: u32 = AVAILABILITY_CAP + 1;
+/// How many places of the file order are told apart. The files after the first
+/// `TIERS - 1` unfinished ones share the last tier; as files finish, later ones move up.
+const TIERS: u32 = 8;
+const KEYS_PER_TIER: u32 = AVAILABILITY_CAP + 1;
+const KEYS_PER_PRIORITY: u32 = TIERS * KEYS_PER_TIER;
 const KEY_COUNT: usize = (MAX_PRIORITY as u32 * KEYS_PER_PRIORITY) as usize;
 const NOT_IN_ORDER: u32 = u32::MAX;
+
+/// A stream fetches the start and the end of its file before anything else: players read
+/// a container's header first, and many formats keep their index at the end (an MP4
+/// `moov` box written last, Matroska cues).
+const STREAM_HEAD: u64 = 1024 * 1024;
+/// How much of the end of a streamed file is fetched first: this fraction of the file,
+/// within the bounds below.
+const STREAM_TAIL_DIVISOR: u64 = 200;
+const STREAM_TAIL_MIN: u64 = 2 * 1024 * 1024;
+const STREAM_TAIL_MAX: u64 = 16 * 1024 * 1024;
+
+/// A file read while it downloads: its pieces are fetched in read order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stream {
+    file: usize,
+    /// The byte in the file the reader needs next (its playhead).
+    from: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Block {
@@ -94,7 +124,15 @@ pub struct Picker {
     order: Vec<u32>,
     pos: Vec<u32>,
     bucket_start: Vec<u32>,
-    sequential: bool,
+    /// The file order (first first), or `None` for no preference between files.
+    file_order: Option<Vec<usize>>,
+    /// Each piece's tier (see the module docs).
+    tier: Vec<u8>,
+    /// Per file, how many of its pieces we lack. A file with none missing is complete.
+    file_missing: Vec<u32>,
+    /// Files that became complete since [`Picker::take_completed_files`] last ran.
+    completed: Vec<usize>,
+    streams: Vec<Stream>,
     rng: StdRng,
     /// Wanted pieces that may not be started yet (their hashes haven't arrived).
     held: Bitfield,
@@ -118,12 +156,22 @@ impl Picker {
             order: Vec::new(),
             pos: vec![NOT_IN_ORDER; n as usize],
             bucket_start: vec![0; KEY_COUNT + 1],
-            sequential: false,
+            file_order: None,
+            tier: vec![0; n as usize],
+            file_missing: Vec::new(),
+            completed: Vec::new(),
+            streams: Vec::new(),
             rng: StdRng::seed_from_u64(seed),
             held: Bitfield::new(n),
             wanted_total: 0,
             wanted_have: 0,
         };
+        p.file_missing = (0..p.layout.files().len())
+            .map(|f| {
+                let missing = p.layout.file_pieces(f).filter(|&q| !p.have.get(q)).count();
+                u32::try_from(missing).expect("fits")
+            })
+            .collect();
         p.rebuild_order();
         p.recount();
         p
@@ -137,8 +185,77 @@ impl Picker {
         &self.layout
     }
 
-    pub fn set_sequential(&mut self, on: bool) {
-        self.sequential = on;
+    /// Prefer files in this order (first first) over rarity, among pieces of the same
+    /// priority. Files left out come after those listed. `None` turns the preference off.
+    pub fn set_file_order(&mut self, order: Option<Vec<usize>>) {
+        let files = self.layout.files().len();
+        let order = order.map(|o| o.into_iter().filter(|&f| f < files).collect::<Vec<_>>());
+        if self.file_order == order {
+            return;
+        }
+        self.file_order = order;
+        self.retier();
+    }
+
+    /// Read file `file` while it downloads, needing byte `from` next: its pieces are
+    /// fetched in read order, from `from` to the end, then from the start up to `from`
+    /// (after its first and last few pieces, see [`STREAM_HEAD`]). Moving `from` (a player
+    /// seeking) moves where fetching continues. `None` stops streaming the file.
+    pub fn set_stream(&mut self, file: usize, from: Option<u64>) {
+        if file >= self.layout.files().len() {
+            return;
+        }
+        self.streams.retain(|s| s.file != file);
+        if let Some(from) = from {
+            let from = from.min(self.layout.files()[file].length.saturating_sub(1));
+            self.streams.push(Stream { file, from });
+        }
+    }
+
+    /// The files being streamed, and the byte each needs next.
+    pub fn streams(&self) -> Vec<(usize, u64)> {
+        self.streams.iter().map(|s| (s.file, s.from)).collect()
+    }
+
+    /// Whether we have every piece holding a byte of file `file`.
+    pub fn file_complete(&self, file: usize) -> bool {
+        self.file_missing.get(file).is_some_and(|&m| m == 0)
+    }
+
+    /// Files that became complete since the last call (every piece holding any of their
+    /// bytes is verified), oldest first. Files complete from the start aren't listed.
+    pub fn take_completed_files(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.completed)
+    }
+
+    /// The files holding any byte of `piece`, pad and empty files left out.
+    fn files_of(&self, piece: u32) -> Vec<usize> {
+        let start = self.layout.piece_offset(piece);
+        let end = start + u64::from(self.layout.piece_size(piece));
+        let files = self.layout.files();
+        let first = files.partition_point(|f| f.offset + f.length <= start);
+        (first..files.len())
+            .take_while(|&f| files[f].offset < end)
+            .filter(|&f| !files[f].pad && files[f].length > 0)
+            .collect()
+    }
+
+    /// Recompute every piece's tier from the file order, and re-sort.
+    fn retier(&mut self) {
+        self.tier.fill(0);
+        if let Some(order) = &self.file_order {
+            let last = u8::try_from(TIERS - 1).expect("fits");
+            self.tier.fill(last);
+            let open = order.iter().filter(|&&f| self.file_missing[f] > 0);
+            for (place, &f) in open.take(usize::from(last)).enumerate() {
+                let place = u8::try_from(place).expect("fits");
+                for p in self.layout.file_pieces(f) {
+                    let t = &mut self.tier[p as usize];
+                    *t = (*t).min(place);
+                }
+            }
+        }
+        self.rebuild_order();
     }
 
     /// Whether we still want piece `piece`.
@@ -170,8 +287,35 @@ impl Picker {
 
     /// Record that `piece` is now had.
     fn gained(&mut self, piece: u32) {
-        if self.have.set(piece) && self.priority[piece as usize] > 0 {
+        if !self.have.set(piece) {
+            return;
+        }
+        if self.priority[piece as usize] > 0 {
             self.wanted_have += 1;
+        }
+        let mut retier = false;
+        for f in self.files_of(piece) {
+            self.file_missing[f] -= 1;
+            if self.file_missing[f] == 0 {
+                self.completed.push(f);
+                // The files behind it in the order move up a place.
+                retier |= self.file_order.is_some();
+            }
+        }
+        if retier {
+            self.retier();
+        }
+    }
+
+    /// Record that `piece`, which was had, no longer is.
+    fn lost(&mut self, piece: u32) {
+        let mut retier = false;
+        for f in self.files_of(piece) {
+            retier |= self.file_missing[f] == 0 && self.file_order.is_some();
+            self.file_missing[f] += 1;
+        }
+        if retier {
+            self.retier();
         }
     }
 
@@ -307,15 +451,17 @@ impl Picker {
             None => !exclusive,
         };
 
-        // 1. Pieces in progress, most complete first.
-        let mut partials: Vec<(u32, u32)> = self
+        // 1. Pieces in progress: those a stream's reader is waiting for, then the most
+        //    complete.
+        let waited_for = self.stream_needs();
+        let mut partials: Vec<(bool, u32, u32)> = self
             .partial
             .iter()
             .filter(|(p, part)| has.get(**p) && part.missing() && allowed(part))
-            .map(|(p, part)| (*p, part.received))
+            .map(|(p, part)| (waited_for.contains(p), part.received, *p))
             .collect();
-        partials.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-        for (piece, _) in partials {
+        partials.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        for (_, _, piece) in partials {
             self.take_missing(piece, peer, max, &mut out);
             if out.len() >= max {
                 return out;
@@ -384,24 +530,61 @@ impl Picker {
     }
 
     fn has_fresh(&self) -> bool {
-        if self.sequential {
-            (0..self.layout.piece_count())
-                .any(|p| self.is_wanted(p) && !self.partial.contains_key(&p) && !self.held.get(p))
-        } else {
-            !self.order.is_empty()
+        !self.order.is_empty()
+    }
+
+    /// The next piece to start for a peer with `has`: the best in `order`, unless a
+    /// stream's next piece is at least as good (the same priority and tier, or better).
+    fn next_fresh(&self, has: &Bitfield) -> Option<u32> {
+        let best = self.order.iter().copied().find(|&p| has.get(p));
+        let class = |p: u32| self.key(p) / KEYS_PER_TIER;
+        let streamed = self
+            .streams
+            .iter()
+            .filter_map(|s| {
+                self.stream_order(s)
+                    .find(|&p| self.pos[p as usize] != NOT_IN_ORDER && has.get(p))
+            })
+            .min_by_key(|&p| class(p));
+        match (best, streamed) {
+            (Some(b), Some(s)) if class(s) <= class(b) => Some(s),
+            (b, s) => b.or(s),
         }
     }
 
-    fn next_fresh(&self, has: &Bitfield) -> Option<u32> {
-        if self.sequential {
-            return (0..self.layout.piece_count()).find(|&p| {
-                self.is_wanted(p)
-                    && !self.partial.contains_key(&p)
-                    && !self.held.get(p)
-                    && has.get(p)
-            });
-        }
-        self.order.iter().copied().find(|&p| has.get(p))
+    /// The piece holding byte `byte` of file `file` (clamped to the file).
+    fn piece_at(&self, file: usize, byte: u64) -> u32 {
+        let span = &self.layout.files()[file];
+        let at = span.offset + byte.min(span.length.saturating_sub(1));
+        u32::try_from(at / self.layout.piece_length()).expect("piece index fits u32")
+    }
+
+    /// A stream's pieces in the order its reader wants them: the file's start and end,
+    /// then from the playhead to the end, then from the start to the playhead. Pieces
+    /// already had are skipped; a piece may come up twice (the first time takes it).
+    fn stream_order(&self, s: &Stream) -> impl Iterator<Item = u32> + '_ {
+        let len = self.layout.files()[s.file].length;
+        let pieces = self.layout.file_pieces(s.file);
+        let tail = (len / STREAM_TAIL_DIVISOR).clamp(STREAM_TAIL_MIN, STREAM_TAIL_MAX);
+        let head = pieces.start..(self.piece_at(s.file, STREAM_HEAD - 1) + 1).min(pieces.end);
+        let tail = self.piece_at(s.file, len.saturating_sub(tail))..pieces.end;
+        let at = self.piece_at(s.file, s.from);
+        head.chain(tail)
+            .chain(at..pieces.end)
+            .chain(pieces.start..at)
+            .filter(|&p| !self.have.get(p))
+    }
+
+    /// For each stream, the first piece from its playhead on that we don't have: what its
+    /// reader is waiting for.
+    fn stream_needs(&self) -> Vec<u32> {
+        self.streams
+            .iter()
+            .filter_map(|s| {
+                let end = self.layout.file_pieces(s.file).end;
+                (self.piece_at(s.file, s.from)..end).find(|&p| !self.have.get(p))
+            })
+            .collect()
     }
 
     fn start_piece(&mut self, piece: u32) {
@@ -501,6 +684,7 @@ impl Picker {
                 self.wanted_have -= 1;
             }
             self.insert_into_order(piece);
+            self.lost(piece);
         }
     }
 
@@ -558,8 +742,9 @@ impl Picker {
     fn key(&self, piece: u32) -> u32 {
         let prio = u32::from(self.priority[piece as usize]);
         debug_assert!(prio > 0);
+        let tier = u32::from(self.tier[piece as usize]);
         let avail = self.availability[piece as usize].min(AVAILABILITY_CAP);
-        (u32::from(MAX_PRIORITY) - prio) * KEYS_PER_PRIORITY + avail
+        (u32::from(MAX_PRIORITY) - prio) * KEYS_PER_PRIORITY + tier * KEYS_PER_TIER + avail
     }
 
     fn rebuild_order(&mut self) {
@@ -936,13 +1121,216 @@ mod tests {
         assert_eq!(p.pick(2, &all, 10, usize::MAX), blocks);
     }
 
+    /// `files` files of `pieces_each` whole pieces of 32 KiB.
+    fn multi_file(files: usize, pieces_each: u32) -> Picker {
+        let piece_len = 32 * 1024;
+        let mut b = TorrentBuilder::new("t", Version::V1).piece_length(piece_len);
+        let names: Vec<String> = (0..files).map(|i| format!("f{i}")).collect();
+        for name in &names {
+            let len = usize::try_from(u64::from(pieces_each) * piece_len).unwrap();
+            b = b.file(FileSource::from_bytes(&[name.as_str()], vec![0; len]));
+        }
+        let t = Torrent::from_bytes(&b.build().unwrap()).unwrap();
+        let layout = Layout::from_info(&t.info);
+        let n = layout.piece_count();
+        Picker::new(layout, Bitfield::new(n), 7)
+    }
+
+    /// Start pieces one at a time for a peer with `has`, returning them in order.
+    fn starts(p: &mut Picker, has: &Bitfield, count: usize) -> Vec<u32> {
+        let mut out = Vec::new();
+        for _ in 0..count {
+            let blocks = p.pick(1, has, 1000, 1);
+            let Some(b) = blocks.first() else { break };
+            assert!(blocks.iter().all(|x| x.piece == b.piece), "{blocks:?}");
+            out.push(b.piece);
+        }
+        out
+    }
+
     #[test]
-    fn sequential_mode() {
-        let mut p = picker(5);
-        p.set_sequential(true);
-        p.peer_bitfield(&has(5, &[4]));
-        let blocks = p.pick(1, &Bitfield::full(5), 1, usize::MAX);
-        assert_eq!(blocks[0].piece, 0);
+    fn file_order_takes_the_first_unfinished_file_first() {
+        let mut p = multi_file(3, 4);
+        let all = Bitfield::full(12);
+        // Make file 0 the rarest, so rarity alone would pick it first.
+        p.peer_bitfield(&has(12, &[4, 5, 6, 7, 8, 9, 10, 11]));
+        p.set_file_order(Some(vec![2, 0, 1]));
+        p.check_invariants();
+        let mut got = starts(&mut p, &all, 12);
+        let (a, rest) = got.split_at_mut(4);
+        let (b, c) = rest.split_at_mut(4);
+        for part in [&mut *a, &mut *b, &mut *c] {
+            part.sort_unstable();
+        }
+        assert_eq!(got, [8, 9, 10, 11, 0, 1, 2, 3, 4, 5, 6, 7]);
+        p.check_invariants();
+    }
+
+    /// A preference, not a rule: a peer without the first file's pieces still gets work.
+    #[test]
+    fn file_order_uses_peers_that_lack_the_first_file() {
+        let mut p = multi_file(3, 4);
+        p.set_file_order(Some(vec![0, 1, 2]));
+        let only_last = has(12, &[8, 9, 10, 11]);
+        let got = starts(&mut p, &only_last, 1);
+        assert!((8..12).contains(&got[0]), "{got:?}");
+    }
+
+    #[test]
+    fn priority_beats_file_order() {
+        let mut p = multi_file(3, 4);
+        p.set_file_order(Some(vec![0, 1, 2]));
+        for piece in 8..12 {
+            p.set_priority(piece, MAX_PRIORITY);
+        }
+        p.check_invariants();
+        let mut got = starts(&mut p, &Bitfield::full(12), 4);
+        got.sort_unstable();
+        assert_eq!(got, [8, 9, 10, 11]);
+    }
+
+    /// Only the first few unfinished files are told apart; as files complete, later files
+    /// move up into their own places.
+    #[test]
+    fn completed_files_are_reported_and_later_files_move_up() {
+        let mut p = multi_file(10, 1);
+        p.set_file_order(Some((0..10).collect()));
+        assert_eq!(p.tier[8], 7);
+        assert_eq!(p.tier[9], 7);
+        p.mark_have(0);
+        assert!(p.file_complete(0));
+        assert!(!p.file_complete(1));
+        assert_eq!(p.take_completed_files(), [0]);
+        assert!(p.take_completed_files().is_empty());
+        assert_eq!(p.tier[1], 0);
+        assert_eq!(p.tier[7], 6);
+        assert_eq!(p.tier[8], 7);
+        p.mark_missing(0);
+        assert!(!p.file_complete(0));
+        assert_eq!(p.tier[0], 0);
+        assert_eq!(p.tier[7], 7);
+        p.check_invariants();
+    }
+
+    /// A piece spanning two files counts toward both.
+    #[test]
+    fn a_shared_piece_completes_both_files() {
+        let bytes = TorrentBuilder::new("t", Version::V1)
+            .piece_length(32 * 1024)
+            .file(FileSource::from_bytes(&["a"], vec![0; 40 * 1024]))
+            .file(FileSource::from_bytes(&["b"], vec![0; 24 * 1024]))
+            .build()
+            .unwrap();
+        let layout = Layout::from_info(&Torrent::from_bytes(&bytes).unwrap().info);
+        let mut p = Picker::new(layout, Bitfield::new(2), 7);
+        p.mark_have(1);
+        assert!(p.take_completed_files() == [1], "b lies in piece 1 only");
+        p.mark_have(0);
+        assert_eq!(p.take_completed_files(), [0]);
+    }
+
+    /// One 10 MiB file in 256 KiB pieces (40 pieces).
+    fn stream_picker() -> Picker {
+        Picker::new(layout(40, 256 * 1024), Bitfield::new(40), 7)
+    }
+
+    #[test]
+    fn a_stream_fetches_start_end_then_from_the_playhead() {
+        let mut p = stream_picker();
+        let all = Bitfield::full(40);
+        p.set_stream(0, Some(20 * 256 * 1024));
+        let got = starts(&mut p, &all, 40);
+        let expected: Vec<u32> = (0..4).chain(31..40).chain(20..31).chain(4..20).collect();
+        assert_eq!(got, expected);
+        p.check_invariants();
+    }
+
+    /// Seeking moves where fetching continues.
+    #[test]
+    fn a_stream_follows_its_playhead() {
+        let mut p = stream_picker();
+        let all = Bitfield::full(40);
+        p.set_stream(0, Some(0));
+        assert_eq!(
+            starts(&mut p, &all, 16),
+            (0..4).chain(31..40).chain(4..7).collect::<Vec<_>>()
+        );
+        p.set_stream(0, Some(25 * 256 * 1024 + 7));
+        assert_eq!(p.streams(), [(0, 25 * 256 * 1024 + 7)]);
+        assert_eq!(starts(&mut p, &all, 2), [25, 26]);
+        p.set_stream(0, None);
+        assert!(p.streams().is_empty());
+    }
+
+    /// The piece a reader waits for is finished before more complete pieces.
+    #[test]
+    fn the_piece_a_reader_waits_for_goes_first() {
+        let mut p = stream_picker();
+        let all = Bitfield::full(40);
+        assert!(!p.prefill(10, &(0..12).collect::<Vec<_>>()));
+        assert!(!p.prefill(20, &[]));
+        p.set_stream(0, Some(20 * 256 * 1024));
+        let blocks = p.pick(1, &all, 1, 0);
+        assert_eq!(blocks[0].piece, 20);
+        p.set_stream(0, None);
+        let blocks = p.pick(1, &all, 1, 0);
+        assert_eq!(blocks[0].piece, 10);
+    }
+
+    /// A stream yields to a higher priority, and to an earlier file in the file order.
+    #[test]
+    fn a_stream_keeps_to_priority_and_file_order() {
+        let mut p = multi_file(2, 4);
+        let all = Bitfield::full(8);
+        p.set_stream(1, Some(0));
+        assert_eq!(starts(&mut p, &all, 1), [4], "ties go to the stream");
+        p.set_file_order(Some(vec![0, 1]));
+        assert!((0..4).contains(&starts(&mut p, &all, 1)[0]));
+        p.set_file_order(None);
+        for piece in 0..4 {
+            p.set_priority(piece, MAX_PRIORITY);
+        }
+        assert!((0..4).contains(&starts(&mut p, &all, 1)[0]));
+        for piece in 0..4 {
+            p.set_priority(piece, 0);
+        }
+        assert_eq!(starts(&mut p, &all, 1), [5]);
+        p.check_invariants();
+    }
+
+    #[test]
+    fn file_order_survives_random_churn() {
+        use rand::RngExt;
+        let mut p = multi_file(9, 3);
+        let n = 27;
+        let mut rng = StdRng::seed_from_u64(7);
+        for _ in 0..3_000 {
+            let piece = rng.random_range(0..n);
+            match rng.random_range(0..8) {
+                0 => p.peer_has(piece),
+                1 => p.peer_lost(piece),
+                2 => p.set_priority(piece, rng.random_range(0..=MAX_PRIORITY)),
+                3 => p.mark_have(piece),
+                4 => p.mark_missing(piece),
+                5 => {
+                    let mut order: Vec<usize> = (0..9).collect();
+                    order.shuffle(&mut rng);
+                    p.set_file_order(rng.random_bool(0.8).then_some(order));
+                }
+                6 => p.set_stream(
+                    rng.random_range(0..9),
+                    rng.random_bool(0.7).then(|| rng.random_range(0..96 * 1024)),
+                ),
+                _ => {
+                    let _ = p.pick(rng.random_range(0..3), &Bitfield::full(n), 4, 1);
+                }
+            }
+            p.check_invariants();
+            for f in 0..9 {
+                let missing = p.layout.file_pieces(f).any(|q| !p.have.get(q));
+                assert_eq!(p.file_complete(f), !missing);
+            }
+        }
     }
 
     #[test]
