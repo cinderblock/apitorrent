@@ -392,6 +392,8 @@ pub(crate) enum Command {
         oneshot::Sender<Result<Adoption, AdoptRefused>>,
     ),
     SetReused(Vec<usize>),
+    /// Verify every piece on disk again, as on a first start.
+    Recheck,
     Pause,
     Resume,
     Shutdown(oneshot::Sender<Bitfield>),
@@ -486,6 +488,12 @@ impl TorrentHandle {
 
     pub async fn pause(&self) {
         let _ = self.tx.send(ActorMsg::Command(Command::Pause)).await;
+    }
+
+    /// Verify every piece on disk again. The torrent shows as checking meanwhile, and
+    /// carries on (or stays paused) with what is found.
+    pub async fn recheck(&self) {
+        let _ = self.tx.send(ActorMsg::Command(Command::Recheck)).await;
     }
 
     pub async fn resume(&self) {
@@ -966,6 +974,9 @@ pub(crate) struct TorrentActor {
     prefilled: HashMap<u32, u32>,
     /// Bookend pieces that failed once: downloaded whole from now on.
     no_prefill: HashSet<u32>,
+    /// A recheck asked for while files were moving or pieces were being taken in; it
+    /// starts once they are done.
+    recheck_pending: bool,
     /// The client this torrent presents as (see [`crate::identity`]): its peer id in
     /// announces and handshakes, its user agent and `v`.
     identity: ActiveIdentity,
@@ -1118,6 +1129,7 @@ impl TorrentActor {
             prefilling: HashSet::new(),
             prefilled: HashMap::new(),
             no_prefill: HashSet::new(),
+            recheck_pending: false,
             identity,
             identity_gen,
         };
@@ -1154,6 +1166,44 @@ impl TorrentActor {
             let have = check_existing(storage.as_ref(), &hashes, &layout);
             let _ = tx.blocking_send(ActorMsg::Checked(have));
         });
+    }
+
+    /// Forget which pieces we have and verify them all again from disk. Connections close
+    /// (peers were told about pieces we may turn out not to have) and reopen once the check
+    /// is done; a paused torrent stays paused. Clears a disk error, like resuming.
+    fn recheck(&mut self) {
+        if self.picker.is_none() && self.error.is_none() {
+            return; // Checking already.
+        }
+        if !self.moving.is_empty() || !self.offered.is_empty() || !self.adopting.is_empty() {
+            self.recheck_pending = true;
+            return;
+        }
+        self.recheck_pending = false;
+        self.error = None;
+        self.shutdown_peers();
+        if let Err(e) = self.storage.sync() {
+            tracing::warn!(error = %e, "could not flush before rechecking");
+        }
+        self.picker = None;
+        self.buffers.clear();
+        self.block_from.clear();
+        self.webseed_pieces.clear();
+        for ws in self.webseeds.values_mut() {
+            ws.piece = None;
+        }
+        self.prefilling.clear();
+        self.prefilled.clear();
+        self.sync_memory();
+        self.publish_stats();
+        self.check_files();
+    }
+
+    /// Start a recheck that waited for moves or offered pieces, once none are left.
+    fn recheck_if_pending(&mut self) {
+        if self.recheck_pending {
+            self.recheck();
+        }
     }
 
     fn start(&mut self, have: Bitfield) {
@@ -1644,6 +1694,14 @@ impl TorrentActor {
         for f in files {
             self.moving.remove(f);
         }
+        if self.recheck_pending {
+            // The check reads every file where it now is.
+            if let Err(e) = result {
+                tracing::error!(error = %e, "placement change failed");
+            }
+            self.recheck_if_pending();
+            return;
+        }
         // A piece that finished while its file was moving may have been written to the
         // old place. Drop any piece whose part-store bytes aren't there.
         let placements = self.storage.placements();
@@ -1758,12 +1816,13 @@ impl TorrentActor {
                     self.publish_stats();
                 }
                 Command::Have(reply) => {
-                    let have = self.picker.as_ref().map_or_else(
-                        || Bitfield::new(self.layout.piece_count()),
-                        |p| p.have().clone(),
-                    );
-                    let _ = reply.send(have);
+                    // While checking, nothing is known: no answer, rather than an empty
+                    // bitfield someone could save as "none of it is there".
+                    if let Some(p) = &self.picker {
+                        let _ = reply.send(p.have().clone());
+                    }
                 }
+                Command::Recheck => self.recheck(),
                 Command::FilePriorities(prios) => self.set_file_priorities(&prios),
                 Command::FileOrder(order) => {
                     self.file_order = order;
@@ -1878,12 +1937,22 @@ impl TorrentActor {
                 piece,
                 result,
                 reply,
-            } => self.on_offer_written(piece, result, reply),
+            } => {
+                self.on_offer_written(piece, result, reply);
+                if self.offered.is_empty() && self.adopting.is_empty() {
+                    self.recheck_if_pending();
+                }
+            }
             ActorMsg::FileAdopted {
                 file,
                 result,
                 reply,
-            } => self.on_file_adopted(file, result, reply),
+            } => {
+                self.on_file_adopted(file, result, reply);
+                if self.offered.is_empty() && self.adopting.is_empty() {
+                    self.recheck_if_pending();
+                }
+            }
             ActorMsg::Prefilled { piece, result } => self.on_prefilled(piece, result),
         }
     }

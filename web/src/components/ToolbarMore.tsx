@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ThemePicker } from "./ThemePicker";
 
 export interface MoreItem {
@@ -6,12 +6,21 @@ export interface MoreItem {
   onSelect: () => void;
 }
 
-/**
- * The phone toolbar's "More" menu: the less-used toolbar buttons and the theme picker,
- * so the toolbar keeps to one row above the search box. Closes on a choice, Escape or a
- * click outside.
- */
-export function ToolbarMore({ items }: { items: MoreItem[] }) {
+interface MenuProps {
+  /** The button's text. */
+  label: ReactNode;
+  /** The button's and the menu's accessible name. */
+  name: string;
+  items: MoreItem[];
+  className?: string;
+  /** Open above the button (a bar at the bottom of the screen). */
+  up?: boolean;
+  /** More content under the items. */
+  children?: ReactNode;
+}
+
+/** A button that opens a short menu. Closes on a choice, Escape or a click outside. */
+export function MenuButton({ label, name, items, className = "", up = false, children }: MenuProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -23,32 +32,27 @@ export function ToolbarMore({ items }: { items: MoreItem[] }) {
     };
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // The menu closes, not whatever the Escape would otherwise do (clear the selection).
+        e.stopPropagation();
         setOpen(false);
         button.current?.focus();
       }
     };
     document.addEventListener("pointerdown", outside);
-    document.addEventListener("keydown", key);
+    document.addEventListener("keydown", key, true);
     return () => {
       document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("keydown", key);
+      document.removeEventListener("keydown", key, true);
     };
   }, [open]);
 
   return (
-    <div className="toolbar-more narrow-only" ref={root}>
-      <button
-        ref={button}
-        type="button"
-        aria-label="More"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-      >
-        ⋯
+    <div className={`toolbar-more ${className}`} ref={root}>
+      <button ref={button} type="button" aria-label={name} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        {label}
       </button>
       {open && (
-        <div className="toolbar-more-menu" role="menu" aria-label="More">
+        <div className={`toolbar-more-menu ${up ? "menu-up" : ""}`} role="menu" aria-label={name}>
           {items.map((item) => (
             <button
               key={item.label}
@@ -62,12 +66,24 @@ export function ToolbarMore({ items }: { items: MoreItem[] }) {
               {item.label}
             </button>
           ))}
-          <label className="toolbar-more-theme">
-            <span>Theme</span>
-            <ThemePicker />
-          </label>
+          {children}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The phone toolbar's "More" menu: the less-used toolbar buttons and the theme picker,
+ * so the toolbar keeps to one row above the search box.
+ */
+export function ToolbarMore({ items }: { items: MoreItem[] }) {
+  return (
+    <MenuButton label="⋯" name="More" items={items} className="narrow-only">
+      <label className="toolbar-more-theme">
+        <span>Theme</span>
+        <ThemePicker />
+      </label>
+    </MenuButton>
   );
 }

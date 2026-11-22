@@ -12,6 +12,7 @@ export const STATE_LABEL: Record<TorrentSummary["state"], string> = {
   queued: "Queued",
   metadata: "Fetching metadata",
   error: "Error",
+  moving: "Moving",
 };
 
 /**

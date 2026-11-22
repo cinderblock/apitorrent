@@ -59,6 +59,11 @@ export function TorrentCards({ rows, selected, sort, onSort, onSelect, focus, on
         <button type="button" aria-label={sort.descending ? "Sorted high to low; reverse" : "Sorted low to high; reverse"} onClick={() => onSort(sort.key)}>
           {sort.descending ? "↓ High first" : "↑ Low first"}
         </button>
+        {selectable && rows.length > 0 && selected.size < rows.length && (
+          <button type="button" onClick={() => onSelect(new Set(rows.map((r) => r.id)), focus)}>
+            Select all
+          </button>
+        )}
         {selected.size > 0 && (
           <button type="button" onClick={() => onSelect(new Set(), focus)}>
             Clear {selected.size} selected

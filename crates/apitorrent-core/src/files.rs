@@ -486,11 +486,14 @@ impl Core {
     /// file is complete. Files that failed to move before are left alone unless
     /// `retry_errors`.
     async fn move_files(&self, key: &Key, only: Option<usize>, retry_errors: bool) {
+        // Never alongside a move to another save path: that stops the engine torrent and
+        // changes where every file is. One waiting its turn is swept again when it's done.
+        let _turn = self.inner.move_lock.lock().await;
         let settings = self.settings();
         let plan = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let Some(e) = torrents.get(key) else { return };
-            if !self.is_primary(key) {
+            if !self.is_primary(key) || e.moving {
                 return;
             }
             let effective = effective_move(

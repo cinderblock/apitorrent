@@ -19,6 +19,7 @@ mod library_index;
 pub mod passkeys;
 pub mod plugin_api;
 pub mod ports;
+mod relocate;
 mod roots;
 pub mod seeding;
 pub mod settings;
@@ -48,6 +49,7 @@ use apitorrent_engine::{
 };
 use apitorrent_metainfo::sanitize::Naming;
 use apitorrent_metainfo::{Magnet, Torrent};
+use apitorrent_types::bulk::{BulkEdit, BulkFailure, BulkReport, TorrentSettings};
 use apitorrent_types::spaces::{DEFAULT_SPACE, Space, SpaceId};
 use apitorrent_types::{
     AddSource, AddTorrentRequest, FilePlacement, FilePriority, QueueMove, Settings, TorrentDetail,
@@ -186,8 +188,21 @@ struct Entry {
     /// File order, sequential files, moving completed files, and the files moved (see
     /// `files`).
     files: crate::files::FileOptions,
-    /// Why moving a file failed, by file, until a move of it succeeds.
+    /// Why moving a completed file failed, by file, until a move of it succeeds.
     move_errors: HashMap<usize, String>,
+    /// Its files are being moved to another save path, or waiting their turn (see
+    /// [`Core::move_storage`]).
+    moving: bool,
+    /// Why its last move to another save path failed.
+    move_error: Option<String>,
+}
+
+/// What a swarm restarted on moved files picks up from: no check needed.
+struct SwarmResume {
+    held_path: PathBuf,
+    have: Bitfield,
+    placements: Vec<Placement>,
+    linked: Vec<usize>,
 }
 
 /// The parts of a pending magnet that the torrent replacing it takes over.
@@ -294,6 +309,9 @@ struct Inner {
     jobs: Arc<jobs::Jobs>,
     /// Completed files being moved right now (see `files`), by torrent id and file.
     moving_files: Mutex<std::collections::HashSet<(TorrentId, usize)>>,
+    /// Held while files move (to another save path, or completed files where their
+    /// setting sends them), so moves run one at a time and never overlap.
+    move_lock: tokio::sync::Mutex<()>,
 }
 
 pub(crate) const SETTINGS_KEY: &str = "settings";
@@ -372,6 +390,7 @@ impl Core {
                 reuse: share::ReuseBook::default(),
                 jobs: Arc::default(),
                 moving_files: Mutex::default(),
+                move_lock: tokio::sync::Mutex::new(()),
             }),
         };
         core.apply_session_settings();
@@ -759,6 +778,16 @@ impl Core {
 
     /// Change a torrent's label, which also picks its group.
     pub async fn set_label(&self, key: &Key, label: Option<String>) -> Result<(), CoreError> {
+        self.store_label(key, label).await?;
+        self.regroup().await;
+        self.files_settings_changed(Some(key.clone()));
+        self.refresh();
+        Ok(())
+    }
+
+    /// Change a torrent's label without regrouping: [`Self::set_label`], or many of them
+    /// followed by one regroup.
+    async fn store_label(&self, key: &Key, label: Option<String>) -> Result<(), CoreError> {
         let label = label.map(|l| l.trim().to_owned()).filter(|l| !l.is_empty());
         if let Some(p) = self
             .inner
@@ -784,10 +813,126 @@ impl Core {
         {
             e.label = label;
         }
-        self.regroup().await;
-        self.files_settings_changed(Some(key.clone()));
-        self.refresh();
         Ok(())
+    }
+
+    /// Change settings on several of a space's torrents (see [`BulkEdit`]). Each torrent
+    /// is changed on its own, and one failing leaves the others changed.
+    pub async fn bulk_edit(&self, space: SpaceId, edit: BulkEdit) -> BulkReport {
+        let mut report = BulkReport::default();
+        let mut relabelled = false;
+        for id in &edit.ids {
+            let key = Key::new(space, id.as_str());
+            let outcome = self.bulk_edit_one(&key, &edit, &mut relabelled).await;
+            match outcome {
+                Ok(()) => report.updated.push(id.clone()),
+                Err(e) => report.failed.push(BulkFailure {
+                    id: id.clone(),
+                    code: e.code().to_owned(),
+                    message: match e {
+                        CoreError::Database(_) | CoreError::Io(_) => {
+                            tracing::error!(torrent = %id, error = %e, "bulk edit failed");
+                            "internal error".to_owned()
+                        }
+                        e => e.to_string(),
+                    },
+                }),
+            }
+        }
+        if relabelled {
+            self.regroup().await;
+            // A new group can bring a different file order or move-completed setting.
+            for id in &report.updated {
+                self.files_settings_changed(Some(Key::new(space, id.as_str())));
+            }
+        }
+        self.refresh();
+        report
+    }
+
+    async fn bulk_edit_one(
+        &self,
+        key: &Key,
+        edit: &BulkEdit,
+        relabelled: &mut bool,
+    ) -> Result<(), CoreError> {
+        if let Some(label) = &edit.label {
+            self.store_label(key, Some(label.clone())).await?;
+            *relabelled = true;
+        }
+        if let Some(limits) = &edit.limits {
+            let current = self
+                .inner
+                .torrents
+                .read()
+                .expect("torrents lock poisoned")
+                .get(key)
+                .map(|e| e.limits)
+                .ok_or(CoreError::NotFound)?;
+            self.set_torrent_limits(key, limits.apply(current)).await?;
+        }
+        if let Some(seed) = &edit.seed_limits {
+            self.set_seed_limits(key, seed.limits).await?;
+        }
+        if let Some(trackers) = edit.trackers.as_ref().filter(|t| !t.is_empty()) {
+            let current = self.torrent_settings_of(key)?.trackers;
+            let next = trackers.apply(&current);
+            if next != current {
+                self.set_trackers(key, next).await?;
+            }
+        }
+        if let Some(policy) = edit.unwanted_policy {
+            self.set_unwanted_policy(key, policy).await?;
+        }
+        // Last: once a move starts, the torrent refuses other changes until it is done.
+        if let Some(save_path) = &edit.save_path {
+            self.move_storage(key, save_path).await?;
+        }
+        Ok(())
+    }
+
+    /// The settings a [`BulkEdit`] changes, for each of `ids` in the space. Torrents not
+    /// in the space are left out.
+    #[must_use]
+    pub fn torrent_settings(&self, space: SpaceId, ids: &[String]) -> Vec<TorrentSettings> {
+        ids.iter()
+            .filter_map(|id| self.torrent_settings_of(&Key::new(space, id.as_str())).ok())
+            .collect()
+    }
+
+    fn torrent_settings_of(&self, key: &Key) -> Result<TorrentSettings, CoreError> {
+        let summary = self.inner.store.get(key).ok_or(CoreError::NotFound)?;
+        if let Some(p) = self
+            .inner
+            .pending
+            .read()
+            .expect("pending lock poisoned")
+            .get(key)
+        {
+            return Ok(TorrentSettings {
+                id: key.id.clone(),
+                save_path: summary.save_path,
+                label: summary.label,
+                limits: TorrentLimits::default(),
+                seed_limits: None,
+                trackers: p.magnet.trackers.iter().map(|t| vec![t.clone()]).collect(),
+                unwanted_policy: p.unwanted,
+            });
+        }
+        let (limits, trackers, unwanted_policy) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let e = torrents.get(key).ok_or(CoreError::NotFound)?;
+            (e.limits, e.trackers.clone(), e.unwanted)
+        };
+        Ok(TorrentSettings {
+            id: key.id.clone(),
+            save_path: summary.save_path,
+            label: summary.label,
+            limits,
+            seed_limits: self.seed_state(key).limits,
+            trackers,
+            unwanted_policy,
+        })
     }
 
     /// Move a torrent in its space's queue. Positions are renumbered from 0.
@@ -2594,6 +2739,8 @@ impl Core {
                     file_paths: custom_paths,
                     files: file_options,
                     move_errors: HashMap::new(),
+                    moving: false,
+                    move_error: None,
                 },
             );
         if joined {
@@ -2780,14 +2927,17 @@ impl Core {
         Ok(id)
     }
 
+    /// The torrent's engine handle, for changing it. Refused while its files move: the
+    /// engine torrent is stopped then, and starts again where they went.
     fn handle(&self, key: &Key) -> Result<TorrentHandle, CoreError> {
-        self.inner
-            .torrents
-            .read()
-            .expect("torrents lock poisoned")
-            .get(key)
-            .map(|e| e.handle.clone())
-            .ok_or(CoreError::NotFound)
+        let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+        let e = torrents.get(key).ok_or(CoreError::NotFound)?;
+        if e.moving {
+            return Err(CoreError::InvalidRequest(
+                "its files are being moved; try again when that is done".into(),
+            ));
+        }
+        Ok(e.handle.clone())
     }
 
     /// Whether an entry's files are its swarm's own (the engine torrent's storage).
@@ -2964,6 +3114,271 @@ impl Core {
         self.set_paused(key, false).await
     }
 
+    /// Move a torrent's files to `save_path` (absolute, inside the space's storage roots).
+    /// Everything that can be checked up front is: the path, files of another space's
+    /// copy in the way, files already at the destination. The move itself then runs in the
+    /// background, one torrent at a time; the torrent shows as moving until it is done. A
+    /// move that fails leaves the files where they were, and its error shows on the
+    /// torrent. A magnet link still fetching its metadata just changes where it will go.
+    pub async fn move_storage(&self, key: &Key, save_path: &str) -> Result<(), CoreError> {
+        let new = self.resolve_save_path(key.space, Some(save_path), None)?;
+        let held_for =
+            |save: &std::path::Path| held_path_for(&self.inner.config.data_dir, save, &key.id);
+        let pending_move = {
+            let mut pending = self.inner.pending.write().expect("pending lock poisoned");
+            pending.get_mut(key).map(|p| {
+                p.save_path.clone_from(&new);
+                p.held_path = held_for(&new);
+                p.held_path.to_string_lossy().into_owned()
+            })
+        };
+        if let Some(held) = pending_move {
+            let (k, save) = (key.clone(), new.to_string_lossy().into_owned());
+            self.db(move |db| db.set_location(&k, &save, Some(&held)))
+                .await?;
+            self.refresh();
+            return Ok(());
+        }
+        let (from, to, theirs) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let e = torrents.get(key).ok_or(CoreError::NotFound)?;
+            if e.moving {
+                return Err(CoreError::InvalidRequest(
+                    "its files are already being moved".into(),
+                ));
+            }
+            if e.save_path == new {
+                return Ok(());
+            }
+            let theirs: std::collections::HashSet<PathBuf> = torrents
+                .iter()
+                .filter(|(k, _)| k.id == key.id && *k != key)
+                .flat_map(|(_, x)| Self::entry_paths(x))
+                .collect();
+            // Files already moved when they completed stay where they are.
+            let (from, to): (Vec<PathBuf>, Vec<PathBuf>) = Self::entry_paths(e)
+                .into_iter()
+                .zip(Self::entry_paths_at(e, &new))
+                .filter(|(a, b)| a != b)
+                .unzip();
+            (from, to, theirs)
+        };
+        if from.iter().chain(&to).any(|p| theirs.contains(p)) {
+            return Err(CoreError::InvalidRequest(
+                "the same torrent in another space uses files there; move that one instead, or \
+                 choose another folder"
+                    .into(),
+            ));
+        }
+        let probe = to.clone();
+        let taken = tokio::task::spawn_blocking(move || {
+            probe
+                .into_iter()
+                .find(|p| std::fs::symlink_metadata(p).is_ok())
+        })
+        .await
+        .expect("path check panicked");
+        if let Some(p) = taken {
+            return Err(CoreError::InvalidRequest(format!(
+                "{} already exists",
+                p.display()
+            )));
+        }
+        {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            let e = torrents.get_mut(key).ok_or(CoreError::NotFound)?;
+            if e.moving {
+                return Err(CoreError::InvalidRequest(
+                    "its files are already being moved".into(),
+                ));
+            }
+            e.moving = true;
+            e.move_error = None;
+        }
+        self.refresh();
+        let core = self.clone();
+        let key = key.clone();
+        tokio::spawn(async move {
+            let result = {
+                let _turn = core.inner.move_lock.lock().await;
+                core.run_move(&key, &new).await
+            };
+            if let Some(e) = core
+                .inner
+                .torrents
+                .write()
+                .expect("torrents lock poisoned")
+                .get_mut(&key)
+            {
+                e.moving = false;
+                e.move_error = result.as_ref().err().cloned();
+            }
+            match result {
+                Ok(()) => tracing::info!(torrent = %key, to = %new.display(), "files moved"),
+                Err(e) => tracing::warn!(torrent = %key, error = %e, "files not moved"),
+            }
+            // Completed files due to move were left alone while it moved.
+            core.files_settings_changed(Some(key.clone()));
+            core.refresh();
+        });
+        Ok(())
+    }
+
+    /// Move the files (see [`Self::move_storage`]). A swarm's primary stops its engine
+    /// torrent first and starts it again on the moved files, carrying over what it has,
+    /// so nothing is checked again; the same torrent in other spaces rejoins it. Another
+    /// space's copy just moves its own files.
+    async fn run_move(&self, key: &Key, new: &std::path::Path) -> Result<(), String> {
+        self.ensure_taken_over(key)
+            .await
+            .map_err(|e| e.to_string())?;
+        let primary = self.is_primary(key);
+        let (old, handle, from, to, others) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let e = torrents.get(key).ok_or("it was removed")?;
+            let mut others: Vec<(Key, i64)> = torrents
+                .iter()
+                .filter(|(k, _)| k.id == key.id && *k != key)
+                .map(|(k, x)| (k.clone(), x.added_at))
+                .collect();
+            others.sort_by_key(|(k, at)| (*at, k.space));
+            (
+                e.save_path.clone(),
+                e.handle.clone(),
+                Self::entry_paths(e),
+                Self::entry_paths_at(e, new),
+                others,
+            )
+        };
+        let k = key.clone();
+        let recorded = self
+            .db(move |db| db.held_path(&k))
+            .await
+            .map_err(|e| e.to_string())?;
+        let data_dir = self.inner.config.data_dir.clone();
+        let (id, old2, new2) = (key.id.clone(), old.clone(), new.to_path_buf());
+        let (old_held, new_held) = tokio::task::spawn_blocking(move || {
+            let old_held =
+                recorded.map_or_else(|| held_path_for(&data_dir, &old2, &id), PathBuf::from);
+            (old_held, held_path_for(&data_dir, &new2, &id))
+        })
+        .await
+        .expect("held path probe panicked");
+        // Files already moved when they completed stay where they are.
+        let mut pairs: Vec<(PathBuf, PathBuf)> = from
+            .iter()
+            .cloned()
+            .zip(to)
+            .filter(|(a, b)| a != b)
+            .collect();
+        let resume = if primary {
+            let have = handle.have().await;
+            let h = handle.clone();
+            let placements = tokio::task::spawn_blocking(move || h.placements())
+                .await
+                .expect("placements task panicked");
+            let linked = handle.linked();
+            handle.shutdown().await;
+            if old_held != new_held {
+                pairs.push((old_held.clone(), new_held.clone()));
+            }
+            // Without a known set of pieces (it was checking), it checks again.
+            have.map(|have| SwarmResume {
+                held_path: new_held.clone(),
+                have,
+                placements,
+                linked,
+            })
+        } else {
+            None
+        };
+        let moves = pairs.clone();
+        let moved = tokio::task::spawn_blocking(move || relocate::move_all(&moves))
+            .await
+            .expect("move task panicked");
+        if moved.is_ok() {
+            let held = if primary { &new_held } else { &old_held };
+            let (k, save, held) = (
+                key.clone(),
+                new.to_string_lossy().into_owned(),
+                held.to_string_lossy().into_owned(),
+            );
+            let saved = self
+                .db(move |db| db.set_location(&k, &save, Some(&held)))
+                .await;
+            if let Err(e) = saved {
+                // The files moved but the record didn't: put them back, so the two agree.
+                let back: Vec<(PathBuf, PathBuf)> =
+                    pairs.iter().map(|(a, b)| (b.clone(), a.clone())).collect();
+                let _ = tokio::task::spawn_blocking(move || relocate::move_all(&back)).await;
+                self.restart_after_move(key, primary, &others, None);
+                return Err(format!("could not record the new folder: {e}"));
+            }
+            if let Some(e) = self
+                .inner
+                .torrents
+                .write()
+                .expect("torrents lock poisoned")
+                .get_mut(key)
+            {
+                e.save_path = new.to_path_buf();
+            }
+            let old_files = from;
+            let _ =
+                tokio::task::spawn_blocking(move || relocate::prune_empty_dirs(&old_files, &old))
+                    .await;
+        }
+        // A failed move put the files back: the swarm starts again where it was.
+        let resume = if moved.is_ok() {
+            resume
+        } else {
+            resume.map(|r| SwarmResume {
+                held_path: old_held,
+                ..r
+            })
+        };
+        self.restart_after_move(key, primary, &others, resume);
+        moved
+    }
+
+    /// Start a primary's swarm again after its files moved (or failed to).
+    fn restart_after_move(
+        &self,
+        key: &Key,
+        primary: bool,
+        others: &[(Key, i64)],
+        resume: Option<SwarmResume>,
+    ) {
+        if !primary {
+            return;
+        }
+        let entries: Vec<Key> = std::iter::once(key.clone())
+            .chain(others.iter().map(|(k, _)| k.clone()))
+            .collect();
+        if let Err(e) = self.move_swarm(&key.id, &entries, resume) {
+            tracing::error!(torrent = %key, error = %e, "could not start the torrent again after moving it");
+        }
+    }
+
+    /// Verify the torrent's pieces on disk again. Its swarm is checked as a whole, so the
+    /// same torrent in other spaces shows as checking too. A magnet link still fetching
+    /// its metadata has nothing to check yet.
+    pub async fn recheck(&self, key: &Key) -> Result<(), CoreError> {
+        if self
+            .inner
+            .pending
+            .read()
+            .expect("pending lock poisoned")
+            .contains_key(key)
+        {
+            return Err(CoreError::InvalidRequest(
+                "it can be checked once its metadata has arrived".into(),
+            ));
+        }
+        self.handle(key)?.recheck().await;
+        Ok(())
+    }
+
     async fn set_paused(&self, key: &Key, paused: bool) -> Result<(), CoreError> {
         if !paused {
             self.ensure_taken_over(key).await?;
@@ -3102,11 +3517,16 @@ impl Core {
 
     /// Where each of an entry's files is in its save path, as laid out (before any move).
     fn laid_out_paths(e: &Entry) -> Vec<PathBuf> {
+        Self::laid_out_paths_at(e, &e.save_path)
+    }
+
+    /// Where each of an entry's files would be laid out with `save_path` as its save path.
+    fn laid_out_paths_at(e: &Entry, save_path: &std::path::Path) -> Vec<PathBuf> {
         e.file_paths.as_ref().map_or_else(
-            || Self::disk_paths(&e.torrent, &e.save_path, e.naming),
+            || Self::disk_paths(&e.torrent, save_path, e.naming),
             |c| {
                 c.iter()
-                    .map(|p| p.iter().fold(e.save_path.clone(), |a, x| a.join(x)))
+                    .map(|p| p.iter().fold(save_path.to_path_buf(), |a, x| a.join(x)))
                     .collect()
             },
         )
@@ -3115,7 +3535,13 @@ impl Core {
     /// Where each of an entry's files is on disk: in its save path, or where it was moved
     /// when it completed.
     fn entry_paths(e: &Entry) -> Vec<PathBuf> {
-        let mut paths = Self::laid_out_paths(e);
+        Self::entry_paths_at(e, &e.save_path)
+    }
+
+    /// Where each of an entry's files would be with `save_path` as its save path. Files
+    /// moved when they completed stay where they went: they're no longer in the save path.
+    fn entry_paths_at(e: &Entry, save_path: &std::path::Path) -> Vec<PathBuf> {
+        let mut paths = Self::laid_out_paths_at(e, save_path);
         for (i, to) in &e.files.moved {
             if let Some(p) = paths.get_mut(*i as usize) {
                 *p = PathBuf::from(to);
@@ -3143,6 +3569,11 @@ impl Core {
         }
         let (entry, others) = {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            if torrents.get(key).is_some_and(|e| e.moving) {
+                return Err(CoreError::InvalidRequest(
+                    "its files are being moved; remove it when that is done".into(),
+                ));
+            }
             let entry = torrents.remove(key).ok_or(CoreError::NotFound)?;
             let mut others: Vec<(Key, i64)> = torrents
                 .iter()
@@ -3197,7 +3628,7 @@ impl Core {
                 Self::delete_paths(&mine, &shared, &entry.save_path).await;
             }
             let next: Vec<Key> = others.iter().map(|(k, _)| k.clone()).collect();
-            if let Err(e) = self.move_swarm(&key.id, &next) {
+            if let Err(e) = self.move_swarm(&key.id, &next, None) {
                 tracing::error!(torrent = %key, error = %e, "could not move the swarm to another space's files");
             }
             self.sync_file_handling(&key.id).await;
@@ -3257,7 +3688,12 @@ impl Core {
     /// Restart a swarm on the files of the first of `entries` (oldest first), the others
     /// joining it: its primary was removed. The new primary's files are checked, since
     /// it may have only some of them.
-    fn move_swarm(&self, id: &str, entries: &[Key]) -> Result<(), CoreError> {
+    fn move_swarm(
+        &self,
+        id: &str,
+        entries: &[Key],
+        resume: Option<SwarmResume>,
+    ) -> Result<(), CoreError> {
         let Some((first, rest)) = entries.split_first() else {
             return Ok(());
         };
@@ -3302,6 +3738,16 @@ impl Core {
                 file_paths,
                 file_locations: e.files.locations(e.torrent.info.files.len()),
                 ..AddTorrent::new(e.torrent.clone(), e.save_path.clone())
+            };
+            let params = match resume {
+                Some(r) => AddTorrent {
+                    held_path: Some(r.held_path),
+                    have: Some(r.have),
+                    placements: Some(r.placements),
+                    linked: r.linked,
+                    ..params
+                },
+                None => params,
             };
             (params, extra)
         };
@@ -3932,7 +4378,9 @@ fn summarize(key: &Key, e: &Entry) -> TorrentSummary {
         name: info.name.clone(),
         info_hash_v1: hashes.get_v1().map(|h| h.to_hex()),
         info_hash_v2: hashes.get_v2().map(|h| h.to_hex()),
-        state: if e.paused {
+        state: if e.moving {
+            TorrentState::Moving
+        } else if e.paused {
             TorrentState::Paused
         } else if e.queued && stats.error.is_none() {
             TorrentState::Queued
@@ -3957,7 +4405,7 @@ fn summarize(key: &Key, e: &Entry) -> TorrentSummary {
         label: e.label.clone(),
         save_path: e.save_path.to_string_lossy().into_owned(),
         private: info.private,
-        error: stats.error,
+        error: stats.error.or_else(|| e.move_error.clone()),
         queue_position: e.queue_position,
         group: e.group.clone(),
         superseded_by: e.superseded_by.clone(),

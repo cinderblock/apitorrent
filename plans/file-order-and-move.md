@@ -110,6 +110,16 @@ arbitrary rules.
 - `discover::tests::{config_arguments, a_daemon_without_config_uses_its_users_home}` fail
   on Windows before this work too (ISSUES.md).
 
+- Merged with origin's bulk edit / move storage (2026-11-22, branch
+  `merge/file-order-bulk-edit`). How the two kinds of move fit together:
+  - Move storage moves only files still in the save path; files moved when they
+    completed stay where they went (`entry_paths_at` keeps `files.moved`).
+  - Both take `move_lock`, so a completed-file move never runs while the engine
+    torrent is stopped for a storage move; `move_files` also skips an entry that's
+    `moving`, and a finished storage move sweeps that torrent again.
+  - A bulk relabel re-sends file handling for each torrent it changed (new group, new
+    file order or move setting).
+
 ## Progress log
 
 - [x] Survey picker, placement, types, DB, UI

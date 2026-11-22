@@ -191,6 +191,73 @@ async fn complete_files_move_by_rule_and_stay_moved() {
     core.shutdown().await.unwrap();
 }
 
+/// Moving a torrent to another save path moves the files still in it; files already moved
+/// when they completed stay where they went, and it keeps seeding all of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn moving_storage_leaves_completed_moves_in_place() {
+    let root = tempfile::tempdir().unwrap();
+    let cfg = config(root.path());
+    let video = root.path().join("video");
+    let (a, nfo) = (data(100_000, 1), data(500, 2));
+    let torrent = TorrentBuilder::new("Show", Version::V1)
+        .piece_length(16 * 1024)
+        .file(FileSource::from_bytes(&["a.mkv"], a.clone()))
+        .file(FileSource::from_bytes(&["info.nfo"], nfo.clone()))
+        .build()
+        .unwrap();
+    let dir = cfg.download_dir.join("Show");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.mkv"), &a).unwrap();
+    std::fs::write(dir.join("info.nfo"), &nfo).unwrap();
+
+    let core = Core::start(cfg.clone()).await.unwrap();
+    let id = core.add(DEFAULT_SPACE, add(&torrent)).await.unwrap();
+    wait_state(&core, &id, TorrentState::Seeding).await;
+    core.set_move_completed(
+        &k(&id),
+        Some(MoveCompleted {
+            enabled: true,
+            to: String::new(),
+            when: MoveWhen::EachFile,
+            rules: vec![MoveRule {
+                pattern: "*.mkv".into(),
+                to: video.to_string_lossy().into_owned(),
+            }],
+        }),
+    )
+    .await
+    .unwrap();
+    wait_detail(&core, &id, "the move", |d| moved(d, "a.mkv").is_some()).await;
+
+    let elsewhere = cfg.download_dir.join("elsewhere");
+    core.move_storage(&k(&id), &elsewhere.to_string_lossy())
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let s = core.store().get(&k(&id)).unwrap();
+        if s.state == TorrentState::Seeding && Path::new(&s.save_path) == elsewhere {
+            assert_eq!(s.pieces_have, s.pieces_total, "nothing to download again");
+            assert_eq!(s.error, None);
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for the move: {s:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        std::fs::read(elsewhere.join("Show").join("info.nfo")).unwrap(),
+        nfo
+    );
+    assert!(!dir.exists(), "the old folder is emptied and goes");
+    assert_eq!(std::fs::read(video.join("Show").join("a.mkv")).unwrap(), a);
+    let d = core.detail(&k(&id)).await.unwrap();
+    assert_eq!(moved(&d, "a.mkv"), Some(video.join("Show").join("a.mkv")));
+    core.shutdown().await.unwrap();
+}
+
 /// A tracker that hands out one peer (an IPv4 address) to everyone.
 async fn tracker_with_peer(peer: std::net::SocketAddr) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
 import type { TorrentSummary } from "../api/generated/TorrentSummary";
 import { formatBytes, formatDateTime, formatEta, formatPercent, formatRate, formatRatio, stateClass, stateLabel } from "../format";
@@ -107,11 +107,39 @@ interface Props {
   /** A click on the empty space under the rows: select nothing. */
   onClear: () => void;
   onKey: (e: KeyboardEvent) => void;
+  /** A checkbox on each row, and one in the header for all rows. */
+  checkboxes?: boolean;
   /** What to show when there are no rows. */
   empty: ReactNode;
 }
 
-export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, onOpen, onClear, onKey, empty }: Props) {
+/** The width of the checkbox column. */
+const CHECK_WIDTH = "1.25rem";
+
+/** The header's box: checked when every row is selected, a dash when some are. */
+function AllBox({ rows, selected, onSelect }: { rows: TorrentSummary[]; selected: ReadonlySet<string>; onSelect: (ids: Set<string>) => void }) {
+  const box = useRef<HTMLInputElement>(null);
+  const count = rows.filter((r) => selected.has(r.id)).length;
+  const all = rows.length > 0 && count === rows.length;
+  const some = count > 0 && !all;
+  useEffect(() => {
+    if (box.current) box.current.indeterminate = some;
+  }, [some]);
+  return (
+    <span className="th th-check" role="columnheader">
+      <input
+        ref={box}
+        type="checkbox"
+        aria-label={all || some ? "Select none" : "Select all"}
+        checked={all}
+        disabled={rows.length === 0}
+        onChange={() => onSelect(all || some ? new Set() : new Set(rows.map((r) => r.id)))}
+      />
+    </span>
+  );
+}
+
+export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, onOpen, onClear, onKey, checkboxes = false, empty }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const [prefs, setPrefs] = useState<ColumnPrefs | null>(loadColumnPrefs);
   const [choosing, setChoosing] = useState(false);
@@ -120,7 +148,7 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
   const [dragged, setDragged] = useState<string | null>(null);
   const [dropBefore, setDropBefore] = useState<string | null | undefined>(undefined);
   const columns = useMemo(() => visibleColumns(COLUMNS, prefs).map((id) => BY_ID.get(id)!), [prefs]);
-  const template = columns.map((c) => c.width).join(" ");
+  const template = [...(checkboxes ? [CHECK_WIDTH] : []), ...columns.map((c) => c.width)].join(" ");
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
@@ -162,6 +190,14 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
     }
   }
 
+  /** A row's box: add or drop that row, leaving the rest of the selection alone. */
+  function toggle(id: string) {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onSelect(next, next.has(id) ? id : focus === id ? null : focus);
+  }
+
   function move(e: KeyboardEvent) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") {
       onKey(e);
@@ -191,6 +227,7 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
           setChoosing(true);
         }}
       >
+        {checkboxes && <AllBox rows={rows} selected={selected} onSelect={(ids) => onSelect(ids, ids.size === 0 ? null : focus)} />}
         {columns.map((c, i) => (
           <button
             key={c.id}
@@ -271,6 +308,11 @@ export function TorrentTable({ rows, selected, sort, onSort, onSelect, focus, on
                   onClick={(e) => click(e, v.index)}
                   onDoubleClick={() => onOpen(t.id)}
                 >
+                  {checkboxes && (
+                    <div role="gridcell" className="td td-check" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" tabIndex={-1} aria-label={`Select ${t.name}`} checked={isSelected} onChange={() => toggle(t.id)} />
+                    </div>
+                  )}
                   {columns.map((c) => (
                     <div key={c.id} role="gridcell" className={`td ${c.align === "end" ? "end" : ""}`}>
                       {c.render(t)}

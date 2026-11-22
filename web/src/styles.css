@@ -554,6 +554,7 @@ code {
 
 .state-paused,
 .state-checking,
+.state-moving,
 .state-metadata {
   color: var(--muted);
 }
@@ -1430,6 +1431,13 @@ button.auth-secondary {
   text-align: left;
 }
 
+.toolbar-more-menu.menu-up {
+  top: auto;
+  bottom: calc(100% + 4px);
+  left: auto;
+  right: 0;
+}
+
 .toolbar-more-theme {
   display: flex;
   align-items: center;
@@ -1653,10 +1661,6 @@ button.link.danger-text {
   border-top: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 0 -4px 16px var(--shadow);
-}
-
-.selection-bar .muted {
-  margin-right: auto;
 }
 
 .drawer-backdrop {
@@ -2090,4 +2094,131 @@ button.link.danger-text {
   justify-content: space-between;
   align-items: baseline;
   gap: 8px;
+/* Selection checkboxes in the wide list. */
+.th-check,
+.td-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.th-check input,
+.td-check input {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.selection-count:not(.x) {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+}
+
+/* Editing many torrents at once. */
+.bulk-intro {
+  margin: -6px 0 12px;
+}
+
+@media (min-width: 481px) {
+  .bulk-edit .field-row {
+    align-items: start;
+  }
+}
+
+.bulk-row {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.bulk-row > .field {
+  margin-bottom: 8px;
+}
+
+/* "Keep as is" sits on the caption line, so a changed field keeps its width. */
+.bulk-row > .link {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.bulk-changed input {
+  border-color: var(--accent);
+}
+
+
+.bulk-note {
+  margin: 0 0 4px;
+  font-size: 12px;
+}
+
+.bulk-choices .check {
+  margin: 2px 0;
+}
+
+.bulk-trackers {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.bulk-trackers li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  min-width: 0;
+}
+
+.bulk-tracker-url {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 10rem;
+}
+
+.bulk-removed .bulk-tracker-url {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.bulk-replace {
+  display: flex;
+  gap: 4px;
+  flex-basis: 100%;
+}
+
+.bulk-replace input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .selection-count:not(.x) {
+    display: none;
+  }
+
+  .bulk-tracker-url {
+    flex-basis: 100%;
+  }
+
+  .selection-bar {
+    gap: 6px;
+    padding-inline: 12px;
+  }
 }

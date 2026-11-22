@@ -8,6 +8,7 @@ import type { Ban } from "../api/generated/Ban";
 import { DelugeTakeOverSection } from "../components/DelugeTakeOverSection";
 import { formatDateTime } from "../format";
 import { setDetailsMode, useDetailsMode, type DetailsMode } from "../state/details";
+import { setSelectionStyle, useSelectionStyle, type SelectionStyle } from "../state/selectionStyle";
 import { THEME_PREFERENCES, setTheme, useTheme, type ThemePreference } from "../theme";
 import { ChoiceCards, Empty, SettingCard, type Choice } from "./controls";
 
@@ -113,9 +114,15 @@ const DETAILS: readonly Choice<DetailsMode>[] = [
   { value: "window", label: "Separate windows", description: "Click only selects. Double-click opens the torrent in a window of its own." },
 ];
 
+const SELECTION: readonly Choice<SelectionStyle>[] = [
+  { value: "boxes", label: "☑ Checkboxes", description: "A box on every row. Click a box to add or drop that torrent; the header box selects them all." },
+  { value: "count", label: "Highlight only", description: "No boxes. Ctrl-click (⌘ on a Mac) adds a torrent, Shift-click a range, Ctrl+A all." },
+];
+
 export function AppearanceSection() {
   const theme = useTheme();
   const details = useDetailsMode();
+  const selection = useSelectionStyle();
   return (
     <>
       <SettingCard title="Theme" description="Only for this browser or app; applies at once.">
@@ -126,6 +133,12 @@ export function AppearanceSection() {
         description="Where a torrent's details show on a wide screen. Torrent windows stay open after the list's window closes. Only for this browser or app."
       >
         <ChoiceCards label="Torrent details" columns={2} value={details} options={DETAILS} onChange={setDetailsMode} />
+      </SettingCard>
+      <SettingCard
+        title="Selecting torrents"
+        description="How the list on a wide screen shows which torrents are selected, for actions and Edit. Phones always show boxes. Only for this browser or app."
+      >
+        <ChoiceCards label="Selecting torrents" columns={2} value={selection} options={SELECTION} onChange={setSelectionStyle} />
       </SettingCard>
     </>
   );

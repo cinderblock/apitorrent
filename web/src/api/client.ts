@@ -5,6 +5,9 @@
 import type { AddPasskeyFinishRequest } from "./generated/AddPasskeyFinishRequest";
 import type { AddTorrentRequest } from "./generated/AddTorrentRequest";
 import type { Ban } from "./generated/Ban";
+import type { BulkEdit } from "./generated/BulkEdit";
+import type { BulkReport } from "./generated/BulkReport";
+import type { TorrentSettings } from "./generated/TorrentSettings";
 import type { DedupeStatus } from "./generated/DedupeStatus";
 import type { LibraryFolder } from "./generated/LibraryFolder";
 import type { LibraryStatus } from "./generated/LibraryStatus";
@@ -120,6 +123,8 @@ export const api = {
   add: (req: AddTorrentRequest) => request<AddTorrentResponse>("POST", "/torrents", req),
   pause: (id: string) => request<void>("POST", `/torrents/${enc(id)}/pause`),
   resume: (id: string) => request<void>("POST", `/torrents/${enc(id)}/resume`),
+  /** Verify its pieces on disk again; it shows as checking meanwhile. */
+  recheck: (id: string) => request<void>("POST", `/torrents/${enc(id)}/recheck`),
   remove: (id: string, deleteFiles: boolean) =>
     request<void>("DELETE", `/torrents/${enc(id)}?deleteFiles=${deleteFiles}`),
   setFilePriorities: (id: string, priorities: FilePriority[]) =>
@@ -166,6 +171,10 @@ export const api = {
   setSequential: (id: string, files: SequentialFile[]) => request<void>("PUT", `/torrents/${enc(id)}/sequential`, { files }),
   /** A torrent's own move-when-complete setting; null follows its group's or the instance's. */
   setMoveCompleted: (id: string, settings: MoveCompleted | null) => request<void>("PUT", `/torrents/${enc(id)}/move-completed`, { settings }),
+  /** Change settings on many torrents at once; answers per torrent. */
+  bulkEdit: (edit: BulkEdit) => request<BulkReport>("PATCH", "/torrents", edit),
+  /** The settings a bulk edit changes, for each of `ids` in the space. */
+  torrentSettings: (ids: string[]) => request<TorrentSettings[]>("POST", "/torrents/settings", { ids }),
   queueMove: (id: string, to: QueueMove) => request<void>("POST", `/torrents/${enc(id)}/queue`, { to }),
   setUnwantedPolicy: (id: string, policy: UnwantedPolicy) =>
     request<void>("PUT", `/torrents/${enc(id)}/unwanted-policy`, { policy }),

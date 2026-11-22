@@ -10,6 +10,7 @@ const FILTERS: Array<[StateFilter, string]> = [
   ["paused", "Paused"],
   ["queued", "Queued"],
   ["checking", "Checking"],
+  ["moving", "Moving"],
   ["metadata", "Fetching metadata"],
   ["error", "Errors"],
 ];
