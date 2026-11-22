@@ -95,6 +95,49 @@ pub struct DelugeSettings {
     pub dont_count_slow: bool,
     /// `stop_seed_at_ratio`, `stop_seed_ratio` and `remove_seed_at_ratio`.
     pub stop_at_ratio: Option<(f64, bool)>,
+    /// `enc_in_policy`, `enc_out_policy` and `enc_level`.
+    pub encryption: DelugeEncryption,
+}
+
+impl DelugeSettings {
+    /// Deluge 2's defaults, for telling which settings were changed in Deluge.
+    #[must_use]
+    pub fn deluge_defaults() -> Self {
+        Self {
+            download_location: None,
+            max_download_rate: None,
+            max_upload_rate: None,
+            max_connections: Some(200),
+            max_active_downloading: Some(3),
+            max_active_seeding: Some(5),
+            max_active_limit: Some(8),
+            dont_count_slow: false,
+            stop_at_ratio: None,
+            encryption: DelugeEncryption::default(),
+        }
+    }
+}
+
+/// Deluge's encryption settings, numbered as Deluge numbers them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DelugeEncryption {
+    /// Incoming connections: 0 forced, 1 enabled, 2 disabled.
+    pub in_policy: u8,
+    /// Outgoing connections, numbered the same.
+    pub out_policy: u8,
+    /// 0 the handshake only, 1 the whole stream, 2 either.
+    pub level: u8,
+}
+
+impl Default for DelugeEncryption {
+    /// Deluge's: enabled both ways, either level.
+    fn default() -> Self {
+        Self {
+            in_policy: 1,
+            out_policy: 1,
+            level: 2,
+        }
+    }
 }
 
 /// What was found, and what couldn't be read.
@@ -529,5 +572,20 @@ fn settings_from(core: &serde_json::Value) -> DelugeSettings {
                     == Some(true),
             )
         }),
+        encryption: {
+            let d = DelugeEncryption::default();
+            let n = |key: &str, or: u8| {
+                core.get(key)
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|n| u8::try_from(n).ok())
+                    .filter(|&n| n <= 2)
+                    .unwrap_or(or)
+            };
+            DelugeEncryption {
+                in_policy: n("enc_in_policy", d.in_policy),
+                out_policy: n("enc_out_policy", d.out_policy),
+                level: n("enc_level", d.level),
+            }
+        },
     }
 }

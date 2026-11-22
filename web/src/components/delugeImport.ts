@@ -94,7 +94,7 @@ export const DEFAULT_OPTIONS: DelugeImportOptions = {
   sequential: true,
   identity: { kind: "deluge" },
   identitySkipHosts: [],
-  settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false },
+  settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false, encryption: false },
 };
 
 const sameRatio = (a: StopAtRatio | null, b: StopAtRatio | null) => (a === null || b === null ? a === b : a.ratio === b.ratio && a.remove === b.remove);
@@ -203,24 +203,44 @@ export function renameLabel(o: DelugeImportOptions, label: string, to: string | 
 export type SettingKey = keyof DelugeImportOptions["settings"];
 
 /** Each of Deluge's settings in words, for the tick boxes. */
-export function settingRows(s: DelugeSettingsView, defaultSpace: boolean): { key: SettingKey; label: string; value: string }[] {
+const ENCRYPTION: Record<DelugeSettingsView["encryption"], string> = {
+  disabled: "off",
+  enabled: "on when the peer can",
+  preferPlaintext: "the handshake only, when the peer allows",
+  required: "required",
+};
+
+export type SettingRow = {
+  key: SettingKey;
+  label: string;
+  value: string;
+  /** Changed in Deluge from Deluge's default. */
+  changed: boolean;
+  note?: string;
+};
+
+/**
+ * Deluge's settings an import can take, as rows: the instance-wide ones (slow torrents,
+ * encryption) only for the default space.
+ */
+export function settingRows(s: DelugeSettingsView, defaultSpace: boolean): SettingRow[] {
   const rate = (b: number | null) => (b === null || b === 0 ? "no limit" : `${formatRate(b)}`);
   const n = (v: number | null) => (v === null ? "no limit" : String(v));
-  const rows: { key: SettingKey; label: string; value: string }[] = [
-    { key: "downloadRate", label: "Download speed", value: rate(s.downloadRate) },
-    { key: "uploadRate", label: "Upload speed", value: rate(s.uploadRate) },
-    { key: "maxConnections", label: "Connections", value: n(s.maxConnections) },
-    {
-      key: "queueSlots",
-      label: "Active torrents",
-      value: `${n(s.maxActiveDownloading)} downloading, ${n(s.maxActiveSeeding)} seeding, ${n(s.maxActive)} in all`,
-    },
-  ];
-  if (defaultSpace) rows.push({ key: "ignoreSlow", label: "Slow torrents", value: s.dontCountSlow ? "don't count against the limits" : "count" });
-  rows.push({
-    key: "stopAtRatio",
-    label: "Stop seeding at ratio",
-    value: s.stopAtRatio === null ? "off" : `${s.stopAtRatio.ratio}, then ${s.stopAtRatio.remove ? "remove" : "pause"}`,
+  const row = (key: SettingKey, label: string, value: string, note?: string): SettingRow => ({
+    key,
+    label,
+    value,
+    changed: s.changed[key],
+    ...(note ? { note } : {}),
   });
+  const rows: SettingRow[] = [
+    row("downloadRate", "Download speed", rate(s.downloadRate)),
+    row("uploadRate", "Upload speed", rate(s.uploadRate)),
+    row("maxConnections", "Connections", n(s.maxConnections)),
+    row("queueSlots", "Active torrents", `${n(s.maxActiveDownloading)} downloading, ${n(s.maxActiveSeeding)} seeding, ${n(s.maxActive)} in all`),
+  ];
+  if (defaultSpace) rows.push(row("ignoreSlow", "Slow torrents", s.dontCountSlow ? "don't count against the limits" : "count"));
+  rows.push(row("stopAtRatio", "Stop seeding at ratio", s.stopAtRatio === null ? "off" : `${s.stopAtRatio.ratio}, then ${s.stopAtRatio.remove ? "remove" : "pause"}`));
+  if (defaultSpace) rows.push(row("encryption", "Encryption", ENCRYPTION[s.encryption], s.encryptionNote ?? undefined));
   return rows;
 }

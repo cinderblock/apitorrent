@@ -17,4 +17,8 @@ ignoreSlow: boolean,
  * Stop seeding at a ratio: the instance's seed limits for the default space; each
  * torrent's own for another space.
  */
-stopAtRatio: boolean, };
+stopAtRatio: boolean, 
+/**
+ * Encryption for peer connections (the default space only: it is the instance's).
+ */
+encryption: boolean, };

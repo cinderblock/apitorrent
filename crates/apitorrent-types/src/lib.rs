@@ -991,6 +991,8 @@ pub struct DelugeSettingsPick {
     /// Stop seeding at a ratio: the instance's seed limits for the default space; each
     /// torrent's own for another space.
     pub stop_at_ratio: bool,
+    /// Encryption for peer connections (the default space only: it is the instance's).
+    pub encryption: bool,
 }
 
 impl DelugeSettingsPick {
@@ -1004,6 +1006,7 @@ impl DelugeSettingsPick {
             queue_slots: true,
             ignore_slow: true,
             stop_at_ratio: true,
+            encryption: true,
         }
     }
 
@@ -1029,6 +1032,13 @@ pub struct DelugeSettingsView {
     pub max_active: Option<u32>,
     pub dont_count_slow: bool,
     pub stop_at_ratio: Option<StopAtRatio>,
+    /// Deluge's encryption settings, as the nearest of apitorrent's.
+    pub encryption: EncryptionPolicy,
+    /// How Deluge's encryption maps, when it isn't one to one (incoming and outgoing set
+    /// differently, say).
+    pub encryption_note: Option<String>,
+    /// The settings changed in Deluge from Deluge's defaults.
+    pub changed: DelugeSettingsPick,
 }
 
 /// Deluge's "stop seeding at ratio".

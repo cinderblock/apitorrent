@@ -349,7 +349,9 @@ export function ImportDelugeOptions({
               <label className="check">
                 <input type="checkbox" checked={o.settings[r.key]} onChange={(e) => setOptions({ ...o, settings: { ...o.settings, [r.key]: e.target.checked } })} />
                 {r.label}: <span className="muted">{r.value}</span>
+                {r.changed && <span className="carry-changed">changed in Deluge</span>}
               </label>
+              {r.note && <div className="carry-detail muted">{r.note}</div>}
             </li>
           ))}
         </ul>

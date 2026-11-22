@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { DelugePreviewTorrent } from "../api/generated/DelugePreviewTorrent";
+import type { DelugeSettingsView } from "../api/generated/DelugeSettingsView";
 import { DEFAULT_OPTIONS, NO_FILTER, carried, hostMatches, importable, labelAfter, matches, renameLabel, rootsFor, settingRows, validSlug, within } from "./delugeImport";
 
 const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
@@ -114,10 +115,24 @@ describe("Deluge import wizard", () => {
   });
 
   test("settings rows: slow torrents only for the default space", () => {
-    const s = { downloadRate: null, uploadRate: 1024, maxConnections: 200, maxActiveDownloading: 3, maxActiveSeeding: null, maxActive: 8, dontCountSlow: true, stopAtRatio: null };
+    const s: DelugeSettingsView = {
+      downloadRate: null,
+      uploadRate: 1024,
+      maxConnections: 200,
+      maxActiveDownloading: 3,
+      maxActiveSeeding: null,
+      maxActive: 8,
+      dontCountSlow: true,
+      stopAtRatio: null,
+      encryption: "required",
+      encryptionNote: "incoming enabled and outgoing forced",
+      changed: { ...DEFAULT_OPTIONS.settings, uploadRate: true, encryption: true },
+    };
     expect(settingRows(s, false).map((r) => r.key)).toEqual(["downloadRate", "uploadRate", "maxConnections", "queueSlots", "stopAtRatio"]);
     const rows = settingRows(s, true);
     expect(rows.map((r) => r.key)).toContain("ignoreSlow");
+    expect(rows.filter((r) => r.changed).map((r) => r.key)).toEqual(["uploadRate", "encryption"]);
+    expect(rows.find((r) => r.key === "encryption")).toMatchObject({ value: "required", note: "incoming enabled and outgoing forced" });
     expect(rows.find((r) => r.key === "downloadRate")?.value).toBe("no limit");
     expect(rows.find((r) => r.key === "queueSlots")?.value).toBe("3 downloading, no limit seeding, 8 in all");
   });

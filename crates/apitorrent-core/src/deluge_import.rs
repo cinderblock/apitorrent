@@ -132,6 +132,42 @@ pub fn apply_instance_settings(s: &mut Settings, d: &DelugeSettings, pick: Delug
     if pick.stop_at_ratio {
         s.seed_limits = seed_limits(d.stop_at_ratio);
     }
+    if pick.encryption {
+        s.encryption = encryption(d.encryption).0;
+    }
+}
+
+/// Deluge's encryption settings as the nearest of apitorrent's policies, with a note when
+/// the mapping isn't one to one. Deluge sets incoming and outgoing apart; apitorrent has one
+/// policy for both, so the stricter of the two wins.
+pub fn encryption(
+    e: apitorrent_deluge::DelugeEncryption,
+) -> (apitorrent_types::EncryptionPolicy, Option<String>) {
+    use apitorrent_types::EncryptionPolicy as P;
+    const FORCED: u8 = 0;
+    const DISABLED: u8 = 2;
+    let name = |p: u8| match p {
+        FORCED => "forced",
+        DISABLED => "disabled",
+        _ => "enabled",
+    };
+    let policy = if e.in_policy == FORCED || e.out_policy == FORCED {
+        P::Required
+    } else if e.in_policy == DISABLED && e.out_policy == DISABLED {
+        P::Disabled
+    } else if e.level == 0 {
+        P::PreferPlaintext
+    } else {
+        P::Enabled
+    };
+    let note = (e.in_policy != e.out_policy).then(|| {
+        format!(
+            "Deluge has incoming {} and outgoing {}; apitorrent has one setting for both",
+            name(e.in_policy),
+            name(e.out_policy)
+        )
+    });
+    (policy, note)
 }
 
 /// The picked ones of Deluge's settings applied to another space's: its rates,
@@ -155,6 +191,33 @@ pub fn apply_space_settings(s: &mut SpaceSettings, d: &DelugeSettings, pick: Del
 }
 
 /// Deluge's settings, for showing before an import.
+/// The names of the settings `pick` holds; the instance-wide ones only for the default
+/// space.
+fn setting_names(pick: DelugeSettingsPick, default_space: bool) -> Vec<&'static str> {
+    [
+        (pick.download_rate, "download rate"),
+        (pick.upload_rate, "upload rate"),
+        (pick.max_connections, "connections"),
+        (pick.queue_slots, "active slots"),
+        (pick.ignore_slow && default_space, "slow torrents"),
+        (pick.stop_at_ratio, "stop at ratio"),
+        (pick.encryption && default_space, "encryption"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect()
+}
+
+fn encryption_name(e: apitorrent_types::EncryptionPolicy) -> &'static str {
+    use apitorrent_types::EncryptionPolicy as P;
+    match e {
+        P::Disabled => "off",
+        P::Enabled => "on when the peer can",
+        P::PreferPlaintext => "the handshake only, when the peer allows",
+        P::Required => "required",
+    }
+}
+
 #[must_use]
 pub fn settings_view(d: &DelugeSettings) -> apitorrent_types::DelugeSettingsView {
     apitorrent_types::DelugeSettingsView {
@@ -166,6 +229,31 @@ pub fn settings_view(d: &DelugeSettings) -> apitorrent_types::DelugeSettingsView
         max_active: d.max_active_limit,
         dont_count_slow: d.dont_count_slow,
         stop_at_ratio: stop_at_ratio(d.stop_at_ratio),
+        encryption: encryption(d.encryption).0,
+        encryption_note: encryption(d.encryption).1,
+        changed: changed(d),
+    }
+}
+
+/// Which of Deluge's settings differ from Deluge's defaults.
+pub fn changed(d: &DelugeSettings) -> DelugeSettingsPick {
+    let z = DelugeSettings::deluge_defaults();
+    DelugeSettingsPick {
+        download_rate: d.max_download_rate != z.max_download_rate,
+        upload_rate: d.max_upload_rate != z.max_upload_rate,
+        max_connections: d.max_connections != z.max_connections,
+        queue_slots: (
+            d.max_active_downloading,
+            d.max_active_seeding,
+            d.max_active_limit,
+        ) != (
+            z.max_active_downloading,
+            z.max_active_seeding,
+            z.max_active_limit,
+        ),
+        ignore_slow: d.dont_count_slow != z.dont_count_slow,
+        stop_at_ratio: d.stop_at_ratio != z.stop_at_ratio,
+        encryption: d.encryption != z.encryption,
     }
 }
 
@@ -1158,19 +1246,25 @@ COUNTS"
         }
     );
     let _ = writeln!(out, "  stop seeding at ratio: {}", ratio(d.stop_at_ratio));
+    let (enc, enc_note) = encryption(d.encryption);
+    let _ = writeln!(
+        out,
+        "  encryption: {}{}",
+        encryption_name(enc),
+        enc_note.map(|n| format!(" ({n})")).unwrap_or_default()
+    );
+    let changed = changed(d);
+    let changed_names: Vec<&str> = setting_names(changed, true);
+    if !changed_names.is_empty() {
+        let _ = writeln!(
+            out,
+            "  changed from Deluge's defaults: {}",
+            changed_names.join(", ")
+        );
+    }
     let pick = c.options.settings;
     let default_space = c.slug == apitorrent_types::spaces::DEFAULT_SLUG;
-    let taken: Vec<&str> = [
-        (pick.download_rate, "download rate"),
-        (pick.upload_rate, "upload rate"),
-        (pick.max_connections, "connections"),
-        (pick.queue_slots, "active slots"),
-        (pick.ignore_slow && default_space, "slow torrents"),
-        (pick.stop_at_ratio, "stop at ratio"),
-    ]
-    .into_iter()
-    .filter_map(|(on, name)| on.then_some(name))
-    .collect();
+    let taken = setting_names(pick, default_space);
     let where_to = if taken.is_empty() {
         "not taken (pass --settings, or --setting NAME, to take them)".to_owned()
     } else if default_space {
@@ -1999,5 +2093,34 @@ mod tests {
             (s.download_rate, s.max_connections, s.max_active_downloads),
             (100, 50, 3)
         );
+    }
+
+    #[test]
+    fn deluge_encryption_maps_to_the_nearest_policy() {
+        use apitorrent_deluge::DelugeEncryption as E;
+        use apitorrent_types::EncryptionPolicy as P;
+        let e = |in_policy, out_policy, level| E {
+            in_policy,
+            out_policy,
+            level,
+        };
+        assert_eq!(encryption(E::default()), (P::Enabled, None));
+        assert_eq!(encryption(e(0, 0, 1)).0, P::Required);
+        assert_eq!(encryption(e(2, 2, 2)), (P::Disabled, None));
+        assert_eq!(encryption(e(1, 1, 0)).0, P::PreferPlaintext);
+        let (p, note) = encryption(e(1, 0, 2));
+        assert_eq!(p, P::Required);
+        assert!(note.is_some_and(|n| n.contains("incoming enabled and outgoing forced")));
+    }
+
+    #[test]
+    fn changed_settings_are_the_ones_off_deluges_defaults() {
+        let mut d = DelugeSettings::deluge_defaults();
+        assert!(!changed(&d).any());
+        d.max_connections = Some(500);
+        d.encryption.in_policy = 0;
+        let c = changed(&d);
+        assert!(c.max_connections && c.encryption);
+        assert!(!c.download_rate && !c.queue_slots && !c.stop_at_ratio);
     }
 }

@@ -55,6 +55,8 @@ enum SettingName {
     /// Don't count slow torrents against the slots (the default space only).
     SlowTorrents,
     StopAtRatio,
+    /// Encryption for peer connections (the default space only).
+    Encryption,
 }
 
 /// What of each torrent comes over. Everything does unless a flag leaves it out.
@@ -129,6 +131,7 @@ impl DelugeArgs {
                 SettingName::Slots => settings.queue_slots = true,
                 SettingName::SlowTorrents => settings.ignore_slow = true,
                 SettingName::StopAtRatio => settings.stop_at_ratio = true,
+                SettingName::Encryption => settings.encryption = true,
             }
         }
         let label_renames = o

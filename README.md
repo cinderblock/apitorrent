@@ -363,7 +363,8 @@ Everything about each torrent comes over unless you leave it out: `--no-labels`,
 `--no-limits`, `--no-seed-limits`, `--no-move-completed`, `--no-sequential`. `--identity deluge|none|qbittorrent|transmission` sets
 what private trackers see (`--no-identity-for HOST` skips one). `--settings` takes all of
 Deluge's own settings; `--setting NAME` takes one (`download-rate`, `upload-rate`,
-`connections`, `slots`, `slow-torrents`, `stop-at-ratio`). The report lists each choice.
+`connections`, `slots`, `slow-torrents`, `stop-at-ratio`, `encryption`). The report lists each choice,
+and which of Deluge's settings were changed from Deluge's defaults.
 
 With the daemon running, Settings → Deluge → "Import from Deluge…" does the same as a
 wizard. It starts with the Deluge installations it finds on the server (running
@@ -375,7 +376,8 @@ the outermost save paths as its storage roots. Before importing, "What comes ove
 every option the ticked torrents carry (files and progress, labels, queue order, dates,
 totals, skipped files, edited trackers, limits, stop-at-ratio, move when complete,
 sequential download, the identity private
-trackers see, whether running ones start here, and each of Deluge's own settings), each
+trackers see, whether running ones start here, and each of Deluge's own settings, marked
+when changed from Deluge's default), each
 with what it amounts to and a box to leave it out; labels can be renamed on the way in,
 and the tracker identity changed. What can't come over is listed too. Afterwards it offers to move them over
 from Deluge at once, and to go on to the next installation.

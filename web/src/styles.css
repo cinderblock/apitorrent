@@ -2012,6 +2012,14 @@ button.link.danger-text {
   margin-block: 2px 0;
   padding: 0;
 }
+.carry-changed {
+  margin-inline-start: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  background: var(--accent-soft);
+  color: var(--text);
+}
 .carry-hosts .check,
 .carry-settings .check {
   margin: 2px 0;

@@ -1292,6 +1292,10 @@ recheck. That is the onboarding path for existing Deluge users.
   NAME` one): into `default`, the picked ones become the instance's; into another space,
   its rates, connections and slots become the space's, and Deluge's global stop-at-ratio
   becomes each imported torrent's own seed limits (seed limits have no space level).
+  Slow torrents and encryption are instance-wide, so only an import into `default` takes
+  them. Deluge sets encryption for incoming and outgoing connections apart; apitorrent has
+  one policy, so the stricter wins (forced either way is `required`), with a note. The
+  preview marks each setting changed from Deluge 2's defaults (`changed`).
 - **Leftover `.torrent` files.** Every `<id>.torrent` in `state/` is read, but one that
   neither `torrents.state` nor `torrents.fastresume` lists is a leftover: Deluge never
   runs it. The preview flags it (`leftover`); it imports paused, dated by the file's
