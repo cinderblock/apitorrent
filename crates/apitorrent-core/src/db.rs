@@ -239,6 +239,11 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE imported ADD COLUMN leftover INTEGER NOT NULL DEFAULT 0;
     ",
+    // 17: an entry's file order, sequential files, move-when-complete setting and moved
+    // files, as JSON (`files::FileOptions`); NULL for none.
+    "
+    ALTER TABLE torrents ADD COLUMN file_options TEXT;
+    ",
 ];
 
 /// A torrent imported from another client.
@@ -605,6 +610,26 @@ impl Database {
             params![key.space, key.id, paused],
         )?;
         Ok(())
+    }
+
+    /// An entry's file options (JSON, see `files::FileOptions`); `None` clears them.
+    pub fn set_file_options(&self, key: &Key, json: Option<&str>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE torrents SET file_options = ?3 WHERE space_id = ?1 AND id = ?2",
+            params![key.space, key.id, json],
+        )?;
+        Ok(())
+    }
+
+    /// Every entry's file options that are set (JSON).
+    pub fn file_options(&self) -> rusqlite::Result<Vec<(Key, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT space_id, id, file_options FROM torrents WHERE file_options IS NOT NULL",
+        )?;
+        stmt.query_map([], |r| {
+            Ok((Key::new(r.get(0)?, r.get::<_, String>(1)?), r.get(2)?))
+        })?
+        .collect()
     }
 
     pub fn set_file_priorities(&self, key: &Key, prios: &[u8]) -> rusqlite::Result<()> {

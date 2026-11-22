@@ -72,6 +72,8 @@ pub struct PlannedTorrent {
     /// [`apitorrent_deluge::DelugeTorrent::leftover`]): imported paused, with nothing to
     /// take over.
     pub leftover: bool,
+    /// File order, sequential files and moving completed files.
+    pub files: crate::files::FileOptions,
 }
 
 /// A magnet link Deluge never got the metadata for.
@@ -687,6 +689,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             label,
             not_carried: d.not_carried.clone(),
             leftover: d.leftover,
+            files: crate::files::FileOptions::default(),
         });
     }
     out

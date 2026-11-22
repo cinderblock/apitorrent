@@ -229,6 +229,8 @@ async fn queue_settings_and_groups() {
         upload_rate: 0,
         max_connections: 10,
         seed_limits: None,
+        file_order: None,
+        move_completed: None,
     });
     core.set_settings(settings.clone()).await.unwrap();
 

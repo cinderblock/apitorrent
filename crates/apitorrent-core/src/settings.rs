@@ -35,6 +35,8 @@ pub fn defaults(session: &SessionConfig) -> Settings {
             .and_then(|d| d.bind_v4.or(d.bind_v6))
             .map_or(0, |a| a.port()),
         identity: IdentitySettings::default(),
+        file_order: apitorrent_types::files::FileOrder::default(),
+        move_completed: apitorrent_types::files::MoveCompleted::default(),
     }
 }
 
@@ -140,6 +142,12 @@ pub fn validate(s: &Settings) -> Result<(), String> {
             .any(|l| !ratio_ok(l))
     {
         return Err("a seed ratio must be a number, 0 or more".into());
+    }
+    crate::files::validate_move(&s.move_completed)?;
+    for g in &s.groups {
+        if let Some(m) = &g.move_completed {
+            crate::files::validate_move(m).map_err(|e| format!("group {}: {e}", g.name))?;
+        }
     }
     if s.peer_port != 0 && s.peer_port == s.dht_port {
         return Err("the peer port and the DHT port must differ".into());
@@ -423,6 +431,8 @@ mod tests {
             upload_rate: 0,
             max_connections: 0,
             seed_limits: None,
+            file_order: None,
+            move_completed: None,
         });
         assert_eq!(group_for(&s, Some("iso")), Some("linux"));
         assert_eq!(group_for(&s, Some("other")), None);
@@ -435,6 +445,8 @@ mod tests {
             upload_rate: 0,
             max_connections: 0,
             seed_limits: None,
+            file_order: None,
+            move_completed: None,
         });
         assert!(validate(&s).is_err());
     }

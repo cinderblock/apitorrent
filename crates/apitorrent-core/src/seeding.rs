@@ -71,6 +71,8 @@ mod tests {
             upload_rate: 0,
             max_connections: 0,
             seed_limits: Some(limits(0.0, 60)),
+            file_order: None,
+            move_completed: None,
         });
         assert_eq!(effective(&s, None, None), limits(2.0, 0));
         assert_eq!(effective(&s, Some("linux"), None), limits(0.0, 60));

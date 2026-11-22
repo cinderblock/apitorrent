@@ -9,6 +9,7 @@ pub mod automation;
 pub mod db;
 pub mod dedupe;
 pub mod deluge_import;
+pub mod files;
 pub mod fingerprint;
 pub mod folders;
 pub mod import;
@@ -182,6 +183,11 @@ struct Entry {
     leftover_from: Option<String>,
     /// Per-file paths overriding the naming policy.
     file_paths: Option<Vec<Vec<String>>>,
+    /// File order, sequential files, moving completed files, and the files moved (see
+    /// `files`).
+    files: crate::files::FileOptions,
+    /// Why moving a file failed, by file, until a move of it succeeds.
+    move_errors: HashMap<usize, String>,
 }
 
 /// The parts of a pending magnet that the torrent replacing it takes over.
@@ -210,16 +216,8 @@ struct Pending {
     fetch: Option<(watch::Receiver<FetchStatus>, oneshot::Sender<()>)>,
 }
 
-/// A torrent as the library sees it: id, metainfo, save path, naming, custom paths,
-/// handle.
-type LibrarySnapshot = (
-    String,
-    Arc<Torrent>,
-    PathBuf,
-    u8,
-    Option<Vec<Vec<String>>>,
-    TorrentHandle,
-);
+/// A torrent as the library sees it: id, metainfo, where each file is, handle.
+type LibrarySnapshot = (String, Arc<Torrent>, Vec<PathBuf>, TorrentHandle);
 
 /// One engine torrent per info-hash, whatever the number of spaces holding it. Its storage
 /// is the primary's: the oldest entry. The other entries get their files by link or copy as
@@ -256,6 +254,7 @@ struct Spawn {
     linked: Vec<usize>,
     /// Per-file paths overriding the naming policy.
     file_paths: Option<Vec<Vec<String>>>,
+    files: crate::files::FileOptions,
 }
 
 struct Inner {
@@ -293,6 +292,8 @@ struct Inner {
     reuse: share::ReuseBook,
     /// Long work running in the background, such as a Deluge import (see `jobs`).
     jobs: Arc<jobs::Jobs>,
+    /// Completed files being moved right now (see `files`), by torrent id and file.
+    moving_files: Mutex<std::collections::HashSet<(TorrentId, usize)>>,
 }
 
 pub(crate) const SETTINGS_KEY: &str = "settings";
@@ -370,6 +371,7 @@ impl Core {
                 library: library_index::LibraryState::default(),
                 reuse: share::ReuseBook::default(),
                 jobs: Arc::default(),
+                moving_files: Mutex::default(),
             }),
         };
         core.apply_session_settings();
@@ -393,6 +395,7 @@ impl Core {
         tokio::spawn(core.clone().fingerprinter());
         tokio::spawn(core.clone().sharer());
         tokio::spawn(core.clone().automation_loop());
+        tokio::spawn(core.clone().mover());
         core.start_library().await;
         Ok(core)
     }
@@ -415,6 +418,7 @@ impl Core {
         self.apply_session_settings();
         self.regroup().await;
         self.apply_queue().await;
+        self.files_settings_changed(None);
         self.refresh();
         Ok(())
     }
@@ -781,6 +785,7 @@ impl Core {
             e.label = label;
         }
         self.regroup().await;
+        self.files_settings_changed(Some(key.clone()));
         self.refresh();
         Ok(())
     }
@@ -992,28 +997,18 @@ impl Core {
                 (
                     k.id.clone(),
                     e.torrent.clone(),
-                    e.save_path.clone(),
-                    e.naming,
-                    e.file_paths.clone(),
+                    Self::entry_paths(e),
                     e.handle.clone(),
                 )
             })
             .collect();
         let mut sources = Vec::with_capacity(entries.len());
-        for (sid, t, save, naming, custom, handle) in entries {
+        for (sid, t, file_paths, handle) in entries {
             let Some(have) = handle.have().await else {
                 continue;
             };
             let placements = handle.placements();
-            let paths: Vec<Option<PathBuf>> = custom
-                .map_or_else(
-                    || Self::disk_paths(&t, &save, naming),
-                    |c| {
-                        c.into_iter()
-                            .map(|p| p.iter().fold(save.clone(), |a, x| a.join(x)))
-                            .collect::<Vec<_>>()
-                    },
-                )
+            let paths: Vec<Option<PathBuf>> = file_paths
                 .into_iter()
                 .zip(placements)
                 .map(|(p, pl)| (pl == Placement::Save).then_some(p))
@@ -1795,6 +1790,7 @@ impl Core {
                         naming: 0,
                         linked: Vec::new(),
                         file_paths: t.file_paths.clone(),
+                        files: t.files.clone(),
                     })
                     .await;
                 match spawned {
@@ -2029,6 +2025,18 @@ impl Core {
 
     async fn restore(&self) -> Result<(), CoreError> {
         let mut rows = self.db(|db| db.torrents()).await?;
+        let mut file_options: HashMap<Key, crate::files::FileOptions> = self
+            .db(|db| db.file_options())
+            .await?
+            .into_iter()
+            .filter_map(|(k, json)| match serde_json::from_str(&json) {
+                Ok(o) => Some((k, o)),
+                Err(e) => {
+                    tracing::warn!(torrent = %k, error = %e, "stored file options don't parse");
+                    None
+                }
+            })
+            .collect();
         let count = rows.len();
         // A torrent in several spaces has one swarm, whose files are its primary's: the
         // entry that saved resume data last time (only primaries do), else the oldest.
@@ -2105,6 +2113,7 @@ impl Core {
                         .file_paths
                         .as_deref()
                         .and_then(|j| serde_json::from_str(j).ok()),
+                    files: file_options.remove(&key).unwrap_or_default(),
                 })
                 .await;
             if let Err(e) = spawned {
@@ -2293,6 +2302,7 @@ impl Core {
             naming,
             linked,
             file_paths: None,
+            files: crate::files::FileOptions::default(),
         })
         .await?;
         let last = self
@@ -2485,6 +2495,7 @@ impl Core {
             naming,
             linked,
             file_paths: custom_paths,
+            files: file_options,
         } = s;
         let file_paths = match (&custom_paths, naming_from_byte(naming)) {
             (Some(p), _) => Some(p.clone()),
@@ -2530,6 +2541,7 @@ impl Core {
                         space: entry.space.clone(),
                         file_paths,
                         linked,
+                        file_locations: file_options.locations(torrent.info.files.len()),
                         ..AddTorrent::new(torrent.clone(), save_path.clone())
                     })
                     .map_err(|_| CoreError::Duplicate)?;
@@ -2578,11 +2590,14 @@ impl Core {
                     in_deluge: None,
                     leftover_from: None,
                     file_paths: custom_paths,
+                    files: file_options,
+                    move_errors: HashMap::new(),
                 },
             );
         if joined {
             self.sync_priorities(&key.id).await;
         }
+        self.sync_file_handling(&key.id).await;
         Ok(key.id)
     }
 
@@ -2738,6 +2753,7 @@ impl Core {
                 naming,
                 linked,
                 file_paths: None,
+                files: crate::files::FileOptions::default(),
             })
             .await;
         if let Err(e) = spawned {
@@ -3040,6 +3056,8 @@ impl Core {
             e.file_priorities.clone_from(&prios);
         }
         self.sync_priorities(&key.id).await;
+        // Deselected files leave the file order, selected ones join it.
+        self.sync_file_handling(&key.id).await;
         Ok(())
     }
 
@@ -3080,8 +3098,8 @@ impl Core {
         Ok(())
     }
 
-    /// Where each of an entry's files is on disk.
-    fn entry_paths(e: &Entry) -> Vec<PathBuf> {
+    /// Where each of an entry's files is in its save path, as laid out (before any move).
+    fn laid_out_paths(e: &Entry) -> Vec<PathBuf> {
         e.file_paths.as_ref().map_or_else(
             || Self::disk_paths(&e.torrent, &e.save_path, e.naming),
             |c| {
@@ -3090,6 +3108,18 @@ impl Core {
                     .collect()
             },
         )
+    }
+
+    /// Where each of an entry's files is on disk: in its save path, or where it was moved
+    /// when it completed.
+    fn entry_paths(e: &Entry) -> Vec<PathBuf> {
+        let mut paths = Self::laid_out_paths(e);
+        for (i, to) in &e.files.moved {
+            if let Some(p) = paths.get_mut(*i as usize) {
+                *p = PathBuf::from(to);
+            }
+        }
+        paths
     }
 
     /// Remove a torrent from its space, and optionally its downloaded files. Only this
@@ -3168,6 +3198,7 @@ impl Core {
             if let Err(e) = self.move_swarm(&key.id, &next) {
                 tracing::error!(torrent = %key, error = %e, "could not move the swarm to another space's files");
             }
+            self.sync_file_handling(&key.id).await;
         } else {
             entry.handle.remove_entry(key.engine()).await;
             if delete_files {
@@ -3267,6 +3298,7 @@ impl Core {
                 trackers: Some(e.trackers.clone()),
                 space: Some(engine_space(first.space)),
                 file_paths,
+                file_locations: e.files.locations(e.torrent.info.files.len()),
                 ..AddTorrent::new(e.torrent.clone(), e.save_path.clone())
             };
             (params, extra)
@@ -3434,6 +3466,10 @@ impl Core {
                 seeding_secs: 0,
                 seed_limit_reached: false,
                 library_bytes: 0,
+                file_order: None,
+                effective_file_order: self.settings().file_order,
+                move_completed: None,
+                effective_move_completed: self.settings().move_completed,
             });
         }
         let (torrent, handle, prios, unwanted_policy, limits, naming, trackers) = {
@@ -3448,6 +3484,11 @@ impl Core {
                 e.naming,
                 e.trackers.clone(),
             )
+        };
+        let (file_options, move_errors) = {
+            let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
+            let e = torrents.get(key).ok_or(CoreError::NotFound)?;
+            (e.files.clone(), e.move_errors.clone())
         };
         let primary = self.is_primary(key);
         let placements = {
@@ -3490,6 +3531,9 @@ impl Core {
                         _ => FilePlacement::Save,
                     },
                     reused: reuse.get(&i).cloned(),
+                    sequential: file_options.is_sequential(i),
+                    moved_to: file_options.moved_to(i).map(str::to_owned),
+                    move_error: move_errors.get(&i).cloned(),
                 }
             })
             .collect();
@@ -3504,10 +3548,21 @@ impl Core {
             .expect("torrents lock poisoned")
             .get(key)
             .and_then(|e| e.group.clone());
-        let effective_seed_limits =
-            seeding::effective(&self.settings(), group.as_deref(), seed.limits);
+        let settings = self.settings();
+        let effective_seed_limits = seeding::effective(&settings, group.as_deref(), seed.limits);
+        let effective_file_order =
+            crate::files::effective_order(&settings, group.as_deref(), file_options.order.as_ref());
+        let effective_move_completed = crate::files::effective_move(
+            &settings,
+            group.as_deref(),
+            file_options.move_completed.as_ref(),
+        );
         let entry = key.engine();
         Ok(TorrentDetail {
+            file_order: file_options.order.clone(),
+            effective_file_order,
+            move_completed: file_options.move_completed.clone(),
+            effective_move_completed,
             seed_limits: seed.limits,
             effective_seed_limits,
             seeding_secs: seed.seed_ms / 1000,

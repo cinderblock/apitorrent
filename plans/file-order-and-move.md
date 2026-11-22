@@ -78,14 +78,31 @@ arbitrary rules.
 
 ## Plan / steps
 
-1. ⏳ **Current:** settle the open questions below with the user.
-2. Picker: file rank and per-file sequential, with exhaustive tests (seeded, no I/O).
-3. Engine: file-completed events, move-one-file placement, persistence in resume data.
-4. Types + API + DB: order rule, per-file sequential, move settings.
-5. Core policy: compute ranks from the rule, move on completion, Deluge import mapping.
-6. Web UI: details pane (order, sequential toggle, destination), Add dialog, label and
-   Settings defaults.
-7. Loopback tests in `apitorrent-engine/tests/loopback.rs`; README.
+1. ✅ Settle the open questions with the user.
+2. ✅ Picker (`d452bdd`): `set_file_order(Option<Vec<usize>>)`, `set_stream(file,
+   Option<from_byte>)`, `take_completed_files()`. Key is `(priority, tier, availability)`,
+   `TIERS = 8`. Streams: first 1 MiB, last 0.5% (2–16 MiB), playhead→end, start→playhead;
+   the waited-for piece is first among partials.
+3. ✅ Engine (`cf0b7d0`): `Storage::relocate` / `file_path`, `TorrentHandle::relocate_file`,
+   `file_paths`, `set_file_order`, `set_stream`; `AddTorrent::{file_locations,
+   file_order, streams}`; `Session::file_events()` (flushed before sending).
+4. ⏳ **Current:** types + DB + core policy + server routes.
+   - Layering like seed limits: `Settings` → `GroupSettings` (groups hold labels: that's
+     the "label" layer) → torrent. Same for file order and move-when-complete.
+   - Core keeps `Entry.locations` (relocated paths) and applies them in `entry_paths` and
+     the library snapshot, so the content library, other spaces and remove-with-data see
+     moved files where they are. Priority-0 files are left out of the order sent to the
+     engine (else they hold an order place for ever); resync on priority change.
+   - Mover: event-driven from `file_events`, plus a sweep at start, on settings change and
+     on a lagged receiver. Rules: glob on the file's path relative to the save path, first
+     match wins; a rule with an empty destination keeps matching files in place.
+5. Deluge import: `move_completed(_path)` → torrent move setting, "whole torrent";
+   `sequential_download` → file order "torrent" + every file sequential.
+6. Web UI: details pane (order, per-file sequential toggle, location / move error, move
+   setting), Settings and group defaults.
+7. README.
+8. Later (wanted): browser playback with seeking; the engine's `set_stream(file, from)` is
+   the hook. Add-time options (order/sequential in the Add dialog). Plugin order rules.
 
 ## Findings / gotchas
 

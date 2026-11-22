@@ -43,9 +43,11 @@ const BASE: Settings = {
   peerPort: 51413,
   dhtPort: 51414,
   identity: { default: presetIdentity("apitorrent"), rules: [] },
+  fileOrder: { by: "off" },
+  moveCompleted: { enabled: false, to: "", when: "eachFile", rules: [] },
 };
 
-const group = (name: string, labels: string[]) => ({ name, labels, downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null });
+const group = (name: string, labels: string[]) => ({ name, labels, downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null, fileOrder: null, moveCompleted: null });
 
 describe("settings page model", () => {
   test("every Settings field belongs to exactly one section", () => {

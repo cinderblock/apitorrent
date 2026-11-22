@@ -66,6 +66,7 @@ pub(crate) async fn info(State(s): State<AppState>) -> Json<ServerInfo> {
     let mut capabilities: Vec<String> = [
         "sync",
         "file-priorities",
+        "file-order",
         "auth",
         "storage-roots",
         "automation",
@@ -253,6 +254,38 @@ pub(crate) async fn set_seed_limits(
     Json(req): Json<apitorrent_types::SetSeedLimitsRequest>,
 ) -> ApiResult<StatusCode> {
     s.core.set_seed_limits(&here.key(id), req.limits).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_file_order(
+    State(s): State<AppState>,
+    here: Here,
+    Path(id): Path<String>,
+    Json(req): Json<apitorrent_types::files::SetFileOrderRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_file_order(&here.key(id), req.order).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_sequential(
+    State(s): State<AppState>,
+    here: Here,
+    Path(id): Path<String>,
+    Json(req): Json<apitorrent_types::files::SetSequentialRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_sequential(&here.key(id), &req.files).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_move_completed(
+    State(s): State<AppState>,
+    here: Here,
+    Path(id): Path<String>,
+    Json(req): Json<apitorrent_types::files::SetMoveCompletedRequest>,
+) -> ApiResult<StatusCode> {
+    s.core
+        .set_move_completed(&here.key(id), req.settings)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

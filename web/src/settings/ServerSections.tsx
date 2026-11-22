@@ -122,7 +122,7 @@ export function SeedingSection({ draft, update }: DraftProps) {
 
 // Groups
 
-const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null };
+const NEW_GROUP: GroupSettings = { name: "", labels: [], downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null, fileOrder: null, moveCompleted: null };
 
 /** Labels typed comma-separated; the text is kept as typed, so a comma doesn't vanish. */
 function LabelsInput({ id, value, onChange }: { id: string; value: string[]; onChange: (v: string[]) => void }) {

@@ -19,4 +19,17 @@ progress: number, placement: FilePlacement,
  * Where the file's bytes came from, when the content library supplied some of them
  * instead of peers. Daemons from before this don't send it.
  */
-reused: FileReuse | null, };
+reused: FileReuse | null, 
+/**
+ * Downloaded front to back, to be read while it downloads.
+ */
+sequential: boolean, 
+/**
+ * Where the file was moved when it completed (see [`files::MoveCompleted`]); `null`
+ * while it is in the save directory.
+ */
+movedTo: string | null, 
+/**
+ * Why moving it failed, the last time it was tried.
+ */
+moveError: string | null, };

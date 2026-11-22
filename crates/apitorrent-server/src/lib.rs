@@ -252,6 +252,12 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         )
         .route("/torrents/{id}/limits", put(routes::set_limits))
         .route("/torrents/{id}/seed-limits", put(routes::set_seed_limits))
+        .route("/torrents/{id}/file-order", put(routes::set_file_order))
+        .route("/torrents/{id}/sequential", put(routes::set_sequential))
+        .route(
+            "/torrents/{id}/move-completed",
+            put(routes::set_move_completed),
+        )
         .route("/torrents/{id}/label", put(routes::set_label))
         .route("/torrents/{id}/trackers", put(routes::set_trackers))
         .route("/torrents/{id}/queue", post(routes::queue_move))

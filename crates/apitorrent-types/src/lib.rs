@@ -12,6 +12,7 @@ use ts_rs::TS;
 
 pub mod auth;
 pub mod automation;
+pub mod files;
 pub mod library;
 pub mod plugins;
 pub mod share;
@@ -118,6 +119,16 @@ pub struct TorrentFile {
     /// instead of peers. Daemons from before this don't send it.
     #[serde(default)]
     pub reused: Option<FileReuse>,
+    /// Downloaded front to back, to be read while it downloads.
+    #[serde(default)]
+    pub sequential: bool,
+    /// Where the file was moved when it completed (see [`files::MoveCompleted`]); `null`
+    /// while it is in the save directory.
+    #[serde(default)]
+    pub moved_to: Option<String>,
+    /// Why moving it failed, the last time it was tried.
+    #[serde(default)]
+    pub move_error: Option<String>,
 }
 
 /// How much of a file the content library supplied, and from where.
@@ -228,6 +239,19 @@ pub struct TorrentDetail {
     #[ts(type = "number")]
     #[serde(default)]
     pub library_bytes: u64,
+    /// The torrent's own file order (`null`: its group's or the instance's).
+    #[serde(default)]
+    pub file_order: Option<files::FileOrder>,
+    /// The file order that applies, wherever it comes from.
+    #[serde(default)]
+    pub effective_file_order: files::FileOrder,
+    /// The torrent's own move-when-complete setting (`null`: its group's or the
+    /// instance's).
+    #[serde(default)]
+    pub move_completed: Option<files::MoveCompleted>,
+    /// The setting that applies, wherever it comes from.
+    #[serde(default)]
+    pub effective_move_completed: files::MoveCompleted,
 }
 
 /// A connected peer.
@@ -390,6 +414,13 @@ pub struct Settings {
     /// Which client apitorrent presents itself as, per tracker.
     #[serde(default)]
     pub identity: IdentitySettings,
+    /// The order torrents' files download in, unless their group or the torrent itself
+    /// says otherwise.
+    #[serde(default)]
+    pub file_order: files::FileOrder,
+    /// Moving completed files, unless their group or the torrent itself says otherwise.
+    #[serde(default)]
+    pub move_completed: files::MoveCompleted,
 }
 
 /// Which client apitorrent presents itself as: its peer id, the `User-Agent` of HTTP
@@ -602,6 +633,14 @@ pub struct GroupSettings {
     /// instance.
     #[serde(default)]
     pub seed_limits: Option<SeedLimits>,
+    /// The file order for the group's torrents, in place of the instance's. `null` follows
+    /// the instance.
+    #[serde(default)]
+    pub file_order: Option<files::FileOrder>,
+    /// Moving the group's completed files, in place of the instance's setting. `null`
+    /// follows the instance.
+    #[serde(default)]
+    pub move_completed: Option<files::MoveCompleted>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
