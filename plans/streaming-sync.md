@@ -55,6 +55,6 @@ once after one big message. Thousands of torrents must stay smooth.
 - [x] Docs (`docs/architecture.md` State sync).
 - [x] Desktop app rebuilt (2026-11-20).
 - [x] On pokol: `93993c4` (deployed 2026-11-21 by the file-order thread) includes `8ea3388`.
-- [ ] pokol lacks origin's bulk edit: local `master` and `origin/master` diverged; merging
-  file order with bulk edit/move storage conflicts in `apitorrent-core/src/lib.rs` (per-file
-  moves vs. move storage). Waiting on the user.
+- [x] Local `master` and `origin/master` merged (`6c87afc`, pushed as `e74ef58`) and
+  deployed to pokol 2026-11-22 2:18 PM PST (22:18Z) by the sync thread; see
+  `plans/file-order-and-move.md`.

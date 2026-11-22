@@ -139,6 +139,13 @@ arbitrary rules.
   `target/desktop-app/run/apitorrent-desktop.exe` (9:00 PM PST); the old one is
   `.bak-20261121-2059`. Restarted on the user's word at 9:23 PM PST (05:23Z): window up,
   responding, no load errors.
+- [x] Merged with origin's bulk edit, recheck and move storage (`6c87afc`); master pushed
+  as `e74ef58`. Deployed to pokol 2026-11-22 2:18 PM PST (22:18Z), asked for by the user
+  ("pokol updated to latest"). Built on sentinel from the clean merge worktree
+  (`rust:1-bookworm`, `embedded-ui,first-party-plugins`, sha256 `f48da9e4…`), installed
+  with `install.sh --binary`. Databases and the old binary backed up first to
+  `/var/lib/apitorrent/backup-2026-11-22/`; 672 torrents restored, the site answers 200 and
+  serves both feature sets.
 - [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
