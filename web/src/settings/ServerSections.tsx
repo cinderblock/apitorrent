@@ -6,6 +6,8 @@ import { useEffect, useState } from "react";
 import type { FileOrder } from "../api/generated/FileOrder";
 import type { GroupSettings } from "../api/generated/GroupSettings";
 import type { MoveCompleted } from "../api/generated/MoveCompleted";
+import type { ProxySettings } from "../api/generated/ProxySettings";
+import type { ProxyType } from "../api/generated/ProxyType";
 import type { SeedLimitAction } from "../api/generated/SeedLimitAction";
 import type { SeedLimits } from "../api/generated/SeedLimits";
 import type { Settings } from "../api/generated/Settings";
@@ -377,7 +379,108 @@ export function NetworkSection({ draft, update }: DraftProps) {
       >
         <ChoiceCards label="Encryption" columns={2} value={draft.encryption} options={ENCRYPTION} onChange={(encryption) => update({ encryption })} />
       </SettingCard>
+
+      <ProxyCard value={draft.proxy} onChange={(proxy) => update({ proxy })} />
     </>
+  );
+}
+
+const PROXY_TYPES: readonly Choice<ProxyType>[] = [
+  { value: "none", label: "No proxy", description: "Every connection goes straight to the peer or tracker." },
+  { value: "socks5", label: "SOCKS5", description: "With or without a username and password. Carries UDP trackers too." },
+  { value: "http", label: "HTTP", description: "A proxy that allows CONNECT, with or without a username and password. No UDP trackers." },
+  { value: "socks4", label: "SOCKS4", description: "IPv4 peers only, and no UDP trackers. A username is sent as the user ID; there is no password." },
+];
+
+function ProxyCard({ value: p, onChange }: { value: ProxySettings; onChange: (v: ProxySettings) => void }) {
+  const set = (patch: Partial<ProxySettings>) => onChange({ ...p, ...patch });
+  const on = p.type !== "none";
+  return (
+    <SettingCard
+      title="Proxy"
+      description="Send peer, web seed and tracker connections through a SOCKS or HTTP proxy. A change applies to new connections at once."
+    >
+      <ChoiceCards label="Proxy type" columns={2} value={p.type} options={PROXY_TYPES} onChange={(type) => set({ type })} />
+      {on && (
+        <>
+          <SettingRow label="Host" description="The proxy's name or address" htmlFor="s-proxy-host">
+            <input id="s-proxy-host" className="s-text" value={p.host} placeholder="proxy.example.com" spellCheck={false} autoComplete="off" onChange={(e) => set({ host: e.target.value })} />
+          </SettingRow>
+          <SettingRow label="Port" htmlFor="s-proxy-port">
+            <AmountInput id="s-proxy-port" value={p.port} max={65535} placeholder="1080" onChange={(port) => set({ port })} />
+          </SettingRow>
+          <SettingRow label="Username" description="Empty for a proxy without one" htmlFor="s-proxy-user">
+            <input id="s-proxy-user" className="s-text" value={p.username} spellCheck={false} autoComplete="off" onChange={(e) => set({ username: e.target.value })} />
+          </SettingRow>
+          {p.type !== "socks4" && <ProxyPassword value={p} onChange={set} />}
+          <ToggleRow
+            label="Resolve host names through the proxy"
+            description="Tracker names are looked up by the proxy, so they never reach this server's DNS. HTTP proxies always do this for HTTP trackers."
+            checked={p.proxyHostnames}
+            onChange={(proxyHostnames) => set({ proxyHostnames })}
+          />
+          <ToggleRow
+            label="Peer connections"
+            description={p.force ? "Always, with force proxy." : "Peers and web seeds go through the proxy, over TCP only (uTP can't)."}
+            checked={p.proxyPeers || p.force}
+            disabled={p.force}
+            onChange={(proxyPeers) => set({ proxyPeers })}
+          />
+          <ToggleRow
+            label="Tracker connections"
+            description={p.force ? "Always, with force proxy." : "Announces and scrapes go through the proxy."}
+            checked={p.proxyTrackers || p.force}
+            disabled={p.force}
+            onChange={(proxyTrackers) => set({ proxyTrackers })}
+          />
+          <ToggleRow
+            label="Force proxy"
+            description="Everything that can go through the proxy does, and the rest is off: no incoming connections, DHT, local peer discovery or uTP."
+            checked={p.force}
+            onChange={(force) => set({ force })}
+          />
+          {p.force && (
+            <Note tone="warn">
+              With no incoming connections, peers who can&apos;t accept connections either can&apos;t reach you, so some torrents find fewer peers. Turning force proxy off
+              brings incoming connections, DHT, local peer discovery and uTP back when the daemon next restarts.
+            </Note>
+          )}
+          {p.type !== "socks5" && p.proxyTrackers && <Note>UDP trackers are skipped while trackers go through {p.type === "http" ? "an HTTP" : "a SOCKS4"} proxy.</Note>}
+        </>
+      )}
+    </SettingCard>
+  );
+}
+
+/** The proxy password: write-only. The server says only whether one is stored; leaving the box
+    empty keeps it, and Remove clears it. */
+function ProxyPassword({ value: p, onChange }: { value: ProxySettings; onChange: (patch: Partial<ProxySettings>) => void }) {
+  const removing = p.password === "";
+  const state = removing ? "will be removed" : p.password !== undefined ? "will be replaced" : p.passwordSet ? "saved" : "none";
+  return (
+    <SettingRow label="Password" description={`Stored, never shown (${state})`} htmlFor="s-proxy-pass">
+      <span className="s-inline">
+        <input
+          id="s-proxy-pass"
+          className="s-text"
+          type="password"
+          autoComplete="new-password"
+          value={removing ? "" : (p.password ?? "")}
+          placeholder={p.passwordSet && !removing ? "Leave empty to keep it" : ""}
+          onChange={(e) => onChange({ password: e.target.value === "" ? undefined : e.target.value })}
+        />
+        {p.passwordSet && !removing && (
+          <button type="button" onClick={() => onChange({ password: "" })}>
+            Remove
+          </button>
+        )}
+        {removing && (
+          <button type="button" onClick={() => onChange({ password: undefined })}>
+            Keep
+          </button>
+        )}
+      </span>
+    </SettingRow>
   );
 }
 

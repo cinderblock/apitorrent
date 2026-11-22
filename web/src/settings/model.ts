@@ -77,9 +77,9 @@ export const SECTIONS: readonly Section[] = [
     id: "network",
     title: "Network",
     group: "server",
-    summary: "Ports, peer discovery, connections and encryption",
-    keywords: "peer port dht udp tcp utp lsd local peer discovery upnp nat-pmp natpmp port forwarding router connections half open connecting encryption mse obfuscation",
-    fields: ["peerPort", "dhtPort", "discovery", "maxConnections", "maxHalfOpen", "connectRate", "encryption"],
+    summary: "Ports, peer discovery, connections, encryption and proxy",
+    keywords: "peer port dht udp tcp utp lsd local peer discovery upnp nat-pmp natpmp port forwarding router connections half open connecting encryption mse obfuscation proxy socks socks4 socks5 http vpn anonymous force",
+    fields: ["peerPort", "dhtPort", "discovery", "maxConnections", "maxHalfOpen", "connectRate", "encryption", "proxy"],
     visible: always,
   },
   {
@@ -219,6 +219,10 @@ export function draftProblems(draft: Settings): Problem[] {
   });
   for (const p of moveProblems(draft.moveCompleted)) out.push({ section: "files", message: p });
   for (const p of identityProblems(draft.identity)) out.push({ section: "identity", message: p });
+  if (draft.proxy.type !== "none") {
+    if (draft.proxy.host.trim() === "") out.push({ section: "network", message: "The proxy needs a host." });
+    if (draft.proxy.port === 0) out.push({ section: "network", message: "The proxy needs a port." });
+  }
   return out;
 }
 
@@ -229,6 +233,7 @@ export function forSaving(draft: Settings): Settings {
     groups: draft.groups.map((g) => ({ ...g, name: g.name.trim(), moveCompleted: g.moveCompleted && trimMove(g.moveCompleted) })),
     moveCompleted: trimMove(draft.moveCompleted),
     identity: { ...draft.identity, rules: draft.identity.rules.map((r) => ({ ...r, host: r.host.trim() })) },
+    proxy: { ...draft.proxy, host: draft.proxy.host.trim() },
   };
 }
 

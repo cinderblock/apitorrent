@@ -46,7 +46,20 @@ const BASE: Settings = {
   identity: { default: presetIdentity("apitorrent"), rules: [] },
   fileOrder: { by: "off" },
   moveCompleted: { enabled: false, to: "", when: "eachFile", rules: [] },
+  proxy: {
+    type: "none",
+    host: "",
+    port: 1080,
+    username: "",
+    passwordSet: false,
+    proxyHostnames: true,
+    proxyPeers: true,
+    proxyTrackers: true,
+    force: false,
+  },
 };
+
+const SOCKS5: Settings["proxy"] = { ...BASE.proxy, type: "socks5", host: "proxy.example", username: "me", passwordSet: true };
 
 const group = (name: string, labels: string[]) => ({ name, labels, downloadRate: 0, uploadRate: 0, maxConnections: 0, seedLimits: null, fileOrder: null, moveCompleted: null });
 
@@ -81,6 +94,12 @@ describe("settings page model", () => {
     ]);
     const identity = { default: presetIdentity("apitorrent"), rules: [{ host: "http://x/", identity: presetIdentity("deluge") }] };
     expect(draftProblems({ ...BASE, identity })[0]?.section).toBe("identity");
+    // A proxy needs a host and a port; while off, anything goes.
+    expect(draftProblems({ ...BASE, proxy: { ...BASE.proxy, port: 0 } })).toEqual([]);
+    expect(draftProblems({ ...BASE, proxy: { ...SOCKS5, host: " ", port: 0 } })).toEqual([
+      { section: "network", message: "The proxy needs a host." },
+      { section: "network", message: "The proxy needs a port." },
+    ]);
   });
 
   test("move destinations must be full paths, in the settings and in groups", () => {
@@ -102,6 +121,14 @@ describe("settings page model", () => {
     expect(s.groups[0]?.name).toBe("TV");
     expect(forSaving({ ...BASE, moveCompleted: { ...BASE.moveCompleted, to: " /srv/public " } }).moveCompleted.to).toBe("/srv/public");
     expect(s.identity.rules[0]?.host).toBe("t.example");
+    expect(forSaving({ ...BASE, proxy: { ...SOCKS5, host: " proxy.example " } }).proxy.host).toBe("proxy.example");
+  });
+
+  test("a proxy password typed, kept or removed marks the network section", () => {
+    const saved = { ...BASE, proxy: SOCKS5 };
+    expect(dirtySections(saved, saved)).toEqual([]);
+    expect(dirtySections(saved, { ...saved, proxy: { ...SOCKS5, password: "new" } })).toEqual(["network"]);
+    expect(dirtySections(saved, { ...saved, proxy: { ...SOCKS5, password: "" } })).toEqual(["network"]);
   });
 
   test("who sees which sections", () => {
@@ -122,6 +149,7 @@ describe("settings page model", () => {
     expect(ids("dark")).toEqual(["appearance"]);
     expect(ids("deluge")).toEqual(["identity", "deluge"]);
     expect(ids("deluge import")).toEqual(["deluge"]);
+    expect(ids("socks5")).toEqual(["network"]);
     expect(ids("nothing like this")).toEqual([]);
   });
 
@@ -168,6 +196,29 @@ describe("settings sections render", () => {
     expect(html).toContain('role="radiogroup"');
     expect(html).toMatch(/class="s-choice picked"><input type="radio"[^>]*checked=""[^>]*value="enabled"/);
     expect(html).toContain('value="51413"');
+    // No proxy: only the choice of type.
+    expect(html).toContain("Proxy type");
+    expect(html).not.toContain("s-proxy-host");
+  });
+
+  test("network: a proxy's fields, the password never shown, force implying peers and trackers", () => {
+    const html = renderToStaticMarkup(<NetworkSection {...props} draft={{ ...BASE, proxy: SOCKS5 }} />);
+    expect(html).toContain('value="proxy.example"');
+    expect(html).toContain('type="password"');
+    expect(html).toContain("Leave empty to keep it");
+    expect(html).toContain("(saved)");
+    expect(html).toContain(">Remove</button>");
+    expect(html).not.toContain("UDP trackers are skipped");
+    const removing = renderToStaticMarkup(<NetworkSection {...props} draft={{ ...BASE, proxy: { ...SOCKS5, password: "" } }} />);
+    expect(removing).toContain("(will be removed)");
+    expect(removing).toContain(">Keep</button>");
+    const forced = renderToStaticMarkup(<NetworkSection {...props} draft={{ ...BASE, proxy: { ...SOCKS5, proxyPeers: false, force: true } }} />);
+    expect(forced.match(/Always, with force proxy\./g)).toHaveLength(2);
+    expect(forced).toContain("no incoming connections");
+    // SOCKS4 has no password, and neither it nor HTTP carries UDP trackers.
+    const socks4 = renderToStaticMarkup(<NetworkSection {...props} draft={{ ...BASE, proxy: { ...SOCKS5, type: "socks4" } }} />);
+    expect(socks4).not.toContain('type="password"');
+    expect(socks4).toContain("UDP trackers are skipped while trackers go through a SOCKS4 proxy.");
   });
 
   test("groups: an empty state, then collapsed cards with their labels", () => {
