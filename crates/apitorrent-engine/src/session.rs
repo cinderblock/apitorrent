@@ -141,6 +141,8 @@ pub(crate) struct Shared {
     public: Mutex<HashSet<Sha1Hash>>,
     /// Every piece a torrent verifies (see [`Session::piece_events`]).
     pub(crate) pieces: tokio::sync::broadcast::Sender<crate::torrent::PieceEvent>,
+    /// Every file a torrent completes (see [`Session::file_events`]).
+    pub(crate) files: tokio::sync::broadcast::Sender<crate::torrent::FileEvent>,
 }
 
 /// The session's memory budget for piece data. Torrents reserve and release whole pieces;
@@ -328,6 +330,7 @@ impl Session {
             torrents: Mutex::new(HashMap::new()),
             skeys: Mutex::new(apitorrent_mse::SkeyTable::new()),
             pieces: tokio::sync::broadcast::channel(PIECE_EVENTS).0,
+            files: tokio::sync::broadcast::channel(PIECE_EVENTS).0,
         });
         tokio::spawn(accept_loop(listener, shared.clone()));
         let utp_addr = utp.as_ref().map(apitorrent_utp::UtpSocket::local_addr);
@@ -358,6 +361,14 @@ impl Session {
     /// torrents' bitfields instead.
     pub fn piece_events(&self) -> tokio::sync::broadcast::Receiver<crate::torrent::PieceEvent> {
         self.shared.pieces.subscribe()
+    }
+
+    /// Every file any torrent completes from now on: each piece holding its bytes is
+    /// verified and written, and flushed to disk. Files complete when added aren't
+    /// reported. A receiver that falls behind gets `Lagged` and should look at the
+    /// torrents' bitfields instead.
+    pub fn file_events(&self) -> tokio::sync::broadcast::Receiver<crate::torrent::FileEvent> {
+        self.shared.files.subscribe()
     }
 
     /// The uTP socket's address, when uTP is on.

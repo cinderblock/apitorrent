@@ -204,6 +204,14 @@ pub struct PieceEvent {
     pub origin: PieceOrigin,
 }
 
+/// A file whose every piece is now verified and written, from
+/// [`crate::Session::file_events`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileEvent {
+    pub torrent: InfoHashes,
+    pub file: usize,
+}
+
 /// Where a verified piece's bytes came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PieceOrigin {
@@ -302,6 +310,15 @@ pub struct AddTorrent {
     /// Files whose bytes on disk came from the content library (see
     /// [`TorrentHandle::set_reused`]).
     pub reused: Vec<usize>,
+    /// Files relocated earlier by [`TorrentHandle::relocate_file`] (resume data): one
+    /// entry per file, `Some` where the file lives at that path instead of under the save
+    /// path.
+    pub file_locations: Option<Vec<Option<PathBuf>>>,
+    /// The file order (see [`TorrentHandle::set_file_order`]).
+    pub file_order: Option<Vec<usize>>,
+    /// Files read while they download, each with the byte its reader needs next (see
+    /// [`TorrentHandle::set_stream`]).
+    pub streams: Vec<(usize, u64)>,
 }
 
 impl AddTorrent {
@@ -326,6 +343,9 @@ impl AddTorrent {
             file_paths: None,
             linked: Vec::new(),
             reused: Vec::new(),
+            file_locations: None,
+            file_order: None,
+            streams: Vec::new(),
         }
     }
 
@@ -351,6 +371,8 @@ pub(crate) enum Command {
     Peers(oneshot::Sender<Vec<PeerInfo>>),
     /// One priority per file (0 = skip, up to [`crate::picker::MAX_PRIORITY`]).
     FilePriorities(Vec<u8>),
+    FileOrder(Option<Vec<usize>>),
+    Stream(usize, Option<u64>),
     SetUnwantedPolicy(UnwantedPolicy),
     SetLimits(EntryKey, TorrentLimits),
     SetGroup(EntryKey, Option<String>),
@@ -531,6 +553,38 @@ impl TorrentHandle {
             .tx
             .send(ActorMsg::Command(Command::FilePriorities(priorities)))
             .await;
+    }
+
+    /// Prefer downloading files in this order (first first): among pieces of the same
+    /// priority, the first unfinished file's go first. A preference, not a rule: peers
+    /// without those pieces still supply later files. `None` turns it off.
+    pub async fn set_file_order(&self, order: Option<Vec<usize>>) {
+        self.command(Command::FileOrder(order)).await;
+    }
+
+    /// Read file `file` while it downloads, needing byte `from` next: its pieces come in
+    /// read order (its start and end first, for a player's header and index), and the
+    /// piece the reader waits for is finished first. Call again with a new `from` when
+    /// the reader seeks. `None` stops.
+    pub async fn set_stream(&self, file: usize, from: Option<u64>) {
+        self.command(Command::Stream(file, from)).await;
+    }
+
+    /// Move file `file` out of the save directory to `to` and keep seeding it from there
+    /// (see `Storage::relocate`). The file must be in the save directory, and nothing
+    /// may exist at `to`.
+    pub async fn relocate_file(&self, file: usize, to: PathBuf) -> std::io::Result<()> {
+        let storage = self.storage.clone();
+        tokio::task::spawn_blocking(move || storage.relocate(file, &to))
+            .await
+            .map_err(std::io::Error::other)?
+    }
+
+    /// Where each file is now: `None` for files kept only in the part store.
+    pub fn file_paths(&self) -> Vec<Option<PathBuf>> {
+        (0..self.storage.placements().len())
+            .map(|f| self.storage.file_path(f))
+            .collect()
     }
 
     /// Where each file's bytes are (for resume data). Waits for a move in progress.
@@ -876,6 +930,8 @@ pub(crate) struct TorrentActor {
     ticks: u32,
     max_message: u32,
     file_priorities: Option<Vec<u8>>,
+    file_order: Option<Vec<usize>>,
+    streams: Vec<(usize, u64)>,
     unwanted: UnwantedPolicy,
     /// Files whose placement change is in flight.
     moving: HashSet<usize>,
@@ -951,6 +1007,9 @@ impl TorrentActor {
         });
         let file_storage = FileStorage::new(&paths, layout.clone(), &relative, Some(&placements));
         file_storage.set_linked(&params.linked);
+        if let Some(locations) = &params.file_locations {
+            file_storage.set_locations(locations);
+        }
         let storage: Arc<dyn Storage> = Arc::new(file_storage);
         let hashes = Arc::new(PieceHashes::new(&torrent));
         let (tx, rx) = mpsc::channel(1024);
@@ -1030,6 +1089,8 @@ impl TorrentActor {
             ticks: 0,
             max_message,
             file_priorities: params.file_priorities,
+            file_order: params.file_order,
+            streams: params.streams,
             unwanted: params.unwanted,
             moving: HashSet::new(),
             memory_held: 0,
@@ -1102,6 +1163,10 @@ impl TorrentActor {
         self.plan_layer_fetches();
         if let Some(prios) = self.effective_priorities() {
             picker.set_priorities(&prios);
+        }
+        picker.set_file_order(self.file_order.clone());
+        for &(file, from) in &self.streams {
+            picker.set_stream(file, Some(from));
         }
         self.picker = Some(picker);
         self.apply_holds();
@@ -1700,6 +1765,25 @@ impl TorrentActor {
                     let _ = reply.send(have);
                 }
                 Command::FilePriorities(prios) => self.set_file_priorities(&prios),
+                Command::FileOrder(order) => {
+                    self.file_order = order;
+                    if let Some(picker) = self.picker.as_mut() {
+                        picker.set_file_order(self.file_order.clone());
+                    }
+                    self.fill_all();
+                }
+                Command::Stream(file, from) => {
+                    if file < self.layout.files().len() {
+                        self.streams.retain(|s| s.0 != file);
+                        if let Some(from) = from {
+                            self.streams.push((file, from));
+                        }
+                        if let Some(picker) = self.picker.as_mut() {
+                            picker.set_stream(file, from);
+                        }
+                        self.fill_all();
+                    }
+                }
                 Command::SetUnwantedPolicy(policy) => self.unwanted = policy,
                 Command::SetLimits(key, limits) => {
                     if let Some(e) = self.entry_mut(key) {
@@ -2900,6 +2984,22 @@ impl TorrentActor {
             piece,
             origin,
         });
+        let completed = self
+            .picker
+            .as_mut()
+            .map(Picker::take_completed_files)
+            .unwrap_or_default();
+        if !completed.is_empty() {
+            // Written, but maybe only to the OS's cache: make the files whole on disk before
+            // anyone moves them.
+            let _ = self.storage.sync();
+        }
+        for file in completed {
+            let _ = self.shared.files.send(FileEvent {
+                torrent: self.info_hashes,
+                file,
+            });
+        }
         if !self.finished && self.picker.as_ref().is_some_and(Picker::is_finished) {
             self.finished = true;
             let _ = self.storage.sync();

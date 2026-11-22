@@ -8,6 +8,10 @@
 //! never do: the bytes of theirs that arrive inside boundary pieces go to the torrent's
 //! [part store](crate::parts), and a file the user deselects after it has data moves to
 //! the torrent's held area, or is deleted.
+//!
+//! A file in the save directory can also be relocated to a path of its own (outside the
+//! save directory, say, once it is complete). The torrent keeps reading and writing it
+//! there.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -58,6 +62,20 @@ pub trait Storage: Send + Sync + std::fmt::Debug {
     /// has and still needs. Moving out of the part store writes the file's bytes from
     /// there back into a file.
     fn set_placement(&self, file: usize, to: Placement, keep: &[u32]) -> io::Result<()>;
+
+    /// Move file `file`, which must be in the save directory, to `to`, and keep using it
+    /// there. A rename where possible; across volumes a copy, flushed, then the original
+    /// deleted. Reads and writes of the file wait while it moves.
+    fn relocate(&self, file: usize, to: &Path) -> io::Result<()> {
+        let _ = (file, to);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Where file `file` is now: `None` for the part store (or storage without paths).
+    fn file_path(&self, file: usize) -> Option<PathBuf> {
+        let _ = file;
+        None
+    }
 
     /// Flush written data to stable storage.
     fn sync(&self) -> io::Result<()>;
@@ -135,10 +153,19 @@ pub struct StoragePaths {
     pub parts: PathBuf,
 }
 
+/// Where one file is.
+#[derive(Debug, Clone)]
+struct Spot {
+    placement: Placement,
+    /// Its path at [`Placement::Save`]: under the save directory, unless it was
+    /// relocated.
+    save: PathBuf,
+}
+
 #[derive(Debug)]
 struct FileSlot {
     /// Held for reading during every I/O on the file, and for writing while it moves.
-    placement: RwLock<Placement>,
+    placement: RwLock<Spot>,
     handle: Mutex<Option<Arc<File>>>,
     /// The file is a hard link to another torrent's copy (the content library). Writes
     /// that would change it break the link first, so the other torrent's file is never
@@ -155,7 +182,6 @@ pub struct FileStorage {
     layout: Layout,
     save_root: PathBuf,
     held_root: PathBuf,
-    save_paths: Vec<PathBuf>,
     held_paths: Vec<PathBuf>,
     files: Vec<FileSlot>,
     parts: PartFile,
@@ -180,15 +206,15 @@ impl FileStorage {
             }
             long_path(&p)
         };
-        let save_paths: Vec<PathBuf> = relative.iter().map(|c| join(&paths.save, c)).collect();
         let held_paths: Vec<PathBuf> = relative.iter().map(|c| join(&paths.held, c)).collect();
         let files = (0..relative.len())
             .map(|i| FileSlot {
-                placement: RwLock::new(
-                    placements
+                placement: RwLock::new(Spot {
+                    placement: placements
                         .and_then(|p| p.get(i).copied())
                         .unwrap_or_default(),
-                ),
+                    save: join(&paths.save, &relative[i]),
+                }),
                 handle: Mutex::new(None),
                 linked: AtomicBool::new(false),
                 unshare: Mutex::new(()),
@@ -199,7 +225,6 @@ impl FileStorage {
             layout,
             save_root: long_path(&paths.save),
             held_root: long_path(&paths.held),
-            save_paths,
             held_paths,
             files,
             parts,
@@ -207,10 +232,29 @@ impl FileStorage {
         }
     }
 
-    /// Where file `file` is at `placement` (`None` for the part store).
-    fn path_at(&self, file: usize, placement: Placement) -> Option<&Path> {
+    /// Files relocated earlier (resume data): each `Some` is the file's path in place of
+    /// its path under the save directory.
+    pub fn set_locations(&self, locations: &[Option<PathBuf>]) {
+        for (slot, loc) in self.files.iter().zip(locations) {
+            if let Some(loc) = loc {
+                slot.placement
+                    .write()
+                    .expect("placement lock poisoned")
+                    .save = long_path(loc);
+            }
+        }
+    }
+
+    /// Where file `file` is at `placement`, with `spot` its current spot (`None` for the
+    /// part store).
+    fn path_at<'a>(
+        &'a self,
+        file: usize,
+        spot: &'a Spot,
+        placement: Placement,
+    ) -> Option<&'a Path> {
         match placement {
-            Placement::Save => Some(&self.save_paths[file]),
+            Placement::Save => Some(&spot.save),
             Placement::Held => Some(&self.held_paths[file]),
             Placement::Parts => None,
         }
@@ -267,9 +311,14 @@ impl FileStorage {
         write_all_at(&f, src, at)
     }
 
-    /// The path file `file` has in the save directory.
-    pub fn path(&self, file: usize) -> &Path {
-        &self.save_paths[file]
+    /// The path file `file` has in the save directory (or where it was relocated).
+    pub fn path(&self, file: usize) -> PathBuf {
+        self.files[file]
+            .placement
+            .read()
+            .expect("placement lock poisoned")
+            .save
+            .clone()
     }
 
     fn handle(&self, file: usize, path: &Path, create: bool) -> io::Result<Option<Arc<File>>> {
@@ -358,11 +407,11 @@ impl Storage for FileStorage {
                 dst.fill(0);
                 continue;
             }
-            let placement = self.files[file]
+            let spot = self.files[file]
                 .placement
                 .read()
                 .expect("placement lock poisoned");
-            match self.path_at(file, *placement) {
+            match self.path_at(file, &spot, spot.placement) {
                 Some(path) => match self.handle(file, path, false)? {
                     Some(f) => read_exact_at(&f, dst, file_offset)?,
                     None => {
@@ -386,11 +435,11 @@ impl Storage for FileStorage {
                 continue;
             }
             let src = &data[seg.buf_offset..seg.buf_offset + seg.len];
-            let placement = self.files[seg.file]
+            let spot = self.files[seg.file]
                 .placement
                 .read()
                 .expect("placement lock poisoned");
-            match self.path_at(seg.file, *placement) {
+            match self.path_at(seg.file, &spot, spot.placement) {
                 Some(path) if self.files[seg.file].linked.load(Ordering::Acquire) => {
                     self.write_linked(seg.file, path, src, seg.file_offset)?;
                 }
@@ -411,11 +460,11 @@ impl Storage for FileStorage {
     fn file_sizes(&self) -> Vec<Option<u64>> {
         (0..self.files.len())
             .map(|i| {
-                let placement = *self.files[i]
+                let spot = self.files[i]
                     .placement
                     .read()
                     .expect("placement lock poisoned");
-                self.path_at(i, placement)
+                self.path_at(i, &spot, spot.placement)
                     .and_then(|p| std::fs::metadata(p).ok())
                     .map(|m| m.len())
             })
@@ -425,7 +474,12 @@ impl Storage for FileStorage {
     fn placements(&self) -> Vec<Placement> {
         self.files
             .iter()
-            .map(|f| *f.placement.read().expect("placement lock poisoned"))
+            .map(|f| {
+                f.placement
+                    .read()
+                    .expect("placement lock poisoned")
+                    .placement
+            })
             .collect()
     }
 
@@ -435,17 +489,20 @@ impl Storage for FileStorage {
 
     fn set_placement(&self, file: usize, to: Placement, keep: &[u32]) -> io::Result<()> {
         let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
-        let mut placement = self.files[file]
+        let mut spot = self.files[file]
             .placement
             .write()
             .expect("placement lock poisoned");
-        let from = *placement;
+        let from = spot.placement;
         if from == to || self.layout.files()[file].pad {
-            *placement = to;
+            spot.placement = to;
             return Ok(());
         }
         self.close(file);
-        match (self.path_at(file, from), self.path_at(file, to)) {
+        match (
+            self.path_at(file, &spot, from),
+            self.path_at(file, &spot, to),
+        ) {
             // Save <-> held: a move.
             (Some(src), Some(dst)) => {
                 move_file(src, dst)?;
@@ -485,8 +542,8 @@ impl Storage for FileStorage {
                     }
                     f.sync_data()?;
                 }
-                *placement = to;
-                drop(placement);
+                spot.placement = to;
+                drop(spot);
                 // Drop slots no other part-store file still needs.
                 for (piece, _) in pieces {
                     let needed = self
@@ -499,10 +556,11 @@ impl Storage for FileStorage {
                         .any(|s| {
                             s.file != file
                                 && !s.pad
-                                && *self.files[s.file]
+                                && self.files[s.file]
                                     .placement
                                     .read()
                                     .expect("placement lock poisoned")
+                                    .placement
                                     == Placement::Parts
                         });
                     if !needed {
@@ -513,8 +571,58 @@ impl Storage for FileStorage {
             }
             (None, None) => {}
         }
-        *placement = to;
+        spot.placement = to;
         Ok(())
+    }
+
+    fn relocate(&self, file: usize, to: &Path) -> io::Result<()> {
+        let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
+        let slot = self
+            .files
+            .get(file)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such file"))?;
+        let mut spot = slot.placement.write().expect("placement lock poisoned");
+        if spot.placement != Placement::Save || self.layout.files()[file].pad {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "only a file in the save directory can be relocated",
+            ));
+        }
+        let to = long_path(to);
+        if to == spot.save {
+            return Ok(());
+        }
+        if to.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} already exists", to.display()),
+            ));
+        }
+        let _one_writer = slot.unshare.lock().expect("unshare lock poisoned");
+        self.close(file);
+        let from = spot.save.clone();
+        if from.exists() {
+            if move_file(&from, &to)? == Moved::Copied {
+                // The copy is this torrent's own; any link to another torrent's file is gone.
+                slot.linked.store(false, Ordering::Release);
+            }
+            prune_empty_dirs(&from, &self.save_root);
+        } else if self.layout.files()[file].length == 0 {
+            open_or_create(&to)?;
+        }
+        spot.save = to;
+        Ok(())
+    }
+
+    fn file_path(&self, file: usize) -> Option<PathBuf> {
+        let spot = self
+            .files
+            .get(file)?
+            .placement
+            .read()
+            .expect("placement lock poisoned");
+        self.path_at(file, &spot, spot.placement)
+            .map(Path::to_path_buf)
     }
 
     fn create_empty_files(&self) -> io::Result<()> {
@@ -522,12 +630,12 @@ impl Storage for FileStorage {
             if f.length != 0 || f.pad {
                 continue;
             }
-            let placement = *self.files[i]
+            let spot = self.files[i]
                 .placement
                 .read()
                 .expect("placement lock poisoned");
-            if let Some(path) = self.path_at(i, placement)
-                && placement == Placement::Save
+            if let Some(path) = self.path_at(i, &spot, spot.placement)
+                && spot.placement == Placement::Save
                 && !path.exists()
             {
                 self.handle(i, path, true)?;
@@ -569,8 +677,8 @@ impl Storage for FileStorage {
         // Every read and write of the file holds the placement lock for reading, so holding
         // it for writing keeps them all out; the unshare lock keeps out a write that is
         // breaking a link.
-        let placement = slot.placement.write().expect("placement lock poisoned");
-        if *placement != Placement::Save {
+        let spot = slot.placement.write().expect("placement lock poisoned");
+        if spot.placement != Placement::Save {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "the file isn't in the save directory",
@@ -578,7 +686,7 @@ impl Storage for FileStorage {
         }
         let _one_writer = slot.unshare.lock().expect("unshare lock poisoned");
         self.close(file);
-        let result = swap(&self.save_paths[file]);
+        let result = swap(&spot.save);
         self.close(file);
         if result.is_ok() {
             slot.linked.store(true, Ordering::Release);
@@ -587,11 +695,11 @@ impl Storage for FileStorage {
     }
 
     fn adopt(&self, file: usize, from: &Path, how: AdoptMode) -> io::Result<Adopted> {
-        let placement = self.files[file]
+        let spot = self.files[file]
             .placement
             .write()
             .expect("placement lock poisoned");
-        if *placement != Placement::Save || self.layout.files()[file].pad {
+        if spot.placement != Placement::Save || self.layout.files()[file].pad {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "only a file in the save directory can be adopted",
@@ -601,7 +709,7 @@ impl Storage for FileStorage {
             .unshare
             .lock()
             .expect("unshare lock poisoned");
-        let path = &self.save_paths[file];
+        let path = &spot.save;
         self.close(file);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -633,7 +741,7 @@ impl Storage for FileStorage {
         self.files[file]
             .linked
             .store(done == Adopted::HardLink, Ordering::Release);
-        drop(placement);
+        drop(spot);
         Ok(done)
     }
 
@@ -641,12 +749,12 @@ impl Storage for FileStorage {
         let _one_at_a_time = self.moving.lock().expect("moving lock poisoned");
         let mut first_error = None;
         for i in 0..self.files.len() {
-            let _guard = self.files[i]
+            let spot = self.files[i]
                 .placement
                 .write()
                 .expect("placement lock poisoned");
             self.close(i);
-            let save = save_files.then_some((&self.save_paths[i], &self.save_root));
+            let save = save_files.then_some((&spot.save, &self.save_root));
             let held = Some((&self.held_paths[i], &self.held_root));
             for (path, root) in [save, held].into_iter().flatten() {
                 match std::fs::remove_file(path) {
@@ -719,22 +827,38 @@ pub(crate) fn set_sparse(f: &File) {
 #[cfg(not(windows))]
 pub(crate) fn set_sparse(_: &File) {}
 
+/// How [`move_file`] moved a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Moved {
+    /// There was nothing to move.
+    Nothing,
+    Renamed,
+    /// Copied, then the original deleted (across volumes).
+    Copied,
+}
+
 /// Move a file, falling back to copy and delete across volumes. A missing source is not
-/// an error: there is nothing to move.
-fn move_file(src: &Path, dst: &Path) -> io::Result<()> {
+/// an error: there is nothing to move. A failed copy leaves the source as it was.
+fn move_file(src: &Path, dst: &Path) -> io::Result<Moved> {
     if !src.exists() {
-        return Ok(());
+        return Ok(Moved::Nothing);
     }
     if let Some(dir) = dst.parent() {
         std::fs::create_dir_all(dir)?;
     }
     match std::fs::rename(src, dst) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok(Moved::Renamed),
         Err(rename_error) => {
             // Cross-volume (EXDEV, ERROR_NOT_SAME_DEVICE) or similar: copy, then delete.
-            std::fs::copy(src, dst).map_err(|_| rename_error)?;
-            OpenOptions::new().write(true).open(dst)?.sync_all()?;
-            std::fs::remove_file(src)
+            let copied = std::fs::copy(src, dst)
+                .map_err(|_| rename_error)
+                .and_then(|_| OpenOptions::new().write(true).open(dst)?.sync_all());
+            if let Err(e) = copied {
+                let _ = std::fs::remove_file(dst);
+                return Err(e);
+            }
+            std::fs::remove_file(src)?;
+            Ok(Moved::Copied)
         }
     }
 }

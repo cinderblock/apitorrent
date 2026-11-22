@@ -28,6 +28,6 @@ pub use announce::TrackerStatus;
 pub use session::{AddError, Session, SessionConfig};
 pub use storage::{AdoptMode, Adopted};
 pub use torrent::{
-    AddTorrent, AdoptRefused, Adoption, EntryKey, EntryParams, EntryStats, Offered, PeerInfo,
-    PieceEvent, PieceOrigin, TorrentHandle, TorrentState, TorrentStats, UnwantedPolicy,
+    AddTorrent, AdoptRefused, Adoption, EntryKey, EntryParams, EntryStats, FileEvent, Offered,
+    PeerInfo, PieceEvent, PieceOrigin, TorrentHandle, TorrentState, TorrentStats, UnwantedPolicy,
 };

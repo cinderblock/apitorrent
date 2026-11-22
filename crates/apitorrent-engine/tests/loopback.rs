@@ -1547,3 +1547,113 @@ async fn encryption_can_change_while_running() {
     assert!(leech.shutdown().await.unwrap().is_full());
     seed.shutdown().await;
 }
+
+/// With a file order, files complete in that order; a completed file can be moved out of
+/// the save directory while the rest still downloads, and is seeded from its new place.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn files_complete_in_order_and_move_while_seeding() {
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    let leech_dir = tempfile::tempdir().unwrap();
+    let public = tempfile::tempdir().unwrap();
+    let (seeder, seed) = seed_fixture(&fx, seed_dir.path()).await;
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+
+    let leecher = Session::start(local_config()).await.unwrap();
+    let mut events = leecher.file_events();
+    let leech = leecher
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![seeder.listen_addr()],
+            // tail.bin, then small.txt, then big.bin.
+            file_order: Some(vec![3, 1, 0]),
+            ..AddTorrent::new(fx.torrent.clone(), leech_dir.path().to_path_buf())
+        })
+        .unwrap();
+    let moved_to = public.path().join("tail.bin");
+    let mut completed = Vec::new();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while completed.len() < 3 {
+            let e = events.recv().await.expect("file events");
+            assert_eq!(e.torrent, leech.info_hashes());
+            if e.file == 3 {
+                leech.relocate_file(3, moved_to.clone()).await.unwrap();
+            }
+            completed.push(e.file);
+        }
+    })
+    .await
+    .expect("files did not complete");
+    // On loopback every piece is requested almost at once, so the two small files may
+    // finish either way round (exact order is the picker tests' job); big.bin, last in the
+    // order, finishes last.
+    assert_eq!(completed.last(), Some(&0), "{completed:?}");
+    completed.sort_unstable();
+    assert_eq!(completed, [0, 1, 3]);
+    leech.wait_finished().await;
+    let root = leech_dir.path().join("pack");
+    assert!(!root.join("tail.bin").exists());
+    assert_eq!(std::fs::read(&moved_to).unwrap(), fx.files[3].1);
+    assert_eq!(
+        leech.file_paths()[3]
+            .as_deref()
+            .map(std::fs::canonicalize)
+            .transpose()
+            .unwrap(),
+        Some(std::fs::canonicalize(&moved_to).unwrap())
+    );
+    seed.shutdown().await;
+    drop(seeder);
+
+    // A second leecher gets everything, tail.bin included, from the first.
+    let second_dir = tempfile::tempdir().unwrap();
+    let second = Session::start(local_config()).await.unwrap();
+    let other = second
+        .add_torrent(AddTorrent {
+            have: Some(Bitfield::new(pieces)),
+            peers: vec![leecher.listen_addr()],
+            ..AddTorrent::new(fx.torrent.clone(), second_dir.path().to_path_buf())
+        })
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), other.wait_finished())
+        .await
+        .expect("second download timed out");
+    other.shutdown().await;
+    assert_files(second_dir.path(), &fx);
+    leech.shutdown().await;
+}
+
+/// A relocated file is found where it was moved when the torrent is added again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relocated_files_are_found_again() {
+    let fx = fixture(Version::V1);
+    let dir = tempfile::tempdir().unwrap();
+    let public = tempfile::tempdir().unwrap();
+    let (session, seed) = seed_fixture(&fx, dir.path()).await;
+    let moved_to = public.path().join("sub").join("big.bin");
+    seed.relocate_file(0, moved_to.clone()).await.unwrap();
+    assert!(
+        seed.relocate_file(0, dir.path().join("pack").join("tail.bin"))
+            .await
+            .is_err(),
+        "never over an existing file"
+    );
+    seed.shutdown().await;
+    drop(session);
+
+    let mut locations = vec![None; fx.torrent.info.files.len()];
+    locations[0] = Some(moved_to);
+    let session = Session::start(local_config()).await.unwrap();
+    let again = session
+        .add_torrent(AddTorrent {
+            have: None,
+            file_locations: Some(locations),
+            ..AddTorrent::new(fx.torrent.clone(), dir.path().to_path_buf())
+        })
+        .unwrap();
+    let stats = tokio::time::timeout(Duration::from_secs(30), again.wait_finished())
+        .await
+        .expect("check timed out");
+    assert_eq!(stats.pieces_have, stats.pieces_total, "every piece found");
+    again.shutdown().await;
+}
