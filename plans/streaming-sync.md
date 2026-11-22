@@ -53,4 +53,8 @@ once after one big message. Thousands of torrents must stay smooth.
 - [x] Web: `applySync` parts and progress; `SyncClient` linger and `connecting` on restart;
   list says "Loading 1,200 of 9,800 torrents…", the status chip "Loading 12%".
 - [x] Docs (`docs/architecture.md` State sync).
-- [ ] Rebuild the desktop app; deploy to pokol needs the user's yes.
+- [x] Desktop app rebuilt (2026-11-20).
+- [x] On pokol: `93993c4` (deployed 2026-11-21 by the file-order thread) includes `8ea3388`.
+- [ ] pokol lacks origin's bulk edit: local `master` and `origin/master` diverged; merging
+  file order with bulk edit/move storage conflicts in `apitorrent-core/src/lib.rs` (per-file
+  moves vs. move storage). Waiting on the user.
