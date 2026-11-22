@@ -127,7 +127,8 @@ arbitrary rules.
   `https://apitorrent.isozilla.com/` answers 200.
 - [x] Desktop app rebuilt (`24db1b5`, `tauri/custom-protocol`) and copied to
   `target/desktop-app/run/apitorrent-desktop.exe` (9:00 PM PST); the old one is
-  `.bak-20261121-2059`. The running copy needs a restart.
+  `.bak-20261121-2059`. Restarted on the user's word at 9:23 PM PST (05:23Z): window up,
+  responding, no load errors.
 - [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
