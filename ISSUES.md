@@ -18,6 +18,14 @@ Found 2026-11-20. The browser's own tooltips are slow, look out of place and nev
 touch screens. Still there: `web/src/components/DetailPane.tsx` (the pop-out and close
 buttons). Replace them with `components/Tip.tsx` or visible text.
 
+## Engine test `a_torrent_presents_as_its_trackers_identity` fails now and then
+
+Found 2026-11-22. CI run https://github.com/cinderblock/apitorrent/actions/runs/45076596762
+(`e74ef58`) failed it on ubuntu and macOS at `crates/apitorrent-engine/tests/tracker.rs:313`
+(the leecher's peer list has no peer whose client is Deluge); the next run on the same code
+passed. Reproduce: run `cargo test -p apitorrent-engine --test tracker` repeatedly. Why it
+matters: the Rust CI job goes red at random.
+
 ## Deluge discovery tests fail on Windows
 
 Found 2026-11-20. `cargo test -p apitorrent-deluge --lib discover` on Windows:
