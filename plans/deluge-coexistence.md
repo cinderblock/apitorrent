@@ -163,6 +163,11 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
        re-run both imports for stragglers that the old endpoint added meanwhile.
     f. Later, with the user's per-change yes: stop and disable `deluged`/`delugex` and
        `http-endpoints` (ops repo).
+    2026-11-22 (switchover thread): a done (the user imported `deluged` into its own
+    space); a torrent has since been added to `deluged` (a straggler for e). d not yet.
+    Order from here: d → remote-add enabled with a key and hosts in both spaces → tracker
+    snippet → re-import stragglers from both (once, after the snippet stops feeding
+    Deluge) → f. Open question 1 decides the snippet.
 
 12. [x] "Still in Deluge" shown on each torrent (asked 2026-11-20), `9f38e36`.
     `TorrentSummary.inDeluge` (the config dir) while an import isn't taken over. The list
@@ -344,7 +349,9 @@ These need a browser and a real Deluge, which the automated tests don't cover:
 
 ## Open questions for the user
 
-(none yet)
+1. ✅ Answered 2026-11-22: **change the tracker snippet** to the plugin's URLs (no nginx
+   forward; a forward would have to put the key in a public, unauthenticated URL).
+   Current step: d, the user imports `/var/lib/delugex` into its own space.
 
 ## Things not to do
 
