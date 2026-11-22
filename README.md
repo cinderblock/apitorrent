@@ -36,6 +36,15 @@ Most of this is built.
   directory, not even partly: bytes it shares with wanted files go to an internal part
   store, and a file deselected after downloading moves to a held area (or is deleted), so
   selecting it again needs no download.
+- **Files in order, watched while they download, moved when done.** A torrent's files can
+  download in an order (by name, by size, or the torrent's own): a strong preference,
+  not a rule, so peers without the first file's pieces still supply the next ones. A
+  file marked "download in order" comes front to back, its start and end first (where
+  players look for a video's header and index), so it can be played as it arrives. A
+  completed file can move on its own (to a public folder, say) before the rest of its
+  torrent is done, or every file once the whole torrent is, by patterns such as
+  `*.mkv`; it keeps seeding from where it went. Set for everything, a group, or one
+  torrent.
 - **Limits that nest.** Rates, connections and memory are capped for the whole session,
   for groups of torrents (chosen by label), and per torrent. A Deluge-style queue limits
   how many torrents download and seed at once, and can let slow torrents stop holding a
@@ -359,7 +368,8 @@ installation's torrents, with the same filters and a tick box each, then imports
 ticked ones into a space you choose, or into a new one it creates (server admins), with
 the outermost save paths as its storage roots. Before importing, "What comes over" lists
 every option the ticked torrents carry (files and progress, labels, queue order, dates,
-totals, skipped files, edited trackers, limits, stop-at-ratio, the identity private
+totals, skipped files, edited trackers, limits, stop-at-ratio, move when complete,
+sequential download, the identity private
 trackers see, whether running ones start here, and each of Deluge's own settings), each
 with what it amounts to and a box to leave it out; labels can be renamed on the way in,
 and the tracker identity changed. What can't come over is listed too. Afterwards it offers to move them over
