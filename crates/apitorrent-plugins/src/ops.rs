@@ -323,7 +323,7 @@ fn op_at_stopped(state: &mut OpState) {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum ToJs {
     Event {
-        event: apitorrent_plugin_api::AppEvent,
+        event: Box<apitorrent_plugin_api::AppEvent>,
     },
     Schedule {
         name: String,
@@ -373,7 +373,12 @@ async fn op_at_next(state: Rc<RefCell<OpState>>) -> Result<Option<Next>, JsError
         id
     };
     let (msg, body) = match msg {
-        HostMsg::Event(event) => (ToJs::Event { event }, None),
+        HostMsg::Event(event) => (
+            ToJs::Event {
+                event: Box::new(event),
+            },
+            None,
+        ),
         HostMsg::Schedule(name) => (ToJs::Schedule { name }, None),
         HostMsg::Http(req, reply) => {
             let id = add(Reply::Http(reply));
