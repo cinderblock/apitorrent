@@ -17,7 +17,7 @@ const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
   present: false,
   problem: null,
   private: false,
-  limits: { downloadRate: 0, uploadRate: 0, maxConnections: null },
+  limits: { downloadRate: 0, uploadRate: 0, maxConnections: null, uploadSlots: null },
   stopAtRatio: null,
   skippedFiles: 0,
   renamedFiles: 0,
@@ -29,6 +29,8 @@ const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
   editedTrackers: false,
   moveCompleted: null,
   sequential: false,
+  firstLast: false,
+  superSeed: false,
   notCarried: [],
   ...over,
 });
@@ -80,9 +82,9 @@ describe("Deluge import wizard", () => {
   test("what the ticked torrents carry", () => {
     const c = carried(
       [
-        t({ label: "tv", private: true, trackers: ["a.org", "b.org"], uploaded: 5, skippedFiles: 2, notCarried: ["super-seeding"], moveCompleted: "/done", sequential: true }),
-        t({ label: null, private: true, trackers: ["a.org"], limits: { downloadRate: 0, uploadRate: 9, maxConnections: null }, paused: true }),
-        t({ label: "tv", stopAtRatio: { ratio: 2, remove: false }, editedTrackers: true, notCarried: ["super-seeding"], leftover: true }),
+        t({ label: "tv", private: true, trackers: ["a.org", "b.org"], uploaded: 5, skippedFiles: 2, notCarried: ["kept out of Deluge's queue"], moveCompleted: "/done", sequential: true, superSeed: true }),
+        t({ label: null, private: true, trackers: ["a.org"], limits: { downloadRate: 0, uploadRate: 9, maxConnections: null, uploadSlots: null }, paused: true }),
+        t({ label: "tv", stopAtRatio: { ratio: 2, remove: false }, editedTrackers: true, notCarried: ["kept out of Deluge's queue"], leftover: true, firstLast: true, limits: { downloadRate: 0, uploadRate: 0, maxConnections: null, uploadSlots: 2 } }),
       ],
       { ratio: 2, remove: false },
     );
@@ -94,12 +96,12 @@ describe("Deluge import wizard", () => {
       ["a.org", 2],
       ["b.org", 1],
     ]);
-    expect(c.notCarried).toEqual([["super-seeding", 2]]);
-    expect([c.withTotals, c.withSkippedFiles, c.skippedFiles, c.withLimits, c.editedTrackers, c.running]).toEqual([1, 1, 2, 1, 1, 2]);
+    expect(c.notCarried).toEqual([["kept out of Deluge's queue", 2]]);
+    expect([c.withTotals, c.withSkippedFiles, c.skippedFiles, c.withLimits, c.editedTrackers, c.running]).toEqual([1, 1, 2, 2, 1, 2]);
     // Two have no ratio while the global is 2: their own differs.
     expect(c.ownRatio).toBe(2);
     expect(c.leftovers).toBe(1);
-    expect([c.moveCompleted, c.sequential]).toEqual([1, 1]);
+    expect([c.moveCompleted, c.sequential, c.firstLast, c.superSeed]).toEqual([1, 1, 1, 1]);
   });
 
   test("labels renamed, dropped or left behind", () => {
@@ -126,6 +128,7 @@ describe("Deluge import wizard", () => {
       stopAtRatio: null,
       encryption: "required",
       encryptionNote: "incoming enabled and outgoing forced",
+      discovery: { dht: true, lsd: false, upnp: true, natpmp: true },
       changed: { ...DEFAULT_OPTIONS.settings, uploadRate: true, encryption: true },
     };
     expect(settingRows(s, false).map((r) => r.key)).toEqual(["downloadRate", "uploadRate", "maxConnections", "queueSlots", "stopAtRatio"]);

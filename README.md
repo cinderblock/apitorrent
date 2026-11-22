@@ -40,7 +40,8 @@ Most of this is built.
   download in an order (by name, by size, or the torrent's own): a strong preference,
   not a rule, so peers without the first file's pieces still supply the next ones. A
   file marked "download in order" comes front to back, its start and end first (where
-  players look for a video's header and index), so it can be played as it arrives. A
+  players look for a video's header and index), so it can be played as it arrives.
+  "First and last pieces first" fetches every wanted file's ends early, for previews. A
   completed file can move on its own (to a public folder, say) before the rest of its
   torrent is done, or every file once the whole torrent is, by patterns such as
   `*.mkv`; it keeps seeding from where it went. Set for everything, a group, or one
@@ -49,7 +50,9 @@ Most of this is built.
   for groups of torrents (chosen by label), and per torrent. A Deluge-style queue limits
   how many torrents download and seed at once, and can let slow torrents stop holding a
   slot. Seeding stops at a ratio or a seeding time (for everything, a group or one
-  torrent), then pauses or removes the torrent.
+  torrent), then pauses or removes the torrent. A torrent can have its own number of
+  upload slots, and the first seed of a new torrent can super-seed (BEP 16): peers see a
+  piece or two at a time, so the first full copy gets out with less upload.
 - **Edit many torrents at once.** Select torrents (a checkbox per row, or Ctrl- and
   Shift-click) and Edit sets their label, rate and connection limits, seed limits,
   trackers (add, remove, replace a URL), deselected-file policy and location for all of
@@ -360,7 +363,8 @@ Everything about each torrent comes over unless you leave it out: `--no-labels`,
 `--rename-label FROM=TO` (an empty TO drops that label), `--no-queue-order`,
 `--no-added-dates`, `--no-totals` (downloaded/uploaded and seeding time),
 `--download-skipped`, `--original-trackers` (the .torrent's, not Deluge's edited lists),
-`--no-limits`, `--no-seed-limits`, `--no-move-completed`, `--no-sequential`. `--identity deluge|none|qbittorrent|transmission` sets
+`--no-limits` (rates, connections and upload slots), `--no-seed-limits`,
+`--no-move-completed`, `--no-sequential`, `--no-first-last`, `--no-super-seed`. `--identity deluge|none|qbittorrent|transmission` sets
 what private trackers see (`--no-identity-for HOST` skips one). `--settings` takes all of
 Deluge's own settings; `--setting NAME` takes one (`download-rate`, `upload-rate`,
 `connections`, `slots`, `slow-torrents`, `stop-at-ratio`, `encryption`). The report lists each choice,
@@ -375,7 +379,7 @@ ticked ones into a space you choose, or into a new one it creates (server admins
 the outermost save paths as its storage roots. Before importing, "What comes over" lists
 every option the ticked torrents carry (files and progress, labels, queue order, dates,
 totals, skipped files, edited trackers, limits, stop-at-ratio, move when complete,
-sequential download, the identity private
+sequential download, first and last pieces first, super-seeding, the identity private
 trackers see, whether running ones start here, and each of Deluge's own settings, marked
 when changed from Deluge's default), each
 with what it amounts to and a box to leave it out; labels can be renamed on the way in,

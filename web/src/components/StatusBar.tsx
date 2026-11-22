@@ -37,7 +37,13 @@ export function StatusBar({ rates }: { rates?: ReactNode }) {
       <span>{stats.dhtNodes === null ? "DHT off" : `DHT ${stats.dhtNodes} nodes`}</span>
       {stats.banned > 0 && <span>{stats.banned} banned</span>}
       {stats.libraryBytes > 0 && <span>Library saved {formatBytes(stats.libraryBytes)}</span>}
-      <span>Peer port {stats.peerPort}</span>
+      <span>
+        Peer port {stats.peerPort}
+        {stats.portForward &&
+          (stats.portForward.method
+            ? `, forwarded by ${stats.portForward.method === "upnp" ? "UPnP" : "NAT-PMP"}`
+            : ", not forwarded")}
+      </span>
     </footer>
   );
 }

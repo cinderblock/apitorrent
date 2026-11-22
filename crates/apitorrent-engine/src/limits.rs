@@ -197,6 +197,8 @@ pub struct TorrentLimits {
     pub max_connections: Option<usize>,
     /// This torrent's own cap on piece data in memory, below the session's.
     pub memory: Option<u64>,
+    /// Peers it uploads to at once, overriding the session's `upload_slots`.
+    pub upload_slots: Option<usize>,
 }
 
 /// Which way bytes go.

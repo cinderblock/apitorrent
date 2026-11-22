@@ -58,6 +58,14 @@ moveCompleted: boolean,
  */
 sequential: boolean, 
 /**
+ * Keep Deluge's "prioritize first and last pieces".
+ */
+firstLast: boolean, 
+/**
+ * Keep Deluge's super-seeding.
+ */
+superSeed: boolean, 
+/**
  * The client private trackers see for these torrents.
  */
 identity: ImportIdentity, 

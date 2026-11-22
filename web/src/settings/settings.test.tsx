@@ -42,6 +42,7 @@ const BASE: Settings = {
   seedLimits: { ratio: 0, seedMinutes: 0, action: "pause" },
   peerPort: 51413,
   dhtPort: 51414,
+  discovery: { dht: true, lsd: true, upnp: true, natpmp: true },
   identity: { default: presetIdentity("apitorrent"), rules: [] },
   fileOrder: { by: "off" },
   moveCompleted: { enabled: false, to: "", when: "eachFile", rules: [] },

@@ -635,6 +635,7 @@ impl Core {
                 limits.download_rate,
                 limits.upload_rate,
                 limits.max_connections,
+                limits.upload_slots,
             )
         })
         .await?;
@@ -1586,6 +1587,8 @@ impl Core {
                     edited_trackers: d.edited_trackers,
                     move_completed: d.move_completed,
                     sequential: d.sequential,
+                    first_last: d.first_last,
+                    super_seed: d.super_seed,
                     not_carried: d.not_carried,
                 }
             })
@@ -2248,6 +2251,7 @@ impl Core {
                         download_rate: row.download_rate,
                         upload_rate: row.upload_rate,
                         max_connections: row.max_connections,
+                        upload_slots: row.upload_slots,
                     },
                     queued: !row.paused && self.queue_limited(),
                     naming: row.naming,
@@ -2581,6 +2585,7 @@ impl Core {
             download_rate: 0,
             upload_rate: 0,
             max_connections: None,
+            upload_slots: None,
             magnet: Some(uri.to_owned()),
             naming,
             linked: None,
@@ -2863,6 +2868,7 @@ impl Core {
             download_rate: 0,
             upload_rate: 0,
             max_connections: None,
+            upload_slots: None,
             magnet: None,
             naming: self.choose_naming(&save_path).await,
             linked: None,
@@ -3918,6 +3924,8 @@ impl Core {
                 effective_file_order: self.settings().file_order,
                 move_completed: None,
                 effective_move_completed: self.settings().move_completed,
+                first_last: false,
+                super_seed: false,
             });
         }
         let (torrent, handle, prios, unwanted_policy, limits, naming, trackers) = {
@@ -4011,6 +4019,8 @@ impl Core {
             effective_file_order,
             move_completed: file_options.move_completed.clone(),
             effective_move_completed,
+            first_last: file_options.first_last,
+            super_seed: file_options.super_seed,
             seed_limits: seed.limits,
             effective_seed_limits,
             seeding_secs: seed.seed_ms / 1000,
@@ -4171,6 +4181,19 @@ impl Core {
                 let n = d.ipv4.map_or(0, |t| t.nodes) + d.ipv6.map_or(0, |t| t.nodes);
                 u32::try_from(n).unwrap_or(u32::MAX)
             }),
+            port_forward: s
+                .port_mapping()
+                .map(|p| apitorrent_types::PortForwardStatus {
+                    method: p.method.map(|m| {
+                        match m {
+                            apitorrent_portmap::Method::NatPmp => "natPmp",
+                            apitorrent_portmap::Method::Upnp => "upnp",
+                        }
+                        .to_owned()
+                    }),
+                    external_ip: p.external_ip.map(|ip| ip.to_string()),
+                    error: p.error,
+                }),
             library_bytes: self.inner.reuse.total(),
         }
     }
@@ -4335,6 +4358,7 @@ impl Core {
         for h in handles {
             h.shutdown().await;
         }
+        self.inner.session.stop_port_mapping().await;
         tracing::info!("core stopped");
         Ok(())
     }
@@ -4518,6 +4542,7 @@ fn engine_limits(l: TorrentLimits) -> apitorrent_engine::limits::TorrentLimits {
         upload_rate: l.upload_rate,
         max_connections: l.max_connections.map(|n| n as usize),
         memory: None,
+        upload_slots: l.upload_slots.map(|n| n as usize),
     }
 }
 

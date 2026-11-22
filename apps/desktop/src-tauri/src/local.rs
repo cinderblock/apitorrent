@@ -136,6 +136,10 @@ impl LocalNode {
             encryption: apitorrent_mse::Policy::Enabled(apitorrent_mse::Preference::Rc4),
             ..SessionConfig::default()
         };
+        apitorrent_core::ports::apply_discovery(&data_dir, &mut session).map_err(|e| {
+            housekeeping.abort();
+            format!("couldn't read the discovery settings: {e}")
+        })?;
         apitorrent_core::ports::resolve(&data_dir, &mut session).map_err(|e| {
             housekeeping.abort();
             format!("couldn't choose the peer port: {e}")

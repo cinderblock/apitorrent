@@ -6,6 +6,9 @@
 //! the instance settings: trackers, peers and port forwards then see the same port on
 //! every start. An explicit port (`--peer-listen`, `--dht-port`, a desktop profile's
 //! port) always wins and is never stored.
+//!
+//! [`apply_discovery`] applies the stored discovery settings (DHT, LSD, port forwarding)
+//! the same way, before the session starts.
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
 use std::path::Path;
@@ -23,6 +26,41 @@ pub const RANGE: std::ops::RangeInclusive<u16> = 20_000..=48_999;
 
 /// How many random ports to try before giving up and letting the OS choose.
 const ATTEMPTS: usize = 64;
+
+/// Turn off the DHT and LSD where the stored settings say so (a session started without
+/// them stays without), and set up port forwarding as they say. Run before [`resolve`],
+/// with the daemon not running.
+///
+/// # Errors
+///
+/// The database can't be opened.
+pub fn apply_discovery(data_dir: &Path, session: &mut SessionConfig) -> Result<(), CoreError> {
+    let d = if data_dir.join("apitorrent.db").exists() {
+        let db = Database::open(&data_dir.join("apitorrent.db"))?;
+        db.meta(SETTINGS_KEY)?
+            .and_then(|j| serde_json::from_str::<Settings>(&j).ok())
+            .map(|s| s.discovery)
+            .unwrap_or_default()
+    } else {
+        apitorrent_types::DiscoverySettings::default()
+    };
+    discovery_into(d, session);
+    Ok(())
+}
+
+fn discovery_into(d: apitorrent_types::DiscoverySettings, session: &mut SessionConfig) {
+    if !d.dht {
+        session.dht = None;
+    }
+    if !d.lsd {
+        session.lsd = None;
+    }
+    session.port_mapping = (d.upnp || d.natpmp).then(|| apitorrent_portmap::Config {
+        natpmp: d.natpmp,
+        upnp: d.upnp,
+        description: "apitorrent".to_owned(),
+    });
+}
 
 /// Fill in `session`'s automatic ports (port 0 on the peer listen address or the DHT's
 /// bind addresses): the stored one if it is still free, else a new free one, which is

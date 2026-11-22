@@ -57,6 +57,8 @@ enum SettingName {
     StopAtRatio,
     /// Encryption for peer connections (the default space only).
     Encryption,
+    /// DHT, local peer discovery, UPnP and NAT-PMP (the default space only).
+    Discovery,
 }
 
 /// What of each torrent comes over. Everything does unless a flag leaves it out.
@@ -97,6 +99,12 @@ struct OptionArgs {
     /// Leave Deluge's sequential download behind: rarest pieces first, as usual.
     #[arg(long)]
     no_sequential: bool,
+    /// Leave Deluge's "prioritize first and last pieces" behind.
+    #[arg(long)]
+    no_first_last: bool,
+    /// Leave Deluge's super-seeding behind.
+    #[arg(long)]
+    no_super_seed: bool,
     /// The client private trackers see for these torrents: `deluge` (as before),
     /// `none` (apitorrent's own; adds no rules), `qbittorrent` or `transmission`.
     #[arg(long, value_enum, default_value = "deluge")]
@@ -132,6 +140,7 @@ impl DelugeArgs {
                 SettingName::SlowTorrents => settings.ignore_slow = true,
                 SettingName::StopAtRatio => settings.stop_at_ratio = true,
                 SettingName::Encryption => settings.encryption = true,
+                SettingName::Discovery => settings.discovery = true,
             }
         }
         let label_renames = o
@@ -172,6 +181,8 @@ impl DelugeArgs {
             seed_limits: !o.no_seed_limits,
             move_completed: !o.no_move_completed,
             sequential: !o.no_sequential,
+            first_last: !o.no_first_last,
+            super_seed: !o.no_super_seed,
             identity,
             identity_skip_hosts: o.no_identity_for.clone(),
             settings,

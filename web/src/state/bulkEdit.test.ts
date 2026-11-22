@@ -9,7 +9,7 @@ function settings(id: string, trackers: string[][], label: string | null = null)
     id,
     label,
     savePath: "/downloads",
-    limits: { downloadRate: 0, uploadRate: 0, maxConnections: null },
+    limits: { downloadRate: 0, uploadRate: 0, maxConnections: null, uploadSlots: null },
     seedLimits: null,
     trackers,
     unwantedPolicy: "hold",

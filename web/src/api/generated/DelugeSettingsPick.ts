@@ -21,4 +21,8 @@ stopAtRatio: boolean,
 /**
  * Encryption for peer connections (the default space only: it is the instance's).
  */
-encryption: boolean, };
+encryption: boolean, 
+/**
+ * DHT, local peer discovery, UPnP and NAT-PMP (the default space only).
+ */
+discovery: boolean, };

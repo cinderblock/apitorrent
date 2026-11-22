@@ -452,6 +452,10 @@ async fn main() -> ExitCode {
         encryption: args.encryption.into(),
         ..SessionConfig::default()
     };
+    if let Err(e) = apitorrent_core::ports::apply_discovery(&data_dir, &mut session) {
+        tracing::error!(error = %e, "could not read the discovery settings");
+        return ExitCode::FAILURE;
+    }
     if let Err(e) = apitorrent_core::ports::resolve(&data_dir, &mut session) {
         tracing::error!(error = %e, "could not choose the peer and DHT ports");
         return ExitCode::FAILURE;

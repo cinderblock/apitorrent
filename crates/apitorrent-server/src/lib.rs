@@ -259,6 +259,8 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
         .route("/torrents/{id}/seed-limits", put(routes::set_seed_limits))
         .route("/torrents/{id}/file-order", put(routes::set_file_order))
         .route("/torrents/{id}/sequential", put(routes::set_sequential))
+        .route("/torrents/{id}/first-last", put(routes::set_first_last))
+        .route("/torrents/{id}/super-seed", put(routes::set_super_seed))
         .route(
             "/torrents/{id}/move-completed",
             put(routes::set_move_completed),

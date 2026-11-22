@@ -34,6 +34,11 @@ pub fn defaults(session: &SessionConfig) -> Settings {
             .as_ref()
             .and_then(|d| d.bind_v4.or(d.bind_v6))
             .map_or(0, |a| a.port()),
+        discovery: apitorrent_types::DiscoverySettings {
+            dht: session.dht.is_some(),
+            lsd: session.lsd.is_some(),
+            ..apitorrent_types::DiscoverySettings::default()
+        },
         identity: IdentitySettings::default(),
         file_order: apitorrent_types::files::FileOrder::default(),
         move_completed: apitorrent_types::files::MoveCompleted::default(),

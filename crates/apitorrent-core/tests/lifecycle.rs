@@ -274,6 +274,7 @@ async fn queue_settings_and_groups() {
         download_rate: 1000,
         upload_rate: 2000,
         max_connections: Some(5),
+        upload_slots: Some(2),
     };
     core.set_torrent_limits(&k(&a), limits).await.unwrap();
     core.shutdown().await.unwrap();

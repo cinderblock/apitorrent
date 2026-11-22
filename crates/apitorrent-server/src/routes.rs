@@ -282,6 +282,26 @@ pub(crate) async fn set_file_order(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub(crate) async fn set_first_last(
+    State(s): State<AppState>,
+    here: Here,
+    Path(id): Path<String>,
+    Json(req): Json<apitorrent_types::files::SetFirstLastRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_first_last(&here.key(id), req.on).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn set_super_seed(
+    State(s): State<AppState>,
+    here: Here,
+    Path(id): Path<String>,
+    Json(req): Json<apitorrent_types::files::SetSuperSeedRequest>,
+) -> ApiResult<StatusCode> {
+    s.core.set_super_seed(&here.key(id), req.on).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn set_sequential(
     State(s): State<AppState>,
     here: Here,

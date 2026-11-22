@@ -105,6 +105,28 @@ pub struct SequentialFile {
     pub from: u64,
 }
 
+/// `PUT /torrents/{id}/first-last`: fetch each wanted file's first and last piece before
+/// the rest of its priority, so files can be previewed (a player reads a container's header
+/// and often its index at the end) before they complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetFirstLastRequest {
+    pub on: bool,
+}
+
+/// `PUT /torrents/{id}/super-seed`: super-seeding (BEP 16), for the first seed of a new
+/// torrent. Once complete, it shows each peer a piece or two at a time, the rarest it
+/// lacks, and another once it has one, so fewer bytes leave this seed before the swarm
+/// holds a full copy. It applies to peers that connect afterwards. Once others seed too,
+/// it only slows things down: turn it off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SetSuperSeedRequest {
+    pub on: bool,
+}
+
 /// `PUT /torrents/{id}/move-completed`: the torrent's own setting. `null` follows its
 /// group's or the instance's.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

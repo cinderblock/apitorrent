@@ -185,6 +185,10 @@ pub struct FileOptions {
     pub move_completed: Option<MoveCompleted>,
     /// Files moved out of the save path when they completed, and where to.
     pub moved: Vec<(u32, String)>,
+    /// Each wanted file's first and last piece first.
+    pub first_last: bool,
+    /// Super-seeding (BEP 16).
+    pub super_seed: bool,
 }
 
 impl FileOptions {
@@ -244,6 +248,36 @@ impl Core {
                 return Err(CoreError::InvalidRequest(format!("no file {bad}")));
             }
             e.files.order = order;
+        }
+        self.save_file_options(key).await?;
+        self.sync_file_handling(&key.id).await;
+        Ok(())
+    }
+
+    /// Fetch each wanted file's first and last piece first, or stop.
+    pub async fn set_first_last(&self, key: &Key, on: bool) -> Result<(), CoreError> {
+        {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            torrents
+                .get_mut(key)
+                .ok_or(CoreError::NotFound)?
+                .files
+                .first_last = on;
+        }
+        self.save_file_options(key).await?;
+        self.sync_file_handling(&key.id).await;
+        Ok(())
+    }
+
+    /// Super-seed the torrent (BEP 16), or stop.
+    pub async fn set_super_seed(&self, key: &Key, on: bool) -> Result<(), CoreError> {
+        {
+            let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
+            torrents
+                .get_mut(key)
+                .ok_or(CoreError::NotFound)?
+                .files
+                .super_seed = on;
         }
         self.save_file_options(key).await?;
         self.sync_file_handling(&key.id).await;
@@ -343,7 +377,7 @@ impl Core {
     /// and every entry's sequential files.
     pub(crate) async fn sync_file_handling(&self, id: &str) {
         let settings = self.settings();
-        let (handle, order, streams) = {
+        let (handle, order, streams, first_last, super_seed) = {
             let torrents = self.inner.torrents.read().expect("torrents lock poisoned");
             let swarms = self.inner.swarms.lock().expect("swarms lock poisoned");
             let Some(swarm) = swarms.get(id) else { return };
@@ -387,9 +421,14 @@ impl Core {
                     }
                 }
             }
-            (swarm.handle.clone(), order, streams)
+            // Swarm-wide switches: on when any entry has them on.
+            let first_last = entries.iter().any(|e| e.files.first_last);
+            let super_seed = entries.iter().any(|e| e.files.super_seed);
+            (swarm.handle.clone(), order, streams, first_last, super_seed)
         };
         handle.set_file_order(order).await;
+        handle.set_first_last(first_last).await;
+        handle.set_super_seed(super_seed).await;
         for (file, from) in streams {
             handle.set_stream(file as usize, Some(from)).await;
         }

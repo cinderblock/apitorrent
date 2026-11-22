@@ -53,4 +53,12 @@ moveCompleted: MoveCompleted | null,
 /**
  * The setting that applies, wherever it comes from.
  */
-effectiveMoveCompleted: MoveCompleted, };
+effectiveMoveCompleted: MoveCompleted, 
+/**
+ * Each file's first and last piece first (see [`files::SetFirstLastRequest`]).
+ */
+firstLast: boolean, 
+/**
+ * Super-seeding (see [`files::SetSuperSeedRequest`]).
+ */
+superSeed: boolean, };

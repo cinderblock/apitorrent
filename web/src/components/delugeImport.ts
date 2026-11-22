@@ -92,9 +92,11 @@ export const DEFAULT_OPTIONS: DelugeImportOptions = {
   seedLimits: true,
   moveCompleted: true,
   sequential: true,
+  firstLast: true,
+  superSeed: true,
   identity: { kind: "deluge" },
   identitySkipHosts: [],
-  settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false, encryption: false },
+  settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false, encryption: false, discovery: false },
 };
 
 const sameRatio = (a: StopAtRatio | null, b: StopAtRatio | null) => (a === null || b === null ? a === b : a.ratio === b.ratio && a.remove === b.remove);
@@ -121,6 +123,10 @@ export interface Carried {
   moveCompleted: number;
   /** Downloaded in order in Deluge. */
   sequential: number;
+  /** First and last pieces first in Deluge. */
+  firstLast: number;
+  /** Super-seeding in Deluge. */
+  superSeed: number;
   /** Private trackers' hosts → how many torrents. */
   privateHosts: [string, number][];
   /** A Deluge option that doesn't carry over → how many torrents have it. */
@@ -152,6 +158,8 @@ export function carried(torrents: DelugePreviewTorrent[], global: StopAtRatio | 
     ownRatio: 0,
     moveCompleted: 0,
     sequential: 0,
+    firstLast: 0,
+    superSeed: 0,
     privateHosts: [],
     notCarried: [],
     running: 0,
@@ -168,10 +176,12 @@ export function carried(torrents: DelugePreviewTorrent[], global: StopAtRatio | 
     if (t.renamedFiles > 0) c.withRenamedFiles++;
     c.renamedFiles += t.renamedFiles;
     if (t.editedTrackers) c.editedTrackers++;
-    if (t.limits.downloadRate > 0 || t.limits.uploadRate > 0 || t.limits.maxConnections !== null) c.withLimits++;
+    if (t.limits.downloadRate > 0 || t.limits.uploadRate > 0 || t.limits.maxConnections !== null || t.limits.uploadSlots !== null) c.withLimits++;
     if (!sameRatio(t.stopAtRatio, global)) c.ownRatio++;
     if (t.moveCompleted) c.moveCompleted++;
     if (t.sequential) c.sequential++;
+    if (t.firstLast) c.firstLast++;
+    if (t.superSeed) c.superSeed++;
     if (t.private) for (const h of t.trackers) count(hosts, h);
     for (const n of t.notCarried) count(notes, n);
     if (!t.paused) c.running++;
@@ -241,6 +251,18 @@ export function settingRows(s: DelugeSettingsView, defaultSpace: boolean): Setti
   ];
   if (defaultSpace) rows.push(row("ignoreSlow", "Slow torrents", s.dontCountSlow ? "don't count against the limits" : "count"));
   rows.push(row("stopAtRatio", "Stop seeding at ratio", s.stopAtRatio === null ? "off" : `${s.stopAtRatio.ratio}, then ${s.stopAtRatio.remove ? "remove" : "pause"}`));
-  if (defaultSpace) rows.push(row("encryption", "Encryption", ENCRYPTION[s.encryption], s.encryptionNote ?? undefined));
+  if (defaultSpace) {
+    rows.push(row("encryption", "Encryption", ENCRYPTION[s.encryption], s.encryptionNote ?? undefined));
+    const d = s.discovery;
+    const onOff = (on: boolean) => (on ? "on" : "off");
+    rows.push(
+      row(
+        "discovery",
+        "Peer discovery and port forwarding",
+        `DHT ${onOff(d.dht)}, local discovery ${onOff(d.lsd)}, UPnP ${onOff(d.upnp)}, NAT-PMP ${onOff(d.natpmp)}`,
+        "Applies when the daemon next restarts.",
+      ),
+    );
+  }
   return rows;
 }

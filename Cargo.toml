@@ -21,6 +21,7 @@ apitorrent-wire = { path = "crates/apitorrent-wire" }
 apitorrent-engine = { path = "crates/apitorrent-engine" }
 apitorrent-tracker = { path = "crates/apitorrent-tracker" }
 apitorrent-dht = { path = "crates/apitorrent-dht" }
+apitorrent-portmap = { path = "crates/apitorrent-portmap" }
 apitorrent-types = { path = "crates/apitorrent-types" }
 apitorrent-core = { path = "crates/apitorrent-core" }
 apitorrent-server = { path = "crates/apitorrent-server" }

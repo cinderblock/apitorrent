@@ -169,6 +169,10 @@ export const api = {
   setFileOrder: (id: string, order: FileOrder | null) => request<void>("PUT", `/torrents/${enc(id)}/file-order`, { order }),
   /** Download these files front to back (others keep their setting); `from` is the byte a reader needs next. */
   setSequential: (id: string, files: SequentialFile[]) => request<void>("PUT", `/torrents/${enc(id)}/sequential`, { files }),
+  /** Fetch each wanted file's first and last piece first, for previews. */
+  setFirstLast: (id: string, on: boolean) => request<void>("PUT", `/torrents/${enc(id)}/first-last`, { on }),
+  /** Super-seed the torrent (BEP 16). */
+  setSuperSeed: (id: string, on: boolean) => request<void>("PUT", `/torrents/${enc(id)}/super-seed`, { on }),
   /** A torrent's own move-when-complete setting; null follows its group's or the instance's. */
   setMoveCompleted: (id: string, settings: MoveCompleted | null) => request<void>("PUT", `/torrents/${enc(id)}/move-completed`, { settings }),
   /** Change settings on many torrents at once; answers per torrent. */

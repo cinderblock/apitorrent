@@ -15,4 +15,8 @@ uploadRate?: number,
 /**
  * Peers at once; 0 uses the server's default.
  */
-maxConnections?: number, };
+maxConnections?: number, 
+/**
+ * Peers uploaded to at once; 0 uses the server's default.
+ */
+uploadSlots?: number, };

@@ -66,6 +66,9 @@ pub struct SessionConfig {
     pub utp_connect_timeout: std::time::Duration,
     /// Message stream encryption for peer connections, both directions.
     pub encryption: apitorrent_mse::Policy,
+    /// Forward the peer port (TCP, and UDP for uTP) and the DHT's port on the router, by
+    /// NAT-PMP or UPnP. Off unless set.
+    pub port_mapping: Option<apitorrent_portmap::Config>,
 }
 
 impl Default for SessionConfig {
@@ -90,6 +93,7 @@ impl Default for SessionConfig {
             prefer_utp: true,
             utp_connect_timeout: std::time::Duration::from_secs(5),
             encryption: apitorrent_mse::Policy::default(),
+            port_mapping: None,
         }
     }
 }
@@ -274,6 +278,7 @@ pub struct Session {
     listen_addr: SocketAddr,
     lsd_addr: Option<SocketAddr>,
     utp_addr: Option<SocketAddr>,
+    port_mapper: Arc<Mutex<Option<apitorrent_portmap::PortMapper>>>,
 }
 
 impl Session {
@@ -344,11 +349,32 @@ impl Session {
             Some(cfg) => Some(crate::lsd::start(&shared, cfg)?),
             None => None,
         };
+        let port_mapper = shared.config.port_mapping.clone().map(|cfg| {
+            use apitorrent_portmap::{PortMapper, Protocol, Request};
+            let mut requests = vec![Request {
+                protocol: Protocol::Tcp,
+                port: listen_addr.port(),
+            }];
+            if let Some(a) = utp_addr {
+                requests.push(Request {
+                    protocol: Protocol::Udp,
+                    port: a.port(),
+                });
+            }
+            if let Some(port) = shared.dht_port() {
+                requests.push(Request {
+                    protocol: Protocol::Udp,
+                    port,
+                });
+            }
+            PortMapper::start(cfg, requests)
+        });
         Ok(Self {
             shared,
             listen_addr,
             lsd_addr,
             utp_addr,
+            port_mapper: Arc::new(Mutex::new(port_mapper)),
         })
     }
 
@@ -374,6 +400,27 @@ impl Session {
     /// The uTP socket's address, when uTP is on.
     pub fn utp_addr(&self) -> Option<SocketAddr> {
         self.utp_addr
+    }
+
+    /// The router's port forwards, when port mapping is on.
+    pub fn port_mapping(&self) -> Option<apitorrent_portmap::Status> {
+        self.port_mapper
+            .lock()
+            .expect("port mapper poisoned")
+            .as_ref()
+            .map(apitorrent_portmap::PortMapper::status)
+    }
+
+    /// Remove the router's port forwards, before shutting down.
+    pub async fn stop_port_mapping(&self) {
+        let mapper = self
+            .port_mapper
+            .lock()
+            .expect("port mapper poisoned")
+            .take();
+        if let Some(m) = mapper {
+            m.stop().await;
+        }
     }
 
     /// The LSD socket's address, when LSD is on.

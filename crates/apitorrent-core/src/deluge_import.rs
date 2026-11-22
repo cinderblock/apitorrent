@@ -135,6 +135,19 @@ pub fn apply_instance_settings(s: &mut Settings, d: &DelugeSettings, pick: Delug
     if pick.encryption {
         s.encryption = encryption(d.encryption).0;
     }
+    if pick.discovery {
+        s.discovery = discovery(d);
+    }
+}
+
+fn discovery(d: &DelugeSettings) -> apitorrent_types::DiscoverySettings {
+    let [dht, lsd, upnp, natpmp] = d.discovery;
+    apitorrent_types::DiscoverySettings {
+        dht,
+        lsd,
+        upnp,
+        natpmp,
+    }
 }
 
 /// Deluge's encryption settings as the nearest of apitorrent's policies, with a note when
@@ -202,6 +215,10 @@ fn setting_names(pick: DelugeSettingsPick, default_space: bool) -> Vec<&'static 
         (pick.ignore_slow && default_space, "slow torrents"),
         (pick.stop_at_ratio, "stop at ratio"),
         (pick.encryption && default_space, "encryption"),
+        (
+            pick.discovery && default_space,
+            "peer discovery and port forwarding",
+        ),
     ]
     .into_iter()
     .filter_map(|(on, name)| on.then_some(name))
@@ -231,6 +248,7 @@ pub fn settings_view(d: &DelugeSettings) -> apitorrent_types::DelugeSettingsView
         stop_at_ratio: stop_at_ratio(d.stop_at_ratio),
         encryption: encryption(d.encryption).0,
         encryption_note: encryption(d.encryption).1,
+        discovery: discovery(d),
         changed: changed(d),
     }
 }
@@ -254,6 +272,7 @@ pub fn changed(d: &DelugeSettings) -> DelugeSettingsPick {
         ignore_slow: d.dont_count_slow != z.dont_count_slow,
         stop_at_ratio: d.stop_at_ratio != z.stop_at_ratio,
         encryption: d.encryption != z.encryption,
+        discovery: d.discovery != z.discovery,
     }
 }
 
@@ -261,9 +280,9 @@ fn stop_at_ratio(s: Option<(f64, bool)>) -> Option<apitorrent_types::StopAtRatio
     s.map(|(ratio, remove)| apitorrent_types::StopAtRatio { ratio, remove })
 }
 
-/// Deluge's "move completed" and sequential download, as apitorrent's file options: the
-/// whole torrent moves once complete; files download in the torrent's order, each front
-/// to back. A destination outside the space's storage roots doesn't come over, and says
+/// Deluge's "move completed", sequential download, first and last pieces first, and
+/// super-seeding, as apitorrent's file options: the whole torrent moves once complete;
+/// files download in the torrent's order, each front to back. A destination outside the space's storage roots doesn't come over, and says
 /// so in `not_carried`.
 fn file_options(
     d: &apitorrent_deluge::DelugeTorrent,
@@ -308,6 +327,8 @@ fn file_options(
             .map(|(i, _)| (u32::try_from(i).expect("fits"), 0))
             .collect();
     }
+    out.first_last = o.first_last && d.first_last;
+    out.super_seed = o.super_seed && d.super_seed;
     out
 }
 
@@ -354,6 +375,7 @@ pub struct Summary {
 }
 
 /// A Deluge torrent's options, as the import's choices see them.
+#[allow(clippy::struct_excessive_bools, reason = "Deluge's own per-torrent switches")]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Details {
     pub private: bool,
@@ -373,6 +395,8 @@ pub struct Details {
     /// Where Deluge moves it when it completes, after the path mapping.
     pub move_completed: Option<String>,
     pub sequential: bool,
+    pub first_last: bool,
+    pub super_seed: bool,
     pub not_carried: Vec<String>,
 }
 
@@ -448,6 +472,7 @@ pub fn summarize(
                         download_rate: d.max_download_rate.unwrap_or(0),
                         upload_rate: d.max_upload_rate.unwrap_or(0),
                         max_connections: d.max_connections,
+                        upload_slots: d.max_upload_slots,
                     },
                     stop_at_ratio: d.stop_at_ratio,
                     skipped_files: 0,
@@ -460,6 +485,8 @@ pub fn summarize(
                     edited_trackers: false,
                     move_completed: d.move_completed.as_deref().map(|p| import::remap(p, map)),
                     sequential: d.sequential,
+                    first_last: d.first_last,
+                    super_seed: d.super_seed,
                     not_carried: d.not_carried.clone(),
                 },
             };
@@ -704,6 +731,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
                     download_rate: 0,
                     upload_rate: 0,
                     max_connections: None,
+                    upload_slots: None,
                     magnet: Some(uri.clone()),
                     naming: 0,
                     linked: None,
@@ -765,6 +793,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
                 download_rate: d.max_download_rate.unwrap_or(0),
                 upload_rate: d.max_upload_rate.unwrap_or(0),
                 max_connections: d.max_connections,
+                upload_slots: d.max_upload_slots,
             }
         } else {
             TorrentLimits::default()
@@ -800,6 +829,7 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
             download_rate: limits.download_rate,
             upload_rate: limits.upload_rate,
             max_connections: limits.max_connections,
+            upload_slots: limits.upload_slots,
             magnet: None,
             naming: 0,
             linked: None,
@@ -1253,6 +1283,16 @@ COUNTS"
         encryption_name(enc),
         enc_note.map(|n| format!(" ({n})")).unwrap_or_default()
     );
+    let on_off = |on: bool| if on { "on" } else { "off" };
+    let [dht, lsd, upnp, natpmp] = d.discovery;
+    let _ = writeln!(
+        out,
+        "  DHT {}, local discovery {}, UPnP {}, NAT-PMP {}",
+        on_off(dht),
+        on_off(lsd),
+        on_off(upnp),
+        on_off(natpmp)
+    );
     let changed = changed(d);
     let changed_names: Vec<&str> = setting_names(changed, true);
     if !changed_names.is_empty() {
@@ -1330,6 +1370,10 @@ COUNTS"
     );
     let _ = writeln!(out, "  speed limits:      {}", keep(o.torrent_limits));
     let _ = writeln!(out, "  stop at ratio:     {}", keep(o.seed_limits));
+    let _ = writeln!(out, "  move completed:    {}", keep(o.move_completed));
+    let _ = writeln!(out, "  sequential:        {}", keep(o.sequential));
+    let _ = writeln!(out, "  first/last pieces: {}", keep(o.first_last));
+    let _ = writeln!(out, "  super-seeding:     {}", keep(o.super_seed));
     let identity = match &o.identity {
         apitorrent_types::ImportIdentity::Deluge => "present as Deluge".to_owned(),
         apitorrent_types::ImportIdentity::None => "no identity rules".to_owned(),
@@ -1358,6 +1402,9 @@ COUNTS"
         }
         if let Some(n) = t.limits.max_connections {
             parts.push(format!("{n} connections"));
+        }
+        if let Some(n) = t.limits.upload_slots {
+            parts.push(format!("{n} upload slots"));
         }
         if let Some(l) = t.seed.limits
             && l.active()
@@ -1840,6 +1887,9 @@ mod tests {
                 seeding_secs: 0,
                 move_completed: None,
                 sequential: false,
+                max_upload_slots: None,
+                first_last: false,
+                super_seed: false,
                 not_carried: Vec::new(),
             }
         };
@@ -1938,6 +1988,33 @@ mod tests {
         assert_eq!(s[0].details.stop_at_ratio, Some((3.0, false)));
     }
 
+    /// Upload slots, first and last pieces first, and super-seeding come over, each unless
+    /// left out.
+    #[test]
+    fn upload_slots_first_last_and_super_seeding_come_over() {
+        let mut state = two_torrents();
+        state.torrents[0].max_upload_slots = Some(3);
+        state.torrents[0].first_last = true;
+        state.torrents[0].super_seed = true;
+        let p = plan_with(&state, &DelugeImportOptions::default());
+        let a = p.torrents.iter().find(|t| t.name == "a").unwrap();
+        assert_eq!(a.limits.upload_slots, Some(3));
+        assert!(a.files.first_last && a.files.super_seed);
+        let b = p.torrents.iter().find(|t| t.name == "b").unwrap();
+        assert!(!b.files.first_last && !b.files.super_seed);
+
+        let off = DelugeImportOptions {
+            first_last: false,
+            super_seed: false,
+            torrent_limits: false,
+            ..DelugeImportOptions::default()
+        };
+        let p = plan_with(&state, &off);
+        let a = p.torrents.iter().find(|t| t.name == "a").unwrap();
+        assert_eq!(a.limits.upload_slots, None);
+        assert!(!a.files.first_last && !a.files.super_seed);
+    }
+
     /// Deluge's "move completed" becomes a whole-torrent move, and its sequential download
     /// the torrent's file order with every file front to back. A destination outside the
     /// space's storage roots stays behind, and says so.
@@ -2016,6 +2093,8 @@ mod tests {
             seed_limits: false,
             move_completed: false,
             sequential: false,
+            first_last: false,
+            super_seed: false,
             identity: apitorrent_types::ImportIdentity::Deluge,
             identity_skip_hosts: vec!["B.example.org".into()],
             settings: DelugeSettingsPick::default(),
@@ -2119,8 +2198,9 @@ mod tests {
         assert!(!changed(&d).any());
         d.max_connections = Some(500);
         d.encryption.in_policy = 0;
+        d.discovery[2] = false;
         let c = changed(&d);
-        assert!(c.max_connections && c.encryption);
+        assert!(c.max_connections && c.encryption && c.discovery);
         assert!(!c.download_rate && !c.queue_slots && !c.stop_at_ratio);
     }
 }

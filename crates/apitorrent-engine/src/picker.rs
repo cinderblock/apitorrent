@@ -25,6 +25,10 @@
 //! tier is the place of its earliest file among the unfinished files of the file order,
 //! capped at `TIERS - 1`; without a file order every tier is 0.
 //!
+//! With first and last pieces first on, the first and last piece of every wanted file
+//! come before the rest of their priority, so a file can be previewed (a player reads a
+//! container's header and often its index at the end) before it is complete.
+//!
 //! The file order is a strong preference, not a rule: a peer that has none of the first
 //! file's missing pieces is still asked for the next file's, and so on.
 
@@ -133,6 +137,8 @@ pub struct Picker {
     /// Files that became complete since [`Picker::take_completed_files`] last ran.
     completed: Vec<usize>,
     streams: Vec<Stream>,
+    /// Fetch each wanted file's first and last piece before the rest of its priority.
+    first_last: bool,
     rng: StdRng,
     /// Wanted pieces that may not be started yet (their hashes haven't arrived).
     held: Bitfield,
@@ -161,6 +167,7 @@ impl Picker {
             file_missing: Vec::new(),
             completed: Vec::new(),
             streams: Vec::new(),
+            first_last: false,
             rng: StdRng::seed_from_u64(seed),
             held: Bitfield::new(n),
             wanted_total: 0,
@@ -210,6 +217,16 @@ impl Picker {
             let from = from.min(self.layout.files()[file].length.saturating_sub(1));
             self.streams.push(Stream { file, from });
         }
+    }
+
+    /// Fetch each wanted file's first and last piece before the rest of its priority, for
+    /// previews.
+    pub fn set_first_last(&mut self, on: bool) {
+        self.first_last = on;
+    }
+
+    pub fn first_last(&self) -> bool {
+        self.first_last
     }
 
     /// The files being streamed, and the byte each needs next.
@@ -536,7 +553,13 @@ impl Picker {
     /// The next piece to start for a peer with `has`: the best in `order`, unless a
     /// stream's next piece is at least as good (the same priority and tier, or better).
     fn next_fresh(&self, has: &Bitfield) -> Option<u32> {
-        let best = self.order.iter().copied().find(|&p| has.get(p));
+        let mut best = self.order.iter().copied().find(|&p| has.get(p));
+        if self.first_last
+            && let Some(edge) = self.next_edge(has)
+            && best.is_none_or(|b| self.priority[edge as usize] >= self.priority[b as usize])
+        {
+            best = Some(edge);
+        }
         let class = |p: u32| self.key(p) / KEYS_PER_TIER;
         let streamed = self
             .streams
@@ -550,6 +573,19 @@ impl Picker {
             (Some(b), Some(s)) if class(s) <= class(b) => Some(s),
             (b, s) => b.or(s),
         }
+    }
+
+    /// The first wanted, not yet started first or last piece of a file that the peer has,
+    /// by priority, then file by file.
+    fn next_edge(&self, has: &Bitfield) -> Option<u32> {
+        (0..self.layout.files().len())
+            .filter(|&f| self.layout.files()[f].length > 0)
+            .flat_map(|f| {
+                let pieces = self.layout.file_pieces(f);
+                [pieces.start, pieces.end.saturating_sub(1)]
+            })
+            .filter(|&p| self.pos[p as usize] != NOT_IN_ORDER && has.get(p))
+            .max_by_key(|&p| (self.priority[p as usize], std::cmp::Reverse(p)))
     }
 
     /// The piece holding byte `byte` of file `file` (clamped to the file).
@@ -1134,6 +1170,32 @@ mod tests {
         let layout = Layout::from_info(&t.info);
         let n = layout.piece_count();
         Picker::new(layout, Bitfield::new(n), 7)
+    }
+
+    #[test]
+    fn first_and_last_pieces_come_first() {
+        let mut p = multi_file(3, 4);
+        let all = Bitfield::full(12);
+        p.set_first_last(true);
+        let got = starts(&mut p, &all, 6);
+        assert_eq!(got, [0, 3, 4, 7, 8, 11]);
+        p.check_invariants();
+        // A skipped file's ends aren't fetched; a higher priority's ends come first.
+        let mut p = multi_file(3, 4);
+        p.set_first_last(true);
+        p.set_priorities(
+            &[DEFAULT_PRIORITY; 4]
+                .iter()
+                .chain(&[0; 4])
+                .chain(&[7; 4])
+                .copied()
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(starts(&mut p, &all, 2), [8, 11]);
+        assert_eq!(starts(&mut p, &all, 1), [9]);
+        let next = starts(&mut p, &all, 3);
+        assert_eq!(next[..1], [10]);
+        assert!(next[1..].contains(&0) && next[1..].contains(&3), "{next:?}");
     }
 
     /// Start pieces one at a time for a peer with `has`, returning them in order.

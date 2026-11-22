@@ -1,0 +1,24 @@
+[package]
+name = "apitorrent-portmap"
+description = "Port forwarding on the router: NAT-PMP (RFC 6886) and UPnP IGD"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# UPnP IGD: SSDP discovery and the WANIPConnection actions, over tokio.
+igd-next = { version = "0.18", default-features = false, features = ["aio_tokio"] }
+# The default gateway, for NAT-PMP (which talks to the gateway directly).
+netdev = { version = "0.48", default-features = false, features = ["gateway"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

@@ -201,6 +201,69 @@ async fn small_swarm() {
     );
 }
 
+/// A super-seed shows each leecher a piece or two at a time, yet every leecher finishes,
+/// with pieces passing between them. The seeder's own limit of one upload slot comes from
+/// the torrent, not the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn super_seeding_swarm() {
+    let fx = fixture(Version::V1);
+    let seed_dir = tempfile::tempdir().unwrap();
+    write_files(seed_dir.path(), &fx);
+    let seeder = Session::start(local_config()).await.unwrap();
+    let seed = seeder
+        .add_torrent(AddTorrent {
+            have: None,
+            paused: false,
+            super_seed: true,
+            limits: apitorrent_engine::limits::TorrentLimits {
+                upload_slots: Some(1),
+                ..Default::default()
+            },
+            ..AddTorrent::new(fx.torrent.clone(), seed_dir.path().to_path_buf())
+        })
+        .unwrap();
+    seed.wait_finished().await;
+
+    let pieces = u32::try_from(fx.torrent.info.piece_count()).unwrap();
+    let mut sessions = Vec::new();
+    let mut dirs = Vec::new();
+    for _ in 0..2 {
+        sessions.push(Session::start(local_config()).await.unwrap());
+        dirs.push(tempfile::tempdir().unwrap());
+    }
+    let addrs: Vec<_> = sessions.iter().map(Session::listen_addr).collect();
+    let mut handles = Vec::new();
+    for (i, s) in sessions.iter().enumerate() {
+        let mut peers = vec![seeder.listen_addr()];
+        peers.extend(
+            addrs
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, a)| *a),
+        );
+        handles.push(
+            s.add_torrent(AddTorrent {
+                have: Some(Bitfield::new(pieces)),
+                paused: false,
+                peers,
+                ..AddTorrent::new(fx.torrent.clone(), dirs[i].path().to_path_buf())
+            })
+            .unwrap(),
+        );
+    }
+    for (i, h) in handles.iter().enumerate() {
+        tokio::time::timeout(Duration::from_secs(90), h.wait_finished())
+            .await
+            .unwrap_or_else(|_| panic!("leecher {i} timed out: {:?}", h.stats()));
+    }
+    for d in &dirs {
+        assert_files(d.path(), &fx);
+    }
+    let from_leechers: u64 = handles.iter().map(|h| h.stats().uploaded).sum();
+    assert!(from_leechers > 0, "leechers should have shared pieces");
+}
+
 /// A file with priority 0 is not downloaded. In a hybrid torrent files are piece-aligned,
 /// so a skipped file shares no piece with a wanted one and is never created.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

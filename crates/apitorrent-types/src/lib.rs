@@ -255,6 +255,12 @@ pub struct TorrentDetail {
     /// The setting that applies, wherever it comes from.
     #[serde(default)]
     pub effective_move_completed: files::MoveCompleted,
+    /// Each file's first and last piece first (see [`files::SetFirstLastRequest`]).
+    #[serde(default)]
+    pub first_last: bool,
+    /// Super-seeding (see [`files::SetSuperSeedRequest`]).
+    #[serde(default)]
+    pub super_seed: bool,
 }
 
 /// A connected peer.
@@ -309,6 +315,9 @@ pub struct SessionStats {
     pub peer_port: u16,
     /// Nodes in the DHT's routing tables, or null when the DHT is off.
     pub dht_nodes: Option<u32>,
+    /// The router's port forwards; null when port forwarding is off.
+    #[serde(default)]
+    pub port_forward: Option<PortForwardStatus>,
     /// Bytes the content library supplied across the torrents here, so they weren't
     /// downloaded.
     #[ts(type = "number")]
@@ -331,6 +340,9 @@ pub struct TorrentLimits {
     /// Peers at once; null uses the server's default.
     #[serde(default)]
     pub max_connections: Option<u32>,
+    /// Peers uploaded to at once; null uses the server's default.
+    #[serde(default)]
+    pub upload_slots: Option<u32>,
 }
 
 /// When a finished torrent stops seeding. 0 means no limit of that kind; with neither
@@ -414,6 +426,10 @@ pub struct Settings {
     /// The DHT's UDP port, chosen and kept like `peer_port`. `--dht-port` overrides it.
     #[serde(default)]
     pub dht_port: u16,
+    /// Finding peers beyond the trackers, and opening the ports on the router. Applies on
+    /// restart; the daemon's `--no-dht` and `--no-lsd` turn those off whatever this says.
+    #[serde(default)]
+    pub discovery: DiscoverySettings,
     /// Which client apitorrent presents itself as, per tracker.
     #[serde(default)]
     pub identity: IdentitySettings,
@@ -424,6 +440,46 @@ pub struct Settings {
     /// Moving completed files, unless their group or the torrent itself says otherwise.
     #[serde(default)]
     pub move_completed: files::MoveCompleted,
+}
+
+/// Finding peers beyond the trackers (none of it for private torrents), and forwarding the
+/// peer and DHT ports on the router so peers outside can connect in. All on by default.
+#[allow(clippy::struct_excessive_bools, reason = "four independent switches")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct DiscoverySettings {
+    /// The Mainline DHT (BEP 5).
+    pub dht: bool,
+    /// Local service discovery (BEP 14): peers on the same network, by multicast.
+    pub lsd: bool,
+    /// Port forwarding by UPnP IGD.
+    pub upnp: bool,
+    /// Port forwarding by NAT-PMP (RFC 6886), tried before UPnP.
+    pub natpmp: bool,
+}
+
+impl Default for DiscoverySettings {
+    fn default() -> Self {
+        Self {
+            dht: true,
+            lsd: true,
+            upnp: true,
+            natpmp: true,
+        }
+    }
+}
+
+/// The router's port forwards, as last tried.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PortForwardStatus {
+    /// `"natPmp"` or `"upnp"` while forwards are in place; null otherwise.
+    pub method: Option<String>,
+    pub external_ip: Option<String>,
+    /// Why there are none, after the last attempt.
+    pub error: Option<String>,
 }
 
 /// Which client apitorrent presents itself as: its peer id, the `User-Agent` of HTTP
@@ -896,6 +952,10 @@ pub struct DelugeImportOptions {
     pub move_completed: bool,
     /// Keep Deluge's sequential download: files in the torrent's order, each front to back.
     pub sequential: bool,
+    /// Keep Deluge's "prioritize first and last pieces".
+    pub first_last: bool,
+    /// Keep Deluge's super-seeding.
+    pub super_seed: bool,
     /// The client private trackers see for these torrents.
     pub identity: ImportIdentity,
     /// Tracker hosts to leave out of the identity rules.
@@ -919,6 +979,8 @@ impl Default for DelugeImportOptions {
             seed_limits: true,
             move_completed: true,
             sequential: true,
+            first_last: true,
+            super_seed: true,
             identity: ImportIdentity::Deluge,
             identity_skip_hosts: Vec::new(),
             settings: DelugeSettingsPick::default(),
@@ -993,6 +1055,8 @@ pub struct DelugeSettingsPick {
     pub stop_at_ratio: bool,
     /// Encryption for peer connections (the default space only: it is the instance's).
     pub encryption: bool,
+    /// DHT, local peer discovery, UPnP and NAT-PMP (the default space only).
+    pub discovery: bool,
 }
 
 impl DelugeSettingsPick {
@@ -1007,6 +1071,7 @@ impl DelugeSettingsPick {
             ignore_slow: true,
             stop_at_ratio: true,
             encryption: true,
+            discovery: true,
         }
     }
 
@@ -1037,6 +1102,8 @@ pub struct DelugeSettingsView {
     /// How Deluge's encryption maps, when it isn't one to one (incoming and outgoing set
     /// differently, say).
     pub encryption_note: Option<String>,
+    /// DHT, local peer discovery, UPnP and NAT-PMP, as Deluge has them.
+    pub discovery: DiscoverySettings,
     /// The settings changed in Deluge from Deluge's defaults.
     pub changed: DelugeSettingsPick,
 }
@@ -1180,6 +1247,12 @@ pub struct DelugePreviewTorrent {
     /// Downloaded in order in Deluge.
     #[serde(default)]
     pub sequential: bool,
+    /// First and last pieces first in Deluge.
+    #[serde(default)]
+    pub first_last: bool,
+    /// Super-seeding in Deluge.
+    #[serde(default)]
+    pub super_seed: bool,
     /// Options set in Deluge that don't carry over, in plain words.
     pub not_carried: Vec<String>,
 }

@@ -219,7 +219,7 @@ export function ImportDelugeOptions({
       />
 
       <Row
-        title="Speed and connection limits"
+        title="Speed, connection and upload slot limits"
         on={o.torrentLimits}
         set={set("torrentLimits")}
         detail={
@@ -267,6 +267,32 @@ export function ImportDelugeOptions({
             : o.sequential
               ? `${plural(c.sequential, "torrent")} ${verb(c.sequential, "downloads its", "download their")} files in order, each from start to end.`
               : `${plural(c.sequential, "torrent")} ${verb(c.sequential, "downloads", "download")} rarest pieces first, as usual.`
+        }
+      />
+
+      <Row
+        title="First and last pieces first"
+        on={o.firstLast}
+        set={set("firstLast")}
+        detail={
+          c.firstLast === 0
+            ? none
+            : o.firstLast
+              ? `${plural(c.firstLast, "torrent")} ${verb(c.firstLast, "fetches", "fetch")} each file's first and last piece before the rest, for previews.`
+              : `${plural(c.firstLast, "torrent")} ${verb(c.firstLast, "downloads", "download")} rarest pieces first, as usual.`
+        }
+      />
+
+      <Row
+        title="Super-seeding"
+        on={o.superSeed}
+        set={set("superSeed")}
+        detail={
+          c.superSeed === 0
+            ? none
+            : o.superSeed
+              ? `${plural(c.superSeed, "torrent")} ${verb(c.superSeed, "shows", "show")} peers a piece or two at a time, to get a new torrent's first copy out with less upload.`
+              : `${plural(c.superSeed, "torrent")} ${verb(c.superSeed, "seeds", "seed")} as usual, showing peers every piece.`
         }
       />
 

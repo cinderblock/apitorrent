@@ -71,12 +71,39 @@ The user went through the "can't come over" list. Status of each:
   earlier); apitorrent has no disk-cache knob to map them onto.
 - Plugins (AutoAdd, Scheduler, Execute, Blocklist, Notifications): out of scope.
 
+User's answers (2026-11-22): super-seeding yes; proxy yes, in its own thread
+([Proxy support, imported from Deluge](t3-thread://v2/ab3781d7-a1dd-4bbb-b3e9-6331e19b7569/mcp:launch:0ac27f799bcaee8be66e0299e8379bf8d1a8a0c5a806ebc493c7f4bef767ae9c),
+branch `proxy-support`); DHT, LSD and UPnP/NAT-PMP: support them as settings and import
+them, even though pokol doesn't need them.
+
+Round 2 steps:
+
+7. [x] Encryption import + "changed in Deluge" marks (`ca6ba0a`).
+8. [x] Engine: per-torrent upload slots, first and last pieces first, super-seeding
+       (libtorrent's non-strict mode, 2 offers per peer); core/API
+       (`PUT /torrents/{id}/first-last`, `/super-seed`, `upload_slots` column, migration
+       18); detail pane switches; import of all three (`--no-first-last`,
+       `--no-super-seed`).
+9. [x] DHT, LSD, UPnP and NAT-PMP as settings (`Settings.discovery`, applied at start by
+       `ports::apply_discovery`; `--no-dht`/`--no-lsd` still win); new crate
+       `apitorrent-portmap` (NAT-PMP per RFC 6886 first, then UPnP via `igd-next`; one-hour
+       leases renewed at half; removed at shutdown); status bar shows the forward; Deluge's
+       `dht`/`lsd`/`upnp`/`natpmp` import as one setting (`--setting discovery`).
+10. [ ] Proxy: in the other thread; merge its branch when done.
+
 ## Findings / gotchas
 
 - The preview asks Deluge's daemon for its versions (for the identity choice's label),
   capped at 3 s so a hung daemon doesn't stall the preview; the import asks again.
 - `importSettings: bool` is gone from `ImportDelugeRequest`, replaced by
   `options.settings` (an old client sending it gets no settings taken).
+- Super-seeding stalled a swarm in the loopback test: apitorrent (like many clients)
+  leaves out `have`s for pieces it thinks the peer already has, so the super-seed never
+  heard an offered piece arrived. Fixed as libtorrent does: NOT_INTERESTED from a
+  super-seeded peer means it has what it was shown, and it is shown more; a `shown` set
+  keeps any piece from being offered twice.
+- This machine's build budget was held for 30+ minutes by another thread's desktop build;
+  Linux checks ran on sentinel (`rbuild`), Windows-only ones (desktop, portmap) locally.
 - Deluge copies its global stop-at-ratio into every torrent; `plan` gives a torrent its
   own seed limits only when it differs (or always, in a non-default space taking the
   setting, since spaces have no seed-limit setting).
@@ -84,6 +111,8 @@ The user went through the "can't come over" list. Status of each:
 ## Progress log
 
 - [x] 2026-11-20: plan written.
+- [x] 2026-11-22: round 2 steps 7–9 built; clippy, every Rust test and the web checks
+      pass on sentinel.
 - [x] 2026-11-20: built. Rust unit tests (`deluge_import`: defaults, every option off,
       label renames, settings one by one), offline and lifecycle Deluge tests, clippy,
       web typecheck and `delugeImport.test.ts` pass. The options panel was rendered to

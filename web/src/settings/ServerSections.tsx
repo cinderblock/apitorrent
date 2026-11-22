@@ -331,6 +331,34 @@ export function NetworkSection({ draft, update }: DraftProps) {
         </Note>
       </SettingCard>
 
+      <SettingCard title="Finding peers" description="Beyond the trackers. Private torrents never use the DHT or local discovery: their peers come from the tracker.">
+        <ToggleRow
+          label="DHT"
+          description="Peers for public torrents without a tracker, and magnet links"
+          checked={draft.discovery.dht}
+          onChange={(dht) => update({ discovery: { ...draft.discovery, dht } })}
+        />
+        <ToggleRow
+          label="Local peer discovery"
+          description="Peers on the same network, found by multicast"
+          checked={draft.discovery.lsd}
+          onChange={(lsd) => update({ discovery: { ...draft.discovery, lsd } })}
+        />
+        <ToggleRow
+          label="Forward ports with UPnP"
+          description="Asks the router to open the peer and DHT ports, so peers outside can connect in"
+          checked={draft.discovery.upnp}
+          onChange={(upnp) => update({ discovery: { ...draft.discovery, upnp } })}
+        />
+        <ToggleRow
+          label="Forward ports with NAT-PMP"
+          description="The same, for routers that speak NAT-PMP; tried before UPnP"
+          checked={draft.discovery.natpmp}
+          onChange={(natpmp) => update({ discovery: { ...draft.discovery, natpmp } })}
+        />
+        <Note>These apply when the daemon next restarts. The daemon&apos;s --no-dht and --no-lsd turn those off whatever is set here.</Note>
+      </SettingCard>
+
       <SettingCard title="Connections" description="Across all torrents. Leave empty for no limit.">
         <SettingRow label="Open connections" htmlFor="s-conn">
           <AmountInput id="s-conn" value={draft.maxConnections} placeholder="No limit" onChange={(maxConnections) => update({ maxConnections })} />

@@ -11,4 +11,8 @@ downloadRate: number, uploadRate: number,
 /**
  * Peers at once; null uses the server's default.
  */
-maxConnections: number | null, };
+maxConnections: number | null, 
+/**
+ * Peers uploaded to at once; null uses the server's default.
+ */
+uploadSlots: number | null, };

@@ -244,6 +244,10 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE torrents ADD COLUMN file_options TEXT;
     ",
+    // 18: a torrent's own upload slots; NULL for the server's default.
+    "
+    ALTER TABLE torrents ADD COLUMN upload_slots INTEGER;
+    ",
 ];
 
 /// A torrent imported from another client.
@@ -320,6 +324,7 @@ pub struct TorrentRow {
     pub download_rate: u64,
     pub upload_rate: u64,
     pub max_connections: Option<u32>,
+    pub upload_slots: Option<u32>,
     /// The magnet link it was added from, if any.
     pub magnet: Option<String>,
     /// 0 portable, 1 native case-sensitive, 2 native case-insensitive.
@@ -435,9 +440,9 @@ impl Database {
                  label, added_at, paused, have, file_priorities, downloaded_total, uploaded_total,
                  placements, held_path, unwanted_policy, queue_position, download_rate,
                  upload_rate, max_connections, magnet, naming, linked, file_paths, space_id,
-                 trackers)
+                 trackers, upload_slots)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 row.id,
                 row.info_hash_v1,
@@ -465,6 +470,7 @@ impl Database {
                 row.file_paths,
                 row.space,
                 row.trackers,
+                row.upload_slots,
             ],
         )?;
         Ok(())
@@ -502,7 +508,7 @@ impl Database {
                     paused, have, file_priorities, downloaded_total, uploaded_total,
                     placements, held_path, unwanted_policy, queue_position, download_rate,
                     upload_rate, max_connections, magnet, naming, linked, file_paths, space_id,
-                    trackers
+                    trackers, upload_slots
              FROM torrents ORDER BY queue_position, added_at, space_id",
         )?;
         stmt.query_map([], |r| {
@@ -533,6 +539,7 @@ impl Database {
                 linked: r.get(22)?,
                 file_paths: r.get(23)?,
                 trackers: r.get(25)?,
+                upload_slots: r.get(26)?,
             })
         })?
         .collect()
@@ -581,16 +588,19 @@ impl Database {
         download_rate: u64,
         upload_rate: u64,
         max_connections: Option<u32>,
+        upload_slots: Option<u32>,
     ) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE torrents SET download_rate = ?2, upload_rate = ?3, max_connections = ?4
+            "UPDATE torrents SET download_rate = ?2, upload_rate = ?3, max_connections = ?4,
+                 upload_slots = ?6
              WHERE id = ?1 AND space_id = ?5",
             params![
                 key.id,
                 to_i64(download_rate),
                 to_i64(upload_rate),
                 max_connections,
-                key.space
+                key.space,
+                upload_slots
             ],
         )?;
         Ok(())
@@ -1154,6 +1164,7 @@ mod tests {
             download_rate: 0,
             upload_rate: 0,
             max_connections: None,
+            upload_slots: None,
             magnet: None,
             naming: 0,
             linked: None,
@@ -1220,7 +1231,7 @@ mod tests {
         db.set_unwanted_policy(&b, 1).unwrap();
         db.set_queue_positions(&[(a.clone(), 5), (b.clone(), 2)])
             .unwrap();
-        db.set_limits(&a, 1000, 2000, Some(30)).unwrap();
+        db.set_limits(&a, 1000, 2000, Some(30), Some(4)).unwrap();
         db.set_paused(&b, true).unwrap();
         db.set_label(&b, Some("linux")).unwrap();
         let rows = db.torrents().unwrap();
@@ -1235,9 +1246,10 @@ mod tests {
             (
                 rows[1].download_rate,
                 rows[1].upload_rate,
-                rows[1].max_connections
+                rows[1].max_connections,
+                rows[1].upload_slots
             ),
-            (1000, 2000, Some(30))
+            (1000, 2000, Some(30), Some(4))
         );
         assert!(rows[0].paused);
         assert_eq!(rows[0].label.as_deref(), Some("linux"));

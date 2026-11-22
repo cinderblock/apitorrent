@@ -84,6 +84,14 @@ moveCompleted: string | null,
  */
 sequential: boolean, 
 /**
+ * First and last pieces first in Deluge.
+ */
+firstLast: boolean, 
+/**
+ * Super-seeding in Deluge.
+ */
+superSeed: boolean, 
+/**
  * Options set in Deluge that don't carry over, in plain words.
  */
 notCarried: Array<string>, };

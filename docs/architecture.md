@@ -160,11 +160,11 @@ licence notices intact.
 | Discovery | BEP 5 (DHT), 11 (PEX), 14 (LSD), 15 (UDP tracker), 23 (compact), 7 / 32 (IPv6), 48 (scrape) |
 | Transport | TCP, BEP 29 (uTP), BEP 55 (holepunch), MSE/PE encryption, SOCKS5 proxy, IPv6 |
 | Data | BEP 19 (webseeds), 17 (HTTP seeds). Not BEP 30, the superseded v1 merkle extension. |
-| Picking | rarest-first with availability tracking, priorities, sequential and streaming deadlines, endgame |
-| Choking | tit-for-tat with optimistic unchoke, a rate-based seed choker, upload slots |
+| Picking | rarest-first with availability tracking, priorities, sequential and streaming deadlines, first and last pieces first, endgame |
+| Choking | tit-for-tat with optimistic unchoke, a rate-based seed choker, upload slots (per session, or per torrent), BEP 16 super-seeding (libtorrent's non-strict mode: a peer gets a new piece once it has one it was shown) |
 | NAT | UPnP IGD, NAT-PMP / PCP |
 | Limits | global, per-torrent and per-peer-class rate limits, connection limits, scheduling |
-| Later | I2P, BEP 21 (partial seeds), super-seeding, share mode |
+| Later | I2P, BEP 21 (partial seeds), share mode |
 
 **Ports.** The peer port (TCP, and UDP for uTP) and the DHT's UDP port are picked at random
 from 20000–48999 on the first start, checked free, and stored in the settings
@@ -1281,7 +1281,9 @@ recheck. That is the onboarding path for existing Deluge users.
   per-torrent option is on by default and can be left out in `deluge_import::plan`:
   labels (with `labelRenames`, rename or drop one), queue order (else by date added),
   added dates, totals and seeding time, skipped files (else downloaded), Deluge's tracker
-  lists (else the `.torrent`'s), per-torrent limits and stop-at-ratio. `identity` is
+  lists (else the `.torrent`'s), per-torrent limits (with upload slots) and stop-at-ratio,
+  move when complete, sequential download, first and last pieces first, and super-seeding
+  (the last two in `files::FileOptions`). `identity` is
   Deluge, none, or another identity; `identitySkipHosts` leaves hosts out. Files, progress
   and renamed files always come (the files are found through them). The preview carries
   what the wizard needs to show each option for the ticked torrents (per torrent: private,

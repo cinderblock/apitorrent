@@ -60,6 +60,10 @@ pub struct BulkLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub max_connections: Option<u32>,
+    /// Peers uploaded to at once; 0 uses the server's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub upload_slots: Option<u32>,
 }
 
 impl BulkLimits {
@@ -73,6 +77,11 @@ impl BulkLimits {
                 Some(0) => None,
                 Some(n) => Some(n),
                 None => current.max_connections,
+            },
+            upload_slots: match self.upload_slots {
+                Some(0) => None,
+                Some(n) => Some(n),
+                None => current.upload_slots,
             },
         }
     }
@@ -212,6 +221,7 @@ mod tests {
             download_rate: 100,
             upload_rate: 200,
             max_connections: Some(30),
+            upload_slots: Some(3),
         };
         let edit = BulkLimits {
             upload_rate: Some(50),

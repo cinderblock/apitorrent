@@ -192,6 +192,7 @@ function describeLimits(l: TorrentLimits): string {
   if (l.downloadRate > 0) parts.push(`↓ ${formatRate(l.downloadRate)}`);
   if (l.uploadRate > 0) parts.push(`↑ ${formatRate(l.uploadRate)}`);
   if (l.maxConnections != null) parts.push(`${l.maxConnections} peers`);
+  if (l.uploadSlots != null) parts.push(`${l.uploadSlots} upload ${l.uploadSlots === 1 ? "slot" : "slots"}`);
   return parts.length > 0 ? parts.join(", ") : "None of its own";
 }
 
@@ -200,6 +201,7 @@ function LimitsEditor({ id, limits, refetch, readOnly }: { id: string; limits: T
   const [down, setDown] = useState(toKiB(limits.downloadRate));
   const [up, setUp] = useState(toKiB(limits.uploadRate));
   const [peers, setPeers] = useState(limits.maxConnections == null ? "" : String(limits.maxConnections));
+  const [slots, setSlots] = useState(limits.uploadSlots == null ? "" : String(limits.uploadSlots));
   if (!editing) {
     return (
       <span className="inline-edit">
@@ -217,8 +219,8 @@ function LimitsEditor({ id, limits, refetch, readOnly }: { id: string; limits: T
       className="inline-edit"
       onSubmit={(e) => {
         e.preventDefault();
-        const maxConnections = peers.trim() === "" ? null : Math.max(1, Math.floor(Number(peers) || 1));
-        void api.setLimits(id, { downloadRate: fromKiB(down), uploadRate: fromKiB(up), maxConnections }).then(refetch);
+        const count = (v: string) => (v.trim() === "" ? null : Math.max(1, Math.floor(Number(v) || 1)));
+        void api.setLimits(id, { downloadRate: fromKiB(down), uploadRate: fromKiB(up), maxConnections: count(peers), uploadSlots: count(slots) }).then(refetch);
         setEditing(false);
       }}
     >
@@ -230,6 +232,10 @@ function LimitsEditor({ id, limits, refetch, readOnly }: { id: string; limits: T
       </label>
       <label>
         Peers <input type="number" min={1} aria-label="Most peers" value={peers} placeholder="default" onChange={(e) => setPeers(e.target.value)} />
+      </label>
+      <label>
+        Upload slots{" "}
+        <input type="number" min={1} aria-label="Peers uploaded to at once" value={slots} placeholder="default" onChange={(e) => setSlots(e.target.value)} />
       </label>
       <button type="submit">Save</button>
       <button type="button" onClick={() => setEditing(false)}>
@@ -343,6 +349,52 @@ function FileOrderEditor({ id, detail, refetch, readOnly }: { id: string; detail
         {own?.by === "manual" && <option value="manual">{describeFileOrder(own)}</option>}
       </select>
       {tip}
+      {error && <span className="error-text">{error}</span>}
+    </span>
+  );
+}
+
+/** A switch saved on change: first and last pieces first, or super-seeding. */
+function PieceSwitch({
+  on,
+  label,
+  save,
+  refetch,
+  readOnly,
+  children,
+}: {
+  on: boolean;
+  label: string;
+  save: (on: boolean) => Promise<void>;
+  refetch: () => void;
+  readOnly: boolean;
+  children: React.ReactNode;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <span className="inline-edit">
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={on}
+          disabled={readOnly || busy}
+          onChange={async (e) => {
+            setError(null);
+            setBusy(true);
+            try {
+              await save(e.target.checked);
+              refetch();
+            } catch (err) {
+              setError(describeError(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+        {label}
+      </label>
+      <Tip label={`About ${label.toLowerCase()}`}>{children}</Tip>
       {error && <span className="error-text">{error}</span>}
     </span>
   );
@@ -849,6 +901,27 @@ export function DetailPane({
             {detail && <Row label="Seeding limits" value={<SeedLimitsEditor key={summary.id} id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />} />}
             {detail && detail.seedingSecs > 0 && <Row label="Seeding time" value={formatSeedingTime(detail.seedingSecs)} />}
             {detail && <Row label="Download order" value={<FileOrderEditor id={summary.id} detail={detail} refetch={refetch} readOnly={readOnly} />} />}
+            {detail && (
+              <Row
+                label="Previews"
+                value={
+                  <PieceSwitch on={detail.firstLast} label="First and last pieces first" save={(on) => api.setFirstLast(summary.id, on)} refetch={refetch} readOnly={readOnly}>
+                    Each wanted file&apos;s first and last piece come before the rest, so a video or archive can be opened to check it before it completes.
+                  </PieceSwitch>
+                }
+              />
+            )}
+            {detail && (
+              <Row
+                label="Super-seeding"
+                value={
+                  <PieceSwitch on={detail.superSeed} label="Super-seed" save={(on) => api.setSuperSeed(summary.id, on)} refetch={refetch} readOnly={readOnly}>
+                    For the first seed of a new torrent. Once complete, each peer is shown a piece or two at a time, the rarest it lacks, and another once it has one, so fewer
+                    bytes leave here before the swarm holds a full copy. It applies to peers that connect afterwards. Once others seed too it only slows things down: turn it off.
+                  </PieceSwitch>
+                }
+              />
+            )}
             {detail && (
               <Row
                 label="Completed files"

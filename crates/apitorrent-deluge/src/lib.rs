@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use apitorrent_bencode::Value as Bencode;
 
 /// One torrent from Deluge, with everything apitorrent can use.
+#[allow(clippy::struct_excessive_bools, reason = "Deluge's own per-torrent switches")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DelugeTorrent {
     /// The v1 info-hash in hex, as Deluge names it.
@@ -74,6 +75,12 @@ pub struct DelugeTorrent {
     pub move_completed: Option<String>,
     /// `sequential_download`: pieces in order, for watching while it downloads.
     pub sequential: bool,
+    /// `max_upload_slots`: peers uploaded to at once; `None` for Deluge's global setting.
+    pub max_upload_slots: Option<u32>,
+    /// `prioritize_first_last_pieces`.
+    pub first_last: bool,
+    /// `super_seeding`.
+    pub super_seed: bool,
     /// Deluge options set on this torrent that apitorrent has no equivalent for, in plain
     /// words (`super-seeding`).
     pub not_carried: Vec<String>,
@@ -97,6 +104,8 @@ pub struct DelugeSettings {
     pub stop_at_ratio: Option<(f64, bool)>,
     /// `enc_in_policy`, `enc_out_policy` and `enc_level`.
     pub encryption: DelugeEncryption,
+    /// `dht`, `lsd`, `upnp` and `natpmp`, in that order.
+    pub discovery: [bool; 4],
 }
 
 impl DelugeSettings {
@@ -114,6 +123,7 @@ impl DelugeSettings {
             dont_count_slow: false,
             stop_at_ratio: None,
             encryption: DelugeEncryption::default(),
+            discovery: [true; 4],
         }
     }
 }
@@ -280,6 +290,9 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
             seeding_secs: 0,
             move_completed: None,
             sequential: false,
+            max_upload_slots: None,
+            first_last: false,
+            super_seed: false,
             not_carried: Vec::new(),
         };
         if let Some(r) = resume.get(&id)
@@ -387,6 +400,16 @@ fn apply_deluge_state(t: &mut DelugeTorrent, d: &pickle::Value) {
         .and_then(Value::as_int)
         .filter(|&n| n > 0)
         .and_then(|n| u32::try_from(n).ok());
+    t.max_upload_slots = d
+        .get("max_upload_slots")
+        .and_then(Value::as_int)
+        .filter(|&n| n > 0)
+        .and_then(|n| u32::try_from(n).ok());
+    t.first_last = d
+        .get("prioritize_first_last_pieces")
+        .and_then(Value::as_bool)
+        == Some(true);
+    t.super_seed = d.get("super_seeding").and_then(Value::as_bool) == Some(true);
     if let Some(list) = d.get("file_priorities").and_then(Value::as_list)
         && !list.is_empty()
     {
@@ -449,21 +472,6 @@ fn torrent_notes(d: &pickle::Value) -> Vec<String> {
             .is_none_or(|p| p.trim().is_empty())
     {
         out.push("move completed downloads, to no folder".to_owned());
-    }
-    if let Some(n) = d
-        .get("max_upload_slots")
-        .and_then(Value::as_int)
-        .filter(|&n| n > 0)
-    {
-        out.push(format!(
-            "{n} upload slots of its own (apitorrent's are per session)"
-        ));
-    }
-    if on("prioritize_first_last_pieces") {
-        out.push("first and last pieces first".to_owned());
-    }
-    if on("super_seeding") {
-        out.push("super-seeding".to_owned());
     }
     if d.get("auto_managed").and_then(Value::as_bool) == Some(false) {
         out.push(
@@ -571,6 +579,11 @@ fn settings_from(core: &serde_json::Value) -> DelugeSettings {
                     .and_then(serde_json::Value::as_bool)
                     == Some(true),
             )
+        }),
+        discovery: ["dht", "lsd", "upnp", "natpmp"].map(|key| {
+            core.get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true)
         }),
         encryption: {
             let d = DelugeEncryption::default();

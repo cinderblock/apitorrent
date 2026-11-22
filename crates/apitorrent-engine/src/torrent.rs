@@ -35,6 +35,9 @@ const TICK: Duration = Duration::from_secs(1);
 /// At most this many PEX uTP hints are kept per torrent (each PEX message adds up to 50).
 const MAX_UTP_HINTS: usize = 2000;
 const CHOKE_EVERY: u32 = 10;
+/// Pieces a super-seed offers each peer at once (BEP 16). libtorrent offers two, so a
+/// peer that hasn't passed one on yet still has another to fetch.
+const SUPERSEED_OFFERS: usize = 2;
 const OPTIMISTIC_EVERY: u32 = 3;
 /// How long to wait before reconnecting to a peer whose connection ended normally.
 const RECONNECT_AFTER: Duration = Duration::from_secs(10);
@@ -319,6 +322,10 @@ pub struct AddTorrent {
     /// Files read while they download, each with the byte its reader needs next (see
     /// [`TorrentHandle::set_stream`]).
     pub streams: Vec<(usize, u64)>,
+    /// Each file's first and last piece first (see [`TorrentHandle::set_first_last`]).
+    pub first_last: bool,
+    /// Super-seeding (see [`TorrentHandle::set_super_seed`]).
+    pub super_seed: bool,
 }
 
 impl AddTorrent {
@@ -346,6 +353,8 @@ impl AddTorrent {
             file_locations: None,
             file_order: None,
             streams: Vec::new(),
+            first_last: false,
+            super_seed: false,
         }
     }
 
@@ -373,6 +382,8 @@ pub(crate) enum Command {
     FilePriorities(Vec<u8>),
     FileOrder(Option<Vec<usize>>),
     Stream(usize, Option<u64>),
+    FirstLast(bool),
+    SuperSeed(bool),
     SetUnwantedPolicy(UnwantedPolicy),
     SetLimits(EntryKey, TorrentLimits),
     SetGroup(EntryKey, Option<String>),
@@ -576,6 +587,22 @@ impl TorrentHandle {
     /// the reader seeks. `None` stops.
     pub async fn set_stream(&self, file: usize, from: Option<u64>) {
         self.command(Command::Stream(file, from)).await;
+    }
+
+    /// Fetch each wanted file's first and last piece before the rest of its priority, so
+    /// files can be previewed before they complete.
+    pub async fn set_first_last(&self, on: bool) {
+        self.command(Command::FirstLast(on)).await;
+    }
+
+    /// Super-seeding (BEP 16), for the first seed of a new torrent: once it has every
+    /// piece, peers are shown one or two pieces at a time instead of everything, each one
+    /// they lack and the rarest, and get another once they have one they were shown. Fewer
+    /// bytes leave this seed before the swarm holds a full copy.
+    /// It applies to peers that connect afterwards; turning it off shows every peer
+    /// everything.
+    pub async fn set_super_seed(&self, on: bool) {
+        self.command(Command::SuperSeed(on)).await;
     }
 
     /// Move file `file` out of the save directory to `to` and keep seeding it from there
@@ -793,6 +820,11 @@ struct Peer {
     last_down: u64,
     last_up: u64,
     optimistic: bool,
+    /// Super-seeding: the pieces this peer was shown and hasn't had yet (see
+    /// [`SUPERSEED_OFFERS`]).
+    offered: Vec<u32>,
+    /// Super-seeding: every piece this peer was ever shown, so none is shown twice.
+    shown: HashSet<u32>,
     /// Units of the session's and group's connection counters, held while connected.
     _slots: Vec<Slot>,
     /// A half-open unit, held until the handshake completes.
@@ -835,6 +867,8 @@ impl Peer {
             last_down: 0,
             last_up: 0,
             optimistic: false,
+            offered: Vec::new(),
+            shown: HashSet::new(),
             _slots: slots,
             half_open: None,
         }
@@ -899,6 +933,7 @@ impl Entry {
     }
 }
 
+#[allow(clippy::struct_excessive_bools, reason = "independent per-torrent switches")]
 pub(crate) struct TorrentActor {
     info_hashes: InfoHashes,
     short_hash: Sha1Hash,
@@ -940,6 +975,8 @@ pub(crate) struct TorrentActor {
     file_priorities: Option<Vec<u8>>,
     file_order: Option<Vec<usize>>,
     streams: Vec<(usize, u64)>,
+    first_last: bool,
+    super_seed: bool,
     unwanted: UnwantedPolicy,
     /// Files whose placement change is in flight.
     moving: HashSet<usize>,
@@ -1102,6 +1139,8 @@ impl TorrentActor {
             file_priorities: params.file_priorities,
             file_order: params.file_order,
             streams: params.streams,
+            first_last: params.first_last,
+            super_seed: params.super_seed,
             unwanted: params.unwanted,
             moving: HashSet::new(),
             memory_held: 0,
@@ -1215,6 +1254,7 @@ impl TorrentActor {
             picker.set_priorities(&prios);
         }
         picker.set_file_order(self.file_order.clone());
+        picker.set_first_last(self.first_last);
         for &(file, from) in &self.streams {
             picker.set_stream(file, Some(from));
         }
@@ -1843,6 +1883,14 @@ impl TorrentActor {
                         self.fill_all();
                     }
                 }
+                Command::FirstLast(on) => {
+                    self.first_last = on;
+                    if let Some(picker) = self.picker.as_mut() {
+                        picker.set_first_last(on);
+                    }
+                    self.fill_all();
+                }
+                Command::SuperSeed(on) => self.set_super_seed(on),
                 Command::SetUnwantedPolicy(policy) => self.unwanted = policy,
                 Command::SetLimits(key, limits) => {
                     if let Some(e) = self.entry_mut(key) {
@@ -2493,7 +2541,7 @@ impl TorrentActor {
                 client: Some(self.identity.client_name(&self.shared.config.client_name)),
                 request_queue: Some(MAX_PEER_UPLOAD_QUEUE),
                 metadata_size: Some(self.torrent.info.raw().len() as u64),
-                upload_only: have.is_full(),
+                upload_only: have.is_full() && !self.super_seed,
                 listen_port: Some(self.shared.listen_port()),
                 your_ip: Some(peer.addr.ip()),
                 ..Default::default()
@@ -2509,12 +2557,21 @@ impl TorrentActor {
                 payload: Bytes::from(ext.encode()),
             });
         }
-        if peer.fast && have.is_full() {
+        let super_seeding = self.super_seed && have.is_full();
+        if super_seeding {
+            // Nothing yet: the pieces on offer follow as `have`s.
+            if peer.fast {
+                peer.send(Message::HaveNone);
+            }
+        } else if peer.fast && have.is_full() {
             peer.send(Message::HaveAll);
         } else if peer.fast && have.none_set() {
             peer.send(Message::HaveNone);
         } else if !have.none_set() {
             peer.send(Message::Bitfield(Bytes::copy_from_slice(have.as_bytes())));
+        }
+        if super_seeding {
+            self.superseed_offer(key);
         }
         self.publish_stats();
     }
@@ -2532,13 +2589,18 @@ impl TorrentActor {
             Message::Bitfield(bytes) => {
                 let has = Bitfield::from_bytes(&bytes, n).ok_or("invalid bitfield")?;
                 set_peer_has(picker, peer, has);
+                // Offers made before the bitfield came may be pieces it already had.
+                let had = peer.has.clone();
+                peer.offered.retain(|&p| !had.get(p));
                 self.update_interest(key);
+                self.superseed_offer(key);
             }
             Message::HaveAll => {
                 if !peer.fast {
                     return Err("have_all without the fast extension".into());
                 }
                 set_peer_has(picker, peer, Bitfield::full(n));
+                peer.offered.clear();
                 self.update_interest(key);
             }
             Message::HaveNone => {
@@ -2562,6 +2624,7 @@ impl TorrentActor {
                     }
                 }
                 self.update_interest(key);
+                self.superseed_done(key, piece);
             }
             Message::Choke => {
                 peer.peer_choking = true;
@@ -2581,6 +2644,16 @@ impl TorrentActor {
             }
             Message::NotInterested => {
                 peer.peer_interested = false;
+                // A super-seeded peer that wants nothing more has what it was shown (a
+                // client that leaves out `have`s for pieces it thinks we have says so only
+                // this way): show it more.
+                let had_offers = !peer.offered.is_empty();
+                if had_offers && self.super_seeding() {
+                    if let Some(p) = self.peers.get_mut(&key) {
+                        p.offered.clear();
+                    }
+                    self.superseed_offer(key);
+                }
             }
             Message::Request(block) => self.on_request(key, block)?,
             Message::Cancel(block) => {
@@ -3420,7 +3493,11 @@ impl TorrentActor {
         {
             return Err(format!("invalid request {block:?}"));
         }
+        // A super-seed serves only the pieces it showed this peer.
+        let hidden =
+            self.super_seed && picker.have().is_full() && !peer.offered.contains(&block.piece);
         if peer.am_choking
+            || hidden
             || !picker.have().get(block.piece)
             || peer.uploads >= MAX_PEER_UPLOAD_QUEUE as usize
         {
@@ -3491,10 +3568,99 @@ impl TorrentActor {
         self.peers.values().filter(|p| !p.am_choking).count()
     }
 
+    /// Peers uploaded to at once: the fewest any entry allows, else the session's.
+    fn upload_slots(&self) -> usize {
+        self.entries
+            .iter()
+            .filter_map(|e| e.limits.upload_slots)
+            .min()
+            .unwrap_or(self.shared.config.upload_slots)
+    }
+
+    // ----- super-seeding (BEP 16) -----------------------------------------------------------
+
+    fn super_seeding(&self) -> bool {
+        self.super_seed && self.picker.as_ref().is_some_and(|p| p.have().is_full())
+    }
+
+    fn set_super_seed(&mut self, on: bool) {
+        if self.super_seed == on {
+            return;
+        }
+        let was = self.super_seeding();
+        self.super_seed = on;
+        if was && !on {
+            // Show every peer everything it was kept from.
+            let n = self.layout.piece_count();
+            for peer in self
+                .peers
+                .values_mut()
+                .filter(|p| p.tx.is_some() && !p.is_seed)
+            {
+                for piece in (0..n).filter(|&p| !peer.has.get(p) && !peer.shown.contains(&p)) {
+                    peer.send(Message::Have(piece));
+                }
+                peer.offered.clear();
+                peer.shown.clear();
+            }
+        }
+    }
+
+    /// Super-seeding: show peer `key` pieces it lacks until it has [`SUPERSEED_OFFERS`] on
+    /// offer, the rarest first, preferring pieces not on offer to anyone else.
+    fn superseed_offer(&mut self, key: PeerKey) {
+        use rand::seq::SliceRandom;
+        if !self.super_seeding() {
+            return;
+        }
+        let picker = self.picker.as_ref().expect("super-seeding has a picker");
+        let elsewhere: HashSet<u32> = self
+            .peers
+            .iter()
+            .filter(|(k, _)| **k != key)
+            .flat_map(|(_, p)| p.offered.iter().copied())
+            .collect();
+        let Some(peer) = self.peers.get(&key) else {
+            return;
+        };
+        let want = SUPERSEED_OFFERS.saturating_sub(peer.offered.len());
+        if peer.tx.is_none() || peer.is_seed || want == 0 {
+            return;
+        }
+        let mut candidates: Vec<(bool, u32, u32)> = (0..self.layout.piece_count())
+            .filter(|&p| !peer.has.get(p) && !peer.shown.contains(&p))
+            .map(|p| (elsewhere.contains(&p), picker.availability(p), p))
+            .collect();
+        candidates.shuffle(&mut rand::rng());
+        candidates.sort_by_key(|&(on_offer, availability, _)| (on_offer, availability));
+        let peer = self.peers.get_mut(&key).expect("checked above");
+        for (_, _, piece) in candidates.into_iter().take(want) {
+            peer.offered.push(piece);
+            peer.shown.insert(piece);
+            peer.send(Message::Have(piece));
+        }
+    }
+
+    /// Super-seeding: peer `key` now has `piece`. If it was one shown to it, it is shown
+    /// another (libtorrent's default, non-strict super-seeding: strict mode waits until a
+    /// third peer has the piece, which stalls a swarm of one).
+    fn superseed_done(&mut self, key: PeerKey, piece: u32) {
+        if !self.super_seeding() {
+            return;
+        }
+        let Some(peer) = self.peers.get_mut(&key) else {
+            return;
+        };
+        if let Some(i) = peer.offered.iter().position(|&p| p == piece) {
+            peer.offered.swap_remove(i);
+            self.superseed_offer(key);
+        }
+    }
+
     /// Unchoke a newly interested peer straight away if a slot is free, instead of waiting
     /// for the next choke round.
     fn maybe_unchoke(&mut self, key: PeerKey) {
-        let slots = self.shared.config.upload_slots;
+        let slots = self.upload_slots();
         if self.unchoked_count() < slots
             && let Some(peer) = self.peers.get_mut(&key)
             && peer.am_choking
@@ -3507,7 +3673,7 @@ impl TorrentActor {
     /// Tit-for-tat: unchoke the interested peers that give us the most (or, when seeding,
     /// that take the most), plus one optimistic unchoke that rotates.
     fn run_choker(&mut self) {
-        let slots = self.shared.config.upload_slots.max(1);
+        let slots = self.upload_slots().max(1);
         let seeding = self.picker.as_ref().is_some_and(|p| p.have().is_full());
         let mut ranked: Vec<(PeerKey, u64)> = self
             .peers

@@ -77,9 +77,9 @@ export const SECTIONS: readonly Section[] = [
     id: "network",
     title: "Network",
     group: "server",
-    summary: "Ports, connections and encryption",
-    keywords: "peer port dht udp tcp utp connections half open connecting encryption mse obfuscation",
-    fields: ["peerPort", "dhtPort", "maxConnections", "maxHalfOpen", "connectRate", "encryption"],
+    summary: "Ports, peer discovery, connections and encryption",
+    keywords: "peer port dht udp tcp utp lsd local peer discovery upnp nat-pmp natpmp port forwarding router connections half open connecting encryption mse obfuscation",
+    fields: ["peerPort", "dhtPort", "discovery", "maxConnections", "maxHalfOpen", "connectRate", "encryption"],
     visible: always,
   },
   {
