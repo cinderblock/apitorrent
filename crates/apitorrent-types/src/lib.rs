@@ -443,6 +443,91 @@ pub struct Settings {
     /// Moving completed files, unless their group or the torrent itself says otherwise.
     #[serde(default)]
     pub move_completed: files::MoveCompleted,
+    /// A proxy for peer, web seed and tracker connections. Applies at once to new
+    /// connections.
+    #[serde(default)]
+    pub proxy: ProxySettings,
+}
+
+impl Settings {
+    /// The settings as the API shows them: secrets left out (see
+    /// [`ProxySettings::password`]).
+    #[must_use]
+    pub fn redacted(mut self) -> Self {
+        self.proxy.password_set = self.proxy.password.as_ref().is_some_and(|p| !p.is_empty());
+        self.proxy.password = None;
+        self
+    }
+}
+
+/// The kind of proxy, or none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ProxyType {
+    /// No proxy: every connection is direct. The other proxy settings are kept.
+    #[default]
+    None,
+    /// SOCKS4, or SOCKS4a when the proxy resolves host names. IPv4 peers only; the
+    /// username is sent as the SOCKS4 user id, and there is no password.
+    Socks4,
+    /// SOCKS5, with or without a username and password. The only kind that carries UDP
+    /// trackers.
+    Socks5,
+    /// An HTTP proxy that allows `CONNECT`, with or without Basic authentication.
+    Http,
+}
+
+/// A proxy for outgoing connections. The options follow Deluge's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+#[allow(clippy::struct_excessive_bools, reason = "independent on/off settings")]
+pub struct ProxySettings {
+    #[serde(rename = "type")]
+    pub kind: ProxyType,
+    /// The proxy's host name or IP address.
+    pub host: String,
+    pub port: u16,
+    /// Empty for a proxy without authentication.
+    pub username: String,
+    /// Write-only: the API never sends it back (see `password_set`). A settings update
+    /// without it keeps the stored password; an empty string removes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub password: Option<String>,
+    /// Read-only: whether a password is stored. Ignored in updates.
+    pub password_set: bool,
+    /// Let the proxy resolve host names (trackers', and peers' given by name), so they
+    /// never reach the local resolver.
+    pub proxy_hostnames: bool,
+    /// Peer connections and web seeds go through the proxy. They are TCP only then: uTP
+    /// can't go through a proxy.
+    pub proxy_peers: bool,
+    /// Tracker announces and scrapes go through the proxy. Through an HTTP or SOCKS4
+    /// proxy, UDP trackers can't be reached and are skipped.
+    pub proxy_trackers: bool,
+    /// Everything that can go through the proxy does, and everything that can't is off:
+    /// no incoming connections, no DHT, no local peer discovery, no uTP. Turning it on
+    /// takes effect at once; turning it off brings those back on the next start.
+    pub force: bool,
+}
+
+impl Default for ProxySettings {
+    fn default() -> Self {
+        Self {
+            kind: ProxyType::None,
+            host: String::new(),
+            port: 1080,
+            username: String::new(),
+            password: None,
+            password_set: false,
+            proxy_hostnames: true,
+            proxy_peers: true,
+            proxy_trackers: true,
+            force: false,
+        }
+    }
 }
 
 /// Finding peers beyond the trackers (none of it for private torrents), and forwarding the

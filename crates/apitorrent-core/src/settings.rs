@@ -42,7 +42,88 @@ pub fn defaults(session: &SessionConfig) -> Settings {
         identity: IdentitySettings::default(),
         file_order: apitorrent_types::files::FileOrder::default(),
         move_completed: apitorrent_types::files::MoveCompleted::default(),
+        proxy: apitorrent_types::ProxySettings::default(),
     }
+}
+
+/// The engine's proxy settings; `None` when there is no proxy.
+pub fn proxy_settings(
+    p: &apitorrent_types::ProxySettings,
+) -> Option<apitorrent_engine::ProxySettings> {
+    use apitorrent_engine::ProxyKind;
+    use apitorrent_types::ProxyType;
+    let kind = match p.kind {
+        ProxyType::None => return None,
+        ProxyType::Socks4 => ProxyKind::Socks4,
+        ProxyType::Socks5 => ProxyKind::Socks5,
+        ProxyType::Http => ProxyKind::Http,
+    };
+    let password = p.password.clone().unwrap_or_default();
+    let credentials =
+        (!p.username.is_empty() || !password.is_empty()).then(|| apitorrent_engine::Credentials {
+            username: p.username.clone(),
+            password,
+        });
+    Some(apitorrent_engine::ProxySettings {
+        proxy: apitorrent_engine::Proxy {
+            kind,
+            host: p.host.trim().to_owned(),
+            port: p.port,
+            credentials,
+            remote_dns: p.proxy_hostnames,
+        },
+        peers: p.proxy_peers,
+        trackers: p.proxy_trackers,
+        force: p.force,
+    })
+}
+
+/// Whether the stored settings force everything through a proxy, so the session starts
+/// without what can't go through one (see [`apitorrent_types::ProxySettings::force`]).
+pub fn forces_proxy(s: &Settings) -> bool {
+    s.proxy.force && s.proxy.kind != apitorrent_types::ProxyType::None
+}
+
+/// Reject proxy settings that can't be used.
+fn validate_proxy(p: &apitorrent_types::ProxySettings) -> Result<(), String> {
+    use apitorrent_types::ProxyType;
+    if p.kind == ProxyType::None {
+        return Ok(());
+    }
+    let host = p.host.trim();
+    if host.is_empty() {
+        return Err("the proxy needs a host".into());
+    }
+    if host
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || "/@?#".contains(c))
+    {
+        return Err(format!("{host:?} is not a host name or address"));
+    }
+    if p.port == 0 {
+        return Err("the proxy needs a port".into());
+    }
+    let password = p.password.as_deref().unwrap_or_default();
+    // SOCKS5 sends each in one length byte.
+    if p.username.len() > 255 || password.len() > 255 {
+        return Err("the proxy username and password must each be at most 255 bytes".into());
+    }
+    if p.username
+        .chars()
+        .chain(password.chars())
+        .any(char::is_control)
+    {
+        return Err("the proxy username and password can't hold control characters".into());
+    }
+    if p.kind == ProxyType::Http && p.username.contains(':') {
+        return Err("an HTTP proxy username can't hold a colon".into());
+    }
+    let engine = proxy_settings(p).expect("a proxy kind");
+    engine
+        .proxy
+        .url()
+        .map_err(|_| format!("{host:?} is not a host name or address"))?;
+    Ok(())
 }
 
 /// The engine's profile for an identity; `None` is apitorrent itself.
@@ -158,6 +239,7 @@ pub fn validate(s: &Settings) -> Result<(), String> {
         return Err("the peer port and the DHT port must differ".into());
     }
     identity_rules(&s.identity)?;
+    validate_proxy(&s.proxy)?;
     let mut names = HashSet::new();
     let mut labels = HashSet::new();
     for g in &s.groups {
@@ -249,6 +331,113 @@ pub fn plan(items: &[QueueItem], q: &QueueSettings) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use apitorrent_types::{ProxySettings, ProxyType};
+
+    fn socks5() -> ProxySettings {
+        ProxySettings {
+            kind: ProxyType::Socks5,
+            host: " proxy.example ".into(),
+            port: 1080,
+            username: "me".into(),
+            password: Some("secret".into()),
+            ..ProxySettings::default()
+        }
+    }
+
+    #[test]
+    fn proxy_maps_to_the_engine() {
+        assert_eq!(proxy_settings(&ProxySettings::default()), None);
+        let mut p = socks5();
+        p.proxy_trackers = false;
+        p.proxy_hostnames = false;
+        let e = proxy_settings(&p).unwrap();
+        assert_eq!(e.proxy.kind, apitorrent_engine::ProxyKind::Socks5);
+        assert_eq!(e.proxy.host, "proxy.example");
+        assert!(!e.proxy.remote_dns);
+        assert!(e.peers && !e.trackers && !e.force);
+        let c = e.proxy.credentials.unwrap();
+        assert_eq!((c.username.as_str(), c.password.as_str()), ("me", "secret"));
+        // No username and no password: no authentication.
+        p.username.clear();
+        p.password = None;
+        assert_eq!(proxy_settings(&p).unwrap().proxy.credentials, None);
+    }
+
+    #[test]
+    fn proxy_validation() {
+        let mut s = defaults(&SessionConfig::default());
+        s.proxy = socks5();
+        assert_eq!(validate(&s), Ok(()));
+        // Anything goes while the proxy is off.
+        s.proxy.kind = ProxyType::None;
+        s.proxy.host.clear();
+        assert_eq!(validate(&s), Ok(()));
+        let bad = [
+            ProxySettings {
+                host: String::new(),
+                ..socks5()
+            },
+            ProxySettings {
+                host: "a b".into(),
+                ..socks5()
+            },
+            ProxySettings {
+                host: "user@host".into(),
+                ..socks5()
+            },
+            ProxySettings {
+                port: 0,
+                ..socks5()
+            },
+            ProxySettings {
+                password: Some("x".repeat(256)),
+                ..socks5()
+            },
+            ProxySettings {
+                username: "a\nb".into(),
+                ..socks5()
+            },
+            ProxySettings {
+                kind: ProxyType::Http,
+                username: "a:b".into(),
+                ..socks5()
+            },
+        ];
+        for p in bad {
+            s.proxy = p.clone();
+            assert!(validate(&s).is_err(), "{p:?}");
+        }
+        s.proxy = ProxySettings {
+            host: "::1".into(),
+            ..socks5()
+        };
+        assert_eq!(validate(&s), Ok(()));
+    }
+
+    #[test]
+    fn force_needs_a_proxy() {
+        let mut s = defaults(&SessionConfig::default());
+        s.proxy.force = true;
+        assert!(!forces_proxy(&s));
+        s.proxy.kind = ProxyType::Http;
+        assert!(forces_proxy(&s));
+    }
+
+    #[test]
+    fn redaction() {
+        let mut s = defaults(&SessionConfig::default());
+        s.proxy = socks5();
+        let r = s.clone().redacted();
+        assert_eq!(r.proxy.password, None);
+        assert!(r.proxy.password_set);
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(
+            !json.contains("secret") && !json.contains("\"password\""),
+            "{json}"
+        );
+        s.proxy.password = Some(String::new());
+        assert!(!s.redacted().proxy.password_set);
+    }
 
     fn item(id: &str, position: u32, finished: bool) -> QueueItem {
         QueueItem {

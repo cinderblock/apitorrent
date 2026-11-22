@@ -233,8 +233,9 @@ pub(crate) async fn stats(State(s): State<AppState>) -> Json<SessionStats> {
     Json(s.core.session_stats())
 }
 
+/// Secrets (the proxy password) are left out; see [`Settings::redacted`].
 pub(crate) async fn get_settings(State(s): State<AppState>) -> Json<Settings> {
-    Json(s.core.settings())
+    Json(s.core.settings().redacted())
 }
 
 /// The instance's settings apply to every space: server admins only.

@@ -481,3 +481,73 @@ async fn bans() {
     assert_eq!(send(&app, unban).await.status, StatusCode::NOT_FOUND);
     core.shutdown().await.unwrap();
 }
+
+/// The proxy password is write-only: never sent back, kept when an update leaves it out,
+/// removed by an empty string.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_password_is_write_only() {
+    let root = tempfile::tempdir().unwrap();
+    let core = core(root.path()).await;
+    let f = AuthFixture::new(root.path(), PasswordMode::Fallback, &[]);
+    let token = f.admin_token();
+    let app = app(&core, AuthMode::Enabled(f.auth.clone()));
+    let get = || async {
+        let resp = send(&app, Req::get("/api/v1/settings").bearer(&token)).await;
+        assert_eq!(resp.status, StatusCode::OK);
+        resp.json()
+    };
+    let put = |settings: serde_json::Value| {
+        let app = &app;
+        let token = &token;
+        async move {
+            send(
+                app,
+                Req::new("PUT", "/api/v1/settings")
+                    .bearer(token)
+                    .raw_json(settings.to_string()),
+            )
+            .await
+            .status
+        }
+    };
+
+    let mut s = get().await;
+    assert_eq!(s["proxy"]["type"], "none");
+    assert_eq!(s["proxy"]["passwordSet"], false);
+    s["proxy"]["type"] = "socks5".into();
+    s["proxy"]["host"] = "127.0.0.1".into();
+    s["proxy"]["port"] = 1080.into();
+    s["proxy"]["username"] = "me".into();
+    s["proxy"]["password"] = "hunter2".into();
+    assert_eq!(put(s).await, StatusCode::NO_CONTENT);
+
+    let s = get().await;
+    assert!(!s.to_string().contains("hunter2"), "{s}");
+    assert!(s["proxy"].get("password").is_none());
+    assert_eq!(s["proxy"]["passwordSet"], true);
+    assert_eq!(
+        core.settings().proxy.password.as_deref(),
+        Some("hunter2"),
+        "an update without it kept it"
+    );
+
+    // Unchanged when left out, even with other changes.
+    let mut s2 = s.clone();
+    s2["proxy"]["port"] = 1081.into();
+    assert_eq!(put(s2).await, StatusCode::NO_CONTENT);
+    assert_eq!(core.settings().proxy.password.as_deref(), Some("hunter2"));
+    assert_eq!(core.settings().proxy.port, 1081);
+
+    // Removed by an empty string.
+    let mut s3 = get().await;
+    s3["proxy"]["password"] = "".into();
+    assert_eq!(put(s3).await, StatusCode::NO_CONTENT);
+    assert_eq!(core.settings().proxy.password, None);
+    assert_eq!(get().await["proxy"]["passwordSet"], false);
+
+    // A proxy without a host is refused.
+    let mut bad = get().await;
+    bad["proxy"]["host"] = "".into();
+    assert_eq!(put(bad).await, StatusCode::BAD_REQUEST);
+    core.shutdown().await.unwrap();
+}

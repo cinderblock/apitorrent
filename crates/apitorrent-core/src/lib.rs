@@ -354,6 +354,13 @@ impl Core {
         };
         // The DHT starts from the nodes it knew last time, when there is saved state.
         let mut session_config = config.session.clone();
+        // Force proxy: what can't go through the proxy doesn't start at all.
+        if settings::forces_proxy(&settings) {
+            session_config.dht = None;
+            session_config.lsd = None;
+            session_config.utp = false;
+            tracing::info!("force proxy: starting without the DHT, LSD and uTP");
+        }
         if let Some(dht) = session_config.dht.as_mut()
             && dht.state.is_none()
             && let Some(saved) = db.meta(DHT_STATE_KEY)?
@@ -428,8 +435,18 @@ impl Core {
     }
 
     /// Replace the instance settings. They are stored, and apply at once: rates,
-    /// connection limits, groups (torrents are regrouped by label) and the queue.
-    pub async fn set_settings(&self, new: Settings) -> Result<(), CoreError> {
+    /// connection limits, groups (torrents are regrouped by label), the queue and the
+    /// proxy.
+    ///
+    /// The proxy password is write-only (see [`apitorrent_types::ProxySettings`]): `None`
+    /// keeps the stored one, an empty string removes it.
+    pub async fn set_settings(&self, mut new: Settings) -> Result<(), CoreError> {
+        match new.proxy.password.as_deref() {
+            None => new.proxy.password = self.settings().proxy.password,
+            Some("") => new.proxy.password = None,
+            Some(_) => {}
+        }
+        new.proxy.password_set = false;
         settings::validate(&new).map_err(CoreError::InvalidRequest)?;
         let json = serde_json::to_string(&new).expect("settings serialize");
         self.db(move |db| db.set_meta(SETTINGS_KEY, &json)).await?;
@@ -494,6 +511,11 @@ impl Core {
         }
         session.set_rate_limits(s.download_rate, s.upload_rate);
         session.set_encryption(settings::encryption_policy(s.encryption));
+        if let Err(e) = session.set_proxy(settings::proxy_settings(&s.proxy)) {
+            // Only stored settings from another version could get here; new ones are
+            // validated, and a valid proxy always applies.
+            tracing::error!(error = %e, "the proxy settings don't apply");
+        }
         session.set_connection_limits(
             s.max_connections as usize,
             s.max_half_open as usize,

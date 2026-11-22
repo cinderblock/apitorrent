@@ -7,6 +7,7 @@ import type { IdentitySettings } from "./IdentitySettings";
 import type { LibrarySettings } from "./LibrarySettings";
 import type { MoveCompleted } from "./MoveCompleted";
 import type { NamingPolicy } from "./NamingPolicy";
+import type { ProxySettings } from "./ProxySettings";
 import type { QueueSettings } from "./QueueSettings";
 import type { SeedLimits } from "./SeedLimits";
 
@@ -67,4 +68,9 @@ fileOrder: FileOrder,
 /**
  * Moving completed files, unless their group or the torrent itself says otherwise.
  */
-moveCompleted: MoveCompleted, };
+moveCompleted: MoveCompleted, 
+/**
+ * A proxy for peer, web seed and tracker connections. Applies at once to new
+ * connections.
+ */
+proxy: ProxySettings, };
