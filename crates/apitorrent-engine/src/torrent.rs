@@ -1390,7 +1390,7 @@ impl TorrentActor {
                 url,
                 key,
                 shape.clone(),
-                self.shared.http.clone(),
+                self.shared.http(),
                 throttle.clone(),
                 self.webseed_tx.clone(),
             );

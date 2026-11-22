@@ -14,6 +14,7 @@ apitorrent-bencode.workspace = true
 apitorrent-dht.workspace = true
 apitorrent-portmap.workspace = true
 apitorrent-mse.workspace = true
+apitorrent-proxy.workspace = true
 apitorrent-utp.workspace = true
 apitorrent-metainfo.workspace = true
 apitorrent-tracker.workspace = true
@@ -33,6 +34,7 @@ url.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+apitorrent-proxy = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 tempfile.workspace = true
 tracing-subscriber.workspace = true

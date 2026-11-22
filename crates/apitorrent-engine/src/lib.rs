@@ -26,7 +26,8 @@ pub mod verify;
 mod webseed;
 
 pub use announce::TrackerStatus;
-pub use session::{AddError, Session, SessionConfig};
+pub use apitorrent_proxy::{Credentials, Proxy, ProxyKind};
+pub use session::{AddError, ProxySettings, Session, SessionConfig};
 pub use storage::{AdoptMode, Adopted};
 pub use torrent::{
     AddTorrent, AdoptRefused, Adoption, EntryKey, EntryParams, EntryStats, FileEvent, Offered,

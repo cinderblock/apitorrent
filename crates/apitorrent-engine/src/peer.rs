@@ -14,6 +14,7 @@ use tokio::sync::mpsc;
 
 use apitorrent_metainfo::Sha1Hash;
 use apitorrent_mse::{MseConfig, MseStream, Policy};
+use apitorrent_proxy::{Proxy, Target};
 use apitorrent_utp::UtpSocket;
 use apitorrent_wire::{Decoder, HANDSHAKE_LEN, Handshake, Message, PeerId, Reserved};
 
@@ -83,6 +84,8 @@ pub(crate) struct Dialer {
     pub(crate) encryption: std::sync::Mutex<Policy>,
     /// Told of every uTP dial, whose answers can't prove the port open.
     pub(crate) reach: std::sync::Arc<crate::reachability::Reachability>,
+    /// Connect through this proxy, over TCP only. Changeable while running.
+    pub(crate) proxy: std::sync::Mutex<Option<Arc<Proxy>>>,
 }
 
 impl Dialer {
@@ -100,13 +103,29 @@ impl Dialer {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
     }
 
+    pub(crate) fn proxy(&self) -> Option<Arc<Proxy>> {
+        self.proxy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    pub(crate) fn set_proxy(&self, proxy: Option<Arc<Proxy>>) {
+        *self
+            .proxy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = proxy;
+    }
+
     /// The transports to try for `addr`, in order: `true` is uTP. A peer that PEX says
     /// doesn't speak uTP gets TCP first, so it doesn't cost a uTP connect timeout.
     fn order(&self, addr: SocketAddr, hint: UtpHint) -> &'static [bool] {
-        let utp = self
-            .utp
-            .as_ref()
-            .is_some_and(|s| reaches(s.local_addr(), addr));
+        // uTP can't go through a proxy.
+        let utp = self.proxy().is_none()
+            && self
+                .utp
+                .as_ref()
+                .is_some_and(|s| reaches(s.local_addr(), addr));
         match (utp, self.prefer_utp && hint != UtpHint::No) {
             (false, _) => &[false],
             (true, true) => &[true, false],
@@ -116,6 +135,18 @@ impl Dialer {
 
     /// Open the transport alone.
     async fn open(&self, addr: SocketAddr, utp: bool) -> Result<BoxIo, String> {
+        // Checked here too, so a proxy set since `order` was asked is never gone around.
+        if let Some(proxy) = self.proxy() {
+            if utp {
+                return Err("uTP is off while peers go through the proxy".to_owned());
+            }
+            let stream = tokio::time::timeout(CONNECT_TIMEOUT, proxy.connect(&Target::Addr(addr)))
+                .await
+                .map_err(|_| "connect through the proxy timed out".to_owned())?
+                .map_err(|e| format!("connect through the proxy failed: {e}"))?;
+            let _ = stream.set_nodelay(true);
+            return Ok(Box::new(stream));
+        }
         if utp {
             // The socket gives up on its own, after `SessionConfig::utp_connect_timeout`.
             let socket = self.utp.as_ref().ok_or("uTP is off")?;
@@ -479,6 +510,7 @@ mod tests {
             reach: std::sync::Arc::new(crate::reachability::Reachability::new(
                 std::time::Instant::now(),
             )),
+            proxy: std::sync::Mutex::new(None),
         };
         let peer = "127.0.0.1:7000".parse().unwrap();
         assert_eq!(d.order(peer, UtpHint::Unknown), [true, false]);
@@ -491,6 +523,16 @@ mod tests {
             d.order("203.0.113.5:51413".parse().unwrap(), UtpHint::Yes),
             [false]
         );
+        // Through a proxy, TCP only.
+        d.set_proxy(Some(std::sync::Arc::new(apitorrent_proxy::Proxy {
+            kind: apitorrent_proxy::ProxyKind::Socks5,
+            host: "127.0.0.1".into(),
+            port: 1080,
+            credentials: None,
+            remote_dns: true,
+        })));
+        d.prefer_utp = true;
+        assert_eq!(d.order(peer, UtpHint::Yes), [false]);
     }
 
     #[test]

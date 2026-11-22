@@ -143,6 +143,7 @@ pub(crate) fn start(shared: &Arc<Shared>, config: LsdConfig) -> std::io::Result<
     let local = socket.local_addr()?;
     let cookie = format!("{:08x}", rand::random::<u32>());
     let weak = Arc::downgrade(shared);
+    let mut forced = shared.forced.subscribe();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(ANNOUNCE_EVERY);
         let mut buf = vec![0u8; MAX_DATAGRAM + 1];
@@ -151,6 +152,8 @@ pub(crate) fn start(shared: &Arc<Shared>, config: LsdConfig) -> std::io::Result<
         let mut fresh = tokio::time::interval(Duration::from_secs(5));
         loop {
             tokio::select! {
+                // Force proxy: LSD stops, and its socket closes.
+                () = crate::session::until_forced(&mut forced) => break,
                 _ = tick.tick() => {
                     let Some(shared) = weak.upgrade() else { break };
                     announced = shared.public_hashes();

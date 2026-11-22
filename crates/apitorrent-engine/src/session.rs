@@ -10,6 +10,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
 use apitorrent_metainfo::{InfoHashes, Sha1Hash};
+use apitorrent_proxy::Proxy;
 use apitorrent_tracker::TrackerClient;
 use apitorrent_wire::PeerId;
 
@@ -102,6 +103,34 @@ impl Default for SessionConfig {
 /// How many piece events a slow receiver may fall behind by.
 const PIECE_EVENTS: usize = 4096;
 
+/// How the session uses a proxy (see [`Session::set_proxy`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxySettings {
+    pub proxy: Proxy,
+    /// Peer connections (and web seeds) go through the proxy. They are TCP only then:
+    /// uTP can't go through a proxy.
+    pub peers: bool,
+    /// Tracker announces and scrapes go through the proxy.
+    pub trackers: bool,
+    /// Everything that can go through the proxy does, and everything that can't is off:
+    /// no incoming connections, no DHT, no LSD, no uTP. Implies `peers` and `trackers`.
+    pub force: bool,
+}
+
+impl ProxySettings {
+    fn for_peers(&self) -> bool {
+        self.peers || self.force
+    }
+
+    fn for_trackers(&self) -> bool {
+        self.trackers || self.force
+    }
+}
+
+/// Timeouts of the web seed HTTP client.
+const WEB_SEED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const WEB_SEED_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 #[derive(Debug, thiserror::Error)]
 pub enum AddError {
     #[error("the torrent is already in the session")]
@@ -123,8 +152,14 @@ pub(crate) struct Shared {
     pub(crate) announce_key: u32,
     pub(crate) memory: MemoryBudget,
     pub(crate) filter: IpFilter,
-    /// For web seeds: verified TLS, no proxies from the environment.
-    pub(crate) http: apitorrent_tracker::reqwest::Client,
+    /// For web seeds: verified TLS, no proxies from the environment, and the configured
+    /// proxy when peers go through one. Replaced when that changes.
+    http: std::sync::RwLock<apitorrent_tracker::reqwest::Client>,
+    /// The proxy settings, as last set.
+    proxy: Mutex<Option<ProxySettings>>,
+    /// Set once force proxy has closed the listener and stopped the DHT and LSD. They
+    /// can't start again in this session, so it stays set until a restart.
+    pub(crate) forced: tokio::sync::watch::Sender<bool>,
     pub(crate) dht: Option<apitorrent_dht::Dht>,
     pub(crate) dialer: Arc<peer::Dialer>,
     pub(crate) download: Arc<Bucket>,
@@ -237,8 +272,24 @@ impl Shared {
         }
     }
 
+    /// The web seed HTTP client.
+    pub(crate) fn http(&self) -> apitorrent_tracker::reqwest::Client {
+        self.http
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Whether force proxy has turned off incoming connections, the DHT and LSD.
+    pub(crate) fn forced(&self) -> bool {
+        *self.forced.borrow()
+    }
+
     /// The UDP port our DHT listens on, for PORT messages.
     pub(crate) fn dht_port(&self) -> Option<u16> {
+        if self.forced() {
+            return None;
+        }
         let dht = self.dht.as_ref()?;
         dht.local_addr_v4()
             .or_else(|| dht.local_addr_v6())
@@ -297,8 +348,8 @@ impl Session {
         let tracker = TrackerClient::new().map_err(io::Error::other)?;
         let http = apitorrent_tracker::strict_http_client(
             &config.client_name,
-            std::time::Duration::from_secs(60),
-            std::time::Duration::from_secs(15),
+            WEB_SEED_TIMEOUT,
+            WEB_SEED_CONNECT_TIMEOUT,
         )
         .map_err(io::Error::other)?;
         let dht = match config.dht.clone() {
@@ -315,6 +366,7 @@ impl Session {
             prefer_utp: config.prefer_utp,
             encryption: std::sync::Mutex::new(config.encryption),
             reach: reach.clone(),
+            proxy: std::sync::Mutex::new(None),
         });
         let memory = MemoryBudget::new(config.memory_limit);
         let filter = IpFilter::new(config.ban_policy);
@@ -330,7 +382,9 @@ impl Session {
             config,
             memory,
             filter,
-            http,
+            http: std::sync::RwLock::new(http),
+            proxy: Mutex::new(None),
+            forced: tokio::sync::watch::channel(false).0,
             dht,
             dialer,
             peer_id,
@@ -533,6 +587,70 @@ impl Session {
         self.shared.connect_rate.set_rate(connect_rate);
     }
 
+    /// Use a proxy, or stop using one (`None`). New connections follow the change at once;
+    /// open ones keep the path they have.
+    ///
+    /// Force proxy also closes the listen socket, shuts the DHT down and stops LSD, and
+    /// refuses incoming uTP connections. Those can't start again while the session runs:
+    /// turning force proxy off brings them back on the next start.
+    pub fn set_proxy(&self, settings: Option<ProxySettings>) -> io::Result<()> {
+        let shared = &self.shared;
+        let peers = settings
+            .as_ref()
+            .filter(|p| p.for_peers())
+            .map(|p| p.proxy.clone());
+        let trackers = settings
+            .as_ref()
+            .filter(|p| p.for_trackers())
+            .map(|p| p.proxy.clone());
+        let http = apitorrent_tracker::strict_http_client_via(
+            &shared.config.client_name,
+            WEB_SEED_TIMEOUT,
+            WEB_SEED_CONNECT_TIMEOUT,
+            peers.as_ref(),
+        )
+        .map_err(io::Error::other)?;
+        shared
+            .tracker
+            .set_proxy(trackers)
+            .map_err(io::Error::other)?;
+        *shared
+            .http
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = http;
+        shared.dialer.set_proxy(peers.map(Arc::new));
+        let force = settings.as_ref().is_some_and(|p| p.force);
+        if force && !shared.forced() {
+            shared.forced.send_replace(true);
+            if let Some(dht) = shared.dht.clone() {
+                tokio::spawn(async move { dht.shutdown().await });
+            }
+            tracing::info!("force proxy: incoming connections, DHT, LSD and uTP are off");
+        } else if !force && shared.forced() {
+            tracing::info!(
+                "force proxy is off: incoming connections, DHT, LSD and uTP come back on the \
+                 next start"
+            );
+        }
+        *shared.proxy.lock().expect("proxy settings poisoned") = settings;
+        Ok(())
+    }
+
+    /// The proxy settings, as last set.
+    pub fn proxy(&self) -> Option<ProxySettings> {
+        self.shared
+            .proxy
+            .lock()
+            .expect("proxy settings poisoned")
+            .clone()
+    }
+
+    /// Whether force proxy has turned off incoming connections, the DHT and LSD in this
+    /// session (they stay off until a restart, even after force proxy is turned off).
+    pub fn forced(&self) -> bool {
+        self.shared.forced()
+    }
+
     /// Change the encryption policy. New connections use it; open ones keep theirs.
     pub fn set_encryption(&self, policy: apitorrent_mse::Policy) {
         self.shared.dialer.set_encryption(policy);
@@ -695,9 +813,25 @@ fn version_digits() -> [u8; 4] {
     out
 }
 
+/// Wait until force proxy turns off what can't go through the proxy (or the session is
+/// gone).
+pub(crate) async fn until_forced(forced: &mut tokio::sync::watch::Receiver<bool>) {
+    // The guard `wait_for` returns isn't `Send`; drop it here, not across an await.
+    let _ = forced.wait_for(|f| *f).await.map(|_| ());
+}
+
 async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
+    let mut forced = shared.forced.subscribe();
     loop {
-        match listener.accept().await {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            // Force proxy: no incoming connections. Dropping the listener closes the port.
+            () = until_forced(&mut forced) => {
+                tracing::debug!("listener closed: force proxy");
+                return;
+            }
+        };
+        match accepted {
             Ok((stream, addr)) => {
                 if shared.filter.is_blocked(addr.ip()) {
                     tracing::debug!(%addr, "refused a blocked peer");
@@ -777,6 +911,12 @@ async fn utp_accept_loop(socket: apitorrent_utp::UtpSocket, shared: Arc<Shared>)
             Ok((stream, addr)) => {
                 if shared.filter.is_blocked(addr.ip()) {
                     tracing::debug!(%addr, "refused a blocked peer");
+                    continue;
+                }
+                // The uTP socket can't be closed while it runs; under force proxy its
+                // connections are dropped as they arrive, until the next start.
+                if shared.forced() {
+                    tracing::debug!(%addr, "refused an incoming uTP peer: force proxy");
                     continue;
                 }
                 tokio::spawn(route_incoming(
@@ -894,6 +1034,9 @@ async fn dht_announcer(weak: std::sync::Weak<Shared>) {
         let Some(dht) = shared.dht.clone() else {
             return;
         };
+        if shared.forced() {
+            return;
+        }
         // An announce made while the routing table is empty (just after start) reaches
         // nobody and would wait 15 minutes to be retried. Wait for nodes first.
         let stats = dht.stats();

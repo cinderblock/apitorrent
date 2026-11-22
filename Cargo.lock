@@ -314,6 +314,7 @@ dependencies = [
  "apitorrent-metainfo",
  "apitorrent-mse",
  "apitorrent-portmap",
+ "apitorrent-proxy",
  "apitorrent-tracker",
  "apitorrent-utp",
  "apitorrent-wire",
