@@ -98,7 +98,7 @@ arbitrary rules.
      match wins; a rule with an empty destination keeps matching files in place.
 5. Deluge import: `move_completed(_path)` → torrent move setting, "whole torrent";
    `sequential_download` → file order "torrent" + every file sequential.
-6. Web UI: details pane (order, per-file sequential toggle, location / move error, move
+6. ✅ Web UI (`84d56f4`): details pane (order, per-file sequential toggle, location / move error, move
    setting), Settings and group defaults.
 7. README.
 8. Later (wanted): browser playback with seeking; the engine's `set_stream(file, from)` is
@@ -116,7 +116,7 @@ arbitrary rules.
 - [ ] Engine move + events
 - [ ] Types/API/DB
 - [ ] Core policy + Deluge mapping
-- [ ] Web UI
+- [x] Web UI (`84d56f4`; manual order not editable in the UI yet)
 - [ ] Tests + README
 
 ## Open questions for the user
