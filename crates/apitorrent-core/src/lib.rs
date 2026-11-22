@@ -1439,6 +1439,8 @@ impl Core {
                     queue: d.queue,
                     added_at: d.added_at,
                     edited_trackers: d.edited_trackers,
+                    move_completed: d.move_completed,
+                    sequential: d.sequential,
                     not_carried: d.not_carried,
                 }
             })

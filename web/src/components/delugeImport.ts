@@ -90,6 +90,8 @@ export const DEFAULT_OPTIONS: DelugeImportOptions = {
   trackers: true,
   torrentLimits: true,
   seedLimits: true,
+  moveCompleted: true,
+  sequential: true,
   identity: { kind: "deluge" },
   identitySkipHosts: [],
   settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false },
@@ -115,6 +117,10 @@ export interface Carried {
   withLimits: number;
   /** Their own stop-at-ratio, different from Deluge's global one. */
   ownRatio: number;
+  /** Moved somewhere by Deluge when they complete. */
+  moveCompleted: number;
+  /** Downloaded in order in Deluge. */
+  sequential: number;
   /** Private trackers' hosts → how many torrents. */
   privateHosts: [string, number][];
   /** A Deluge option that doesn't carry over → how many torrents have it. */
@@ -144,6 +150,8 @@ export function carried(torrents: DelugePreviewTorrent[], global: StopAtRatio | 
     editedTrackers: 0,
     withLimits: 0,
     ownRatio: 0,
+    moveCompleted: 0,
+    sequential: 0,
     privateHosts: [],
     notCarried: [],
     running: 0,
@@ -162,6 +170,8 @@ export function carried(torrents: DelugePreviewTorrent[], global: StopAtRatio | 
     if (t.editedTrackers) c.editedTrackers++;
     if (t.limits.downloadRate > 0 || t.limits.uploadRate > 0 || t.limits.maxConnections !== null) c.withLimits++;
     if (!sameRatio(t.stopAtRatio, global)) c.ownRatio++;
+    if (t.moveCompleted) c.moveCompleted++;
+    if (t.sequential) c.sequential++;
     if (t.private) for (const h of t.trackers) count(hosts, h);
     for (const n of t.notCarried) count(notes, n);
     if (!t.paused) c.running++;

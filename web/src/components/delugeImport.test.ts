@@ -26,6 +26,8 @@ const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
   queue: null,
   addedAt: null,
   editedTrackers: false,
+  moveCompleted: null,
+  sequential: false,
   notCarried: [],
   ...over,
 });
@@ -77,9 +79,9 @@ describe("Deluge import wizard", () => {
   test("what the ticked torrents carry", () => {
     const c = carried(
       [
-        t({ label: "tv", private: true, trackers: ["a.org", "b.org"], uploaded: 5, skippedFiles: 2, notCarried: ["sequential download"] }),
+        t({ label: "tv", private: true, trackers: ["a.org", "b.org"], uploaded: 5, skippedFiles: 2, notCarried: ["super-seeding"], moveCompleted: "/done", sequential: true }),
         t({ label: null, private: true, trackers: ["a.org"], limits: { downloadRate: 0, uploadRate: 9, maxConnections: null }, paused: true }),
-        t({ label: "tv", stopAtRatio: { ratio: 2, remove: false }, editedTrackers: true, notCarried: ["sequential download"], leftover: true }),
+        t({ label: "tv", stopAtRatio: { ratio: 2, remove: false }, editedTrackers: true, notCarried: ["super-seeding"], leftover: true }),
       ],
       { ratio: 2, remove: false },
     );
@@ -91,11 +93,12 @@ describe("Deluge import wizard", () => {
       ["a.org", 2],
       ["b.org", 1],
     ]);
-    expect(c.notCarried).toEqual([["sequential download", 2]]);
+    expect(c.notCarried).toEqual([["super-seeding", 2]]);
     expect([c.withTotals, c.withSkippedFiles, c.skippedFiles, c.withLimits, c.editedTrackers, c.running]).toEqual([1, 1, 2, 1, 1, 2]);
     // Two have no ratio while the global is 2: their own differs.
     expect(c.ownRatio).toBe(2);
     expect(c.leftovers).toBe(1);
+    expect([c.moveCompleted, c.sequential]).toEqual([1, 1]);
   });
 
   test("labels renamed, dropped or left behind", () => {

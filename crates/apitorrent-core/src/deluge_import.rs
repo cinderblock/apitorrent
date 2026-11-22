@@ -173,6 +173,56 @@ fn stop_at_ratio(s: Option<(f64, bool)>) -> Option<apitorrent_types::StopAtRatio
     s.map(|(ratio, remove)| apitorrent_types::StopAtRatio { ratio, remove })
 }
 
+/// Deluge's "move completed" and sequential download, as apitorrent's file options: the
+/// whole torrent moves once complete; files download in the torrent's order, each front
+/// to back. A destination outside the space's storage roots doesn't come over, and says
+/// so in `not_carried`.
+fn file_options(
+    d: &apitorrent_deluge::DelugeTorrent,
+    torrent: &Torrent,
+    t: &Target<'_>,
+    not_carried: &mut Vec<String>,
+) -> crate::files::FileOptions {
+    use apitorrent_types::files::{FileOrder, MoveCompleted, MoveWhen};
+    let o = t.options;
+    let mut out = crate::files::FileOptions::default();
+    if o.move_completed
+        && let Some(to) = &d.move_completed
+    {
+        let to = import::remap(to, t.map);
+        let path = Path::new(&to);
+        if !path.is_absolute() {
+            not_carried.push(format!(
+                "move completed downloads to {to} (not a full path)"
+            ));
+        } else if root_of(t.roots, path).is_none() {
+            not_carried.push(format!(
+                "move completed downloads to {to} (outside space {}'s storage roots)",
+                t.slug
+            ));
+        } else {
+            out.move_completed = Some(MoveCompleted {
+                enabled: true,
+                to,
+                when: MoveWhen::WholeTorrent,
+                rules: Vec::new(),
+            });
+        }
+    }
+    if o.sequential && d.sequential {
+        out.order = Some(FileOrder::Torrent);
+        out.sequential = torrent
+            .info
+            .files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| !f.is_pad())
+            .map(|(i, _)| (u32::try_from(i).expect("fits"), 0))
+            .collect();
+    }
+    out
+}
+
 /// The storage root a path is in: `Some(root)`, `Some("")` when the space has none (any
 /// path), `None` when it is outside all of them.
 fn root_of<'r>(roots: &'r [String], path: &Path) -> Option<&'r str> {
@@ -232,6 +282,9 @@ pub struct Details {
     pub added_at: Option<i64>,
     /// Deluge's tracker list differs from the `.torrent` file's.
     pub edited_trackers: bool,
+    /// Where Deluge moves it when it completes, after the path mapping.
+    pub move_completed: Option<String>,
+    pub sequential: bool,
     pub not_carried: Vec<String>,
 }
 
@@ -317,6 +370,8 @@ pub fn summarize(
                     queue: d.queue,
                     added_at: d.added_at.map(|s| s.saturating_mul(1000)),
                     edited_trackers: false,
+                    move_completed: d.move_completed.as_deref().map(|p| import::remap(p, map)),
+                    sequential: d.sequential,
                     not_carried: d.not_carried.clone(),
                 },
             };
@@ -631,6 +686,8 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
         } else {
             (0, 0, 0)
         };
+        let mut not_carried = d.not_carried.clone();
+        let files_options = file_options(d, &torrent, t, &mut not_carried);
         let hashes = torrent.info.info_hashes();
         let row = TorrentRow {
             space: t.space,
@@ -687,9 +744,9 @@ pub fn plan(state: &DelugeState, t: &Target<'_>) -> Plan {
                 reached: false,
             },
             label,
-            not_carried: d.not_carried.clone(),
+            not_carried,
             leftover: d.leftover,
-            files: crate::files::FileOptions::default(),
+            files: files_options,
         });
     }
     out
@@ -717,6 +774,12 @@ pub fn write(
         match db.insert_torrent(&t.row) {
             Ok(()) => {
                 let key = Key::new(t.row.space, t.row.id.clone());
+                if t.files != crate::files::FileOptions::default() {
+                    let json = serde_json::to_string(&t.files).expect("file options serialize");
+                    if let Err(e) = db.set_file_options(&key, Some(&json)) {
+                        tracing::warn!(torrent = %t.name, error = %e, "could not store file options");
+                    }
+                }
                 if let Err(e) = db.save_seed_states(&[(key, t.seed)]) {
                     tracing::warn!(torrent = %t.name, error = %e, "could not store seeding time");
                 }
@@ -1681,6 +1744,8 @@ mod tests {
                 magnet: None,
                 stop_at_ratio: None,
                 seeding_secs: 0,
+                move_completed: None,
+                sequential: false,
                 not_carried: Vec::new(),
             }
         };
@@ -1779,6 +1844,66 @@ mod tests {
         assert_eq!(s[0].details.stop_at_ratio, Some((3.0, false)));
     }
 
+    /// Deluge's "move completed" becomes a whole-torrent move, and its sequential download
+    /// the torrent's file order with every file front to back. A destination outside the
+    /// space's storage roots stays behind, and says so.
+    #[test]
+    fn move_completed_and_sequential_come_over() {
+        use apitorrent_types::files::{FileOrder, MoveWhen};
+        #[cfg(windows)]
+        const DONE: &str = r"C:\srv\done";
+        #[cfg(not(windows))]
+        const DONE: &str = "/srv/done";
+        let mut state = two_torrents();
+        state.torrents[0].move_completed = Some(DONE.into());
+        state.torrents[0].sequential = true;
+        let p = plan_with(&state, &DelugeImportOptions::default());
+        let a = p.torrents.iter().find(|t| t.name == "a").unwrap();
+        let m = a.files.move_completed.as_ref().expect("carried");
+        assert!(m.enabled && m.rules.is_empty());
+        assert_eq!((m.to.as_str(), m.when), (DONE, MoveWhen::WholeTorrent));
+        assert_eq!(a.files.order, Some(FileOrder::Torrent));
+        assert_eq!(a.files.sequential, [(0, 0), (1, 0)]);
+        let b = p.torrents.iter().find(|t| t.name == "b").unwrap();
+        assert_eq!(b.files, crate::files::FileOptions::default());
+
+        let off = DelugeImportOptions {
+            move_completed: false,
+            sequential: false,
+            ..DelugeImportOptions::default()
+        };
+        let p = plan_with(&state, &off);
+        let a = p.torrents.iter().find(|t| t.name == "a").unwrap();
+        assert_eq!(a.files, crate::files::FileOptions::default());
+
+        let present = HashSet::new();
+        let roots = ["/srv/t".to_owned()];
+        let p = plan(
+            &state,
+            &Target {
+                space: 1,
+                slug: "tv",
+                roots: &roots,
+                download_dir: Path::new("/srv/t"),
+                present: &present,
+                map: &[],
+                paused: false,
+                ratio_per_torrent: false,
+                options: &DelugeImportOptions::default(),
+                first_position: 0,
+            },
+        );
+        let a = p.torrents.iter().find(|t| t.name == "a").unwrap();
+        assert!(a.files.move_completed.is_none());
+        assert!(
+            a.not_carried
+                .iter()
+                .any(|n| n.contains(DONE) && n.contains("storage roots")),
+            "{:?}",
+            a.not_carried
+        );
+    }
+
     #[test]
     fn options_leave_things_out() {
         let state = two_torrents();
@@ -1795,6 +1920,8 @@ mod tests {
             trackers: false,
             torrent_limits: false,
             seed_limits: false,
+            move_completed: false,
+            sequential: false,
             identity: apitorrent_types::ImportIdentity::Deluge,
             identity_skip_hosts: vec!["B.example.org".into()],
             settings: DelugeSettingsPick::default(),

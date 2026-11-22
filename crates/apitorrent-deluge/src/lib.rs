@@ -69,8 +69,13 @@ pub struct DelugeTorrent {
     pub stop_at_ratio: Option<(f64, bool)>,
     /// libtorrent's `seeding_time`, in seconds.
     pub seeding_secs: u64,
+    /// `move_completed_path`, when `move_completed` is on: where Deluge moves the files once
+    /// the torrent completes.
+    pub move_completed: Option<String>,
+    /// `sequential_download`: pieces in order, for watching while it downloads.
+    pub sequential: bool,
     /// Deluge options set on this torrent that apitorrent has no equivalent for, in plain
-    /// words (`move completed to /done`).
+    /// words (`super-seeding`).
     pub not_carried: Vec<String>,
 }
 
@@ -230,6 +235,8 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
             magnet: None,
             stop_at_ratio: None,
             seeding_secs: 0,
+            move_completed: None,
+            sequential: false,
             not_carried: Vec::new(),
         };
         if let Some(r) = resume.get(&id)
@@ -377,6 +384,14 @@ fn apply_deluge_state(t: &mut DelugeTorrent, d: &pickle::Value) {
     {
         t.magnet = Some(m.to_owned());
     }
+    if d.get("move_completed").and_then(Value::as_bool) == Some(true) {
+        t.move_completed = d
+            .get("move_completed_path")
+            .and_then(Value::as_str)
+            .filter(|p| !p.trim().is_empty())
+            .map(str::to_owned);
+    }
+    t.sequential = d.get("sequential_download").and_then(Value::as_bool) == Some(true);
     t.not_carried = torrent_notes(d);
 }
 
@@ -385,14 +400,12 @@ fn torrent_notes(d: &pickle::Value) -> Vec<String> {
     use pickle::Value;
     let on = |key: &str| d.get(key).and_then(Value::as_bool) == Some(true);
     let mut out = Vec::new();
-    if on("move_completed") {
-        let to = d
-            .get("move_completed_path")
+    if on("move_completed")
+        && d.get("move_completed_path")
             .and_then(Value::as_str)
-            .unwrap_or("?");
-        out.push(format!(
-            "move completed downloads to {to} (apitorrent keeps files where they download)"
-        ));
+            .is_none_or(|p| p.trim().is_empty())
+    {
+        out.push("move completed downloads, to no folder".to_owned());
     }
     if let Some(n) = d
         .get("max_upload_slots")
@@ -405,9 +418,6 @@ fn torrent_notes(d: &pickle::Value) -> Vec<String> {
     }
     if on("prioritize_first_last_pieces") {
         out.push("first and last pieces first".to_owned());
-    }
-    if on("sequential_download") {
-        out.push("sequential download".to_owned());
     }
     if on("super_seeding") {
         out.push("super-seeding".to_owned());
@@ -429,7 +439,9 @@ fn label_notes(o: &serde_json::Value) -> Vec<String> {
             .get("move_completed_path")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("?");
-        out.push(format!("move completed downloads to {to}"));
+        out.push(format!(
+            "move completed downloads to {to} (set it on a group in apitorrent's settings)"
+        ));
     }
     if on("apply_max") {
         let n = |key: &str| {

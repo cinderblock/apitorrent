@@ -76,6 +76,14 @@ addedAt: number | null,
  */
 editedTrackers: boolean, 
 /**
+ * Where Deluge moves it when it completes (after `pathMap`); null when it doesn't.
+ */
+moveCompleted: string | null, 
+/**
+ * Downloaded in order in Deluge.
+ */
+sequential: boolean, 
+/**
  * Options set in Deluge that don't carry over, in plain words.
  */
 notCarried: Array<string>, };

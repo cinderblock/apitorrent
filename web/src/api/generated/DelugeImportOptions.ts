@@ -49,6 +49,15 @@ torrentLimits: boolean,
  */
 seedLimits: boolean, 
 /**
+ * Keep Deluge's "move completed": the torrent's files move to that folder once it
+ * completes.
+ */
+moveCompleted: boolean, 
+/**
+ * Keep Deluge's sequential download: files in the torrent's order, each front to back.
+ */
+sequential: boolean, 
+/**
  * The client private trackers see for these torrents.
  */
 identity: ImportIdentity, 

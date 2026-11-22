@@ -245,6 +245,32 @@ export function ImportDelugeOptions({
       />
 
       <Row
+        title="Move when complete"
+        on={o.moveCompleted}
+        set={set("moveCompleted")}
+        detail={
+          c.moveCompleted === 0
+            ? none
+            : o.moveCompleted
+              ? `${plural(c.moveCompleted, "torrent")} ${verb(c.moveCompleted, "moves its", "move their")} files where Deluge would once complete, and ${verb(c.moveCompleted, "seeds", "seed")} from there.`
+              : `${plural(c.moveCompleted, "torrent")} ${verb(c.moveCompleted, "keeps its", "keep their")} files where they download.`
+        }
+      />
+
+      <Row
+        title="Sequential download"
+        on={o.sequential}
+        set={set("sequential")}
+        detail={
+          c.sequential === 0
+            ? none
+            : o.sequential
+              ? `${plural(c.sequential, "torrent")} ${verb(c.sequential, "downloads its", "download their")} files in order, each from start to end.`
+              : `${plural(c.sequential, "torrent")} ${verb(c.sequential, "downloads", "download")} rarest pieces first, as usual.`
+        }
+      />
+
+      <Row
         title="Client private trackers see"
         detail={
           c.privateHosts.length === 0

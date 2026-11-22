@@ -888,6 +888,11 @@ pub struct DelugeImportOptions {
     pub torrent_limits: bool,
     /// Keep each torrent's own stop-at-ratio.
     pub seed_limits: bool,
+    /// Keep Deluge's "move completed": the torrent's files move to that folder once it
+    /// completes.
+    pub move_completed: bool,
+    /// Keep Deluge's sequential download: files in the torrent's order, each front to back.
+    pub sequential: bool,
     /// The client private trackers see for these torrents.
     pub identity: ImportIdentity,
     /// Tracker hosts to leave out of the identity rules.
@@ -909,6 +914,8 @@ impl Default for DelugeImportOptions {
             trackers: true,
             torrent_limits: true,
             seed_limits: true,
+            move_completed: true,
+            sequential: true,
             identity: ImportIdentity::Deluge,
             identity_skip_hosts: Vec::new(),
             settings: DelugeSettingsPick::default(),
@@ -1154,6 +1161,12 @@ pub struct DelugePreviewTorrent {
     pub added_at: Option<i64>,
     /// Deluge's tracker list differs from the `.torrent` file's.
     pub edited_trackers: bool,
+    /// Where Deluge moves it when it completes (after `pathMap`); null when it doesn't.
+    #[serde(default)]
+    pub move_completed: Option<String>,
+    /// Downloaded in order in Deluge.
+    #[serde(default)]
+    pub sequential: bool,
     /// Options set in Deluge that don't carry over, in plain words.
     pub not_carried: Vec<String>,
 }
