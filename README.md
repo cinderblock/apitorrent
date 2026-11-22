@@ -22,6 +22,11 @@ Most of this is built.
 - **Its own Rust engine.** BitTorrent v1, v2 and hybrid torrents, uTP, DHT, PEX, LSD,
   encryption and webseeds. The protocol core is deterministic, so it can be tested by
   simulation.
+- **Through a proxy, if you like.** Peers, web seeds and trackers can go through a SOCKS4,
+  SOCKS5 or HTTP proxy (Settings → Network → Proxy), with or without a password, with
+  host names resolved by the proxy. UDP trackers go through SOCKS5 too. Force proxy turns
+  off everything that can't go through it: incoming connections, DHT, local discovery and
+  uTP. The password is write-only: the API never sends it back.
 - **One API for everything.** The web UI, desktop app, CLI and plugins all use it. The
   desktop app embeds the engine, or acts as a thin client to a headless daemon. Path
   mappings open remote download folders in your file manager.
@@ -372,8 +377,9 @@ Everything about each torrent comes over unless you leave it out: `--no-labels`,
 `--no-move-completed`, `--no-sequential`, `--no-first-last`, `--no-super-seed`. `--identity deluge|none|qbittorrent|transmission` sets
 what private trackers see (`--no-identity-for HOST` skips one). `--settings` takes all of
 Deluge's own settings; `--setting NAME` takes one (`download-rate`, `upload-rate`,
-`connections`, `slots`, `slow-torrents`, `stop-at-ratio`, `encryption`). The report lists each choice,
-and which of Deluge's settings were changed from Deluge's defaults.
+`connections`, `slots`, `slow-torrents`, `stop-at-ratio`, `encryption`, `discovery`,
+`proxy`). The report lists each choice, and which of Deluge's settings were changed from
+Deluge's defaults.
 
 With the daemon running, Settings → Deluge → "Import from Deluge…" does the same as a
 wizard. It starts with the Deluge installations it finds on the server (running

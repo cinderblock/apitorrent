@@ -97,7 +97,8 @@ apitorrentd        desktop app       web UI (browser)     CLI      TS plugins (V
 | `crates/apitorrent-mse` | Message Stream Encryption (MSE/PE): sans-IO initiator and receiver handshakes, and `MseStream` over any async byte stream. |
 | `crates/apitorrent-utp` | uTP (BEP 29) with LEDBAT congestion control: a sans-IO connection, a socket multiplexer and tokio streams. |
 | `crates/apitorrent-engine` | The engine: session, peer manager, piece picker, choker, storage, announce scheduling, LSD/PEX, rate limiting. Runs connections over TCP or uTP, encrypted or not, and drives the DHT. |
-| `crates/apitorrent-tracker` | Tracker clients: HTTP/HTTPS (strict TLS through the OS trust store) and UDP (BEP 15), announce and scrape. Pure codecs plus a shared async client. |
+| `crates/apitorrent-tracker` | Tracker clients: HTTP/HTTPS (strict TLS through the OS trust store) and UDP (BEP 15), announce and scrape, direct or through a proxy. Pure codecs plus a shared async client. |
+| `crates/apitorrent-proxy` | Outgoing connections through SOCKS4/4a, SOCKS5 (`tokio-socks`) and HTTP `CONNECT`, and SOCKS5 UDP associations. Test proxy servers behind the `testing` feature. |
 | `crates/apitorrent-dht` | The Mainline DHT: BEP 5, 32 (IPv6), 33 (scrape), 42 (secure IDs) and 43 (read-only). A sans-IO node plus a tokio driver; persistence as opaque bytes the core stores. |
 | `crates/apitorrent-types` | Shared domain and API DTO types. Exported to TypeScript. |
 | `crates/apitorrent-core` | Orchestration: registry, persistence, queue, labels, seed limits, content library, the event store, and automation (candidates, rules, aliases, channels and subscriptions). |
@@ -158,7 +159,7 @@ licence notices intact.
 | Core protocol | BEP 3, 6 (fast), 10 (extension protocol), 20 (peer id) |
 | Metadata | BEP 9 (magnet metadata), 12 (multitracker), 47 (pad files, attributes), 52 (v2, hybrid), 53 (magnet file selection) |
 | Discovery | BEP 5 (DHT), 11 (PEX), 14 (LSD), 15 (UDP tracker), 23 (compact), 7 / 32 (IPv6), 48 (scrape) |
-| Transport | TCP, BEP 29 (uTP), BEP 55 (holepunch), MSE/PE encryption, SOCKS5 proxy, IPv6 |
+| Transport | TCP, BEP 29 (uTP), BEP 55 (holepunch), MSE/PE encryption, SOCKS4/SOCKS5/HTTP proxy, IPv6 |
 | Data | BEP 19 (webseeds), 17 (HTTP seeds). Not BEP 30, the superseded v1 merkle extension. |
 | Picking | rarest-first with availability tracking, priorities, sequential and streaming deadlines, first and last pieces first, endgame |
 | Choking | tit-for-tat with optimistic unchoke, a rate-based seed choker, upload slots (per session, or per torrent), BEP 16 super-seeding (libtorrent's non-strict mode: a peer gets a new piece once it has one it was shown) |
@@ -187,6 +188,17 @@ reads as probably closed, never certain. Our public address comes from DHT votes
 (BEP 24); when it changes, the proof starts over. A router (NAT-PMP or UPnP) whose public
 address differs, or isn't public, means another NAT is in front of it. An active
 connect-back check could later feed the same evidence.
+
+**Proxy.** `Settings::proxy` (SOCKS4, SOCKS5 or HTTP; Deluge's options) goes to the engine
+through `Session::set_proxy` and applies to new connections at once. Proxied peers and web
+seeds use TCP only (`peer::Dialer`); trackers go through reqwest's proxy support, and UDP
+trackers through a SOCKS5 UDP association (through HTTP or SOCKS4 they fail with
+`UdpNotProxied` rather than going direct). Nothing falls back to a direct connection when
+the proxy is down. Force proxy also closes the listener, shuts the DHT down, stops LSD and
+refuses incoming uTP; those can't restart in a running session, so turning it off brings
+them back on the next start, and a daemon that starts with it stored starts without them.
+The password is write-only, like plugin secrets: `GET /settings` leaves it out and says
+`passwordSet`; a `PUT` without it keeps it, and `""` removes it.
 
 ### Engine API
 
@@ -1312,6 +1324,9 @@ recheck. That is the onboarding path for existing Deluge users.
   them. Deluge sets encryption for incoming and outgoing connections apart; apitorrent has
   one policy, so the stricter wins (forced either way is `required`), with a note. The
   preview marks each setting changed from Deluge 2's defaults (`changed`).
+  Deluge's proxy (`proxy` in `core.conf`, libtorrent's types 1–5) comes over only into
+  `default`, since it is the instance's; I2P, a proxy without a host and anonymous mode are
+  listed with what can't come over, and the preview shows the proxy without its password.
 - **Leftover `.torrent` files.** Every `<id>.torrent` in `state/` is read, but one that
   neither `torrents.state` nor `torrents.fastresume` lists is a leftover: Deluge never
   runs it. The preview flags it (`leftover`); it imports paused, dated by the file's
