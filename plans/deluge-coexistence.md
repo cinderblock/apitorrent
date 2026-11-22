@@ -351,7 +351,12 @@ These need a browser and a real Deluge, which the automated tests don't cover:
 
 1. ✅ Answered 2026-11-22: **change the tracker snippet** to the plugin's URLs (no nginx
    forward; a forward would have to put the key in a public, unauthenticated URL).
-   Current step: d, the user imports `/var/lib/delugex` into its own space.
+   Before d (asked 2026-11-22): test whether the tracker accepts apitorrent's own
+   identity or needs the Deluge spoof. Current step: the user checks the tracker's rules
+   for an allowed-client list. If none is mentioned, live test: switch that host's
+   identity rule (Settings → Client identity) to apitorrent, watch the Trackers tab on
+   one torrent for an accept or a "client not allowed" error, then put the Deluge rule
+   back (same list). Then d.
 
 ## Things not to do
 
