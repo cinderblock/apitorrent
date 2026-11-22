@@ -61,77 +61,69 @@ arbitrary rules.
 - **Several spaces holding one swarm:** the first entry's move settings win; other entries
   see the file wherever it is. *(mine; not asked separately)*
 
-## Design sketch
+## Design (as built)
 
-- **Layer 1:** the picker's key becomes `(priority, file rank, availability)`. Within one
-  file, rarest first still spreads peers over the swarm. A piece spanning two files takes
-  the better (lower) rank.
-- **Layer 2:** a sequential file's pieces are picked in index order, after its first and
-  last few pieces (container metadata: MP4 `moov`, MKV cues often sit at the end). The next
-  needed piece may be requested from a second peer when the first is slow (time-critical,
-  like endgame for one piece), so one slow peer can't stall playback.
-- **Move:** the engine emits "file N complete" once every piece touching it is verified. The
-  core moves it with a new placement (a file at its own path outside the save directory).
-  Rename on one volume; copy, fsync, then delete across volumes. The file's I/O lock is held
-  while it moves, so a neighbour's boundary piece waits instead of writing to the old place.
-  Placement and the new path are persisted, so a restart finds it.
+- **Layer 1:** the picker's key is `(priority, tier, availability)`; a piece's tier is its
+  earliest file's place among the unfinished files of the order (8 places, the rest share
+  the last; files move up as earlier ones finish). Rarest first within a file.
+- **Layer 2:** a stream fetches its file's first 1 MiB and last 0.5% (2–16 MiB), then from
+  the playhead to the end, then the start up to the playhead. The piece the reader waits
+  for goes first among pieces in progress. Not built: requesting that piece from a second
+  peer when the first is slow (needs request ages in the picker).
+- **Move:** `Session::file_events` (after the last piece is written and flushed) drives the
+  core's mover; `Storage::relocate` renames (or copies, flushes, deletes across volumes)
+  under the file's write lock, so neighbouring boundary pieces wait. Moved paths are kept
+  per entry in `torrents.file_options` (JSON) and handed back as
+  `AddTorrent::file_locations`.
 
 ## Plan / steps
 
 1. ✅ Settle the open questions with the user.
-2. ✅ Picker (`d452bdd`): `set_file_order(Option<Vec<usize>>)`, `set_stream(file,
-   Option<from_byte>)`, `take_completed_files()`. Key is `(priority, tier, availability)`,
-   `TIERS = 8`. Streams: first 1 MiB, last 0.5% (2–16 MiB), playhead→end, start→playhead;
-   the waited-for piece is first among partials.
-3. ✅ Engine (`cf0b7d0`): `Storage::relocate` / `file_path`, `TorrentHandle::relocate_file`,
-   `file_paths`, `set_file_order`, `set_stream`; `AddTorrent::{file_locations,
-   file_order, streams}`; `Session::file_events()` (flushed before sending).
-4. ⏳ **Current:** types + DB + core policy + server routes.
-   - Layering like seed limits: `Settings` → `GroupSettings` (groups hold labels: that's
-     the "label" layer) → torrent. Same for file order and move-when-complete.
-   - Core keeps `Entry.locations` (relocated paths) and applies them in `entry_paths` and
-     the library snapshot, so the content library, other spaces and remove-with-data see
-     moved files where they are. Priority-0 files are left out of the order sent to the
-     engine (else they hold an order place for ever); resync on priority change.
-   - Mover: event-driven from `file_events`, plus a sweep at start, on settings change and
-     on a lagged receiver. Rules: glob on the file's path relative to the save path, first
-     match wins; a rule with an empty destination keeps matching files in place.
-5. Deluge import: `move_completed(_path)` → torrent move setting, "whole torrent";
-   `sequential_download` → file order "torrent" + every file sequential.
-6. ✅ Web UI (`84d56f4`): details pane (order, per-file sequential toggle, location / move error, move
-   setting), Settings and group defaults.
-7. README.
-8. Later (wanted): browser playback with seeking; the engine's `set_stream(file, from)` is
-   the hook. Add-time options (order/sequential in the Add dialog). Plugin order rules.
+2. ✅ Picker (`d452bdd`).
+3. ✅ Engine (`cf0b7d0`): relocate, file events, order and streams on the handle.
+4. ✅ Types, DB (migration 17), core policy, server routes (`7391548`).
+5. ✅ Deluge import mapping (`dc20978`): move completed → whole-torrent move; sequential →
+   order "torrent" + every file sequential. Both are import options with wizard rows.
+6. ✅ Web UI (`84d56f4`, by a delegated child).
+7. ✅ README (`4ff80d6`).
+8. Later (wanted, not started): browser playback with seeking (`set_stream(file, from)` and
+   `SequentialFile.from` are the hooks); duplicate requests for the waited-for piece;
+   add-time options (order / sequential in the Add dialog); editing a manual order in the
+   UI; plugin-supplied order rules.
 
 ## Findings / gotchas
 
-- (none yet)
+- On loopback every piece is requested almost at once, so files finish in "roughly" the
+  order: small.txt (2 pieces) sometimes beat tail.bin (7) though tail was first. The
+  loopback test checks only that the last file in the order finishes last; exact order is
+  the picker tests' job.
+- `tracing` macros bring a `display` function into scope: a local named `display`
+  can't be indexed inside `tracing::warn!(… %display[i] …)`.
+- Windows: `/srv/done` is not an absolute path; tests that need one use `C:\…` under
+  `cfg(windows)`.
+- A per-torrent destination must be inside the space's storage roots
+  (`check_save_path`), else any member could make the daemon write anywhere. Instance and
+  group settings are admin-only and not checked.
+- `discover::tests::{config_arguments, a_daemon_without_config_uses_its_users_home}` fail
+  on Windows before this work too (ISSUES.md).
 
 ## Progress log
 
 - [x] Survey picker, placement, types, DB, UI
-- [ ] Open questions answered
-- [ ] Picker
-- [ ] Engine move + events
-- [ ] Types/API/DB
-- [ ] Core policy + Deluge mapping
+- [x] Open questions answered
+- [x] Picker
+- [x] Engine move + events
+- [x] Types/API/DB
+- [x] Core policy + Deluge mapping
 - [x] Web UI (`84d56f4`; manual order not editable in the UI yet)
-- [ ] Tests + README
+- [x] Tests + README
+- [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
 
-1. Moved file: keep seeding from its new place (recommended), link/copy into the public dir
-   and leave the original, or move it and stop seeding it?
-2. Offer Deluge's "whole torrent when everything is done" as well as per file?
-   (Recommended: both, per file the default.)
-3. Where the destination is set: global default, then label, then torrent (recommended);
-   and/or per-file pattern rules (`*.mkv` → `/public/video`)?
-4. Watching while downloading: a player reading the file on disk only (recommended first),
-   or also playback in the web UI with seeking, where the playhead steers the picker?
-5. Several spaces holding one swarm share one copy of each file: whose move setting wins?
-   (Recommended: the first entry's; others see the file where it is.)
+1. Deploy to the seedbox (pokol) to try it? Not done; deploys are yours to call.
 
 ## Things not to do
 
 - Don't make file order strict: a peer that only has later files' pieces must still be used.
+- Don't let a torrent's own move destination leave its space's storage roots.
