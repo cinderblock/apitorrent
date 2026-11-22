@@ -188,3 +188,61 @@ fn not_a_deluge_directory() {
     let dir = tempfile::tempdir().unwrap();
     assert!(apitorrent_deluge::load(dir.path()).is_err());
 }
+
+/// Deluge's `proxy` section, for each of libtorrent's proxy types.
+#[test]
+fn reads_the_proxy() {
+    use apitorrent_deluge::{DelugeProxy, DelugeProxyKind};
+    let dir = fake_deluge();
+    let load = |proxy: &str| {
+        std::fs::write(
+            dir.path().join("core.conf"),
+            format!(r#"{{"file": 1, "format": 1}}{{"proxy": {proxy}}}"#),
+        )
+        .unwrap();
+        let state = apitorrent_deluge::load(dir.path()).unwrap();
+        (state.settings.proxy, state.label_options)
+    };
+    let full = |ty: u8| {
+        format!(
+            r#"{{"type": {ty}, "hostname": " proxy.example ", "port": 1080, "username": "me",
+                "password": "secret", "proxy_hostnames": false, "proxy_peer_connections": true,
+                "proxy_tracker_connections": false, "force_proxy": true, "anonymous_mode": false}}"#
+        )
+    };
+    let want = |kind, username: &str, password: &str| {
+        Some(DelugeProxy {
+            kind,
+            hostname: "proxy.example".into(),
+            port: 1080,
+            username: username.into(),
+            password: password.into(),
+            proxy_hostnames: false,
+            proxy_peer_connections: true,
+            proxy_tracker_connections: false,
+            force_proxy: true,
+        })
+    };
+
+    // Deluge's default: no proxy, nothing to say.
+    let (p, notes) = load(r#"{"type": 0, "hostname": "", "port": 8080}"#);
+    assert_eq!((p, notes.len()), (None, 0));
+    // The credentials come over only for the types that use them (SOCKS4: the user id).
+    assert_eq!(load(&full(1)).0, want(DelugeProxyKind::Socks4, "me", ""));
+    assert_eq!(load(&full(2)).0, want(DelugeProxyKind::Socks5, "", ""));
+    assert_eq!(
+        load(&full(3)).0,
+        want(DelugeProxyKind::Socks5, "me", "secret")
+    );
+    assert_eq!(load(&full(4)).0, want(DelugeProxyKind::Http, "", ""));
+    assert_eq!(
+        load(&full(5)).0,
+        want(DelugeProxyKind::Http, "me", "secret")
+    );
+    // I2P, and a proxy without a host, can't come over, and say so.
+    let (p, notes) = load(&full(6));
+    assert_eq!((p, notes), (None, vec!["the I2P proxy".to_owned()]));
+    let (p, notes) = load(r#"{"type": 2, "hostname": "", "port": 1080, "anonymous_mode": true}"#);
+    assert_eq!(p, None);
+    assert_eq!(notes, ["anonymous mode", "the proxy (no host or port set)"]);
+}

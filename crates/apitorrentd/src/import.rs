@@ -29,7 +29,8 @@ pub struct DelugeArgs {
     #[arg(long = "map", value_name = "FROM=TO")]
     map: Vec<String>,
     /// Also take all of Deluge's speed, connection and queue limits and its stop-at-ratio
-    /// (into the space's settings, or the instance's for `default`).
+    /// (into the space's settings, or the instance's for `default`), and its proxy (for
+    /// `default`).
     #[arg(long)]
     settings: bool,
     /// Take one of Deluge's settings. Repeatable.
@@ -59,6 +60,8 @@ enum SettingName {
     Encryption,
     /// DHT, local peer discovery, UPnP and NAT-PMP (the default space only).
     Discovery,
+    /// The proxy (the default space only).
+    Proxy,
 }
 
 /// What of each torrent comes over. Everything does unless a flag leaves it out.
@@ -141,6 +144,7 @@ impl DelugeArgs {
                 SettingName::StopAtRatio => settings.stop_at_ratio = true,
                 SettingName::Encryption => settings.encryption = true,
                 SettingName::Discovery => settings.discovery = true,
+                SettingName::Proxy => settings.proxy = true,
             }
         }
         let label_renames = o

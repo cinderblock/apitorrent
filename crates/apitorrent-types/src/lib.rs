@@ -1209,6 +1209,8 @@ pub struct DelugeSettingsPick {
     pub encryption: bool,
     /// DHT, local peer discovery, UPnP and NAT-PMP (the default space only).
     pub discovery: bool,
+    /// The proxy (the default space only: it is the instance's).
+    pub proxy: bool,
 }
 
 impl DelugeSettingsPick {
@@ -1224,6 +1226,7 @@ impl DelugeSettingsPick {
             stop_at_ratio: true,
             encryption: true,
             discovery: true,
+            proxy: true,
         }
     }
 
@@ -1258,6 +1261,10 @@ pub struct DelugeSettingsView {
     pub discovery: DiscoverySettings,
     /// The settings changed in Deluge from Deluge's defaults.
     pub changed: DelugeSettingsPick,
+    /// Deluge's proxy, as it would be here (without its password: `passwordSet` says
+    /// whether it has one). `null` when Deluge uses no proxy, or one that can't come over
+    /// (that is listed with what can't).
+    pub proxy: Option<ProxySettings>,
 }
 
 /// Deluge's "stop seeding at ratio".

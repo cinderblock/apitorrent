@@ -2,6 +2,7 @@
 import type { DelugeSettingsPick } from "./DelugeSettingsPick";
 import type { DiscoverySettings } from "./DiscoverySettings";
 import type { EncryptionPolicy } from "./EncryptionPolicy";
+import type { ProxySettings } from "./ProxySettings";
 import type { StopAtRatio } from "./StopAtRatio";
 
 /**
@@ -29,3 +30,8 @@ discovery: DiscoverySettings,
  * The settings changed in Deluge from Deluge's defaults.
  */
 changed: DelugeSettingsPick, };
+ * Deluge's proxy, as it would be here (without its password: `passwordSet` says
+ * whether it has one). `null` when Deluge uses no proxy, or one that can't come over
+ * (that is listed with what can't).
+ */
+proxy: ProxySettings | null, };

@@ -138,6 +138,87 @@ pub fn apply_instance_settings(s: &mut Settings, d: &DelugeSettings, pick: Delug
     if pick.discovery {
         s.discovery = discovery(d);
     }
+    if pick.proxy {
+        match d.proxy.as_ref().map(proxy_settings) {
+            // A proxy the settings would refuse (a username too long, say) would fail the
+            // whole import; it is left out instead, and the rest comes over.
+            Some(p) => match crate::settings::validate_proxy(&p) {
+                Ok(()) => s.proxy = p,
+                Err(e) => tracing::warn!(error = %e, "Deluge's proxy doesn't come over"),
+            },
+            // No proxy in Deluge: none here either. The rest of the proxy settings (and a
+            // stored password) are kept, for turning it back on.
+            None => s.proxy.kind = apitorrent_types::ProxyType::None,
+        }
+    }
+}
+
+/// Deluge's proxy as apitorrent's proxy settings, password and all. An empty password is
+/// `Some("")`, which removes a stored one when the settings are saved.
+fn proxy_settings(p: &apitorrent_deluge::DelugeProxy) -> apitorrent_types::ProxySettings {
+    use apitorrent_deluge::DelugeProxyKind;
+    use apitorrent_types::ProxyType;
+    apitorrent_types::ProxySettings {
+        kind: match p.kind {
+            DelugeProxyKind::Socks4 => ProxyType::Socks4,
+            DelugeProxyKind::Socks5 => ProxyType::Socks5,
+            DelugeProxyKind::Http => ProxyType::Http,
+        },
+        host: p.hostname.clone(),
+        port: p.port,
+        username: p.username.clone(),
+        password: Some(p.password.clone()),
+        password_set: false,
+        proxy_hostnames: p.proxy_hostnames,
+        proxy_peers: p.proxy_peer_connections,
+        proxy_trackers: p.proxy_tracker_connections,
+        force: p.force_proxy,
+    }
+}
+
+/// Deluge's proxy in words, for the dry run: `SOCKS5 proxy.example:1080 as me (with a
+/// password); names, peers and trackers through it; forced`.
+fn describe_proxy(p: Option<&apitorrent_deluge::DelugeProxy>) -> String {
+    use apitorrent_deluge::DelugeProxyKind;
+    let Some(p) = p else {
+        return "none".to_owned();
+    };
+    let kind = match p.kind {
+        DelugeProxyKind::Socks4 => "SOCKS4",
+        DelugeProxyKind::Socks5 => "SOCKS5",
+        DelugeProxyKind::Http => "HTTP",
+    };
+    let mut out = format!("{kind} {}:{}", p.hostname, p.port);
+    if !p.username.is_empty() {
+        let _ = write!(out, " as {}", p.username);
+    }
+    if !p.password.is_empty() {
+        out.push_str(" (with a password)");
+    }
+    let through: Vec<&str> = [
+        (p.proxy_hostnames, "names"),
+        (p.proxy_peer_connections || p.force_proxy, "peers"),
+        (p.proxy_tracker_connections || p.force_proxy, "trackers"),
+    ]
+    .into_iter()
+    .filter_map(|(on, what)| on.then_some(what))
+    .collect();
+    if !through.is_empty() {
+        let _ = write!(out, "; {} through it", join_and(&through));
+    }
+    if p.force_proxy {
+        out.push_str("; forced");
+    }
+    out
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn join_and(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 fn discovery(d: &DelugeSettings) -> apitorrent_types::DiscoverySettings {
@@ -219,6 +300,7 @@ fn setting_names(pick: DelugeSettingsPick, default_space: bool) -> Vec<&'static 
             pick.discovery && default_space,
             "peer discovery and port forwarding",
         ),
+        (pick.proxy && default_space, "proxy"),
     ]
     .into_iter()
     .filter_map(|(on, name)| on.then_some(name))
@@ -250,6 +332,12 @@ pub fn settings_view(d: &DelugeSettings) -> apitorrent_types::DelugeSettingsView
         encryption_note: encryption(d.encryption).1,
         discovery: discovery(d),
         changed: changed(d),
+        proxy: d.proxy.as_ref().map(|p| {
+            let mut s = proxy_settings(p);
+            s.password_set = !p.password.is_empty();
+            s.password = None;
+            s
+        }),
     }
 }
 
@@ -273,6 +361,7 @@ pub fn changed(d: &DelugeSettings) -> DelugeSettingsPick {
         stop_at_ratio: d.stop_at_ratio != z.stop_at_ratio,
         encryption: d.encryption != z.encryption,
         discovery: d.discovery != z.discovery,
+        proxy: d.proxy != z.proxy,
     }
 }
 
@@ -1305,6 +1394,7 @@ COUNTS"
             changed_names.join(", ")
         );
     }
+    let _ = writeln!(out, "  proxy: {}", describe_proxy(d.proxy.as_ref()));
     let pick = c.options.settings;
     let default_space = c.slug == apitorrent_types::spaces::DEFAULT_SLUG;
     let taken = setting_names(pick, default_space);
@@ -2205,5 +2295,88 @@ mod tests {
         let c = changed(&d);
         assert!(c.max_connections && c.encryption && c.discovery);
         assert!(!c.download_rate && !c.queue_slots && !c.stop_at_ratio);
+    }
+
+    fn deluge_proxy() -> apitorrent_deluge::DelugeProxy {
+        apitorrent_deluge::DelugeProxy {
+            kind: apitorrent_deluge::DelugeProxyKind::Socks5,
+            hostname: "proxy.example".into(),
+            port: 1080,
+            username: "me".into(),
+            password: "secret".into(),
+            proxy_hostnames: true,
+            proxy_peer_connections: true,
+            proxy_tracker_connections: false,
+            force_proxy: false,
+        }
+    }
+
+    #[test]
+    fn the_proxy_comes_over_only_when_ticked() {
+        use apitorrent_types::ProxyType;
+        let d = DelugeSettings {
+            proxy: Some(deluge_proxy()),
+            ..DelugeSettings::default()
+        };
+        let mut s = crate::settings::defaults(&apitorrent_engine::SessionConfig::default());
+        apply_instance_settings(&mut s, &d, DelugeSettingsPick::default());
+        assert_eq!(s.proxy.kind, ProxyType::None);
+        let pick = DelugeSettingsPick {
+            proxy: true,
+            ..DelugeSettingsPick::default()
+        };
+        apply_instance_settings(&mut s, &d, pick);
+        assert_eq!(s.proxy.kind, ProxyType::Socks5);
+        assert_eq!(
+            (
+                s.proxy.host.as_str(),
+                s.proxy.port,
+                s.proxy.username.as_str()
+            ),
+            ("proxy.example", 1080, "me")
+        );
+        assert_eq!(s.proxy.password.as_deref(), Some("secret"));
+        assert!(s.proxy.proxy_peers && !s.proxy.proxy_trackers && !s.proxy.force);
+
+        // The view never holds the password.
+        let view = settings_view(&d).proxy.unwrap();
+        assert_eq!(view.password, None);
+        assert!(view.password_set);
+
+        // Deluge without a proxy turns it off here, keeping the rest for later.
+        apply_instance_settings(&mut s, &DelugeSettings::default(), pick);
+        assert_eq!(s.proxy.kind, ProxyType::None);
+        assert_eq!(s.proxy.host, "proxy.example");
+
+        // One the settings would refuse is left out, not a failed import.
+        let mut bad = deluge_proxy();
+        bad.username = "x".repeat(300);
+        let d = DelugeSettings {
+            proxy: Some(bad),
+            ..DelugeSettings::default()
+        };
+        apply_instance_settings(&mut s, &d, pick);
+        assert_eq!(s.proxy.kind, ProxyType::None);
+    }
+
+    #[test]
+    fn proxy_in_words() {
+        assert_eq!(describe_proxy(None), "none");
+        assert_eq!(
+            describe_proxy(Some(&deluge_proxy())),
+            "SOCKS5 proxy.example:1080 as me (with a password); names and peers through it"
+        );
+        let forced = apitorrent_deluge::DelugeProxy {
+            kind: apitorrent_deluge::DelugeProxyKind::Http,
+            username: String::new(),
+            password: String::new(),
+            proxy_hostnames: false,
+            force_proxy: true,
+            ..deluge_proxy()
+        };
+        assert_eq!(
+            describe_proxy(Some(&forced)),
+            "HTTP proxy.example:1080; peers and trackers through it; forced"
+        );
     }
 }

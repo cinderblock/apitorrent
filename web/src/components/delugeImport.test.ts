@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import type { DelugePreviewTorrent } from "../api/generated/DelugePreviewTorrent";
 import type { DelugeSettingsView } from "../api/generated/DelugeSettingsView";
-import { DEFAULT_OPTIONS, NO_FILTER, carried, hostMatches, importable, labelAfter, matches, renameLabel, rootsFor, settingRows, validSlug, within } from "./delugeImport";
+import { DEFAULT_OPTIONS, NO_FILTER, carried, describeProxy, hostMatches, importable, labelAfter, matches, renameLabel, rootsFor, settingRows, validSlug, within } from "./delugeImport";
 
 const t = (over: Partial<DelugePreviewTorrent>): DelugePreviewTorrent => ({
   id: "a".repeat(40),
@@ -116,7 +116,7 @@ describe("Deluge import wizard", () => {
     expect(labelAfter(o, "")).toBeNull();
   });
 
-  test("settings rows: slow torrents only for the default space", () => {
+  test("settings rows: slow torrents, encryption, discovery and the proxy only for the default space", () => {
     const s: DelugeSettingsView = {
       downloadRate: null,
       uploadRate: 1024,
@@ -126,6 +126,7 @@ describe("Deluge import wizard", () => {
       maxActive: 8,
       dontCountSlow: true,
       stopAtRatio: null,
+      proxy: null,
       encryption: "required",
       encryptionNote: "incoming enabled and outgoing forced",
       discovery: { dht: true, lsd: false, upnp: true, natpmp: true },
@@ -136,7 +137,27 @@ describe("Deluge import wizard", () => {
     expect(rows.map((r) => r.key)).toContain("ignoreSlow");
     expect(rows.filter((r) => r.changed).map((r) => r.key)).toEqual(["uploadRate", "encryption"]);
     expect(rows.find((r) => r.key === "encryption")).toMatchObject({ value: "required", note: "incoming enabled and outgoing forced" });
+    expect(rows.find((r) => r.key === "proxy")?.value).toBe("none");
     expect(rows.find((r) => r.key === "downloadRate")?.value).toBe("no limit");
     expect(rows.find((r) => r.key === "queueSlots")?.value).toBe("3 downloading, no limit seeding, 8 in all");
+  });
+
+  test("Deluge's proxy in words, never with its password", () => {
+    const p = {
+      type: "socks5" as const,
+      host: "proxy.example",
+      port: 1080,
+      username: "me",
+      passwordSet: true,
+      proxyHostnames: true,
+      proxyPeers: true,
+      proxyTrackers: false,
+      force: false,
+    };
+    expect(describeProxy(p)).toBe("SOCKS5 proxy.example:1080 as me (with a password); names and peers through it");
+    expect(describeProxy({ ...p, type: "http", username: "", passwordSet: false, proxyHostnames: false, force: true })).toBe(
+      "HTTP proxy.example:1080; peers and trackers through it; forced",
+    );
+    expect(describeProxy(null)).toBe("none");
   });
 });

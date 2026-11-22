@@ -109,6 +109,35 @@ pub struct DelugeSettings {
     pub encryption: DelugeEncryption,
     /// `dht`, `lsd`, `upnp` and `natpmp`, in that order.
     pub discovery: [bool; 4],
+    /// `proxy`, when Deluge uses a proxy apitorrent can (not I2P).
+    pub proxy: Option<DelugeProxy>,
+}
+
+/// Deluge's proxy: libtorrent's proxy settings, as Deluge's `core.conf` keeps them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Deluge's own on/off settings"
+)]
+pub struct DelugeProxy {
+    pub kind: DelugeProxyKind,
+    pub hostname: String,
+    pub port: u16,
+    /// Empty unless the proxy type authenticates (SOCKS5 or HTTP with a password, or the
+    /// SOCKS4 user id).
+    pub username: String,
+    pub password: String,
+    pub proxy_hostnames: bool,
+    pub proxy_peer_connections: bool,
+    pub proxy_tracker_connections: bool,
+    pub force_proxy: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelugeProxyKind {
+    Socks4,
+    Socks5,
+    Http,
 }
 
 impl DelugeSettings {
@@ -127,6 +156,7 @@ impl DelugeSettings {
             stop_at_ratio: None,
             encryption: DelugeEncryption::default(),
             discovery: [true; 4],
+            proxy: None,
         }
     }
 }
@@ -158,8 +188,8 @@ impl Default for DelugeEncryption {
 pub struct DelugeState {
     pub torrents: Vec<DelugeTorrent>,
     pub settings: DelugeSettings,
-    /// Label plugin options (per label) that apitorrent has no equivalent for, in plain
-    /// words. The labels themselves carry over.
+    /// Label plugin options (per label), and Deluge settings, that apitorrent has no
+    /// equivalent for, in plain words. The labels themselves carry over.
     pub label_options: Vec<String>,
     /// Problems that didn't stop the import, in plain words.
     pub warnings: Vec<String>,
@@ -234,6 +264,9 @@ pub fn load(config_dir: &Path) -> Result<DelugeState, DelugeError> {
 
     if let Ok(core) = read_config(&config_dir.join("core.conf")) {
         out.settings = settings_from(&core);
+        let (proxy, notes) = proxy_from(&core);
+        out.settings.proxy = proxy;
+        out.label_options.extend(notes);
     }
 
     // Every .torrent in the state directory is a torrent Deluge has.
@@ -541,6 +574,77 @@ pub fn read_config(path: &Path) -> std::io::Result<serde_json::Value> {
         .ok_or_else(|| std::io::Error::other("empty config file"))
 }
 
+/// Deluge's proxy, when it has one apitorrent can use, and notes on what of it can't come
+/// over. libtorrent's types: 0 none, 1 SOCKS4, 2 SOCKS5, 3 SOCKS5 with a password, 4 HTTP,
+/// 5 HTTP with a password, 6 I2P.
+fn proxy_from(core: &serde_json::Value) -> (Option<DelugeProxy>, Vec<String>) {
+    let Some(p) = core.get("proxy").filter(|p| p.is_object()) else {
+        return (None, Vec::new());
+    };
+    let text = |key: &str| {
+        p.get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let flag = |key: &str, default: bool| {
+        p.get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(default)
+    };
+    let mut notes = Vec::new();
+    if flag("anonymous_mode", false) {
+        notes.push("anonymous mode".to_owned());
+    }
+    let (kind, auth) = match p.get("type").and_then(serde_json::Value::as_i64) {
+        None | Some(0) => return (None, notes),
+        Some(1) => (DelugeProxyKind::Socks4, false),
+        Some(2) => (DelugeProxyKind::Socks5, false),
+        Some(3) => (DelugeProxyKind::Socks5, true),
+        Some(4) => (DelugeProxyKind::Http, false),
+        Some(5) => (DelugeProxyKind::Http, true),
+        Some(6) => {
+            notes.push("the I2P proxy".to_owned());
+            return (None, notes);
+        }
+        Some(n) => {
+            notes.push(format!("the proxy (unknown type {n})"));
+            return (None, notes);
+        }
+    };
+    let hostname = text("hostname").trim().to_owned();
+    let port = p
+        .get("port")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| u16::try_from(n).ok())
+        .filter(|&n| n != 0);
+    let Some(port) = port.filter(|_| !hostname.is_empty()) else {
+        notes.push("the proxy (no host or port set)".to_owned());
+        return (None, notes);
+    };
+    let proxy = DelugeProxy {
+        kind,
+        hostname,
+        port,
+        // libtorrent sends the username as the SOCKS4 user id.
+        username: if auth || kind == DelugeProxyKind::Socks4 {
+            text("username")
+        } else {
+            String::new()
+        },
+        password: if auth {
+            text("password")
+        } else {
+            String::new()
+        },
+        proxy_hostnames: flag("proxy_hostnames", true),
+        proxy_peer_connections: flag("proxy_peer_connections", true),
+        proxy_tracker_connections: flag("proxy_tracker_connections", true),
+        force_proxy: flag("force_proxy", false),
+    };
+    (Some(proxy), notes)
+}
+
 fn settings_from(core: &serde_json::Value) -> DelugeSettings {
     let rate = |key: &str| {
         core.get(key)
@@ -603,5 +707,6 @@ fn settings_from(core: &serde_json::Value) -> DelugeSettings {
                 level: n("enc_level", d.level),
             }
         },
+        proxy: None,
     }
 }

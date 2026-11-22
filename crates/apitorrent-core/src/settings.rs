@@ -85,7 +85,7 @@ pub fn forces_proxy(s: &Settings) -> bool {
 }
 
 /// Reject proxy settings that can't be used.
-fn validate_proxy(p: &apitorrent_types::ProxySettings) -> Result<(), String> {
+pub(crate) fn validate_proxy(p: &apitorrent_types::ProxySettings) -> Result<(), String> {
     use apitorrent_types::ProxyType;
     if p.kind == ProxyType::None {
         return Ok(());

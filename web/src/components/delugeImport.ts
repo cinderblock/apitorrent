@@ -5,6 +5,7 @@
 import type { DelugeImportOptions } from "../api/generated/DelugeImportOptions";
 import type { DelugePreviewTorrent } from "../api/generated/DelugePreviewTorrent";
 import type { DelugeSettingsView } from "../api/generated/DelugeSettingsView";
+import type { ProxySettings } from "../api/generated/ProxySettings";
 import type { StopAtRatio } from "../api/generated/StopAtRatio";
 import { formatRate } from "../format";
 
@@ -96,7 +97,7 @@ export const DEFAULT_OPTIONS: DelugeImportOptions = {
   superSeed: true,
   identity: { kind: "deluge" },
   identitySkipHosts: [],
-  settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false, encryption: false, discovery: false },
+  settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false, encryption: false, discovery: false, proxy: false },
 };
 
 const sameRatio = (a: StopAtRatio | null, b: StopAtRatio | null) => (a === null || b === null ? a === b : a.ratio === b.ratio && a.remove === b.remove);
@@ -264,5 +265,21 @@ export function settingRows(s: DelugeSettingsView, defaultSpace: boolean): Setti
       ),
     );
   }
+  // The proxy is the instance's, so only an import into the default space takes it.
+  if (defaultSpace) rows.push(row("proxy", "Proxy", describeProxy(s.proxy)));
   return rows;
+}
+
+const PROXY_NAMES: Record<ProxySettings["type"], string> = { none: "none", socks4: "SOCKS4", socks5: "SOCKS5", http: "HTTP" };
+
+/** Deluge's proxy in words: "SOCKS5 proxy.example:1080 as me (with a password); peers and trackers through it, forced". */
+export function describeProxy(p: ProxySettings | null): string {
+  if (p === null || p.type === "none") return "none";
+  let out = `${PROXY_NAMES[p.type]} ${p.host}:${p.port}`;
+  if (p.username !== "") out += ` as ${p.username}`;
+  if (p.passwordSet) out += " (with a password)";
+  const through = [p.proxyHostnames && "names", (p.proxyPeers || p.force) && "peers", (p.proxyTrackers || p.force) && "trackers"].filter((w): w is string => !!w);
+  if (through.length > 0) out += `; ${through.length === 1 ? through[0] : `${through.slice(0, -1).join(", ")} and ${through[through.length - 1]}`} through it`;
+  if (p.force) out += "; forced";
+  return out;
 }
