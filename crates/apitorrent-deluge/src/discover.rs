@@ -736,7 +736,8 @@ mod tests {
         assert!(p.unit_dirs.is_empty());
         assert!(p.home_parents.is_empty());
         let appdata = std::env::var_os("APPDATA").expect("APPDATA is set on Windows");
-        assert!(p.candidates.contains(&PathBuf::from(appdata).join("deluge")));
+        let deluge = PathBuf::from(appdata).join("deluge");
+        assert!(p.candidates.contains(&deluge));
         assert_eq!(running_daemon(&p, Path::new(r"C:\x")), None);
     }
 }
