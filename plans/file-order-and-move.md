@@ -163,6 +163,10 @@ arbitrary rules.
   `/var/lib/apitorrent/backup-2026-11-22-0a0cd13/`; 672 restored, `/health` 200, the UI
   serves "Check port with…". Desktop app rebuilt from `0a0cd13` and restarted 8:57 PM PST
   (old one `.bak-20261122-2025`).
+- [x] Resynced after the other threads finished: master matches origin at `9b588e1`; pokol
+  deployed with it 2026-11-22 10:25 PM PST (06:25Z Nov 23), sha256 `53eac6db…`, backups in
+  `/var/lib/apitorrent/backup-2026-11-22-9b588e1/`, 672 restored, `/health` 200. The desktop
+  app already ran `80c92ec` (the last code commit), restarted by the reachability thread.
 - [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
