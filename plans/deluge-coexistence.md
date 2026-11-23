@@ -186,7 +186,12 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
     back to waiting (In Deluge). Migration 19, `imported.released_at`, stops the asking
     once Deluge doesn't have the torrent, its config dir is gone, or it was a leftover.
     Tests: takeover units and `deluge_take_over` (refused while a daemon holds the port,
-    started after a restart). Not yet deployed to pokol.
+    started after a restart). Pushed and deployed to pokol on the user's yes,
+    2026-11-22 7:22 PM PST (03:22Z): built on sentinel (`rust:1-bookworm`,
+    `embedded-ui,first-party-plugins`, sha256 `72d3cd76…`); databases and the `b282e1e`
+    binary backed up to `/var/lib/apitorrent/backup-2026-11-22-56a4105/`; migration 19 ran,
+    672 restored, `/health` 200. The 3 taken-over running torrents were held, Deluge was
+    asked, and they started with no warnings (Deluge had them stopped).
 
 ## Findings / gotchas
 
