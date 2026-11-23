@@ -149,6 +149,15 @@ arbitrary rules.
 - [x] Desktop app rebuilt from `e74ef58` (`tauri/custom-protocol`, merge worktree) and copied
   to `target/desktop-app/run/apitorrent-desktop.exe` (2026-11-22 4:55 PM PST, 00:55Z); the
   old one is `.bak-20261122-1655`. Not started: it wasn't running.
+- [x] Redeployed pokol with master `b282e1e` (proxy support, Deluge encryption import, upload
+  slots, super-seeding, reachability) on the user's word, 2026-11-22 6:40 PM PST (02:40Z).
+  sha256 `c73526ff…`; databases and the `e74ef58` binary backed up to
+  `/var/lib/apitorrent/backup-2026-11-22-b282e1e/`; migration 18 ran, 672 torrents restored,
+  `/health` 200, the served UI has the proxy settings. Desktop app rebuilt from `b282e1e`
+  (old one `.bak-20261122-1845`) and started at 6:41 PM PST.
+- [x] CI's Plugins job failed on `b282e1e`: qbittorrent-api's state map lacked `moving`.
+  Fixed in `2925b9a`. pokol's installed plugin copies (2026-11-14) are unaffected by binary
+  swaps, so no redeploy for it.
 - [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
