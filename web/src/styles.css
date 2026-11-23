@@ -2102,6 +2102,8 @@ button.link.danger-text {
   justify-content: space-between;
   align-items: baseline;
   gap: 8px;
+}
+
 /* Selection checkboxes in the wide list. */
 .th-check,
 .td-check {
