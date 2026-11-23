@@ -37,14 +37,6 @@ the `pickle` target; the input was saved as `oom-19597dc2a899f6249eb65d0cf58bc6d
 -max_total_time=600 -rss_limit_mb=2048` in `fuzz/`. Why it matters: a crafted Deluge state
 file can make the import use gigabytes, and the Fuzz CI job goes red.
 
-## Engine test `a_torrent_presents_as_its_trackers_identity` fails now and then
-
-Found 2026-11-22. CI run https://github.com/cinderblock/apitorrent/actions/runs/45076596762
-(`e74ef58`) failed it on ubuntu and macOS at `crates/apitorrent-engine/tests/tracker.rs:313`
-(the leecher's peer list has no peer whose client is Deluge); the next run on the same code
-passed. Reproduce: run `cargo test -p apitorrent-engine --test tracker` repeatedly. Why it
-matters: the Rust CI job goes red at random.
-
 ## Deluge discovery tests fail on Windows
 
 Found 2026-11-20. `cargo test -p apitorrent-deluge --lib discover` on Windows:
