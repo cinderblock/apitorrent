@@ -25,7 +25,8 @@ encryption: boolean,
 /**
  * DHT, local peer discovery, UPnP and NAT-PMP (the default space only).
  */
-discovery: boolean, };
+discovery: boolean, 
+/**
  * The proxy (the default space only: it is the instance's).
  */
 proxy: boolean, };
