@@ -75,6 +75,10 @@ Later, not now: our own check-back service (#4) as a third backend.
   menu, docs; clippy + unit tests (sentinel), web tests + typecheck; live test of both
   services over IPv4 and IPv6 on Windows (`live_port_check`, ignored by default: port 1
   reads closed from all four); on master
+- [x] Local desktop app rebuilt at `5cd9189` and restarted (2026-11-22 8:46 PM PST,
+  04:46Z; PID 37324; old exe `.bak-20261122-2047`). It's connected to pokol, which runs
+  `56a4105` (before the port check), so the button there answers 404 until pokol is
+  deployed.
 - [ ] See it on pokol after a deploy: the status bar's peer port should read "open" once a
   peer connects in, and the check button should answer
 
