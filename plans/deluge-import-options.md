@@ -89,9 +89,16 @@ Round 2 steps:
        `apitorrent-portmap` (NAT-PMP per RFC 6886 first, then UPnP via `igd-next`; one-hour
        leases renewed at half; removed at shutdown); status bar shows the forward; Deluge's
        `dht`/`lsd`/`upnp`/`natpmp` import as one setting (`--setting discovery`).
-10. [ ] Proxy: in the other thread; merge its branch when done.
+10. [x] Proxy: built in the other thread (`plans/proxy-support.md`), cherry-picked onto
+        master here. Force proxy now also keeps UPnP and NAT-PMP off (at start, and the
+        forwards are removed when it is turned on while running); the discovery settings
+        only ever turn DHT/LSD off, so they can't bring them back while forced.
 
 ## Findings / gotchas
+
+- Bringing `proxy-support` over: conflicts only where round-2 fields sat next to the
+  proxy ones (`DelugeSettings`, `DelugeSettingsPick`/`View`, `settingRows`), plus
+  reachability's `Dialer.reach` and `route_incoming` argument next to the proxy's.
 
 - The preview asks Deluge's daemon for its versions (for the identity choice's label),
   capped at 3 s so a hung daemon doesn't stall the preview; the import asks again.
