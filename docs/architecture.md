@@ -186,8 +186,12 @@ swarms learned our address (a successful tracker or DHT announce; for the DHT, i
 reads as probably closed, never certain. Our public address comes from DHT votes
 (BEP 42), peers' `yourip` (BEP 10, by majority) and HTTP trackers' `external ip`
 (BEP 24); when it changes, the proof starts over. A router (NAT-PMP or UPnP) whose public
-address differs, or isn't public, means another NAT is in front of it. An active
-connect-back check could later feed the same evidence.
+address differs, or isn't public, means another NAT is in front of it. When the user
+asks (`POST /api/v1/port-check`), the daemon has a public service (Transmission's port
+test or ifconfig.co) connect back to the TCP port, with one request bound to each family
+it listens on, straight rather than through a proxy, since the service tests the address
+asking (`apitorrent_engine::port_check`). The newer of its answer and the last incoming
+connection decides: one that got through means open, one that didn't means closed.
 
 **Proxy.** `Settings::proxy` (SOCKS4, SOCKS5 or HTTP; Deluge's options) goes to the engine
 through `Session::set_proxy` and applies to new connections at once. Proxied peers and web

@@ -621,18 +621,74 @@ pub struct PortReachability {
     /// knows our address yet.
     #[ts(type = "number | null")]
     pub waiting_since: Option<i64>,
+    /// The last port check since our public address last changed (TCP only).
+    #[serde(default)]
+    pub check: Option<PortCheckResult>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum PortState {
-    /// A connection came in on its own since our public address last changed.
+    /// A connection came in on its own, or a port check got through, since our public
+    /// address last changed.
     Open,
     /// None yet, and it's too soon to say.
     Waiting,
     /// None for half an hour since the swarms learned our address.
     ProbablyClosed,
+    /// A port check couldn't connect, and nothing has come in since.
+    Closed,
+}
+
+/// A public service that connects back to the port it's given, at the address asking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum PortCheckService {
+    /// Transmission's port test, `portcheck.transmissionbt.com`.
+    Transmission,
+    /// `ifconfig.co`.
+    Ifconfig,
+}
+
+/// What a port check service found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PortCheckResult {
+    pub service: PortCheckService,
+    pub open: bool,
+    /// When, in milliseconds since the Unix epoch.
+    #[ts(type = "number")]
+    pub at: i64,
+}
+
+/// `POST /api/v1/port-check`: ask a public service to connect back to the TCP peer port
+/// from the daemon, once per address family it listens on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PortCheckRequest {
+    pub service: PortCheckService,
+}
+
+/// The answer per family; null where the peer port doesn't listen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PortCheckResponse {
+    pub ipv4: Option<PortCheckAnswer>,
+    pub ipv6: Option<PortCheckAnswer>,
+}
+
+/// Whether the service got through, or why there's no answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PortCheckAnswer {
+    pub open: Option<bool>,
+    pub error: Option<String>,
 }
 
 /// Which client apitorrent presents itself as: its peer id, the `User-Agent` of HTTP

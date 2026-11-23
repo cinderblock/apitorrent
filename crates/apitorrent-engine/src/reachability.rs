@@ -15,6 +15,10 @@
 //! sees, another NAT sits in front of the router, often the ISP's, and a forward on the
 //! router can't open the port.
 //!
+//! When the user asks, a public service connects back to the TCP port
+//! ([`crate::port_check`]). Its answer counts until newer evidence says otherwise: one that
+//! got through proves the port open, one that didn't says it's closed.
+//!
 //! When the public address of a family changes, its proof starts over.
 
 use std::collections::VecDeque;
@@ -23,6 +27,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use apitorrent_dht::Contacted;
+
+use crate::port_check::PortChecker;
 
 /// How long to wait for proof after the swarms learned our address before calling a port
 /// probably closed.
@@ -41,6 +47,16 @@ pub enum PortState {
     Waiting,
     /// None in [`PROBABLY_CLOSED_AFTER`] since the swarms learned our address.
     ProbablyClosed,
+    /// A port check couldn't connect, and nothing has come in since.
+    Closed,
+}
+
+/// What a port check service found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortCheck {
+    pub checker: PortChecker,
+    pub open: bool,
+    pub at: Instant,
 }
 
 /// One port, one family.
@@ -53,6 +69,8 @@ pub struct PortReport {
     pub last_incoming: Option<Instant>,
     /// Since when we've been waiting for proof; `None` while no swarm knows our address.
     pub waiting_since: Option<Instant>,
+    /// The last port check since the public address last changed (TCP only).
+    pub check: Option<PortCheck>,
 }
 
 /// One address family.
@@ -114,6 +132,8 @@ struct State {
     advertised: Option<Instant>,
     tcp: [Proof; 2],
     utp: [Proof; 2],
+    /// The last port check of the TCP port, per family.
+    checks: [Option<PortCheck>; 2],
     /// IPs we dialed over uTP lately: their connections back prove nothing.
     utp_dialed: Contacted,
     /// (voter, what it says our address is), oldest first.
@@ -138,6 +158,7 @@ impl Reachability {
                 advertised: None,
                 tcp: [Proof::default(); 2],
                 utp: [Proof::default(); 2],
+                checks: [None, None],
                 utp_dialed: Contacted::new(now),
                 votes: [VecDeque::new(), VecDeque::new()],
                 tracker_ip: [None, None],
@@ -209,6 +230,15 @@ impl Reachability {
         }
     }
 
+    /// `checker` found the TCP port open or not, in `family` (0 is IPv4).
+    pub(crate) fn checked(&self, family: usize, checker: PortChecker, open: bool, now: Instant) {
+        self.state().checks[family] = Some(PortCheck {
+            checker,
+            open,
+            at: now,
+        });
+    }
+
     /// A DHT announce finished.
     pub(crate) fn announced_on_dht(&self, now: Instant) {
         self.state().advertised.get_or_insert(now);
@@ -247,9 +277,23 @@ impl Reachability {
                 (Some(t), Some(c)) => Some(t.max(c)),
                 (t, _) => t,
             };
-            let port = |port: u16, proof: Proof, waiting_since: Option<Instant>| {
-                let proven = proof.last.is_some_and(|l| changed.is_none_or(|c| l >= c));
-                let state = if proven {
+            let current = |t: Instant| changed.is_none_or(|c| t >= c);
+            let port = |port: u16,
+                        proof: Proof,
+                        waiting_since: Option<Instant>,
+                        check: Option<PortCheck>| {
+                let proven = proof.last.filter(|l| current(*l));
+                let check = check.filter(|c| current(c.at));
+                // The newer of a port check and the last incoming connection decides.
+                let state = if let Some(c) = check
+                    && proven.is_none_or(|l| c.at >= l)
+                {
+                    if c.open {
+                        PortState::Open
+                    } else {
+                        PortState::Closed
+                    }
+                } else if proven.is_some() {
                     PortState::Open
                 } else if waiting_since
                     .is_some_and(|w| now.saturating_duration_since(w) >= PROBABLY_CLOSED_AFTER)
@@ -264,13 +308,14 @@ impl Reachability {
                     incoming: proof.count,
                     last_incoming: proof.last,
                     waiting_since,
+                    check,
                 }
             };
             let advertised = since(s.advertised);
-            let tcp =
-                inputs.tcp_families[fam].then(|| port(inputs.peer_port, s.tcp[fam], advertised));
-            let utp =
-                inputs.utp_families[fam].then(|| port(inputs.peer_port, s.utp[fam], advertised));
+            let tcp = inputs.tcp_families[fam]
+                .then(|| port(inputs.peer_port, s.tcp[fam], advertised, s.checks[fam]));
+            let utp = inputs.utp_families[fam]
+                .then(|| port(inputs.peer_port, s.utp[fam], advertised, None));
             // DHT nodes learn of us as soon as we query them, so its wait starts with the
             // session.
             let dht = inputs.dht_ports[fam].map(|p| {
@@ -279,7 +324,7 @@ impl Reachability {
                     count: stats.map_or(0, |d| d.unsolicited_queries[fam]),
                     last: stats.and_then(|d| d.last_unsolicited[fam]),
                 };
-                port(p, proof, since(Some(s.started)))
+                port(p, proof, since(Some(s.started)), None)
             });
             *out = FamilyReport {
                 external_ip,
@@ -571,6 +616,39 @@ mod tests {
         let rep = r.report(&dht(2, Some(t0)), t0 + PROBABLY_CLOSED_AFTER);
         let d = rep.ipv4.dht.unwrap();
         assert_eq!((d.state, d.incoming, d.port), (PortState::Open, 2, 41_000));
+    }
+
+    #[test]
+    fn a_port_check_counts_until_newer_evidence() {
+        let t0 = Instant::now();
+        let r = Reachability::new(t0);
+        r.announced(Some(ip("203.1.1.1")), t0);
+        let state = |t| r.report(&inputs(), t).ipv4.tcp.unwrap().state;
+        r.checked(0, PortChecker::Ifconfig, false, t0);
+        assert_eq!(state(t0), PortState::Closed);
+        let t1 = t0 + Duration::from_secs(60);
+        r.incoming(false, addr("23.1.2.3:5000"), t1);
+        assert_eq!(state(t1), PortState::Open, "a peer came in since");
+        let t2 = t1 + Duration::from_secs(60);
+        r.checked(0, PortChecker::Transmission, false, t2);
+        assert_eq!(state(t2), PortState::Closed, "the forward went away");
+        r.checked(0, PortChecker::Transmission, true, t2);
+        let tcp = r.report(&inputs(), t2).ipv4.tcp.unwrap();
+        assert_eq!(tcp.state, PortState::Open);
+        assert_eq!(
+            tcp.check.map(|c| c.checker),
+            Some(PortChecker::Transmission)
+        );
+        assert!(
+            r.report(&inputs(), t2).ipv4.utp.unwrap().check.is_none(),
+            "the services test TCP"
+        );
+
+        // A new address: the check was of the old one.
+        let t3 = t2 + Duration::from_secs(60);
+        r.announced(Some(ip("203.2.2.2")), t3);
+        let tcp = r.report(&inputs(), t3).ipv4.tcp.unwrap();
+        assert_eq!((tcp.state, tcp.check), (PortState::Waiting, None));
     }
 
     #[test]

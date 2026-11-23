@@ -12,8 +12,11 @@ internet, and what our public address is, without a third-party service:
    A router whose public IP differs from what the internet sees means another NAT sits in
    front (often the ISP's), so a forward on the router can't open the port.
 
-Later, not now: an active connect-back check (our own service, or a public one) feeding
-the same model as another kind of evidence.
+3. **Check button** (asked 2026-11-22: "build both. a user gets a button 'check my port is
+   open with...'"): the daemon asks Transmission's port test or ifconfig.co to connect
+   back; the answer feeds the same model.
+
+Later, not now: our own check-back service (#4) as a third backend.
 
 ## Decisions already made
 
@@ -24,6 +27,9 @@ the same model as another kind of evidence.
   threads that have uncommitted generated types).
 - UI: extend the status bar's "Peer port" item (the piece that already shows port
   forwarding). No new page.
+- Check button: in the status bar beside the peer port, a "Check port with…" menu of the
+  two services. The daemon makes the request (from the browser it would test the
+  browser's network, and CORS blocks it anyway).
 
 ## Design
 
@@ -44,6 +50,13 @@ the same model as another kind of evidence.
   a non-empty routing table for the DHT).
 - External IP per family: DHT vote, else peers' `yourip` majority (≥ 3 distinct peers),
   else the latest tracker report. A change of it restarts the wait.
+- Port check (`apitorrent-engine/src/port_check.rs`): `PortChecker` enum is the seam (URL +
+  answer parser per service; #4 would be a third variant). One request per family the TCP
+  listener covers, bound to `0.0.0.0` / `::` (hyper-util then dials only that family),
+  never through the proxy; refused under force proxy. 30 s cooldown per service. The
+  newer of the check and the last incoming connection decides TCP's state: `open` or a
+  new `closed`. An address change drops the check like any proof.
+  `POST /api/v1/port-check {service}` → per-family `{open, error}`.
 
 ## Progress
 
@@ -57,16 +70,20 @@ the same model as another kind of evidence.
 - [x] README highlight, architecture paragraph
 - [x] clippy, tests (sentinel), web tests and typecheck; commits `050bed7`, `a6f201b`,
   `7a412d0`, fast-forwarded onto master
-- [ ] Push (waiting on the user: the repo's CLAUDE.md says nothing about pushing)
+- [x] Pushed (on origin/master by 2026-11-22)
+- [x] Check button: engine `port_check`, `closed` state, core, route, types, status bar
+  menu, docs; clippy + unit tests (sentinel), web tests + typecheck; live test of both
+  services over IPv4 and IPv6 on Windows (`live_port_check`, ignored by default: port 1
+  reads closed from all four); on master
 - [ ] See it on pokol after a deploy: the status bar's peer port should read "open" once a
-  peer connects in
+  peer connects in, and the check button should answer
 
 ## Findings
 
 - Public check-back services exist and work over IPv4 and IPv6 (tried 2026-11-22):
   `https://portcheck.transmissionbt.com/<port>` (body `1`/`0`) and
   `https://ifconfig.co/port/<port>` (JSON `reachable`). Both connect back to the
-  requester's IP. Not built in: they're someone else's infrastructure.
+  requester's IP. Built in later as a user-pressed button (the user asked), never automatic.
 - `apitorrentd --peer-listen` defaults to `0.0.0.0:0`: TCP and uTP listen on IPv4 only.
   The DHT binds both families. Logged in ISSUES.md.
 - The engine has no guard against dialing itself (trackers may list us), so a TCP
@@ -80,4 +97,5 @@ the same model as another kind of evidence.
 ## Things not to do
 
 - Don't count LAN or loopback peers (LSD, tests) as proof.
-- Don't call a third-party checker from the daemon.
+- Don't call a third-party checker on our own: only when the user presses the button.
+- Don't send the check through the proxy: it would test the proxy's address.

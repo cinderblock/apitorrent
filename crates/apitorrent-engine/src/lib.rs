@@ -17,6 +17,7 @@ pub mod metadata;
 pub mod parts;
 mod peer;
 pub mod picker;
+pub mod port_check;
 pub mod reachability;
 pub mod reputation;
 mod session;

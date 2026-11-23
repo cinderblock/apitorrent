@@ -42,6 +42,7 @@ use tokio::sync::{Notify, broadcast, oneshot, watch};
 use apitorrent_engine::bitfield::Bitfield;
 use apitorrent_engine::layout::Layout;
 use apitorrent_engine::metadata::FetchStatus;
+use apitorrent_engine::port_check::PortChecker;
 use apitorrent_engine::storage::Placement;
 use apitorrent_engine::{
     AddTorrent, EntryKey, EntryParams, EntryStats, Session, SessionConfig, TorrentHandle,
@@ -4338,6 +4339,46 @@ impl Core {
         }
     }
 
+    /// Ask a public service to connect back to the TCP peer port, from the daemon, once
+    /// per family it listens on. The answers also show in [`Core::session_stats`].
+    pub async fn check_port(
+        &self,
+        service: apitorrent_types::PortCheckService,
+    ) -> Result<apitorrent_types::PortCheckResponse, CoreError> {
+        use apitorrent_engine::port_check::PortCheckError;
+        let checker = match service {
+            apitorrent_types::PortCheckService::Transmission => PortChecker::Transmission,
+            apitorrent_types::PortCheckService::Ifconfig => PortChecker::Ifconfig,
+        };
+        let [ipv4, ipv6] = self
+            .inner
+            .session
+            .check_port(checker)
+            .await
+            .map_err(|e| match e {
+                PortCheckError::TooSoon { .. } => CoreError::Busy(e.to_string()),
+                PortCheckError::ForceProxy | PortCheckError::NotListening => {
+                    CoreError::InvalidRequest(e.to_string())
+                }
+            })?;
+        let answer = |a: Option<Result<bool, String>>| {
+            a.map(|a| match a {
+                Ok(open) => apitorrent_types::PortCheckAnswer {
+                    open: Some(open),
+                    error: None,
+                },
+                Err(e) => apitorrent_types::PortCheckAnswer {
+                    open: None,
+                    error: Some(e),
+                },
+            })
+        };
+        Ok(apitorrent_types::PortCheckResponse {
+            ipv4: answer(ipv4),
+            ipv6: answer(ipv6),
+        })
+    }
+
     /// Publish one torrent's summary, when only it changed.
     fn refresh_one(&self, key: &Key) {
         let summary = self
@@ -4706,10 +4747,19 @@ fn reachability(
             PortState::Open => apitorrent_types::PortState::Open,
             PortState::Waiting => apitorrent_types::PortState::Waiting,
             PortState::ProbablyClosed => apitorrent_types::PortState::ProbablyClosed,
+            PortState::Closed => apitorrent_types::PortState::Closed,
         },
         incoming: p.incoming,
         last_incoming: p.last_incoming.map(ms),
         waiting_since: p.waiting_since.map(ms),
+        check: p.check.map(|c| apitorrent_types::PortCheckResult {
+            service: match c.checker {
+                PortChecker::Transmission => apitorrent_types::PortCheckService::Transmission,
+                PortChecker::Ifconfig => apitorrent_types::PortCheckService::Ifconfig,
+            },
+            open: c.open,
+            at: ms(c.at),
+        }),
     };
     let ip = |ip: Option<std::net::IpAddr>| ip.map(|ip| ip.to_string());
     let family = |f: &FamilyReport| apitorrent_types::FamilyReachability {

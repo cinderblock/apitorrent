@@ -233,6 +233,15 @@ pub(crate) async fn stats(State(s): State<AppState>) -> Json<SessionStats> {
     Json(s.core.session_stats())
 }
 
+/// Ask a public service to connect back to the peer port. The daemon makes the request,
+/// so the service tests the daemon's address; it names only the port.
+pub(crate) async fn check_port(
+    State(s): State<AppState>,
+    Json(req): Json<apitorrent_types::PortCheckRequest>,
+) -> ApiResult<Json<apitorrent_types::PortCheckResponse>> {
+    Ok(Json(s.core.check_port(req.service).await?))
+}
+
 /// Secrets (the proxy password) are left out; see [`Settings::redacted`].
 pub(crate) async fn get_settings(State(s): State<AppState>) -> Json<Settings> {
     Json(s.core.settings().redacted())

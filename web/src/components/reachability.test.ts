@@ -3,12 +3,12 @@ import { describe, expect, test } from "bun:test";
 import type { FamilyReachability } from "../api/generated/FamilyReachability";
 import type { PortReachability } from "../api/generated/PortReachability";
 import type { Reachability } from "../api/generated/Reachability";
-import { ago, familyLines, reachSummary } from "./reachability";
+import { ago, checkSummary, familyLines, reachSummary } from "./reachability";
 
 const NOW = 1_800_000_000_000;
 
 function port(state: PortReachability["state"], extra: Partial<PortReachability> = {}): PortReachability {
-  return { port: 40000, state, incoming: 0, lastIncoming: null, waitingSince: NOW, ...extra };
+  return { port: 40000, state, incoming: 0, lastIncoming: null, waitingSince: NOW, check: null, ...extra };
 }
 
 function family(extra: Partial<FamilyReachability> = {}): FamilyReachability {
@@ -49,6 +49,11 @@ describe("reachSummary", () => {
     );
   });
 
+  test("a failed port check says closed, unless another family is open", () => {
+    expect(reachSummary(reach({ tcp: port("closed") }))).toEqual({ text: "closed", tone: "warn" });
+    expect(reachSummary(reach({ tcp: port("closed") }, { tcp: port("open") }))?.text).toBe("open");
+  });
+
   test("nothing to say without a listener", () => {
     expect(reachSummary(reach({}))).toBeNull();
   });
@@ -72,6 +77,29 @@ describe("familyLines", () => {
     ]);
   });
 
+  test("what a port check found", () => {
+    const at = NOW - 2 * 60_000;
+    const [closed] = familyLines(
+      "IPv4",
+      family({ tcp: port("closed", { check: { service: "ifconfig", open: false, at } }) }),
+      NOW,
+    );
+    expect(closed).toBe("IPv4 TCP 40000: closed: ifconfig.co couldn't connect 2 min ago, and nothing has come in since");
+    const [open] = familyLines(
+      "IPv6",
+      family({
+        tcp: port("open", {
+          lastIncoming: NOW - 60 * 60_000,
+          check: { service: "transmission", open: true, at },
+        }),
+      }),
+      NOW,
+    );
+    expect(open).toBe(
+      "IPv6 TCP 40000: open, last incoming connection 1 h ago; portcheck.transmissionbt.com got through 2 min ago",
+    );
+  });
+
   test("a NAT in front of the router", () => {
     const [, warning] = familyLines(
       "IPv4",
@@ -82,6 +110,16 @@ describe("familyLines", () => {
     const [only] = familyLines("IPv4", family({ fromRouter: "100.70.1.2", doubleNat: true }), NOW);
     expect(only).toContain("100.70.1.2, isn't a public one");
   });
+});
+
+test("checkSummary names each family it asked over", () => {
+  expect(
+    checkSummary("transmission", {
+      ipv4: { open: true, error: null },
+      ipv6: { open: null, error: "connection refused" },
+    }),
+  ).toBe("portcheck.transmissionbt.com: IPv4 open, IPv6 not checked (connection refused)");
+  expect(checkSummary("ifconfig", { ipv4: { open: false, error: null }, ipv6: null })).toBe("ifconfig.co: IPv4 closed");
 });
 
 test("ago", () => {

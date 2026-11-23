@@ -17,10 +17,11 @@ interface MenuProps {
   up?: boolean;
   /** More content under the items. */
   children?: ReactNode;
+  disabled?: boolean;
 }
 
 /** A button that opens a short menu. Closes on a choice, Escape or a click outside. */
-export function MenuButton({ label, name, items, className = "", up = false, children }: MenuProps) {
+export function MenuButton({ label, name, items, className = "", up = false, children, disabled = false }: MenuProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -48,7 +49,7 @@ export function MenuButton({ label, name, items, className = "", up = false, chi
 
   return (
     <div className={`toolbar-more ${className}`} ref={root}>
-      <button ref={button} type="button" aria-label={name} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button ref={button} type="button" aria-label={name} aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen((o) => !o)}>
         {label}
       </button>
       {open && (

@@ -822,6 +822,21 @@ code {
   color: var(--warn);
 }
 
+.statusbar-check > button {
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* The status bar starts at the left: open the menu rightward from the button. */
+.statusbar-check .toolbar-more-menu.menu-up {
+  left: 0;
+  right: auto;
+}
+
+.statusbar-check-note {
+  color: var(--text);
+}
+
 @keyframes tip-in {
   from {
     opacity: 0;

@@ -65,9 +65,10 @@ Most of this is built.
   time, and keeps what was downloaded. Recheck verifies the files on disk again.
 - **Knows whether peers can reach it.** The status bar says whether the peer port is open,
   judged from connections that come in on their own (over TCP and uTP, and DHT queries
-  from nodes it never contacted), with no outside service. It shows the public address
-  that peers, DHT nodes and trackers see, and notices when another NAT sits in front of
-  the router, where a port forward on the router can't help.
+  from nodes it never contacted). For an answer right away, a button has the daemon ask
+  Transmission's port test or ifconfig.co to connect back, over IPv4 and IPv6. It shows
+  the public address that peers, DHT nodes and trackers see, and notices when another NAT
+  sits in front of the router, where a port forward on the router can't help.
 - **Bad peers are banned on evidence.** Corrupt data is traced to the peer that sent it,
   block by block, before anyone is banned. IP blocklists load from common formats.
 - **A content library.** A new torrent reuses files other torrents already have (hard

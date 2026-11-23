@@ -249,6 +249,7 @@ pub(crate) fn build_router(core: Core, config: &ServerConfig, tls: Option<tls::T
             get(routes::get_settings).put(routes::put_settings),
         )
         .route("/stats", get(routes::stats))
+        .route("/port-check", post(routes::check_port))
         .route("/roots", get(routes::roots))
         .route("/roots/{id}/locators", put(routes::set_root_locators))
         .route(

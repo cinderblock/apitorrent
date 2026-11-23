@@ -323,6 +323,8 @@ dependencies = [
  "proptest",
  "rand 0.10.3",
  "reflink-copy",
+ "serde",
+ "serde_json",
  "sha1 0.11.0",
  "sha2 0.11.1",
  "socket2",

@@ -335,6 +335,8 @@ pub struct Session {
     /// Which families the TCP listener takes connections on: IPv4, IPv6.
     tcp_families: [bool; 2],
     port_mapper: Arc<Mutex<Option<apitorrent_portmap::PortMapper>>>,
+    /// When each port check service was last asked.
+    port_checks: Arc<crate::port_check::Cooldown>,
 }
 
 impl Session {
@@ -439,6 +441,7 @@ impl Session {
             utp_addr,
             tcp_families,
             port_mapper: Arc::new(Mutex::new(port_mapper)),
+            port_checks: Arc::default(),
         })
     }
 
@@ -497,6 +500,50 @@ impl Session {
             router_ip: self.port_mapping().and_then(|p| p.external_ip),
         };
         self.shared.reach.report(&inputs, std::time::Instant::now())
+    }
+
+    /// Ask `checker` to connect back to the TCP peer port, once for each family it listens
+    /// on, and keep the answers as evidence (see [`crate::port_check`]). Per family (IPv4
+    /// first): whether it got through, or why there's no answer; `None` where we don't
+    /// listen.
+    pub async fn check_port(
+        &self,
+        checker: crate::port_check::PortChecker,
+    ) -> Result<[Option<Result<bool, String>>; 2], crate::port_check::PortCheckError> {
+        use crate::port_check::PortCheckError;
+        if self.shared.forced() {
+            return Err(PortCheckError::ForceProxy);
+        }
+        if !self.tcp_families.contains(&true) {
+            return Err(PortCheckError::NotListening);
+        }
+        self.port_checks
+            .take(checker, std::time::Instant::now())
+            .map_err(|wait| PortCheckError::TooSoon {
+                checker,
+                secs: wait.as_secs().max(1),
+            })?;
+        let port = self.listen_addr.port();
+        let name = &self.shared.config.client_name;
+        let ask = |family: usize| async move {
+            if !self.tcp_families[family] {
+                return None;
+            }
+            let answer = crate::port_check::check(checker, port, family, name).await;
+            match &answer {
+                Ok(open) => {
+                    self.shared
+                        .reach
+                        .checked(family, checker, *open, std::time::Instant::now());
+                }
+                Err(e) => {
+                    tracing::info!(checker = checker.host(), family, error = %e, "port check failed");
+                }
+            }
+            Some(answer)
+        };
+        let (v4, v6) = tokio::join!(ask(0), ask(1));
+        Ok([v4, v6])
     }
 
     /// Remove the router's port forwards, before shutting down.

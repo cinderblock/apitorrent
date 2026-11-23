@@ -15,6 +15,8 @@ import type { LocatorCheck } from "./generated/LocatorCheck";
 import type { SeedLimits } from "./generated/SeedLimits";
 import type { TlsStatus } from "./generated/TlsStatus";
 import type { SessionStats } from "./generated/SessionStats";
+import type { PortCheckResponse } from "./generated/PortCheckResponse";
+import type { PortCheckService } from "./generated/PortCheckService";
 import type { AddTorrentResponse } from "./generated/AddTorrentResponse";
 import type { ApiError } from "./generated/ApiError";
 import type { ApiTokenInfo } from "./generated/ApiTokenInfo";
@@ -131,6 +133,8 @@ export const api = {
     request<void>("PUT", `/torrents/${enc(id)}/files/priorities`, { priorities }),
   settings: () => request<Settings>("GET", "/settings"),
   stats: () => request<SessionStats>("GET", "/stats"),
+  /** Have the daemon ask `service` to connect back to the peer port. */
+  checkPort: (service: PortCheckService) => request<PortCheckResponse>("POST", "/port-check", { service }),
   /** The instance's storage roots and where other computers reach them. */
   roots: () => request<StorageRoot[]>("GET", "/roots"),
   /** Replace a root's share locators (server admins); answers with the normalised root. */
