@@ -30,7 +30,10 @@ use std::path::{Path, PathBuf};
 use apitorrent_bencode::Value as Bencode;
 
 /// One torrent from Deluge, with everything apitorrent can use.
-#[allow(clippy::struct_excessive_bools, reason = "Deluge's own per-torrent switches")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Deluge's own per-torrent switches"
+)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct DelugeTorrent {
     /// The v1 info-hash in hex, as Deluge names it.

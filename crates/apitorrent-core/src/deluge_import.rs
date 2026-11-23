@@ -375,7 +375,10 @@ pub struct Summary {
 }
 
 /// A Deluge torrent's options, as the import's choices see them.
-#[allow(clippy::struct_excessive_bools, reason = "Deluge's own per-torrent switches")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "Deluge's own per-torrent switches"
+)]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Details {
     pub private: bool,
