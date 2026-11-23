@@ -55,7 +55,11 @@ the same model as another kind of evidence.
 - [x] Tests (unit: voting, states, self-connections; web helpers)
 - [x] ISSUES.md: peer port is IPv4-only by default
 - [x] README highlight, architecture paragraph
-- [ ] clippy, tests, web checks; commit; cherry-pick to master ← current
+- [x] clippy, tests (sentinel), web tests and typecheck; commits `050bed7`, `a6f201b`,
+  `7a412d0`, fast-forwarded onto master
+- [ ] Push (waiting on the user: the repo's CLAUDE.md says nothing about pushing)
+- [ ] See it on pokol after a deploy: the status bar's peer port should read "open" once a
+  peer connects in
 
 ## Findings
 
