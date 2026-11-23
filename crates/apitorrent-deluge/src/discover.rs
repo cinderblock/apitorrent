@@ -527,6 +527,9 @@ mod tests {
 
     /// pokol's layout: two daemons under one package user, each with `--config`, each
     /// with its own unit; one more in a home directory, not running.
+    // The fake machine is Linux: its `/proc`, `/etc/passwd` and units hold Linux paths,
+    // which only parse as such on Unix. Elsewhere `Places::system()` leaves them out.
+    #[cfg(unix)]
     #[test]
     fn finds_daemons_units_and_homes() {
         let tmp = tempfile::tempdir().unwrap();
@@ -633,6 +636,9 @@ mod tests {
         );
     }
 
+    // The fake machine is Linux: its `/proc`, `/etc/passwd` and units hold Linux paths,
+    // which only parse as such on Unix. Elsewhere `Places::system()` leaves them out.
+    #[cfg(unix)]
     #[test]
     fn a_daemon_without_config_uses_its_users_home() {
         let tmp = tempfile::tempdir().unwrap();
@@ -657,6 +663,9 @@ mod tests {
         assert_eq!(found[0].torrents, Some(0));
     }
 
+    // The fake machine is Linux: its `/proc`, `/etc/passwd` and units hold Linux paths,
+    // which only parse as such on Unix. Elsewhere `Places::system()` leaves them out.
+    #[cfg(unix)]
     #[test]
     fn config_arguments() {
         let a = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
@@ -714,5 +723,20 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].torrents, None);
         assert!(found[0].problem.is_some());
+    }
+
+    /// Windows has no `/proc`, `/etc/passwd`, systemd units or `/home`: only the usual
+    /// places, `%APPDATA%\deluge` among them.
+    #[cfg(windows)]
+    #[test]
+    fn windows_looks_only_in_the_usual_places() {
+        let p = Places::system();
+        assert_eq!(p.proc, None);
+        assert_eq!(p.passwd, None);
+        assert!(p.unit_dirs.is_empty());
+        assert!(p.home_parents.is_empty());
+        let appdata = std::env::var_os("APPDATA").expect("APPDATA is set on Windows");
+        assert!(p.candidates.contains(&PathBuf::from(appdata).join("deluge")));
+        assert_eq!(running_daemon(&p, Path::new(r"C:\x")), None);
     }
 }

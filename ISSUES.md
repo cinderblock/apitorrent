@@ -37,14 +37,6 @@ the `pickle` target; the input was saved as `oom-19597dc2a899f6249eb65d0cf58bc6d
 -max_total_time=600 -rss_limit_mb=2048` in `fuzz/`. Why it matters: a crafted Deluge state
 file can make the import use gigabytes, and the Fuzz CI job goes red.
 
-## Deluge discovery tests fail on Windows (in progress — fix-discover-windows)
-
-Found 2026-11-20. `cargo test -p apitorrent-deluge --lib discover` on Windows:
-`discover::tests::config_arguments` (discover.rs:664, `left: None, right: Some("/x")`) and
-`discover::tests::a_daemon_without_config_uses_its_users_home` (discover.rs:654,
-`left: 0, right: 1`). They read a fake `/proc`; likely path handling that only works on
-Unix. Why it matters: the workspace test run is red on Windows.
-
 ## Desktop app: a release build without `tauri/custom-protocol` is a black window
 
 Found 2026-11-14 1:30 PM PST (21:30Z). `cargo build --release -p apitorrent-desktop`
