@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ClientIdentity } from "../api/generated/ClientIdentity";
 import type { DelugeImportOptions } from "../api/generated/DelugeImportOptions";
 import type { DelugePreview } from "../api/generated/DelugePreview";
@@ -7,6 +8,8 @@ import { presetIdentity } from "./clientIdentity";
 import { carried, labelAfter, renameLabel, settingRows } from "./delugeImport";
 
 type IdentityKind = "deluge" | "none" | "qBittorrent" | "transmission";
+/** The clients an import can present as, under Advanced. */
+const SPOOFABLE = ["deluge", "qBittorrent", "transmission"] as const;
 
 function identityName(i: ClientIdentity): string {
   switch (i.client) {
@@ -88,6 +91,9 @@ export function ImportDelugeOptions({
   const set = <K extends keyof DelugeImportOptions>(k: K) => (v: DelugeImportOptions[K]) => setOptions({ ...o, [k]: v });
   const none = "None of the ticked torrents have any.";
   const kind: IdentityKind = o.identity.kind === "other" ? (o.identity.identity.client as IdentityKind) : o.identity.kind;
+  const presented = o.identity.kind === "other" ? o.identity.identity : preview.delugeIdentity;
+  // Advanced holds presenting as another client: closed unless that's already chosen.
+  const [advanced, setAdvanced] = useState(kind !== "none");
   const covered = new Set(preview.coveredHosts);
   const settings = settingRows(preview.settings, defaultSpace);
   const anySetting = Object.values(o.settings).some(Boolean);
@@ -301,21 +307,40 @@ export function ImportDelugeOptions({
         detail={
           c.privateHosts.length === 0
             ? "None of the ticked torrents are private: public trackers see apitorrent."
-            : "Private trackers knew these torrents as Deluge's, and many allow only clients on a list. Some forbid pretending to be another client: check your trackers' rules. Change it later in Settings → Client identity."
+            : kind === "none"
+              ? "apitorrent. These trackers knew the torrents as Deluge's, and many allow only clients on a list: check that yours list apitorrent before starting the torrents here."
+              : `${identityName(presented)} on the trackers ticked below, apitorrent everywhere else. Change it later in Settings → Client identity.`
         }
       >
         {c.privateHosts.length > 0 && (
-          <>
-            <label className="field">
-              <span>Present as</span>
-              <select value={kind} onChange={(e) => chooseIdentity(e.target.value as IdentityKind)}>
-                <option value="deluge">{identityName(preview.delugeIdentity)} (as before)</option>
-                <option value="none">apitorrent (no rules)</option>
-                <option value="qBittorrent">{identityName(presetIdentity("qBittorrent"))}</option>
-                <option value="transmission">{identityName(presetIdentity("transmission"))}</option>
-              </select>
-            </label>
-            {kind !== "none" && (
+          <div className="carry-advanced">
+            <button type="button" className="link" aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>
+              {advanced ? "Hide advanced" : "Advanced"}
+            </button>
+            {advanced && (
+              <>
+                <label className="check">
+                  <input type="checkbox" checked={kind !== "none"} onChange={(e) => chooseIdentity(e.target.checked ? "deluge" : "none")} />
+                  Present as another client
+                </label>
+                <div className="carry-detail muted">
+                  Private trackers see the client chosen here instead of apitorrent. Many forbid pretending to be another client and disable accounts that do: check each
+                  tracker&apos;s rules first.
+                </div>
+                {kind !== "none" && (
+                  <div className="carry-identity" role="radiogroup" aria-label="Present as">
+                    {SPOOFABLE.map((k) => (
+                      <label key={k} className="check">
+                        <input type="radio" name="import-identity" checked={kind === k} onChange={() => chooseIdentity(k)} />
+                        {identityName(k === "deluge" ? preview.delugeIdentity : presetIdentity(k))}
+                        {k === "deluge" && <span className="muted"> (as before)</span>}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+            {advanced && kind !== "none" && (
               <ul className="carry-hosts">
                 {c.privateHosts.map(([host, n]) => {
                   const skip = o.identitySkipHosts.some((h) => h.toLowerCase() === host);
@@ -341,7 +366,7 @@ export function ImportDelugeOptions({
                 })}
               </ul>
             )}
-          </>
+          </div>
         )}
       </Row>
 

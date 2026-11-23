@@ -1165,7 +1165,8 @@ pub struct DelugeImportOptions {
     pub first_last: bool,
     /// Keep Deluge's super-seeding.
     pub super_seed: bool,
-    /// The client private trackers see for these torrents.
+    /// The client private trackers see for these torrents: apitorrent's own unless asked
+    /// to present as another client.
     pub identity: ImportIdentity,
     /// Tracker hosts to leave out of the identity rules.
     pub identity_skip_hosts: Vec<String>,
@@ -1190,7 +1191,7 @@ impl Default for DelugeImportOptions {
             sequential: true,
             first_last: true,
             super_seed: true,
-            identity: ImportIdentity::Deluge,
+            identity: ImportIdentity::None,
             identity_skip_hosts: Vec::new(),
             settings: DelugeSettingsPick::default(),
         }
@@ -1236,10 +1237,10 @@ pub struct LabelRename {
 #[ts(export)]
 pub enum ImportIdentity {
     /// Deluge, at the versions its daemon reports (or the newest release when it isn't
-    /// running): what those trackers saw before.
-    #[default]
+    /// running): what those trackers saw before. Only when asked for.
     Deluge,
     /// No rules: apitorrent's own identity (or whatever rules already exist).
+    #[default]
     None,
     /// Another identity.
     Other { identity: ClientIdentity },

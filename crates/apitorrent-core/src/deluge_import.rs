@@ -2069,8 +2069,16 @@ mod tests {
         assert_eq!(a.limits.upload_rate, 1024);
         assert_eq!(a.seed.limits.map(|l| l.ratio), Some(3.0));
         assert_eq!(a.torrent.trackers, [["https://new.example.org/announce"]]);
+        assert!(
+            identity_hosts(&p, &DelugeImportOptions::default()).is_empty(),
+            "no identity rules unless asked for"
+        );
+        let as_deluge = DelugeImportOptions {
+            identity: apitorrent_types::ImportIdentity::Deluge,
+            ..DelugeImportOptions::default()
+        };
         assert_eq!(
-            identity_hosts(&p, &DelugeImportOptions::default()),
+            identity_hosts(&p, &as_deluge),
             ["b.example.org", "new.example.org"]
         );
 

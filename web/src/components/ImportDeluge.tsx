@@ -282,7 +282,7 @@ export function ImportDeluge({ onClose, job: openOn = null }: { onClose: () => v
           )}
           {report.identityHosts.length > 0 && (
             <p className="hint muted">
-              These private trackers keep seeing Deluge, as before: {report.identityHosts.join(", ")}. Change that in Settings → Client identity.
+              These private trackers see the client chosen under Advanced, not apitorrent: {report.identityHosts.join(", ")}. Change that in Settings → Client identity.
             </p>
           )}
           {report.warnings.length > 0 && (

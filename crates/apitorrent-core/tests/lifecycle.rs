@@ -1126,8 +1126,8 @@ async fn deluge_take_over() {
     let data: Vec<u8> = (0..40_000u32)
         .map(|i| u8::try_from(i % 251).unwrap())
         .collect();
-    // A private torrent, so the import gives its tracker the Deluge identity. The tracker
-    // doesn't exist; announces to it just fail.
+    // A private torrent, so the import (asked to present as Deluge) gives its tracker the
+    // Deluge identity. The tracker doesn't exist; announces to it just fail.
     let bytes = TorrentBuilder::new("single", Version::V1)
         .piece_length(16 * 1024)
         .private(true)
@@ -1184,7 +1184,10 @@ async fn deluge_take_over() {
             apitorrent_types::ImportDelugeRequest {
                 config_dir: deluge.to_string_lossy().into_owned(),
                 path_map: Vec::new(),
-                options: apitorrent_types::DelugeImportOptions::default(),
+                options: apitorrent_types::DelugeImportOptions {
+                    identity: apitorrent_types::ImportIdentity::Deluge,
+                    ..apitorrent_types::DelugeImportOptions::default()
+                },
                 paused: false,
                 filter: apitorrent_types::DelugeImportFilter::default(),
             },

@@ -108,9 +108,10 @@ struct OptionArgs {
     /// Leave Deluge's super-seeding behind.
     #[arg(long)]
     no_super_seed: bool,
-    /// The client private trackers see for these torrents: `deluge` (as before),
-    /// `none` (apitorrent's own; adds no rules), `qbittorrent` or `transmission`.
-    #[arg(long, value_enum, default_value = "deluge")]
+    /// The client private trackers see for these torrents: `none` (apitorrent's own;
+    /// adds no rules), or another client to present as: `deluge` (as before),
+    /// `qbittorrent` or `transmission`.
+    #[arg(long, value_enum, default_value = "none")]
     identity: IdentityName,
     /// Add no identity rule for this tracker host. Repeatable.
     #[arg(long = "no-identity-for", value_name = "HOST")]

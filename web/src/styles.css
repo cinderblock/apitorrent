@@ -2027,8 +2027,21 @@ button.link.danger-text {
   font-size: 13px;
   padding-inline-start: calc(1rem + 6px);
 }
-.carry-row > :is(table, ul, .field) {
+.carry-row > :is(table, ul, .field, .carry-advanced) {
   margin-inline-start: calc(1rem + 6px);
+}
+.carry-advanced {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+.carry-advanced > .carry-detail {
+  padding-inline-start: 0;
+}
+.carry-identity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
 }
 .carry-labels td,
 .carry-labels th {

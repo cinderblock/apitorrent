@@ -26,8 +26,10 @@ the CLI report.
 - Per-torrent options, each on by default: labels (keep, rename or drop each one), queue
   order, added dates, totals and seeding time, skipped files, Deluge's edited tracker
   lists, per-torrent speed/connection limits, per-torrent stop-at-ratio.
-- Client identity for private trackers: Deluge (default, versions from the daemon),
-  apitorrent (add no rules), qBittorrent or Transmission; hosts can be unticked one by one.
+- Client identity for private trackers: apitorrent (default, adds no rules; Cameron,
+  2026-11-22: no spoofing on import by default), or, under Advanced, "Present as another
+  client": Deluge (versions from the daemon), qBittorrent or Transmission; hosts can be
+  unticked one by one. CLI `--identity` defaults to `none`.
 - Deluge's global settings: one tick per setting (download rate, upload rate, connections,
   active slots, slow torrents, stop at ratio), replacing `importSettings: bool`. CLI
   `--settings` still takes them all; `--setting NAME` takes one.

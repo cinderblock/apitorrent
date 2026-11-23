@@ -95,7 +95,7 @@ export const DEFAULT_OPTIONS: DelugeImportOptions = {
   sequential: true,
   firstLast: true,
   superSeed: true,
-  identity: { kind: "deluge" },
+  identity: { kind: "none" },
   identitySkipHosts: [],
   settings: { downloadRate: false, uploadRate: false, maxConnections: false, queueSlots: false, ignoreSlow: false, stopAtRatio: false, encryption: false, discovery: false, proxy: false },
 };

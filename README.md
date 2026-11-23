@@ -94,7 +94,7 @@ Most of this is built.
   progress, labels, queue order, limits and totals, with no rehash and no re-download.
   A wizard previews and filters what to bring over. Deluge can keep running while you
   move a few at a time: a torrent is paused in Deluge (through its daemon) before it
-  starts here, and private trackers keep seeing Deluge. Two Deluge instances can become
+  starts here. Two Deluge instances can become
   two spaces.
 - **Client identity per tracker.** For trackers that only accept clients on their list,
   a torrent can announce as Deluge, qBittorrent or Transmission (peer id, user agent and
@@ -375,8 +375,9 @@ Everything about each torrent comes over unless you leave it out: `--no-labels`,
 `--no-added-dates`, `--no-totals` (downloaded/uploaded and seeding time),
 `--download-skipped`, `--original-trackers` (the .torrent's, not Deluge's edited lists),
 `--no-limits` (rates, connections and upload slots), `--no-seed-limits`,
-`--no-move-completed`, `--no-sequential`, `--no-first-last`, `--no-super-seed`. `--identity deluge|none|qbittorrent|transmission` sets
-what private trackers see (`--no-identity-for HOST` skips one). `--settings` takes all of
+`--no-move-completed`, `--no-sequential`, `--no-first-last`, `--no-super-seed`. Private trackers see apitorrent;
+`--identity deluge|qbittorrent|transmission` presents as that client instead
+(`--no-identity-for HOST` skips one; many trackers forbid this, so check their rules). `--settings` takes all of
 Deluge's own settings; `--setting NAME` takes one (`download-rate`, `upload-rate`,
 `connections`, `slots`, `slow-torrents`, `stop-at-ratio`, `encryption`, `discovery`,
 `proxy`). The report lists each choice, and which of Deluge's settings were changed from
@@ -394,8 +395,9 @@ totals, skipped files, edited trackers, limits, stop-at-ratio, move when complet
 sequential download, first and last pieces first, super-seeding, the identity private
 trackers see, whether running ones start here, and each of Deluge's own settings, marked
 when changed from Deluge's default), each
-with what it amounts to and a box to leave it out; labels can be renamed on the way in,
-and the tracker identity changed. What can't come over is listed too. Afterwards it offers to move them over
+with what it amounts to and a box to leave it out; labels can be renamed on the way in.
+Private trackers see apitorrent unless "Present as another client", under the identity
+row's Advanced, is ticked. What can't come over is listed too. Afterwards it offers to move them over
 from Deluge at once, and to go on to the next installation.
 
 Deluge can keep running while you move over. A torrent runs in only one client at a time:
@@ -413,10 +415,12 @@ Every later start asks Deluge again, in case it was resumed there since, and pau
 there first the same way; after a restart, those torrents wait until Deluge has been asked.
 The asking stops once Deluge no longer has the torrent, or its config folder is gone.
 
-Private trackers that knew your torrents as Deluge's keep seeing Deluge: the import adds
-a client identity rule for each of their hosts (with the running daemon's exact Deluge
-and libtorrent versions, when it answers), unless a rule of yours already covers the
-host. Public trackers aren't touched.
+Private trackers see apitorrent from then on, so check that each one lists apitorrent
+before starting its torrents here. Asked to present as Deluge (Advanced in the wizard,
+`--identity deluge` on the command line), the import instead adds a client identity rule
+for each of their hosts, with the running daemon's exact Deluge and libtorrent versions
+when it answers, unless a rule of yours already covers the host. Many private trackers
+forbid that: check their rules first. Public trackers aren't touched.
 
 ## Signing in
 
