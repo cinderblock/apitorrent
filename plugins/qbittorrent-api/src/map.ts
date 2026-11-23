@@ -37,6 +37,7 @@ export function qbState(t: TorrentSummary): string {
     seeding: t.uploadRate > 0 ? "uploading" : "stalledUP",
     paused: done ? "pausedUP" : "pausedDL",
     queued: done ? "queuedUP" : "queuedDL",
+    moving: "moving",
     error: "error",
   };
   if (t.error && t.state !== "paused") return "error";
