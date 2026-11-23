@@ -146,6 +146,9 @@ arbitrary rules.
   with `install.sh --binary`. Databases and the old binary backed up first to
   `/var/lib/apitorrent/backup-2026-11-22/`; 672 torrents restored, the site answers 200 and
   serves both feature sets.
+- [x] Desktop app rebuilt from `e74ef58` (`tauri/custom-protocol`, merge worktree) and copied
+  to `target/desktop-app/run/apitorrent-desktop.exe` (2026-11-22 4:55 PM PST, 00:55Z); the
+  old one is `.bak-20261122-1655`. Not started: it wasn't running.
 - [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
