@@ -2,6 +2,16 @@
 
 Problems found while working on something else. Each entry is enough to start a fix.
 
+## The peer port listens on IPv4 only by default
+
+Found 2026-11-22. `apitorrentd --peer-listen` defaults to `0.0.0.0:0`
+(`crates/apitorrentd/src/main.rs`), so TCP and uTP take connections over IPv4 only, while
+the DHT binds both families. Reproduce: start the daemon with defaults and list its
+listening sockets (`ss -ltnu` / `netstat -ano`): no IPv6 entry on the peer port. Why it
+matters: IPv6 peers can't connect in, which hurts most where IPv4 sits behind a
+carrier-grade NAT and IPv6 is the only way in; the status bar's reachability shows no IPv6
+TCP or uTP line.
+
 ## qBittorrent plugin: recheck does nothing, no set location
 
 Found 2026-11-20. `plugins/qbittorrent-api/src/index.ts` answers `torrents/recheck` with
