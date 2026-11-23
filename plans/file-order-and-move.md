@@ -158,6 +158,11 @@ arbitrary rules.
 - [x] CI's Plugins job failed on `b282e1e`: qbittorrent-api's state map lacked `moving`.
   Fixed in `2925b9a`. pokol's installed plugin copies (2026-11-14) are unaffected by binary
   swaps, so no redeploy for it.
+- [x] Redeployed pokol with `0a0cd13` (adds the port check menu, `d76286d`) after the user
+  didn't see it, 2026-11-22 8:22 PM PST (04:22Z Nov 23). sha256 `521ed2fc…`; backups in
+  `/var/lib/apitorrent/backup-2026-11-22-0a0cd13/`; 672 restored, `/health` 200, the UI
+  serves "Check port with…". Desktop app rebuilt from `0a0cd13` and restarted 8:57 PM PST
+  (old one `.bak-20261122-2025`).
 - [ ] Seen working in a browser against a running daemon (nobody has yet)
 
 ## Open questions for the user
