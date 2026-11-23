@@ -28,7 +28,7 @@ Found 2026-11-20. The browser's own tooltips are slow, look out of place and nev
 touch screens. Still there: `web/src/components/DetailPane.tsx` (the pop-out and close
 buttons). Replace them with `components/Tip.tsx` or visible text.
 
-## Fuzz target `pickle` runs out of memory
+## Fuzz target `pickle` runs out of memory (in progress — fix-pickle-fuzz-oom)
 
 Found 2026-11-22. CI run https://github.com/cinderblock/apitorrent/actions/runs/45102024794
 (`2925b9a`): `libFuzzer: out-of-memory (used: 2068Mb; limit: 2048Mb)` after about 40 s of
