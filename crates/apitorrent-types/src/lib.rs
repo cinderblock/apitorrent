@@ -318,6 +318,9 @@ pub struct SessionStats {
     /// The router's port forwards; null when port forwarding is off.
     #[serde(default)]
     pub port_forward: Option<PortForwardStatus>,
+    /// Whether peers on the internet can connect in, and our public address.
+    #[serde(default)]
+    pub reachability: Reachability,
     /// Bytes the content library supplied across the torrents here, so they weren't
     /// downloaded.
     #[ts(type = "number")]
@@ -480,6 +483,70 @@ pub struct PortForwardStatus {
     pub external_ip: Option<String>,
     /// Why there are none, after the last attempt.
     pub error: Option<String>,
+}
+
+/// Whether peers on the internet can connect to us, judged from what has happened: an
+/// incoming connection from a public address proves a port open; none for a long while
+/// after the swarms learned our address suggests it is closed.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct Reachability {
+    pub ipv4: FamilyReachability,
+    pub ipv6: FamilyReachability,
+}
+
+/// One address family's public address and ports.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct FamilyReachability {
+    /// Our public address as the internet sees it; null until something has said.
+    pub external_ip: Option<String>,
+    /// What each source says it is: DHT nodes (by vote), peers (by majority), the last
+    /// HTTP tracker to say, and the router (NAT-PMP or UPnP).
+    pub from_dht: Option<String>,
+    pub from_peers: Option<String>,
+    pub from_tracker: Option<String>,
+    pub from_router: Option<String>,
+    /// The router's public address isn't the one the internet sees: another NAT (often
+    /// the internet provider's) is in front of it, so a forward on the router can't open
+    /// the port.
+    pub double_nat: bool,
+    /// Each port, or null when it doesn't listen on this family.
+    pub tcp: Option<PortReachability>,
+    pub utp: Option<PortReachability>,
+    pub dht: Option<PortReachability>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct PortReachability {
+    pub port: u16,
+    pub state: PortState,
+    /// Connections that came in on their own since the daemon started.
+    #[ts(type = "number")]
+    pub incoming: u64,
+    /// When the last of them came, in milliseconds since the Unix epoch.
+    #[ts(type = "number | null")]
+    pub last_incoming: Option<i64>,
+    /// Since when we've been waiting for one (ms since the epoch); null while no swarm
+    /// knows our address yet.
+    #[ts(type = "number | null")]
+    pub waiting_since: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum PortState {
+    /// A connection came in on its own since our public address last changed.
+    Open,
+    /// None yet, and it's too soon to say.
+    Waiting,
+    /// None for half an hour since the swarms learned our address.
+    ProbablyClosed,
 }
 
 /// Which client apitorrent presents itself as: its peer id, the `User-Agent` of HTTP

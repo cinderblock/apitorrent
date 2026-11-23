@@ -38,6 +38,7 @@
 //! [BEP 42]: https://www.bittorrent.org/beps/bep_0042.html
 //! [BEP 43]: https://www.bittorrent.org/beps/bep_0043.html
 
+pub mod contacted;
 mod dht;
 pub mod id;
 pub mod krpc;
@@ -48,6 +49,7 @@ mod state;
 pub mod store;
 mod token;
 
+pub use contacted::Contacted;
 pub use dht::{DEFAULT_BOOTSTRAP, Dht, DhtConfig, DhtError, PeerStream};
 pub use id::NodeId;
 pub use node::{

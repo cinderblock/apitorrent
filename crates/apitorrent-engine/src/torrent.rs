@@ -933,7 +933,10 @@ impl Entry {
     }
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "independent per-torrent switches")]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent per-torrent switches"
+)]
 pub(crate) struct TorrentActor {
     info_hashes: InfoHashes,
     short_hash: Sha1Hash,
@@ -2169,6 +2172,10 @@ impl TorrentActor {
         result: Result<apitorrent_tracker::AnnounceResponse, String>,
     ) {
         let now = Instant::now();
+        if let Ok(resp) = &result {
+            // The tracker knows where we are now, whatever became of the entry.
+            self.shared.reach.announced(resp.external_ip, now);
+        }
         let Some(entry) = self.entry_mut(key) else {
             return;
         };
@@ -2689,6 +2696,9 @@ impl TorrentActor {
             Message::Extended { id: 0, payload } => {
                 let ext = ExtensionHandshake::decode(&payload)
                     .map_err(|e| format!("bad extension handshake: {e}"))?;
+                if let Some(ip) = ext.your_ip {
+                    self.shared.reach.peer_says(peer.addr.ip(), ip);
+                }
                 peer.extensions = Some(ext);
             }
             Message::Extended {

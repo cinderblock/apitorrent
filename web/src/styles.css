@@ -804,6 +804,24 @@ code {
   animation: tip-in 90ms ease-out;
 }
 
+/* A tip with several separate points: one per line. */
+.tip-line {
+  display: block;
+}
+
+.tip-line + .tip-line {
+  margin-top: 4px;
+}
+
+/* Whether the peer port is open, in the status bar. */
+.reach-ok {
+  color: var(--ok);
+}
+
+.reach-warn {
+  color: var(--warn);
+}
+
 @keyframes tip-in {
   from {
     opacity: 0;

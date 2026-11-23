@@ -472,6 +472,7 @@ mod tests {
             leechers: Some(2),
             tracker_id: None,
             warning: None,
+            external_ip: None,
         }
     }
 

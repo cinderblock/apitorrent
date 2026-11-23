@@ -3,6 +3,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api/client";
 import type { SessionStats } from "../api/generated/SessionStats";
 import { formatBytes } from "../format";
+import { reachLines, reachSummary } from "./reachability";
+import { Tip } from "./Tip";
 
 /**
  * Session-wide numbers along the bottom, refreshed every few seconds. `rates`: the total
@@ -27,6 +29,8 @@ export function StatusBar({ rates }: { rates?: ReactNode }) {
   }, []);
   const ratesHere = rates && <span className="statusbar-rates">{rates}</span>;
   if (!stats) return <footer className="statusbar">{ratesHere}</footer>;
+  const reach = reachSummary(stats.reachability);
+  const reachDetail = reachLines(stats.reachability, Date.now());
   return (
     <footer className="statusbar">
       {ratesHere}
@@ -39,10 +43,24 @@ export function StatusBar({ rates }: { rates?: ReactNode }) {
       {stats.libraryBytes > 0 && <span>Library saved {formatBytes(stats.libraryBytes)}</span>}
       <span>
         Peer port {stats.peerPort}
+        {reach && <span className={`reach reach-${reach.tone}`}> {reach.text}</span>}
         {stats.portForward &&
           (stats.portForward.method
             ? `, forwarded by ${stats.portForward.method === "upnp" ? "UPnP" : "NAT-PMP"}`
             : ", not forwarded")}
+        {reachDetail.length > 0 && (
+          <Tip label="About the peer port">
+            {reachDetail.map((line) => (
+              <span key={line} className="tip-line">
+                {line}
+              </span>
+            ))}
+            <span className="tip-line">
+              An incoming connection proves a port open. Until one comes, apitorrent can't tell
+              a closed port from a quiet swarm.
+            </span>
+          </Tip>
+        )}
       </span>
     </footer>
   );

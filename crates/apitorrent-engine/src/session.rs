@@ -17,6 +17,7 @@ use crate::ban::{BanInfo, BanPolicy, BanReason, Blocklist, IpFilter};
 use crate::identity::IdentityRules;
 use crate::limits::{Bucket, Counter, Group, GroupLimits};
 use crate::peer;
+use crate::reachability::{Reachability, ReachabilityReport};
 use crate::torrent::{ActorMsg, AddTorrent, TorrentActor, TorrentHandle};
 
 #[derive(Debug, Clone)]
@@ -147,6 +148,8 @@ pub(crate) struct Shared {
     pub(crate) pieces: tokio::sync::broadcast::Sender<crate::torrent::PieceEvent>,
     /// Every file a torrent completes (see [`Session::file_events`]).
     pub(crate) files: tokio::sync::broadcast::Sender<crate::torrent::FileEvent>,
+    /// Evidence of whether peers on the internet can reach us (see [`Session::reachability`]).
+    pub(crate) reach: Arc<Reachability>,
 }
 
 /// The session's memory budget for piece data. Torrents reserve and release whole pieces;
@@ -278,6 +281,8 @@ pub struct Session {
     listen_addr: SocketAddr,
     lsd_addr: Option<SocketAddr>,
     utp_addr: Option<SocketAddr>,
+    /// Which families the TCP listener takes connections on: IPv4, IPv6.
+    tcp_families: [bool; 2],
     port_mapper: Arc<Mutex<Option<apitorrent_portmap::PortMapper>>>,
 }
 
@@ -286,6 +291,7 @@ impl Session {
     pub async fn start(config: SessionConfig) -> io::Result<Self> {
         let (listener, utp) = bind_peer_port(&config).await?;
         let listen_addr = listener.local_addr()?;
+        let tcp_families = listen_families(&listener)?;
         let version = version_digits();
         let peer_id = PeerId::azureus(*b"AT", version, rand::random());
         let tracker = TrackerClient::new().map_err(io::Error::other)?;
@@ -303,10 +309,12 @@ impl Session {
             ),
             None => None,
         };
+        let reach = Arc::new(Reachability::new(std::time::Instant::now()));
         let dialer = Arc::new(peer::Dialer {
             utp: utp.clone(),
             prefer_utp: config.prefer_utp,
             encryption: std::sync::Mutex::new(config.encryption),
+            reach: reach.clone(),
         });
         let memory = MemoryBudget::new(config.memory_limit);
         let filter = IpFilter::new(config.ban_policy);
@@ -336,6 +344,7 @@ impl Session {
             skeys: Mutex::new(apitorrent_mse::SkeyTable::new()),
             pieces: tokio::sync::broadcast::channel(PIECE_EVENTS).0,
             files: tokio::sync::broadcast::channel(PIECE_EVENTS).0,
+            reach,
         });
         tokio::spawn(accept_loop(listener, shared.clone()));
         let utp_addr = utp.as_ref().map(apitorrent_utp::UtpSocket::local_addr);
@@ -374,6 +383,7 @@ impl Session {
             listen_addr,
             lsd_addr,
             utp_addr,
+            tcp_families,
             port_mapper: Arc::new(Mutex::new(port_mapper)),
         })
     }
@@ -409,6 +419,30 @@ impl Session {
             .expect("port mapper poisoned")
             .as_ref()
             .map(apitorrent_portmap::PortMapper::status)
+    }
+
+    /// Whether peers on the internet can connect to us, from what has happened so far, and
+    /// what our public address is (see [`crate::reachability`]).
+    pub fn reachability(&self) -> ReachabilityReport {
+        let dht = self.shared.dht.as_ref();
+        let utp = self.utp_addr.map(|a| a.ip().to_canonical());
+        let inputs = crate::reachability::Inputs {
+            peer_port: self.listen_addr.port(),
+            tcp_families: self.tcp_families,
+            utp_families: [
+                utp.is_some_and(|ip| ip.is_ipv4()),
+                utp.is_some_and(|ip| ip.is_ipv6()),
+            ],
+            dht_ports: [
+                dht.and_then(apitorrent_dht::Dht::local_addr_v4)
+                    .map(|a| a.port()),
+                dht.and_then(apitorrent_dht::Dht::local_addr_v6)
+                    .map(|a| a.port()),
+            ],
+            dht: dht.map(apitorrent_dht::Dht::stats),
+            router_ip: self.port_mapping().and_then(|p| p.external_ip),
+        };
+        self.shared.reach.report(&inputs, std::time::Instant::now())
     }
 
     /// Remove the router's port forwards, before shutting down.
@@ -670,9 +704,13 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
                     continue;
                 }
                 let _ = stream.set_nodelay(true);
+                // We dialed our own address (trackers sometimes list us): it proves nothing
+                // about the way in from outside.
+                let from_self = stream.local_addr().is_ok_and(|l| l.ip() == addr.ip());
                 tokio::spawn(route_incoming(
                     Box::new(stream),
                     false,
+                    from_self,
                     addr,
                     shared.clone(),
                 ));
@@ -683,6 +721,21 @@ async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
             }
         }
     }
+}
+
+/// Which families a listener takes connections on: IPv4, IPv6. An IPv6 wildcard takes
+/// IPv4 too unless the socket is IPv6-only (the default on Windows, and on Linux with
+/// `net.ipv6.bindv6only`).
+fn listen_families(listener: &TcpListener) -> io::Result<[bool; 2]> {
+    let addr = listener.local_addr()?;
+    Ok(match addr.ip() {
+        std::net::IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some() => [true, false],
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() => {
+            [!socket2::SockRef::from(listener).only_v6()?, true]
+        }
+        std::net::IpAddr::V6(_) => [false, true],
+        std::net::IpAddr::V4(_) => [true, false],
+    })
 }
 
 /// Bind the peer port: TCP, and the same port on UDP for uTP when it is on. When the
@@ -726,7 +779,13 @@ async fn utp_accept_loop(socket: apitorrent_utp::UtpSocket, shared: Arc<Shared>)
                     tracing::debug!(%addr, "refused a blocked peer");
                     continue;
                 }
-                tokio::spawn(route_incoming(Box::new(stream), true, addr, shared.clone()));
+                tokio::spawn(route_incoming(
+                    Box::new(stream),
+                    true,
+                    false,
+                    addr,
+                    shared.clone(),
+                ));
             }
             // The socket only fails like this once it has shut down.
             Err(e) => {
@@ -751,8 +810,15 @@ impl apitorrent_mse::SkeyLookup for SkeyIndex {
 }
 
 /// Run the encryption handshake if the peer starts one, read its BitTorrent handshake,
-/// and hand the connection to the torrent it names.
-async fn route_incoming(stream: peer::BoxIo, utp: bool, addr: SocketAddr, shared: Arc<Shared>) {
+/// and hand the connection to the torrent it names. `from_self`: the connection comes from
+/// one of this machine's own addresses.
+async fn route_incoming(
+    stream: peer::BoxIo,
+    utp: bool,
+    from_self: bool,
+    addr: SocketAddr,
+    shared: Arc<Shared>,
+) {
     let policy = shared.dialer.encryption();
     let (mut stream, link, named): (peer::BoxIo, peer::Link, Option<Sha1Hash>) = if policy
         .accepts_mse()
@@ -786,6 +852,10 @@ async fn route_incoming(stream: peer::BoxIo, utp: bool, addr: SocketAddr, shared
             return;
         }
     };
+    // A peer got all the way here on its own, whichever torrent it asks for.
+    if !from_self {
+        shared.reach.incoming(utp, addr, std::time::Instant::now());
+    }
     // An encrypted connection already named its torrent; the handshake must agree.
     if named.is_some_and(|h| h != handshake.info_hash) {
         tracing::debug!(%addr, "incoming connection rejected: handshake names another torrent");
@@ -849,6 +919,10 @@ async fn dht_announcer(weak: std::sync::Weak<Shared>) {
                 while let Some(peer) = stream.next().await {
                     let Some(shared) = weak.upgrade() else { return };
                     shared.discovered(&hash, vec![peer]).await;
+                }
+                // The lookup is over and the announces are sent.
+                if let Some(shared) = weak.upgrade() {
+                    shared.reach.announced_on_dht(std::time::Instant::now());
                 }
             });
         }

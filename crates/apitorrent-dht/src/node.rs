@@ -24,6 +24,7 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use tracing::{debug, trace};
 
+use crate::contacted::Contacted;
 use crate::id::{NodeId, is_exempt};
 use crate::krpc::{self, Body, Message, NodeInfo, Query, Response, Want, canonical, error_code};
 use crate::rate::RateLimiter;
@@ -218,6 +219,11 @@ pub struct DhtStats {
     /// Incoming queries dropped by the response rate limit.
     pub rate_limited: u64,
     pub announces_stored: u64,
+    /// Queries from public IPs we hadn't sent anything to lately, by family: they got
+    /// through on their own, so the DHT port is open to the internet. Index 0 is IPv4.
+    pub unsolicited_queries: [u64; 2],
+    /// When the last of those came.
+    pub last_unsolicited: [Option<Instant>; 2],
 }
 
 /// One routing table's size.
@@ -333,6 +339,8 @@ pub struct Node {
     recent_verify: HashMap<SocketAddr, Instant>,
     ip_votes: [VecDeque<(IpAddr, IpAddr)>; 2],
     external_ip: [Option<IpAddr>; 2],
+    /// Who we've sent to lately, to tell unsolicited queries from answers to our own.
+    contacted: Contacted,
     next_maintenance: Instant,
     next_store_expire: Instant,
     stats: DhtStats,
@@ -387,6 +395,7 @@ impl Node {
             recent_verify: HashMap::new(),
             ip_votes: [VecDeque::new(), VecDeque::new()],
             external_ip: [None, None],
+            contacted: Contacted::new(now),
             next_maintenance: now,
             next_store_expire: now + STORE_EXPIRE_EVERY,
             stats: DhtStats::default(),
@@ -1108,6 +1117,12 @@ impl Node {
         now: Instant,
     ) {
         self.stats.queries_received += 1;
+        let fam = fam_of(&from);
+        // A query reaches us whether or not we answer it, so judge it first.
+        if !is_exempt(from.ip()) && self.contacted.unsolicited(from.ip()) == Some(true) {
+            self.stats.unsolicited_queries[fam] += 1;
+            self.stats.last_unsolicited[fam] = Some(now);
+        }
         if self.cfg.read_only {
             return;
         }
@@ -1115,7 +1130,6 @@ impl Node {
             self.stats.rate_limited += 1;
             return;
         }
-        let fam = fam_of(&from);
 
         if let Some(id) = q.sender_id()
             && !sender_read_only
@@ -1367,6 +1381,7 @@ impl Node {
 
     fn maintain(&mut self, now: Instant) {
         self.tokens.tick(now, &mut self.rng);
+        self.contacted.tick(now);
         if now >= self.next_store_expire {
             self.next_store_expire = now + STORE_EXPIRE_EVERY;
             self.store.expire(now);
@@ -1436,7 +1451,9 @@ impl Node {
 
     /// The next datagram to send.
     pub fn poll_transmit(&mut self) -> Option<Transmit> {
-        self.transmits.pop_front()
+        let t = self.transmits.pop_front()?;
+        self.contacted.note(t.to.ip());
+        Some(t)
     }
 
     /// The next event.

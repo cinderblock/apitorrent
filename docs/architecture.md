@@ -174,6 +174,20 @@ stored port that is taken at start is replaced, with a warning. `--peer-listen`,
 `--dht-port` and a desktop profile's port override them and aren't stored; a change in
 Settings applies on restart.
 
+**Reachability.** Whether peers on the internet can connect in is judged from what
+happens, with no outside service (`apitorrent_engine::reachability`, on `SessionStats`).
+A completed BitTorrent handshake on an accepted TCP connection from a public address
+proves the TCP port open: no NAT or stateful firewall lets an unrequested SYN through
+without a forward. uTP and the DHT are UDP, where our own packets open a hole for the
+answers, so only a uTP connection or DHT query from an IP we haven't sent to in the last
+10 to 20 minutes counts (`apitorrent_dht::Contacted`). No proof half an hour after the
+swarms learned our address (a successful tracker or DHT announce; for the DHT, its start)
+reads as probably closed, never certain. Our public address comes from DHT votes
+(BEP 42), peers' `yourip` (BEP 10, by majority) and HTTP trackers' `external ip`
+(BEP 24); when it changes, the proof starts over. A router (NAT-PMP or UPnP) whose public
+address differs, or isn't public, means another NAT is in front of it. An active
+connect-back check could later feed the same evidence.
+
 ### Engine API
 
 The core talks to the engine through a Rust API: commands (`add`, `pause`,

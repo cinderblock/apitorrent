@@ -192,6 +192,7 @@ pub fn decode_announce(
         leechers: Some(leechers),
         tracker_id: None,
         warning: None,
+        external_ip: None,
     })
 }
 

@@ -81,6 +81,8 @@ pub(crate) struct Dialer {
     pub(crate) prefer_utp: bool,
     /// Changeable while running; connections already open keep what they settled on.
     pub(crate) encryption: std::sync::Mutex<Policy>,
+    /// Told of every uTP dial, whose answers can't prove the port open.
+    pub(crate) reach: std::sync::Arc<crate::reachability::Reachability>,
 }
 
 impl Dialer {
@@ -117,6 +119,7 @@ impl Dialer {
         if utp {
             // The socket gives up on its own, after `SessionConfig::utp_connect_timeout`.
             let socket = self.utp.as_ref().ok_or("uTP is off")?;
+            self.reach.dialed_utp(addr.ip(), std::time::Instant::now());
             let stream = socket
                 .connect(addr)
                 .await
@@ -473,6 +476,9 @@ mod tests {
             utp: Some(socket),
             prefer_utp: true,
             encryption: std::sync::Mutex::new(apitorrent_mse::Policy::Disabled),
+            reach: std::sync::Arc::new(crate::reachability::Reachability::new(
+                std::time::Instant::now(),
+            )),
         };
         let peer = "127.0.0.1:7000".parse().unwrap();
         assert_eq!(d.order(peer, UtpHint::Unknown), [true, false]);

@@ -123,6 +123,8 @@ pub struct AnnounceResponse {
     pub tracker_id: Option<String>,
     /// A `warning message`: the announce worked, but the tracker has something to say.
     pub warning: Option<String>,
+    /// Our address as the tracker saw it (BEP 24 `external ip`; HTTP trackers only).
+    pub external_ip: Option<std::net::IpAddr>,
 }
 
 /// Swarm statistics for one torrent, from a scrape.

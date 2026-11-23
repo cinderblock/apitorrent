@@ -20,7 +20,14 @@ struct Sim {
     /// Events per node, collected as they happen.
     events: Vec<Vec<Event>>,
     delivered: u64,
+    /// Nodes behind a NAT: they get datagrams only from IPs they sent to lately.
+    nat: HashSet<usize>,
+    /// When each node last sent to each IP.
+    sent: HashMap<(usize, IpAddr), Instant>,
 }
+
+/// How long the simulated NAT keeps a mapping open after the last packet out.
+const NAT_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl Sim {
     /// `n` nodes on distinct public-looking IPv4 addresses (so BEP 42 and the
@@ -51,6 +58,8 @@ impl Sim {
             rng: StdRng::seed_from_u64(seed),
             loss,
             delivered: 0,
+            nat: HashSet::new(),
+            sent: HashMap::new(),
         };
         let boot = sim.addrs[0];
         for i in 1..n {
@@ -77,11 +86,20 @@ impl Sim {
                 return;
             }
             for (from, t) in queue {
+                self.sent.insert((from, t.to.ip()), self.now);
                 if self.loss > 0.0 && self.rng.random_bool(self.loss) {
                     continue;
                 }
                 if let Some(&to) = self.by_addr.get(&t.to) {
                     let src = self.addrs[from];
+                    if self.nat.contains(&to)
+                        && self
+                            .sent
+                            .get(&(to, src.ip()))
+                            .is_none_or(|at| self.now.duration_since(*at) > NAT_TIMEOUT)
+                    {
+                        continue;
+                    }
                     self.nodes[to].handle_datagram(src, &t.data, self.now);
                     self.delivered += 1;
                 }
@@ -182,6 +200,33 @@ fn announce_then_find_in_200_nodes() {
     assert!(done);
     let expected = SocketAddr::new(sim.addrs[17].ip(), 4444);
     assert_eq!(peers, vec![expected]);
+}
+
+#[test]
+fn unsolicited_queries_show_whether_the_port_is_open() {
+    let mut sim = Sim::new(60, 9, 0.0, |_, _| {});
+    let unsolicited = |n: &Node, now| n.stats(now).unsolicited_queries[0];
+    // It joined in the open; from now on it is behind a NAT.
+    let behind = 7;
+    sim.nat.insert(behind);
+    let before: Vec<u64> = sim.nodes.iter().map(|n| unsolicited(n, sim.now)).collect();
+    sim.run_for(Duration::from_secs(20 * 60));
+    assert_eq!(
+        unsolicited(&sim.nodes[behind], sim.now),
+        before[behind],
+        "only nodes it contacted get through its NAT"
+    );
+    let open = sim
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|&(i, n)| i != behind && unsolicited(n, sim.now) > before[i])
+        .count();
+    assert!(
+        open >= 50,
+        "only {open}/59 open nodes saw an unsolicited query"
+    );
+    assert!(sim.nodes[0].stats(sim.now).last_unsolicited[0].is_some());
 }
 
 #[test]

@@ -4194,6 +4194,7 @@ impl Core {
                     external_ip: p.external_ip.map(|ip| ip.to_string()),
                     error: p.error,
                 }),
+            reachability: reachability(&s.reachability()),
             library_bytes: self.inner.reuse.total(),
         }
     }
@@ -4549,6 +4550,44 @@ fn engine_limits(l: TorrentLimits) -> apitorrent_engine::limits::TorrentLimits {
 #[allow(clippy::cast_precision_loss)]
 fn ratio(a: usize, b: usize) -> f64 {
     a as f64 / b as f64
+}
+
+/// The engine's reachability report, for the API.
+fn reachability(
+    r: &apitorrent_engine::reachability::ReachabilityReport,
+) -> apitorrent_types::Reachability {
+    use apitorrent_engine::reachability::{FamilyReport, PortReport, PortState};
+    let (now, wall) = (std::time::Instant::now(), now_ms());
+    let ms = |t: std::time::Instant| {
+        wall - i64::try_from(now.saturating_duration_since(t).as_millis()).unwrap_or(i64::MAX)
+    };
+    let port = |p: &PortReport| apitorrent_types::PortReachability {
+        port: p.port,
+        state: match p.state {
+            PortState::Open => apitorrent_types::PortState::Open,
+            PortState::Waiting => apitorrent_types::PortState::Waiting,
+            PortState::ProbablyClosed => apitorrent_types::PortState::ProbablyClosed,
+        },
+        incoming: p.incoming,
+        last_incoming: p.last_incoming.map(ms),
+        waiting_since: p.waiting_since.map(ms),
+    };
+    let ip = |ip: Option<std::net::IpAddr>| ip.map(|ip| ip.to_string());
+    let family = |f: &FamilyReport| apitorrent_types::FamilyReachability {
+        external_ip: ip(f.external_ip),
+        from_dht: ip(f.from_dht),
+        from_peers: ip(f.from_peers),
+        from_tracker: ip(f.from_tracker),
+        from_router: ip(f.from_router),
+        double_nat: f.double_nat,
+        tcp: f.tcp.as_ref().map(port),
+        utp: f.utp.as_ref().map(port),
+        dht: f.dht.as_ref().map(port),
+    };
+    apitorrent_types::Reachability {
+        ipv4: family(&r.ipv4),
+        ipv6: family(&r.ipv6),
+    }
 }
 
 fn now_ms() -> i64 {

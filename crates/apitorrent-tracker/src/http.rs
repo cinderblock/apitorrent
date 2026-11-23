@@ -317,6 +317,7 @@ pub fn parse_announce(body: &[u8]) -> Result<AnnounceResponse, TrackerError> {
         leechers: count(dict, b"incomplete"),
         tracker_id: dict.get_bytes(b"tracker id").map(lossy),
         warning: dict.get_bytes(b"warning message").map(lossy),
+        external_ip: dict.get_bytes(b"external ip").and_then(compact::parse_ip),
     })
 }
 
@@ -536,6 +537,25 @@ mod tests {
                 "[2001:db8::1]:51413".parse().unwrap()
             ]
         );
+    }
+
+    #[test]
+    fn parses_external_ip() {
+        let mut body = b"d11:external ip4:".to_vec();
+        body.extend_from_slice(&[203, 0, 113, 7]);
+        body.extend_from_slice(b"8:intervali900ee");
+        let r = parse_announce(&body).unwrap();
+        assert_eq!(r.external_ip, Some("203.0.113.7".parse().unwrap()));
+
+        let mut body = b"d11:external ip16:".to_vec();
+        body.extend_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+        body.extend_from_slice(b"8:intervali900ee");
+        let r = parse_announce(&body).unwrap();
+        assert_eq!(r.external_ip, Some("2001:db8::9".parse().unwrap()));
+
+        // A length that is neither 4 nor 16 is ignored.
+        let r = parse_announce(b"d11:external ip3:abc8:intervali900ee").unwrap();
+        assert_eq!(r.external_ip, None);
     }
 
     #[test]
