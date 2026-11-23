@@ -277,9 +277,22 @@ async fn a_torrent_presents_as_its_trackers_identity() {
             ..AddTorrent::new(torrent.clone(), leech_dir.path().to_path_buf())
         })
         .unwrap();
-    tokio::time::timeout(Duration::from_secs(60), leech.wait_finished())
-        .await
-        .unwrap_or_else(|_| panic!("download timed out: {:?}", leech.stats()));
+    // The clients the leecher's peers present as, watched while it downloads: once it
+    // finishes, the two seeds have nothing for each other and hang up.
+    let mut clients = std::collections::BTreeSet::new();
+    let finished = leech.wait_finished();
+    tokio::pin!(finished);
+    let deadline = tokio::time::sleep(Duration::from_secs(60));
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut finished => break,
+            () = &mut deadline => panic!("download timed out: {:?}", leech.stats()),
+            () = tokio::time::sleep(Duration::from_millis(10)) => {
+                clients.extend(leech.peers().await.into_iter().map(|p| p.client));
+            }
+        }
+    }
 
     // The tracker saw the seeder as Deluge, with libtorrent's numwant, and the leecher as
     // apitorrent, as before.
@@ -309,12 +322,9 @@ async fn a_torrent_presents_as_its_trackers_identity() {
 
     // Peers see it too: the seeder's handshake carried the Deluge peer id, and its
     // extension handshake Deluge's `v`.
-    let peers = leech.peers().await;
     assert!(
-        peers
-            .iter()
-            .any(|p| p.client == "Deluge/2.1.1 libtorrent/2.0.10.0"),
-        "{peers:?}"
+        clients.contains("Deluge/2.1.1 libtorrent/2.0.10.0"),
+        "{clients:?}"
     );
 
     // Taking the rule away applies live, and looks like one client quitting and another
