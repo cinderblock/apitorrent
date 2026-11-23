@@ -1235,6 +1235,38 @@ async fn deluge_take_over() {
             .unwrap()
             .is_empty()
     );
+
+    // Resumed in Deluge since, and Deluge can't be made to pause it: it stays stopped here.
+    core.pause(&k(&id)).await.unwrap();
+    wait_for(&core, &id, TorrentState::Paused).await;
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let daemon = tokio::spawn(async move {
+        loop {
+            let _ = listener.accept().await;
+        }
+    });
+    let refused = core.resume(&k(&id)).await;
+    assert!(
+        matches!(refused, Err(apitorrent_core::CoreError::OtherOwner(_))),
+        "{refused:?}"
+    );
+    daemon.abort();
+    let _ = daemon.await;
+
+    // Deluge stopped: it starts, here and after a restart (asked again first).
+    core.resume(&k(&id)).await.unwrap();
+    wait_for(&core, &id, TorrentState::Seeding).await;
+    core.shutdown().await.unwrap();
+    let core = Core::start(config(root.path())).await.unwrap();
+    wait_for(&core, &id, TorrentState::Seeding).await;
+
+    // Deluge's config is gone: it let go for good, and isn't asked again.
+    std::fs::remove_dir_all(&deluge).unwrap();
+    core.pause(&k(&id)).await.unwrap();
+    core.resume(&k(&id)).await.unwrap();
+    wait_for(&core, &id, TorrentState::Seeding).await;
     core.shutdown().await.unwrap();
 }
 

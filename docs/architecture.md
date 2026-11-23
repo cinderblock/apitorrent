@@ -1276,6 +1276,14 @@ recheck. That is the onboarding path for existing Deluge users.
   (`discover::running_daemon`, from `/proc`); one that does is an error. A running
   daemon's `--port` and `--ui-interface` override `core.conf` when connecting. The
   offline CLI import does the same before writing its rows.
+- **Asked again on every start.** After the take-over, `Core::resume` (and a move's
+  restart) first runs `takeover::recheck_in_deluge`: one status query, and torrents
+  Deluge runs again are paused there as above; failure refuses the start (`other_owner`).
+  `restore` holds such torrents stopped and `recheck_restored` asks each source once,
+  retrying every 10 s for 2 minutes (a daemon starting with the machine); one that never
+  answers puts them back to waiting (`taken_over_at` NULL, paused, shown In Deluge).
+  `imported.released_at` ends the asking: set when Deluge answers without the torrent,
+  its config directory is gone, or the import was a leftover.
 - **In the background.** An import of thousands of torrents takes seconds, so the web UI
   never waits on a request for it: `POST …/import/deluge/jobs` and
   `POST …/import/deluge/take-over/jobs` start a job (`apitorrent_core::jobs`) and answer

@@ -178,6 +178,16 @@ Work is split three ways; integration of 2 and 3 into the import happens last.
     to pokol as part of `105a06d` (2026-11-20 1:43 PM PST, 21:43Z; schema 16), built on
     sentinel from a clean worktree (`embedded-ui,first-party-plugins`).
 
+13. [x] Ask Deluge again on every start after the take-over (asked 2026-11-22).
+    `takeover::recheck_in_deluge`: one status query; torrents Deluge runs again are
+    paused there first, as in the take-over; a running daemon that won't answer refuses
+    the start. After a restart, `recheck_restored` holds those torrents stopped and asks
+    each source once, retrying every 10 s for 2 minutes; if Deluge never answers they go
+    back to waiting (In Deluge). Migration 19, `imported.released_at`, stops the asking
+    once Deluge doesn't have the torrent, its config dir is gone, or it was a leftover.
+    Tests: takeover units and `deluge_take_over` (refused while a daemon holds the port,
+    started after a restart). Not yet deployed to pokol.
+
 ## Findings / gotchas
 
 - The web import today imports into the *request's* space only; a second instance needs

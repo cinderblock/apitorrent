@@ -408,6 +408,9 @@ daemon answers there and no `deluged` process uses that folder, it just starts; 
 that runs but can't be reached leaves the torrent stopped here, with the reason. The import
 does this for the torrents it starts; ones imported paused wait, and resuming one takes
 it over then. Settings → Deluge → "Take over all" takes over everything still waiting at once.
+Every later start asks Deluge again, in case it was resumed there since, and pauses it
+there first the same way; after a restart, those torrents wait until Deluge has been asked.
+The asking stops once Deluge no longer has the torrent, or its config folder is gone.
 
 Private trackers that knew your torrents as Deluge's keep seeing Deluge: the import adds
 a client identity rule for each of their hosts (with the running daemon's exact Deluge

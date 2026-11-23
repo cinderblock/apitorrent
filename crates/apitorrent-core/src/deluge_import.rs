@@ -1041,6 +1041,8 @@ pub fn imported_row(
         },
         source_id: (deluge_id != row.id).then(|| deluge_id.to_owned()),
         leftover,
+        // Deluge doesn't list a leftover: there is nothing to ask it about later.
+        released_at: leftover.then_some(now),
     }
 }
 

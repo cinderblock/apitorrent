@@ -7,6 +7,11 @@
 //! (a torrent it would start is taken over first, or imported paused), resuming an
 //! imported torrent here, and the bulk "take over" action.
 //!
+//! After the take-over, every start here asks again ([`recheck_in_deluge`]): someone may
+//! have resumed the torrent in Deluge since. A torrent Deluge still runs is paused there
+//! first, the same way. The asking stops for good once Deluge no longer has the torrent,
+//! or its config directory is gone.
+//!
 //! The daemon is reached through `apitorrent_deluge::rpc`: port, certificate (pinned) and
 //! `localclient` password all come from the config directory, read each time and never
 //! stored. A running `deluged` whose command line moved its RPC (`--port`,
@@ -67,24 +72,93 @@ async fn pause_in_deluge_on(
     if ids.is_empty() {
         return Ok(TakeOver::Paused);
     }
-    let running = discover::running_daemon(places, config_dir);
-    let mut client = match connect(config_dir, running.as_ref()).await {
-        Ok(c) => c,
-        Err(e) if not_running(&e) && running.is_none() => {
-            tracing::info!(
-                dir = %config_dir.display(),
-                "no Deluge daemon answers or runs for this config directory; taking over"
-            );
-            return Ok(TakeOver::NotRunning);
-        }
-        Err(e) if not_running(&e) => {
-            return Err(format!(
-                "a Deluge daemon is running with {} but couldn't be reached to pause it there: {e}",
-                config_dir.display()
-            ));
-        }
-        Err(e) => return Err(format!("couldn't reach Deluge to pause it there: {e}")),
+    let Some(mut client) = reach(places, config_dir).await? else {
+        tracing::info!(
+            dir = %config_dir.display(),
+            "no Deluge daemon answers or runs for this config directory; taking over"
+        );
+        return Ok(TakeOver::NotRunning);
     };
+    pause_and_wait(&mut client, config_dir, ids).await?;
+    Ok(TakeOver::Paused)
+}
+
+/// Before a torrent taken over earlier starts here again: make sure the Deluge that owns
+/// `config_dir` isn't running any of `ids` (Deluge's ids), pausing those it is, as
+/// [`pause_in_deluge`] does. Torrents Deluge already has stopped cost one question.
+///
+/// Returns the ids Deluge has let go of for good: those it no longer has, or all of them
+/// when its config directory is gone. A daemon that isn't running releases nothing: it may
+/// start again.
+///
+/// # Errors
+///
+/// As [`pause_in_deluge`]: the caller must then leave its copies stopped.
+pub async fn recheck_in_deluge(config_dir: &Path, ids: &[String]) -> Result<Vec<String>, String> {
+    recheck_in_deluge_on(&Places::system(), config_dir, ids).await
+}
+
+async fn recheck_in_deluge_on(
+    places: &Places,
+    config_dir: &Path,
+    ids: &[String],
+) -> Result<Vec<String>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let gone = matches!(
+        std::fs::metadata(config_dir),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    );
+    let Some(mut client) = reach(places, config_dir).await? else {
+        return Ok(if gone { ids.to_vec() } else { Vec::new() });
+    };
+    let have = client
+        .torrents(Some(ids))
+        .await
+        .map_err(|e| format!("couldn't ask Deluge whether it runs it: {e}"))?;
+    let running: Vec<String> = have
+        .iter()
+        .filter(|t| !t.is_stopped())
+        .map(|t| t.id.clone())
+        .collect();
+    if !running.is_empty() {
+        tracing::info!(
+            dir = %config_dir.display(),
+            running = running.len(),
+            "Deluge runs torrents taken over from it; pausing them there again"
+        );
+        pause_and_wait(&mut client, config_dir, &running).await?;
+    }
+    Ok(ids
+        .iter()
+        .filter(|id| !have.iter().any(|t| &t.id == *id))
+        .cloned()
+        .collect())
+}
+
+/// A logged-in client for the daemon that owns `config_dir`, or `None` when no daemon
+/// answers or runs for it.
+async fn reach(places: &Places, config_dir: &Path) -> Result<Option<DelugeClient>, String> {
+    let running = discover::running_daemon(places, config_dir);
+    match connect(config_dir, running.as_ref()).await {
+        Ok(c) => Ok(Some(c)),
+        Err(e) if not_running(&e) && running.is_none() => Ok(None),
+        Err(e) if not_running(&e) => Err(format!(
+            "a Deluge daemon is running with {} but couldn't be reached to pause it there: {e}",
+            config_dir.display()
+        )),
+        Err(e) => Err(format!("couldn't reach Deluge to pause it there: {e}")),
+    }
+}
+
+/// Pause `ids` in Deluge, wait until they have stopped, then (briefly) until their
+/// trackers have heard.
+async fn pause_and_wait(
+    client: &mut DelugeClient,
+    config_dir: &Path,
+    ids: &[String],
+) -> Result<(), String> {
     let paused = client
         .pause(ids)
         .await
@@ -124,7 +198,7 @@ async fn pause_in_deluge_on(
         paused = paused.len(),
         "paused in Deluge to take over"
     );
-    Ok(TakeOver::Paused)
+    Ok(())
 }
 
 /// The identity of the Deluge that owns `config_dir`: its exact Deluge and libtorrent
@@ -290,6 +364,49 @@ mod tests {
         let e = got.expect_err("a running daemon was taken for a stopped one");
         assert!(e.contains("is running"), "{e}");
         assert!(e.contains(&other.to_string()), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_recheck_releases_only_when_the_config_dir_is_gone() {
+        let machine = tempfile::tempdir().unwrap();
+        let none = places(machine.path(), &[]);
+        let ids = ["aa".repeat(20)];
+        let gone = machine.path().join("deluge");
+        assert_eq!(
+            recheck_in_deluge_on(&none, &gone, &ids).await,
+            Ok(ids.to_vec())
+        );
+        // Not running, but it may start again: keep asking.
+        let dir = closed_port_dir();
+        assert_eq!(
+            recheck_in_deluge_on(&none, dir.path(), &ids).await,
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            recheck_in_deluge_on(&none, dir.path(), &[]).await,
+            Ok(Vec::new())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recheck_refuses_while_a_running_daemon_does_not_answer() {
+        let dir = closed_port_dir();
+        let machine = tempfile::tempdir().unwrap();
+        let daemon = vec![
+            "/usr/bin/deluged".to_owned(),
+            "-c".to_owned(),
+            dir.path().display().to_string(),
+        ];
+        let got = recheck_in_deluge_on(
+            &places(machine.path(), &[daemon]),
+            dir.path(),
+            &["aa".repeat(20)],
+        )
+        .await;
+        assert!(
+            got.expect_err("started beside a running Deluge")
+                .contains("is running")
+        );
     }
 
     #[test]

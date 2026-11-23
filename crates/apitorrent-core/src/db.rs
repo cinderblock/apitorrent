@@ -248,6 +248,11 @@ const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE torrents ADD COLUMN upload_slots INTEGER;
     ",
+    // 19: when the other client let go of an imported torrent for good (it no longer has
+    // it, or its config directory is gone), so starting it here stops asking that client.
+    "
+    ALTER TABLE imported ADD COLUMN released_at INTEGER;
+    ",
 ];
 
 /// A torrent imported from another client.
@@ -264,6 +269,9 @@ pub struct ImportedRow {
     /// Only a `.torrent` file left in the other client's state directory: the client
     /// didn't list it, so there was nothing to take over.
     pub leftover: bool,
+    /// When the other client was found to have let go of it for good; until then, every
+    /// start here first makes sure that client isn't running it.
+    pub released_at: Option<i64>,
 }
 
 impl ImportedRow {
@@ -282,6 +290,7 @@ fn imported_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ImportedRow> {
         taken_over_at: r.get(4)?,
         source_id: r.get(5)?,
         leftover: r.get(6)?,
+        released_at: r.get(7)?,
     })
 }
 
@@ -614,6 +623,17 @@ impl Database {
         Ok(())
     }
 
+    /// Whether a torrent is stored paused; `None` when it isn't stored.
+    pub fn paused(&self, key: &Key) -> rusqlite::Result<Option<bool>> {
+        self.conn
+            .query_row(
+                "SELECT paused FROM torrents WHERE space_id = ?1 AND id = ?2",
+                params![key.space, key.id],
+                |r| r.get(0),
+            )
+            .optional()
+    }
+
     pub fn set_paused(&self, key: &Key, paused: bool) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE torrents SET paused = ?3 WHERE space_id = ?1 AND id = ?2",
@@ -797,11 +817,13 @@ impl Database {
     pub fn set_imported(&self, row: &ImportedRow) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT INTO imported
-                 (space_id, torrent, source, imported_at, taken_over_at, source_id, leftover)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 (space_id, torrent, source, imported_at, taken_over_at, source_id, leftover,
+                  released_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(space_id, torrent) DO UPDATE SET source = excluded.source,
                  imported_at = excluded.imported_at, taken_over_at = excluded.taken_over_at,
-                 source_id = excluded.source_id, leftover = excluded.leftover",
+                 source_id = excluded.source_id, leftover = excluded.leftover,
+                 released_at = excluded.released_at",
             params![
                 row.key.space,
                 row.key.id,
@@ -809,7 +831,8 @@ impl Database {
                 row.imported_at,
                 row.taken_over_at,
                 row.source_id,
-                row.leftover
+                row.leftover,
+                row.released_at
             ],
         )?;
         Ok(())
@@ -824,10 +847,31 @@ impl Database {
         Ok(())
     }
 
+    /// Mark an imported torrent as no longer held by the client it came from; `None`
+    /// clears that, and its being taken over, so it waits for a take-over again.
+    pub fn set_released(&self, key: &Key, at: Option<i64>) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE imported SET released_at = ?3 WHERE space_id = ?1 AND torrent = ?2",
+            params![key.space, key.id, at],
+        )?;
+        Ok(())
+    }
+
+    /// Put an imported torrent back to waiting for a take-over: the client it came from
+    /// may run it again.
+    pub fn set_not_taken_over(&self, key: &Key) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "UPDATE imported SET taken_over_at = NULL WHERE space_id = ?1 AND torrent = ?2",
+            params![key.space, key.id],
+        )?;
+        Ok(())
+    }
+
     /// Every imported torrent.
     pub fn imported(&self) -> rusqlite::Result<Vec<ImportedRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id, leftover
+            "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id, leftover,
+                 released_at
              FROM imported",
         )?;
         stmt.query_map([], imported_row)?.collect()
@@ -838,7 +882,7 @@ impl Database {
         self.conn
             .query_row(
                 "SELECT space_id, torrent, source, imported_at, taken_over_at, source_id,
-                     leftover
+                     leftover, released_at
                  FROM imported WHERE space_id = ?1 AND torrent = ?2",
                 params![key.space, key.id],
                 imported_row,
@@ -1185,12 +1229,17 @@ mod tests {
             taken_over_at: None,
             source_id: None,
             leftover: true,
+            released_at: None,
         })
         .unwrap();
         assert_eq!(db.imported().unwrap()[0].taken_over_at, None);
         assert!(db.imported().unwrap()[0].leftover);
         db.set_taken_over(&a, 9).unwrap();
         assert_eq!(db.imported().unwrap()[0].taken_over_at, Some(9));
+        db.set_released(&a, Some(11)).unwrap();
+        assert_eq!(db.imported_one(&a).unwrap().unwrap().released_at, Some(11));
+        db.set_not_taken_over(&a).unwrap();
+        assert_eq!(db.imported_one(&a).unwrap().unwrap().taken_over_at, None);
         db.remove_torrent(&a).unwrap();
         assert!(db.imported().unwrap().is_empty());
     }

@@ -67,6 +67,10 @@ const SAVE_EVERY: Duration = Duration::from_secs(30);
 const FINGERPRINT_EVERY: Duration = Duration::from_secs(5 * 60);
 /// How often superseded torrents are checked for retirement.
 const RETIRE_EVERY: Duration = Duration::from_secs(60);
+/// After a restart, how often and how long a Deluge that doesn't answer yet (it may be
+/// starting too) is asked again before its taken-over torrents are left stopped.
+const RESTORE_RECHECK_WAIT: Duration = Duration::from_secs(10);
+const RESTORE_RECHECK_TRIES: u32 = 12;
 
 /// A torrent entry: a torrent in one space. The same torrent (info-hash) can be in several
 /// spaces; they share one swarm in the engine (see `Swarm`).
@@ -2215,8 +2219,23 @@ impl Core {
         // A torrent in several spaces has one swarm, whose files are its primary's: the
         // entry that saved resume data last time (only primaries do), else the oldest.
         rows.sort_by_key(|r| (r.have.is_none(), r.added_at, r.space));
-        for row in rows {
+        let imported = self.db(|db| db.imported()).await?;
+        // Taken over from Deluge, and maybe resumed there since: these wait stopped until
+        // Deluge has been asked (`recheck_restored`).
+        let mut recheck: HashMap<Key, db::ImportedRow> = imported
+            .iter()
+            .filter(|r| r.taken_over_at.is_some() && r.released_at.is_none())
+            .map(|r| (r.key.clone(), r.clone()))
+            .collect();
+        let mut held = Vec::new();
+        for mut row in rows {
             let key = Key::new(row.space, row.id.clone());
+            if !row.paused
+                && let Some(r) = recheck.remove(&key)
+            {
+                row.paused = true;
+                held.push(r);
+            }
             if row.torrent.is_empty() {
                 self.restore_pending(row);
                 continue;
@@ -2296,7 +2315,6 @@ impl Core {
             }
         }
         let superseded = self.db(|db| db.superseded()).await?;
-        let imported = self.db(|db| db.imported()).await?;
         {
             let mut torrents = self.inner.torrents.write().expect("torrents lock poisoned");
             for (s, by) in superseded {
@@ -2317,6 +2335,10 @@ impl Core {
         }
         tracing::info!(count, "torrents restored");
         self.refresh();
+        if !held.is_empty() {
+            let core = self.clone();
+            tokio::spawn(async move { core.recheck_restored(held).await });
+        }
         Ok(())
     }
 
@@ -2981,20 +3003,108 @@ impl Core {
     }
 
     /// Before an imported torrent runs here, make sure the client it came from has stopped
-    /// it (see `takeover`). Torrents that weren't imported, or were taken over already,
-    /// pass straight through.
+    /// it (see `takeover`): the first time to take it over, and on every start after that
+    /// in case it was resumed there since. Torrents that weren't imported, or whose client
+    /// has let go of them, pass straight through.
     async fn ensure_taken_over(&self, key: &Key) -> Result<(), CoreError> {
         let k = key.clone();
         let Some(row) = self.db(move |db| db.imported_one(&k)).await? else {
             return Ok(());
         };
-        if row.taken_over_at.is_some() {
+        if row.released_at.is_some() {
             return Ok(());
         }
-        takeover::pause_in_deluge(Path::new(&row.source), &[row.source_id().to_owned()])
+        let ids = [row.source_id().to_owned()];
+        if row.taken_over_at.is_none() {
+            takeover::pause_in_deluge(Path::new(&row.source), &ids)
+                .await
+                .map_err(CoreError::OtherOwner)?;
+            return self.mark_taken_over(key, now_ms()).await;
+        }
+        let released = takeover::recheck_in_deluge(Path::new(&row.source), &ids)
             .await
             .map_err(CoreError::OtherOwner)?;
-        self.mark_taken_over(key, now_ms()).await
+        if !released.is_empty() {
+            self.mark_released(key).await?;
+        }
+        Ok(())
+    }
+
+    /// Stop asking the client an imported torrent came from about it: it let go for good.
+    async fn mark_released(&self, key: &Key) -> Result<(), CoreError> {
+        let (k, at) = (key.clone(), now_ms());
+        self.db(move |db| db.set_released(&k, Some(at))).await?;
+        tracing::info!(torrent = %key, "the client it was imported from no longer has it");
+        Ok(())
+    }
+
+    /// After a restart, the torrents taken over from Deluge that [`Self::restore`] held
+    /// stopped: ask each Deluge once (per config directory), then start the ones it isn't
+    /// running, pausing those it is first. A daemon that is starting up too gets a while
+    /// to answer. One that never does leaves its torrents stopped and shown as Deluge's
+    /// again, to take over by hand (Settings → Still with Deluge).
+    async fn recheck_restored(&self, held: Vec<db::ImportedRow>) {
+        let mut groups: std::collections::BTreeMap<String, Vec<db::ImportedRow>> =
+            std::collections::BTreeMap::new();
+        for r in held {
+            groups.entry(r.source.clone()).or_default().push(r);
+        }
+        for (source, rows) in groups {
+            let ids: Vec<String> = rows.iter().map(|r| r.source_id().to_owned()).collect();
+            let mut tries = 0;
+            let outcome = loop {
+                match takeover::recheck_in_deluge(Path::new(&source), &ids).await {
+                    Err(e) if tries < RESTORE_RECHECK_TRIES => {
+                        tries += 1;
+                        tracing::info!(dir = %source, error = %e, "Deluge didn't answer yet; asking again shortly");
+                        tokio::time::sleep(RESTORE_RECHECK_WAIT).await;
+                    }
+                    other => break other,
+                }
+            };
+            match outcome {
+                Ok(released) => {
+                    for r in rows {
+                        if released.iter().any(|id| id == r.source_id())
+                            && let Err(e) = self.mark_released(&r.key).await
+                        {
+                            tracing::warn!(torrent = %r.key, error = %e, "could not record that Deluge let go");
+                        }
+                        // Paused or removed while Deluge was asked: leave it so.
+                        let k = r.key.clone();
+                        if !matches!(self.db(move |db| db.paused(&k)).await, Ok(Some(false))) {
+                            continue;
+                        }
+                        if let Err(e) = self.apply_paused(&r.key, false).await {
+                            tracing::warn!(torrent = %r.key, error = %e, "could not start the torrent after checking Deluge");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        dir = %source,
+                        torrents = rows.len(),
+                        error = %e,
+                        "couldn't make sure Deluge isn't running torrents taken over from it;                          leaving them stopped, to take over again"
+                    );
+                    for r in rows {
+                        let k = r.key.clone();
+                        let reverted = self
+                            .db(move |db| {
+                                db.set_not_taken_over(&k)?;
+                                db.set_paused(&k, true)
+                            })
+                            .await;
+                        match reverted {
+                            Ok(()) => self.set_in_deluge(&r.key, Some(source.clone())),
+                            Err(e) => {
+                                tracing::warn!(torrent = %r.key, error = %e, "could not record it as Deluge's again");
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The Deluge installations on this machine (see `apitorrent_deluge::discover`), with
@@ -3413,6 +3523,11 @@ impl Core {
         if !paused {
             self.ensure_taken_over(key).await?;
         }
+        self.apply_paused(key, paused).await
+    }
+
+    /// [`Self::set_paused`], once any other client that had the torrent has stopped it.
+    async fn apply_paused(&self, key: &Key, paused: bool) -> Result<(), CoreError> {
         let is_pending = {
             let mut pending = self.inner.pending.write().expect("pending lock poisoned");
             match pending.get_mut(key) {
