@@ -37,7 +37,7 @@ the `pickle` target; the input was saved as `oom-19597dc2a899f6249eb65d0cf58bc6d
 -max_total_time=600 -rss_limit_mb=2048` in `fuzz/`. Why it matters: a crafted Deluge state
 file can make the import use gigabytes, and the Fuzz CI job goes red.
 
-## Deluge discovery tests fail on Windows
+## Deluge discovery tests fail on Windows (in progress — fix-discover-windows)
 
 Found 2026-11-20. `cargo test -p apitorrent-deluge --lib discover` on Windows:
 `discover::tests::config_arguments` (discover.rs:664, `left: None, right: Some("/x")`) and
