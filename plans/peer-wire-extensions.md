@@ -76,8 +76,8 @@ Client identity → Custom → "What peers see".
 - [x] 5. `ut_holepunch`
 - [x] Docs: `identity.rs` header, `docs/architecture.md`, `plans/deluge-coexistence.md`
 - [x] Full test + clippy run on sentinel (clean), wire tests on Windows, final benchmark
-- [x] Commit: `daf5828`, `7cd0b9b`
-- [ ] Push: waiting on the user (the repo's CLAUDE.md doesn't say)
+- [x] Commit: pushed as `2341d91`, `80c92ec` (rebased by another thread; identical)
+- [x] Push; CI run 45121256881 passed; the local desktop app (restarted 2026-11-22 10:14 PM PST) includes it
 
 ## Findings
 
