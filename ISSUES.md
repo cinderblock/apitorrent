@@ -28,20 +28,6 @@ Found 2026-11-20. The browser's own tooltips are slow, look out of place and nev
 touch screens. Still there: `web/src/components/DetailPane.tsx` (the pop-out and close
 buttons). Replace them with `components/Tip.tsx` or visible text.
 
-## Fuzz target `pickle` runs out of memory (in progress — fix-pickle-fuzz-oom)
-
-Found 2026-11-22. CI run https://github.com/cinderblock/apitorrent/actions/runs/45102024794
-(`2925b9a`): `libFuzzer: out-of-memory (used: 2068Mb; limit: 2048Mb)` after about 40 s of
-the `pickle` target; the input was saved as `oom-19597dc2a899f6249eb65d0cf58bc6d15d0d8161`
-(only on the runner). Earlier runs passed. Reproduce: `cargo +nightly fuzz run pickle --
--max_total_time=600 -rss_limit_mb=2048` in `fuzz/`. Why it matters: a crafted Deluge state
-file can make the import use gigabytes, and the Fuzz CI job goes red.
-
-Again in https://github.com/cinderblock/apitorrent/actions/runs/45109815845 (`0a0cd13`,
-2112Mb after 36 s). Its input, from the log (`base64 -d > oom` and pass it to
-`cargo +nightly fuzz run pickle oom`):
-`Tk5OcSkyKWIyMpIyMjJdkikykpIpYjIyMjJdkiliMjIyMpIyMjJdkiliYjIykjIyMl2SKWIyMjIyMmIyMmJdXZIpYjIykpIpYjIyMjJdkiliMjIyMjIykjIyMl2SKTKSkiliMjIyMl2SKWIyMjIykjIyMl2SKWJiMjKSMjIyXZIpYjIyXV2SKWJLkiliS2KSKWIyMjJLYGJiS11dki5OTnEmXWIyMmJdXZIpYjIykpIpYjIyMjJdkiliMjIyYl0y`
-
 ## Desktop app: a release build without `tauri/custom-protocol` is a black window
 
 Found 2026-11-14 1:30 PM PST (21:30Z). `cargo build --release -p apitorrent-desktop`

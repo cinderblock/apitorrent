@@ -6,17 +6,34 @@
 //! arguments and the state that `BUILD` sets. Nothing is ever called or imported.
 //!
 //! Protocols 0–5 are read, but only the opcodes Python emits for plain data, classes and
-//! their instances. Anything else is an error, as is any input that would need more than
-//! [`MAX_MEMORY`] bytes of values and strings, or nesting deeper than [`MAX_DEPTH`]: the
-//! input is not trusted. `DUP` and the memo copy values, so a short
-//! pickle could otherwise double its size with every pair of opcodes.
+//! their instances. Anything else is an error, as is nesting deeper than [`MAX_DEPTH`] or
+//! building more values and strings than [`memory_limit`] allows: the input is not
+//! trusted. `DUP` and the memo copy values, so a short pickle could otherwise double its
+//! size with every pair of opcodes.
 
 use std::collections::HashMap;
 
-/// The most memory a pickle may build, in bytes, to bound hostile input. Values are
-/// counted at [`VALUE_COST`] each, plus the strings that `DUP` and the memo copy. A
-/// Deluge state of tens of thousands of torrents fits well inside it.
+/// The most memory any pickle may build, in bytes. Values are counted at [`VALUE_COST`]
+/// each, plus their strings, including the copies that `DUP` and the memo make. A Deluge
+/// state of 5,000 torrents with large file lists (3.8 MB on disk) builds about 240 MB.
 pub const MAX_MEMORY: usize = 384 * 1024 * 1024;
+
+/// How much a pickle may build per byte of its own size, below [`MAX_MEMORY`]. Deluge's
+/// states build 40–65 bytes per byte. Without this, a few hundred hostile bytes could
+/// build the whole [`MAX_MEMORY`], and many such files (or fuzzer inputs) in a row leave
+/// the allocator holding gigabytes.
+pub const MEMORY_PER_BYTE: usize = 256;
+
+/// What even the smallest pickle may build: room for a few torrents. Kept small, as the
+/// allocator holds on to each input's peak.
+pub const MIN_MEMORY: usize = 1024 * 1024;
+
+/// The memory limit for a pickle of `len` bytes.
+#[must_use]
+pub fn memory_limit(len: usize) -> usize {
+    len.saturating_mul(MEMORY_PER_BYTE)
+        .clamp(MIN_MEMORY, MAX_MEMORY)
+}
 
 /// What one value is counted as: its own size, doubled for the allocations it may own (a
 /// boxed class, a vector's spare capacity).
@@ -117,8 +134,8 @@ pub enum PickleError {
     Opcode(u8),
     #[error("malformed pickle: {0}")]
     Malformed(&'static str),
-    #[error("pickle is too large")]
-    TooLarge,
+    #[error("pickle builds more than its limit of {limit} bytes of values")]
+    TooLarge { limit: usize },
     #[error("pickle nests too deeply")]
     TooDeep,
 }
@@ -169,7 +186,8 @@ impl<'a> Reader<'a> {
     }
 
     fn sized(&mut self, n: u64) -> Result<&'a [u8], PickleError> {
-        let n = usize::try_from(n).map_err(|_| PickleError::TooLarge)?;
+        // A length past `usize` can't fit in the input either.
+        let n = usize::try_from(n).map_err(|_| PickleError::Truncated)?;
         self.take(n)
     }
 }
@@ -199,7 +217,7 @@ impl Budget {
             .saturating_add(items.saturating_mul(VALUE_COST))
             .saturating_add(bytes);
         if self.used > self.max {
-            return Err(PickleError::TooLarge);
+            return Err(PickleError::TooLarge { limit: self.max });
         }
         Ok(())
     }
@@ -239,12 +257,12 @@ fn nest(depth: u32) -> Result<u32, PickleError> {
     Ok(d)
 }
 
-/// Read a pickle.
+/// Read a pickle, within [`memory_limit`] for its size.
 pub fn load(data: &[u8]) -> Result<Value, PickleError> {
-    load_limited(data, MAX_MEMORY)
+    load_limited(data, memory_limit(data.len()))
 }
 
-/// [`load`] with a smaller memory limit, so tests of the limit run quickly.
+/// [`load`] with a given memory limit, so tests of the limit run quickly.
 fn load_limited(data: &[u8], max: usize) -> Result<Value, PickleError> {
     let mut r = Reader { data, pos: 0 };
     let mut stack: Vec<Slot> = Vec::new();
@@ -696,7 +714,7 @@ mod tests {
         p.push(b'.');
         assert!(matches!(
             load_limited(&p, 8 << 20),
-            Err(PickleError::TooLarge | PickleError::TooDeep)
+            Err(PickleError::TooLarge { .. } | PickleError::TooDeep)
         ));
         // The same through the memo: PUT, then GET it twice and append.
         let mut p = b"\x80\x02]".to_vec();
@@ -712,6 +730,41 @@ mod tests {
         // when only the number of values was limited.
         let found = b")]\x89)\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89])a\x922\x92222\x8f\x89\x9222\x92\x92\x92222\x8f\x89\x9222\x92\x922\x9222\x8f\x89\x922\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89])a\x922\x92222\x8f\x89\x9222\x92\x92\x92222\x8f\x89\x9222\x92\x922\x9222\x8f\x89\x922\x9222\x8f\x89\x9222\x92222\x9222\x8f\x89\x9222\x8f\x89\x9222\x9222.\x922\xc8";
         assert!(load_limited(found, 8 << 20).is_err());
+    }
+
+    /// A small pickle gets a small limit. This 196-byte input from the fuzzer doubles an
+    /// object with `DUP` and `NEWOBJ`; it built the whole [`MAX_MEMORY`] in over a second,
+    /// and a run of such inputs left the fuzzer at 2 GB.
+    #[test]
+    fn small_pickles_get_a_small_limit() {
+        let found = b"}2]K\xaa22UK\xaa222\x81N2\x81\x812\x80\x812\x81\x812\x81\x8122\x81\x812\x80\x812\x81\x812\x812\x80\x812\x81N2\x81\x812\x802\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x81\x812\x81\x812\x812\x812\x81\x812\x81\x8122\x81\x8122\x80\x812\x81\x81\x81N2\x81\x812\x80\x812\x81\x812\x81\x8122\x81\x812\x80\x812\x81\x812\x812\x80\x812\x81N2\x81\x812\x802\x81\x812\x81\x812\x812\x812\x81\x812\x81\x8122\x81\x8122\x80\x812\x81\x812\x812\x80\x812\x81\x8122\x812\x80\x812\x81\x812\x81\x812\x812";
+        assert_eq!(
+            load(found),
+            Err(PickleError::TooLarge { limit: MIN_MEMORY })
+        );
+        // From CI (https://github.com/cinderblock/apitorrent/actions/runs/45109815845):
+        // `NEWOBJ_EX`, `BUILD` and `DUP`. These 192 bytes loaded, as almost 384 MiB.
+        let found = b"NNNq)2)b22\x92222]\x92)2\x92\x92)b2222]\x92)b2222\x92222]\x92)bb22\x92222]\x92)b22222b22b]]\x92)b22\x92\x92)b2222]\x92)b222222\x92222]\x92)2\x92\x92)b2222]\x92)b2222\x92222]\x92)bb22\x92222]\x92)b22]]\x92)bK\x92)bKb\x92)b222K`bbK]]\x92.NNq&]b22b]]\x92)b22\x92\x92)b2222]\x92)b222b]2";
+        assert_eq!(
+            load(found),
+            Err(PickleError::TooLarge { limit: MIN_MEMORY })
+        );
+        assert_eq!(memory_limit(0), MIN_MEMORY);
+        assert_eq!(memory_limit(usize::MAX), MAX_MEMORY);
+    }
+
+    /// A large pickle gets room in proportion to its size: 300,000 small ints build more
+    /// than [`MIN_MEMORY`], within 256 bytes per byte.
+    #[test]
+    fn large_pickles_get_room_in_proportion() {
+        let n = 300_000;
+        let mut p = b"\x80\x02](".to_vec();
+        for _ in 0..n {
+            p.extend_from_slice(b"K\x07");
+        }
+        p.extend_from_slice(b"e.");
+        assert!(load_limited(&p, MIN_MEMORY).is_err());
+        assert_eq!(load(&p).unwrap().as_list().map(<[Value]>::len), Some(n));
     }
 
     #[test]
