@@ -21,3 +21,17 @@ onboarding feature, not a pitch.
 
 This applies to READMEs, docs, UI copy, release notes, commit messages, and briefs for
 other agents.
+
+## The local desktop app
+
+The user runs the desktop app on the development machine from
+`target/desktop-app/run/apitorrent-desktop.exe`. After a change lands on master, always
+rebuild it and restart it, without asking (the user, 2026-11-22: "yes. always"):
+
+1. Build from a clean worktree at that commit, so other threads' uncommitted work stays
+   out: `bun run build` in `web/`, then `cargo build --release -p apitorrent-desktop
+   --features tauri/custom-protocol`. Without `custom-protocol` the window points at the
+   Vite dev server and shows a black window.
+2. Stop the running app by its PID (never by name), copy the new exe over the one in
+   `target/desktop-app/run/` (copy, don't link), and start it again.
+3. Check that it came up, and say which commit it now runs.
