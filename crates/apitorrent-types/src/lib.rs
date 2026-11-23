@@ -508,8 +508,9 @@ pub struct ProxySettings {
     /// proxy, UDP trackers can't be reached and are skipped.
     pub proxy_trackers: bool,
     /// Everything that can go through the proxy does, and everything that can't is off:
-    /// no incoming connections, no DHT, no local peer discovery, no uTP. Turning it on
-    /// takes effect at once; turning it off brings those back on the next start.
+    /// no incoming connections, no DHT, no local peer discovery, no uTP, no UPnP or
+    /// NAT-PMP port forwarding, whatever [`DiscoverySettings`] says. Turning it on takes
+    /// effect at once; turning it off brings those back on the next start.
     pub force: bool,
 }
 

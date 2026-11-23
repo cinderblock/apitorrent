@@ -359,6 +359,7 @@ export function NetworkSection({ draft, update }: DraftProps) {
           onChange={(natpmp) => update({ discovery: { ...draft.discovery, natpmp } })}
         />
         <Note>These apply when the daemon next restarts. The daemon&apos;s --no-dht and --no-lsd turn those off whatever is set here.</Note>
+        {draft.proxy.force && draft.proxy.type !== "none" && <Note tone="warn">Force proxy (under Proxy, below) keeps all four off.</Note>}
       </SettingCard>
 
       <SettingCard title="Connections" description="Across all torrents. Leave empty for no limit.">
@@ -435,14 +436,14 @@ function ProxyCard({ value: p, onChange }: { value: ProxySettings; onChange: (v:
           />
           <ToggleRow
             label="Force proxy"
-            description="Everything that can go through the proxy does, and the rest is off: no incoming connections, DHT, local peer discovery or uTP."
+            description="Everything that can go through the proxy does, and the rest is off: no incoming connections, DHT, local peer discovery, uTP or port forwarding."
             checked={p.force}
             onChange={(force) => set({ force })}
           />
           {p.force && (
             <Note tone="warn">
               With no incoming connections, peers who can&apos;t accept connections either can&apos;t reach you, so some torrents find fewer peers. Turning force proxy off
-              brings incoming connections, DHT, local peer discovery and uTP back when the daemon next restarts.
+              brings incoming connections, DHT, local peer discovery, uTP and port forwarding back when the daemon next restarts.
             </Note>
           )}
           {p.type !== "socks5" && p.proxyTrackers && <Note>UDP trackers are skipped while trackers go through {p.type === "http" ? "an HTTP" : "a SOCKS4"} proxy.</Note>}

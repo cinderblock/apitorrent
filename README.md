@@ -25,8 +25,8 @@ Most of this is built.
 - **Through a proxy, if you like.** Peers, web seeds and trackers can go through a SOCKS4,
   SOCKS5 or HTTP proxy (Settings → Network → Proxy), with or without a password, with
   host names resolved by the proxy. UDP trackers go through SOCKS5 too. Force proxy turns
-  off everything that can't go through it: incoming connections, DHT, local discovery and
-  uTP. The password is write-only: the API never sends it back.
+  off everything that can't go through it: incoming connections, DHT, local discovery,
+  uTP, and UPnP and NAT-PMP port forwarding. The password is write-only: the API never sends it back.
 - **One API for everything.** The web UI, desktop app, CLI and plugins all use it. The
   desktop app embeds the engine, or acts as a thin client to a headless daemon. Path
   mappings open remote download folders in your file manager.

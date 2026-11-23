@@ -590,9 +590,10 @@ impl Session {
     /// Use a proxy, or stop using one (`None`). New connections follow the change at once;
     /// open ones keep the path they have.
     ///
-    /// Force proxy also closes the listen socket, shuts the DHT down and stops LSD, and
-    /// refuses incoming uTP connections. Those can't start again while the session runs:
-    /// turning force proxy off brings them back on the next start.
+    /// Force proxy also closes the listen socket, shuts the DHT down, stops LSD, removes
+    /// the router's port forwards, and refuses incoming uTP connections. Those can't start
+    /// again while the session runs: turning force proxy off brings them back on the next
+    /// start.
     pub fn set_proxy(&self, settings: Option<ProxySettings>) -> io::Result<()> {
         let shared = &self.shared;
         let peers = settings
@@ -625,10 +626,21 @@ impl Session {
             if let Some(dht) = shared.dht.clone() {
                 tokio::spawn(async move { dht.shutdown().await });
             }
-            tracing::info!("force proxy: incoming connections, DHT, LSD and uTP are off");
+            // Asking the router for forwards goes around the proxy, and nothing can come in.
+            let mapper = self
+                .port_mapper
+                .lock()
+                .expect("port mapper poisoned")
+                .take();
+            if let Some(m) = mapper {
+                tokio::spawn(m.stop());
+            }
+            tracing::info!(
+                "force proxy: incoming connections, DHT, LSD, uTP and port forwarding are off"
+            );
         } else if !force && shared.forced() {
             tracing::info!(
-                "force proxy is off: incoming connections, DHT, LSD and uTP come back on the \
+                "force proxy is off: incoming connections, DHT, LSD, uTP and port forwarding come back on the \
                  next start"
             );
         }

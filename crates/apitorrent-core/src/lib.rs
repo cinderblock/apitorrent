@@ -354,12 +354,14 @@ impl Core {
         };
         // The DHT starts from the nodes it knew last time, when there is saved state.
         let mut session_config = config.session.clone();
-        // Force proxy: what can't go through the proxy doesn't start at all.
+        // Force proxy: what can't go through the proxy doesn't start at all, whatever the
+        // discovery settings say (`ports::apply_discovery` only ever turns these off).
         if settings::forces_proxy(&settings) {
             session_config.dht = None;
             session_config.lsd = None;
             session_config.utp = false;
-            tracing::info!("force proxy: starting without the DHT, LSD and uTP");
+            session_config.port_mapping = None;
+            tracing::info!("force proxy: starting without the DHT, LSD, uTP and port forwarding");
         }
         if let Some(dht) = session_config.dht.as_mut()
             && dht.state.is_none()

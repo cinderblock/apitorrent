@@ -194,8 +194,9 @@ through `Session::set_proxy` and applies to new connections at once. Proxied pee
 seeds use TCP only (`peer::Dialer`); trackers go through reqwest's proxy support, and UDP
 trackers through a SOCKS5 UDP association (through HTTP or SOCKS4 they fail with
 `UdpNotProxied` rather than going direct). Nothing falls back to a direct connection when
-the proxy is down. Force proxy also closes the listener, shuts the DHT down, stops LSD and
-refuses incoming uTP; those can't restart in a running session, so turning it off brings
+the proxy is down. Force proxy also closes the listener, shuts the DHT down, stops LSD,
+removes the router's port forwards and refuses incoming uTP, whatever `Settings::discovery`
+says; those can't restart in a running session, so turning it off brings
 them back on the next start, and a daemon that starts with it stored starts without them.
 The password is write-only, like plugin secrets: `GET /settings` leaves it out and says
 `passwordSet`; a `PUT` without it keeps it, and `""` removes it.
