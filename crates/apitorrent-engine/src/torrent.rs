@@ -12,7 +12,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use apitorrent_metainfo::{InfoHashes, Sha1Hash, Sha256Hash, Torrent};
 use apitorrent_wire::extended::{
-    ExtensionHandshake, METADATA_PIECE_LEN, MetadataMessage, PexFlags, PexMessage, names,
+    self, ExtensionHandshake, HolepunchError, HolepunchMessage, METADATA_PIECE_LEN,
+    MetadataMessage, PexFlags, PexMessage, names,
 };
 use apitorrent_wire::{BlockRef, Decoder, Handshake, HashRequest, MAX_BLOCK_LEN, Message, PeerId};
 
@@ -20,7 +21,7 @@ use crate::announce::{Announcer, Job, Totals, TrackerStatus};
 use crate::ban::BanReason;
 use crate::bitfield::Bitfield;
 use crate::hashreq::LayerShape;
-use crate::identity::ActiveIdentity;
+use crate::identity::{ActiveIdentity, WireStyle};
 use crate::layout::{BLOCK_LEN, Layout};
 use crate::limits::{Slot, Throttle, TorrentLimits};
 use crate::peer::{self, PeerCmd, PeerEvent};
@@ -71,11 +72,28 @@ struct LayerFetch {
     refused: HashSet<PeerKey>,
 }
 
-/// Our extension ids, sent in the extension handshake.
+/// Our extension ids, sent in the extension handshake. libtorrent's extensions get the ids
+/// libtorrent gives them.
 const OUR_UT_METADATA: u8 = 1;
 const OUR_UT_PEX: u8 = 2;
-/// Most outstanding block reads we'll do for one peer.
-const MAX_PEER_UPLOAD_QUEUE: u32 = 256;
+const OUR_UPLOAD_ONLY: u8 = 3;
+const OUR_UT_HOLEPUNCH: u8 = 4;
+const OUR_LT_DONTHAVE: u8 = 7;
+/// A peer's send budget, piece bytes being read or waiting to go out: about a second of its
+/// upload rate, within these bounds.
+const SEND_BUDGET_MIN: u64 = 512 * 1024;
+const SEND_BUDGET_MAX: u64 = 4 * 1024 * 1024;
+/// Most bytes read from disk in one go: queued requests for consecutive blocks of a piece
+/// are read together.
+const READ_RUN_MAX: u32 = 256 * 1024;
+/// Requests we keep outstanding to a peer: at least the session's `request_queue`, and up
+/// to this many seconds of its download rate (libtorrent's `request_queue_time`), within
+/// what the peer takes.
+const REQUEST_QUEUE_SECS: u64 = 3;
+/// The most requests outstanding to one peer, and what we assume a peer takes when its
+/// handshake doesn't say (libtorrent's defaults, `max_out_request_queue` and 250).
+const MAX_REQUEST_QUEUE: usize = 500;
+const DEFAULT_PEER_REQQ: usize = 250;
 /// Most bookend pieces started from disk and not yet finished, per torrent. Each holds a
 /// piece buffer until peers send the rest.
 const MAX_PREFILLED: usize = 4;
@@ -425,9 +443,10 @@ pub(crate) enum ActorMsg {
         /// SHA-1 of each block, when asked for or when the piece failed.
         digests: Option<Vec<Sha1Hash>>,
     },
-    BlockRead {
+    /// Consecutive blocks of one piece, read in one go.
+    BlocksRead {
         peer: PeerKey,
-        block: BlockRef,
+        blocks: Vec<BlockRef>,
         result: Result<Bytes, String>,
     },
     Announced {
@@ -801,16 +820,28 @@ struct Peer {
     link: peer::Link,
     has: Bitfield,
     is_seed: bool,
+    /// The peer said it downloads nothing more (BEP 21 `upload_only`).
+    upload_only: bool,
     /// How many pieces the peer has that we still want.
     wanted: u32,
     am_choking: bool,
     am_interested: bool,
     peer_choking: bool,
     peer_interested: bool,
-    /// Our outstanding requests to the peer.
-    requests: Vec<BlockRef>,
-    /// Block reads in flight for the peer's requests.
-    uploads: usize,
+    /// Our outstanding requests to the peer. A set: a fast peer has hundreds, and each
+    /// block that arrives is looked up.
+    requests: HashSet<BlockRef>,
+    /// The `reqq` we told the peer: the most requests it may have with us at once. Queued
+    /// requests cost a few bytes each: they are read from disk only as the peer's send
+    /// budget allows (see [`send_budget`]).
+    our_reqq: u32,
+    /// The peer's requests we took and haven't started reading, oldest first.
+    upload_queue: VecDeque<BlockRef>,
+    /// Blocks being read for the peer, and their bytes.
+    reading: usize,
+    reading_bytes: u64,
+    /// Piece bytes handed to the connection and not yet written to the socket.
+    unsent: u64,
     /// Requests the peer cancelled while their read was in flight: not sent when it ends.
     cancelled: HashSet<BlockRef>,
     downloaded: u64,
@@ -852,13 +883,18 @@ impl Peer {
             link: peer::Link::default(),
             has: Bitfield::new(pieces),
             is_seed: false,
+            upload_only: false,
             wanted: 0,
             am_choking: true,
             am_interested: false,
             peer_choking: true,
             peer_interested: false,
-            requests: Vec::new(),
-            uploads: 0,
+            requests: HashSet::new(),
+            our_reqq: WireStyle::APITORRENT.request_queue,
+            upload_queue: VecDeque::new(),
+            reading: 0,
+            reading_bytes: 0,
+            unsent: 0,
             cancelled: HashSet::new(),
             downloaded: 0,
             uploaded: 0,
@@ -957,9 +993,15 @@ pub(crate) struct TorrentActor {
     candidates: VecDeque<(SocketAddr, Option<EntryKey>)>,
     /// What PEX said about candidates' uTP support, until they are dialed.
     utp_hints: HashMap<SocketAddr, peer::UtpHint>,
+    /// Holepunch-capable candidates (PEX flag `0x08`) and the peer that told us of each,
+    /// which can introduce us if dialing fails (BEP 55).
+    introducers: HashMap<SocketAddr, PeerKey>,
+    /// Addresses we asked an introducer for, so each is asked once.
+    punched: HashSet<SocketAddr>,
     /// Candidates we shouldn't dial before the given time.
     retry_at: HashMap<SocketAddr, Instant>,
-    /// Addresses we know to be seeds. They aren't dialled while we have every piece.
+    /// Addresses of seeds, and of peers that wanted nothing more when we had finished. They
+    /// aren't dialled while we have everything we want.
     seed_addrs: HashSet<SocketAddr>,
     known: HashSet<SocketAddr>,
     stats: watch::Sender<TorrentStats>,
@@ -997,6 +1039,8 @@ pub(crate) struct TorrentActor {
     webseed_rx: mpsc::Receiver<WebSeedEvent>,
     /// Whether the download was already finished; finishing sends `completed` once.
     finished: bool,
+    /// What peers were last told of our `upload_only` (BEP 21: nothing left we want).
+    told_upload_only: bool,
     /// Pieces handed over by `offer_piece`, being hashed and written.
     offered: HashSet<u32>,
     /// Pieces held back while a file they touch is being adopted.
@@ -1125,6 +1169,8 @@ impl TorrentActor {
             buffers: HashMap::new(),
             candidates: VecDeque::new(),
             utp_hints: HashMap::new(),
+            introducers: HashMap::new(),
+            punched: HashSet::new(),
             retry_at: HashMap::new(),
             seed_addrs: HashSet::new(),
             known: HashSet::new(),
@@ -1155,6 +1201,7 @@ impl TorrentActor {
             webseed_tx,
             webseed_rx,
             finished: false,
+            told_upload_only: false,
             offered: HashSet::new(),
             adopting: HashSet::new(),
             reused: {
@@ -1283,7 +1330,7 @@ impl TorrentActor {
         self.place_files();
         self.refresh_priorities();
         // Newly wanted pieces may need the seeds we let go once we had everything.
-        if self.picker.as_ref().is_some_and(|p| !p.have().is_full()) {
+        if self.picker.as_ref().is_some_and(|p| !p.is_finished()) {
             for addr in &self.seed_addrs {
                 self.retry_at.remove(addr);
             }
@@ -1715,6 +1762,7 @@ impl TorrentActor {
                         keep.push(piece);
                     } else if let Some(picker) = self.picker.as_mut() {
                         picker.mark_missing(piece);
+                        self.piece_dropped(piece);
                     }
                 }
             }
@@ -1748,6 +1796,7 @@ impl TorrentActor {
         // A piece that finished while its file was moving may have been written to the
         // old place. Drop any piece whose part-store bytes aren't there.
         let placements = self.storage.placements();
+        let mut dropped = Vec::new();
         if let Some(picker) = self.picker.as_mut() {
             for &file in files {
                 if placements[file] != Placement::Parts {
@@ -1756,9 +1805,13 @@ impl TorrentActor {
                 for piece in self.layout.file_pieces(file) {
                     if picker.have().get(piece) && !self.storage.in_parts(piece) {
                         picker.mark_missing(piece);
+                        dropped.push(piece);
                     }
                 }
             }
+        }
+        for piece in dropped {
+            self.piece_dropped(piece);
         }
         if let Err(e) = result {
             tracing::error!(error = %e, "placement change failed");
@@ -1977,11 +2030,11 @@ impl TorrentActor {
                 result,
                 digests,
             } => self.on_piece_written(piece, result, digests.as_deref()),
-            ActorMsg::BlockRead {
+            ActorMsg::BlocksRead {
                 peer,
-                block,
+                blocks,
                 result,
-            } => self.on_block_read(peer, block, result),
+            } => self.on_blocks_read(peer, &blocks, result),
             ActorMsg::Announced { entry, job, result } => self.on_announced(entry, &job, result),
             ActorMsg::Moved { files, result } => self.on_moved(&files, result),
             ActorMsg::OfferWritten {
@@ -2341,7 +2394,9 @@ impl TorrentActor {
                 deferred.push((addr, from));
                 continue;
             }
-            let complete = self.picker.as_ref().is_some_and(|p| p.have().is_full());
+            // Finished what we want (every piece, or every selected one): seeds and
+            // peers that want nothing more have nothing for us.
+            let complete = self.picker.as_ref().is_some_and(Picker::is_finished);
             if self.retry_at.get(&addr).is_some_and(|&at| now < at)
                 || (complete && self.seed_addrs.contains(&addr))
             {
@@ -2383,11 +2438,15 @@ impl TorrentActor {
     }
 
     fn our_handshake(&self) -> Handshake {
+        let wire = self.identity.wire();
         peer::our_handshake(
             self.short_hash,
             self.identity.peer_id,
-            self.info_hashes.get_v2().is_some(),
-            self.shared.dht.is_some(),
+            wire.v2(
+                self.info_hashes.get_v2().is_some(),
+                self.info_hashes.get_v1().is_some(),
+            ),
+            wire.dht(self.shared.dht.is_some(), self.torrent.info.private),
         )
     }
 
@@ -2494,6 +2553,12 @@ impl TorrentActor {
                     self.drop_peer(key);
                 }
             }
+            PeerEvent::Sent { bytes } => {
+                if let Some(p) = self.peers.get_mut(&key) {
+                    p.unsent = p.unsent.saturating_sub(bytes);
+                    self.issue_reads(key);
+                }
+            }
             PeerEvent::Closed { reason } => {
                 if let Some(p) = self.peers.get(&key) {
                     tracing::debug!(key, addr = %p.addr, %reason, "peer closed");
@@ -2508,10 +2573,54 @@ impl TorrentActor {
                         self.candidates.push_back((p.addr, Some(p.entry)));
                     }
                 }
+                let unreached = self
+                    .peers
+                    .get(&key)
+                    .filter(|p| p.outbound && p.tx.is_none())
+                    .map(|p| p.addr);
                 self.drop_peer(key);
+                if let Some(addr) = unreached {
+                    self.ask_introducer(addr);
+                }
                 self.connect_more();
             }
         }
+    }
+
+    /// Whether connection `key`, just ready with `peer_id`, should stay when the same peer
+    /// is already connected (a holepunch has both ends dial at once). One of an inbound
+    /// and an outbound pair goes: the connection started by the end with the lower peer
+    /// id stays, so both ends close the same one. A second connection the same way round
+    /// goes. The other one is closed here when this one wins.
+    fn keep_duplicate(&mut self, key: PeerKey, peer_id: PeerId) -> bool {
+        let Some(this) = self.peers.get(&key) else {
+            return false;
+        };
+        let (ip, outbound) = (this.addr.ip(), this.outbound);
+        let Some((&other, other_outbound)) = self
+            .peers
+            .iter()
+            .find(|(k, p)| {
+                **k != key && p.tx.is_some() && p.peer_id == Some(peer_id) && p.addr.ip() == ip
+            })
+            .map(|(k, p)| (k, p.outbound))
+        else {
+            return true;
+        };
+        if outbound == other_outbound {
+            return false;
+        }
+        let keep_ours = self.identity.peer_id.0 < peer_id.0;
+        if outbound != keep_ours {
+            tracing::debug!(key, "closing a second connection to the same peer");
+            return false;
+        }
+        tracing::debug!(key = other, "closing a second connection to the same peer");
+        if let Some(p) = self.peers.get(&other) {
+            p.close();
+        }
+        self.drop_peer(other);
+        true
     }
 
     fn on_ready(
@@ -2521,11 +2630,20 @@ impl TorrentActor {
         peer_id: PeerId,
         tx: mpsc::UnboundedSender<PeerCmd>,
     ) {
-        let Some(picker) = self.picker.as_ref() else {
+        if self.picker.is_none() {
             let _ = tx.send(PeerCmd::Close);
             return;
-        };
-        let have = picker.have().clone();
+        }
+        if !self.keep_duplicate(key, peer_id) {
+            // Gone now, so its close isn't taken for a failed dial.
+            let _ = tx.send(PeerCmd::Close);
+            self.drop_peer(key);
+            return;
+        }
+        // Brought up to date first, so this peer hears the same as the others.
+        self.sync_upload_only();
+        let have = self.picker.as_ref().expect("checked").have().clone();
+        let wire = self.identity.wire();
         let Some(peer) = self.peers.get_mut(&key) else {
             let _ = tx.send(PeerCmd::Close);
             return;
@@ -2535,6 +2653,7 @@ impl TorrentActor {
         peer.peer_id = Some(peer_id);
         peer.fast = reserved.fast();
         peer.v2 = reserved.v2();
+        peer.our_reqq = wire.request_queue;
         // Tell DHT-capable peers where our DHT listens (BEP 5). Not for private torrents:
         // their peers come only from the tracker.
         if reserved.dht()
@@ -2546,9 +2665,9 @@ impl TorrentActor {
         if reserved.extension_protocol() {
             let mut ext = ExtensionHandshake {
                 client: Some(self.identity.client_name(&self.shared.config.client_name)),
-                request_queue: Some(MAX_PEER_UPLOAD_QUEUE),
+                request_queue: Some(wire.request_queue),
                 metadata_size: Some(self.torrent.info.raw().len() as u64),
-                upload_only: have.is_full() && !self.super_seed,
+                upload_only: self.told_upload_only,
                 listen_port: Some(self.shared.listen_port()),
                 your_ip: Some(peer.addr.ip()),
                 ..Default::default()
@@ -2558,6 +2677,14 @@ impl TorrentActor {
             // No peer exchange for private torrents (BEP 27): peers come from the tracker.
             if !self.torrent.info.private {
                 ext.extensions.insert(names::UT_PEX.to_owned(), OUR_UT_PEX);
+            }
+            if wire.libtorrent_extensions {
+                ext.extensions
+                    .insert(names::UPLOAD_ONLY.to_owned(), OUR_UPLOAD_ONLY);
+                ext.extensions
+                    .insert(names::LT_DONTHAVE.to_owned(), OUR_LT_DONTHAVE);
+                ext.extensions
+                    .insert(names::UT_HOLEPUNCH.to_owned(), OUR_UT_HOLEPUNCH);
             }
             peer.send(Message::Extended {
                 id: 0,
@@ -2636,7 +2763,7 @@ impl TorrentActor {
             Message::Choke => {
                 peer.peer_choking = true;
                 if !peer.fast {
-                    for b in peer.requests.drain(..) {
+                    for b in peer.requests.drain() {
                         picker.request_failed(key, &b);
                     }
                 }
@@ -2664,9 +2791,15 @@ impl TorrentActor {
             }
             Message::Request(block) => self.on_request(key, block)?,
             Message::Cancel(block) => {
-                // Only reads still in flight can be cancelled; anything already sent is
-                // gone. The set is bounded by the upload queue.
-                if peer.uploads > 0 && peer.cancelled.len() < MAX_PEER_UPLOAD_QUEUE as usize {
+                // A queued request is dropped, and a read in flight isn't sent when it
+                // ends; anything already handed to the connection is gone. With the Fast
+                // extension every request gets an answer (BEP 6): here, a reject.
+                if let Some(i) = peer.upload_queue.iter().position(|b| *b == block) {
+                    peer.upload_queue.remove(i);
+                    if peer.fast {
+                        peer.send(Message::Reject(block));
+                    }
+                } else if peer.reading > 0 && peer.cancelled.len() < peer.reading {
                     peer.cancelled.insert(block);
                 }
             }
@@ -2674,8 +2807,7 @@ impl TorrentActor {
                 if !peer.fast {
                     return Err("reject without the fast extension".into());
                 }
-                if let Some(i) = peer.requests.iter().position(|b| *b == block) {
-                    peer.requests.swap_remove(i);
+                if peer.requests.remove(&block) {
                     picker.request_failed(key, &block);
                 }
             }
@@ -2699,7 +2831,36 @@ impl TorrentActor {
                 if let Some(ip) = ext.your_ip {
                     self.shared.reach.peer_says(peer.addr.ip(), ip);
                 }
+                peer.upload_only = ext.upload_only;
                 peer.extensions = Some(ext);
+                self.update_interest(key);
+            }
+            Message::Extended {
+                id: OUR_UPLOAD_ONLY,
+                payload,
+            } => {
+                peer.upload_only = extended::decode_upload_only(&payload)
+                    .map_err(|e| format!("bad upload_only message: {e}"))?;
+                self.update_interest(key);
+            }
+            Message::Extended {
+                id: OUR_UT_HOLEPUNCH,
+                payload,
+            } => {
+                let msg = HolepunchMessage::decode(&payload)
+                    .map_err(|e| format!("bad ut_holepunch message: {e}"))?;
+                self.on_holepunch(key, msg);
+            }
+            Message::Extended {
+                id: OUR_LT_DONTHAVE,
+                payload,
+            } => {
+                let piece = extended::decode_dont_have(&payload)
+                    .map_err(|e| format!("bad lt_donthave message: {e}"))?;
+                if piece >= n {
+                    return Err(format!("lt_donthave for piece {piece} of {n}"));
+                }
+                self.peer_lost_piece(key, piece);
             }
             Message::Extended {
                 id: OUR_UT_METADATA,
@@ -2726,6 +2887,13 @@ impl TorrentActor {
                                 peer::UtpHint::No
                             };
                             self.utp_hints.insert(addr, hint);
+                        }
+                        // The latest peer to name it is the one to ask.
+                        if flags.supports_holepunch()
+                            && (self.introducers.len() < MAX_UTP_HINTS
+                                || self.introducers.contains_key(&addr))
+                        {
+                            self.introducers.insert(addr, key);
                         }
                         added.push(addr);
                     }
@@ -2791,6 +2959,7 @@ impl TorrentActor {
         if self.torrent.info.private {
             return;
         }
+        let offer_holepunch = self.identity.wire().libtorrent_extensions;
         // What we know first-hand about each peer we pass on (BEP 11 flags).
         let connected: HashMap<SocketAddr, PexFlags> = self
             .peers
@@ -2806,6 +2975,14 @@ impl TorrentActor {
                 }
                 if p.link.utp {
                     flags |= 0x04;
+                }
+                if offer_holepunch
+                    && p.extensions
+                        .as_ref()
+                        .is_some_and(|e| e.id_of(names::UT_HOLEPUNCH).is_some())
+                {
+                    // We can introduce others to it.
+                    flags |= 0x08;
                 }
                 if p.outbound {
                     // We reached it, so it accepts incoming connections.
@@ -2856,6 +3033,195 @@ impl TorrentActor {
         }
     }
 
+    /// Tell peers when our `upload_only` changes: we finished what we want, or more was
+    /// selected, or super-seeding started or stopped (a super-seed still hands out
+    /// pieces). libtorrent's extension message, to peers that take it.
+    fn sync_upload_only(&mut self) {
+        let Some(picker) = self.picker.as_ref() else {
+            return;
+        };
+        let now = picker.is_finished() && !self.super_seed;
+        if now == self.told_upload_only {
+            return;
+        }
+        self.told_upload_only = now;
+        if !self.identity.wire().libtorrent_extensions {
+            return;
+        }
+        for peer in self.peers.values() {
+            if let Some(id) = peer
+                .extensions
+                .as_ref()
+                .and_then(|e| e.id_of(names::UPLOAD_ONLY))
+            {
+                peer.send(Message::Extended {
+                    id,
+                    payload: Bytes::from(extended::encode_upload_only(now)),
+                });
+            }
+        }
+    }
+
+    /// We no longer have `piece` (its file was deselected and dropped): peers that were
+    /// told we had it hear otherwise (libtorrent's `lt_donthave`), so they stop asking.
+    fn piece_dropped(&self, piece: u32) {
+        if !self.identity.wire().libtorrent_extensions {
+            return;
+        }
+        for peer in self.peers.values() {
+            if let Some(id) = peer
+                .extensions
+                .as_ref()
+                .and_then(|e| e.id_of(names::LT_DONTHAVE))
+            {
+                peer.send(Message::Extended {
+                    id,
+                    payload: Bytes::from(extended::encode_dont_have(piece)),
+                });
+            }
+        }
+    }
+
+    /// Whether we take part in holepunching (BEP 55) for this torrent: the identity offers
+    /// it, and the torrent is public (a private torrent's peers come only from its tracker,
+    /// BEP 27).
+    fn holepunching(&self) -> bool {
+        self.identity.wire().libtorrent_extensions && !self.torrent.info.private
+    }
+
+    /// The id peer `key` takes `ut_holepunch` messages on, if it offered the extension.
+    fn holepunch_id(&self, key: PeerKey) -> Option<u8> {
+        self.peers
+            .get(&key)
+            .filter(|p| p.tx.is_some())?
+            .extensions
+            .as_ref()?
+            .id_of(names::UT_HOLEPUNCH)
+    }
+
+    fn send_holepunch(&self, key: PeerKey, msg: HolepunchMessage) {
+        if let (Some(id), Some(peer)) = (self.holepunch_id(key), self.peers.get(&key)) {
+            peer.send(Message::Extended {
+                id,
+                payload: Bytes::from(msg.encode()),
+            });
+        }
+    }
+
+    /// Dialing `addr` failed. If a peer told us of it as holepunch-capable and is still
+    /// connected, ask it to introduce us, once (libtorrent does this after a failed
+    /// connect too). Both ends then dial each other over uTP at once.
+    fn ask_introducer(&mut self, addr: SocketAddr) {
+        if !self.holepunching() || self.shared.dialer.utp.is_none() || self.punched.contains(&addr)
+        {
+            return;
+        }
+        let Some(&via) = self.introducers.get(&addr) else {
+            return;
+        };
+        if self.holepunch_id(via).is_none() {
+            return;
+        }
+        if self.punched.len() >= MAX_UTP_HINTS {
+            self.punched.clear();
+        }
+        self.punched.insert(addr);
+        tracing::debug!(%addr, "asking a peer to introduce us (holepunch)");
+        self.send_holepunch(via, HolepunchMessage::Rendezvous(addr));
+    }
+
+    /// Where another peer should dial `peer` for a holepunch: over uTP its connection's
+    /// own address (the NAT's mapping of its uTP socket), else its listen port.
+    fn holepunch_addr(peer: &Peer) -> SocketAddr {
+        if peer.link.utp {
+            peer.addr
+        } else {
+            Self::reachable_addr(peer).unwrap_or(peer.addr)
+        }
+    }
+
+    fn on_holepunch(&mut self, key: PeerKey, msg: HolepunchMessage) {
+        // BEP 55: ignore holepunch messages from peers that didn't offer the extension.
+        if !self.holepunching() || self.holepunch_id(key).is_none() {
+            return;
+        }
+        match msg {
+            HolepunchMessage::Rendezvous(target) => {
+                let target = SocketAddr::new(target.ip().to_canonical(), target.port());
+                let found = self.peers.iter().find(|(_, p)| {
+                    p.tx.is_some() && (p.addr == target || Self::reachable_addr(p) == Some(target))
+                });
+                let reply = match found {
+                    None => Err(HolepunchError::NotConnected),
+                    Some((&k, _)) if k == key => Err(HolepunchError::NoSelf),
+                    Some((&k, _)) if self.holepunch_id(k).is_none() => {
+                        Err(HolepunchError::NoSupport)
+                    }
+                    Some((&k, p)) => Ok((k, Self::holepunch_addr(p))),
+                };
+                match reply {
+                    Ok((other, other_addr)) => {
+                        let asker = Self::holepunch_addr(&self.peers[&key]);
+                        tracing::debug!(from = %asker, to = %other_addr, "introducing peers (holepunch)");
+                        self.send_holepunch(other, HolepunchMessage::Connect(asker));
+                        self.send_holepunch(key, HolepunchMessage::Connect(other_addr));
+                    }
+                    Err(e) => self.send_holepunch(key, HolepunchMessage::Error(target, e)),
+                }
+            }
+            HolepunchMessage::Connect(addr) => {
+                let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port());
+                if self.shared.dialer.utp.is_none()
+                    || self.peers.values().any(|p| p.addr == addr)
+                    || self.shared.filter.is_blocked(addr.ip())
+                {
+                    return;
+                }
+                tracing::debug!(%addr, "dialing an introduced peer over uTP (holepunch)");
+                // Now: the other end is dialing us at the same moment.
+                self.utp_hints.insert(addr, peer::UtpHint::Only);
+                self.retry_at.remove(&addr);
+                self.known.insert(addr);
+                self.candidates.push_front((addr, None));
+                self.connect_more();
+            }
+            HolepunchMessage::Error(addr, e) => {
+                tracing::debug!(%addr, error = ?e, "holepunch refused");
+            }
+        }
+    }
+
+    /// Peer `key` says it no longer has `piece`.
+    fn peer_lost_piece(&mut self, key: PeerKey, piece: u32) {
+        let (Some(picker), Some(peer)) = (self.picker.as_mut(), self.peers.get_mut(&key)) else {
+            return;
+        };
+        if peer.is_seed {
+            // A seed no more: count its pieces one by one from here.
+            picker.peer_seed_removed();
+            peer.is_seed = false;
+            picker.peer_bitfield(&peer.has);
+        }
+        if peer.has.clear(piece) {
+            picker.peer_lost(piece);
+            if picker.is_wanted(piece) {
+                peer.wanted = peer.wanted.saturating_sub(1);
+            }
+        }
+        let gone: Vec<BlockRef> = peer
+            .requests
+            .iter()
+            .filter(|b| b.piece == piece)
+            .copied()
+            .collect();
+        for block in gone {
+            peer.requests.remove(&block);
+            peer.send(Message::Cancel(block));
+            picker.request_failed(key, &block);
+        }
+        self.update_interest(key);
+    }
+
     fn update_interest(&mut self, key: PeerKey) {
         let Some(peer) = self.peers.get_mut(&key) else {
             return;
@@ -2872,10 +3238,11 @@ impl TorrentActor {
         if interested && !peer.peer_choking {
             self.fill_requests(key);
         }
-        // Two seeds have nothing to give each other.
+        // Two seeds have nothing to give each other, nor do two peers that both want
+        // nothing more (BEP 21's partial seeds included).
         if let (Some(picker), Some(peer)) = (self.picker.as_ref(), self.peers.get(&key))
-            && picker.have().is_full()
-            && peer.is_seed
+            && (picker.have().is_full() || picker.is_finished())
+            && (peer.is_seed || peer.upload_only)
         {
             // Kept as a candidate: if files are selected again, we'll want it back.
             self.seed_addrs.insert(peer.addr);
@@ -2884,11 +3251,15 @@ impl TorrentActor {
     }
 
     fn fill_requests(&mut self, key: PeerKey) {
-        let depth = self.shared.config.request_queue;
         let memory_limit = self.memory_limit();
         let (Some(picker), Some(peer)) = (self.picker.as_mut(), self.peers.get_mut(&key)) else {
             return;
         };
+        let depth = request_depth(
+            peer.rate_down,
+            self.shared.config.request_queue,
+            peer.extensions.as_ref().and_then(|e| e.request_queue),
+        );
         if peer.peer_choking || !peer.am_interested || peer.requests.len() >= depth {
             return;
         }
@@ -2906,7 +3277,7 @@ impl TorrentActor {
         };
         for block in blocks {
             peer.send(Message::Request(block));
-            peer.requests.push(block);
+            peer.requests.insert(block);
         }
         self.sync_memory();
     }
@@ -2940,11 +3311,10 @@ impl TorrentActor {
             offset,
             length: u32::try_from(data.len()).unwrap_or(u32::MAX),
         };
-        let Some(i) = peer.requests.iter().position(|b| *b == block) else {
+        if !peer.requests.remove(&block) {
             // Unsolicited, or a late reply after a cancel. Ignore it.
             return;
-        };
-        peer.requests.swap_remove(i);
+        }
         let peer_ip = peer.addr.ip();
         let entry = peer.entry;
         peer.downloaded += data.len() as u64;
@@ -2971,9 +3341,8 @@ impl TorrentActor {
                 from[(offset / BLOCK_LEN) as usize] = Some(peer_ip);
                 for other in cancel {
                     if let Some(p) = self.peers.get_mut(&other)
-                        && let Some(j) = p.requests.iter().position(|b| *b == block)
+                        && p.requests.remove(&block)
                     {
-                        p.requests.swap_remove(j);
                         p.send(Message::Cancel(block));
                     }
                 }
@@ -3162,6 +3531,7 @@ impl TorrentActor {
             }
             self.announce();
         }
+        self.sync_upload_only();
     }
 
     // ----- the content library ------------------------------------------------------------
@@ -3509,65 +3879,120 @@ impl TorrentActor {
         if peer.am_choking
             || hidden
             || !picker.have().get(block.piece)
-            || peer.uploads >= MAX_PEER_UPLOAD_QUEUE as usize
+            || peer.upload_queue.len() + peer.reading >= peer.our_reqq as usize
         {
             if peer.fast {
                 peer.send(Message::Reject(block));
             }
             return Ok(());
         }
-        peer.uploads += 1;
-        let storage = self.storage.clone();
-        let offset = self.layout.piece_offset(block.piece) + u64::from(block.offset);
-        let tx = self.tx.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut buf = vec![0u8; block.length as usize];
-            let result = storage
-                .read(offset, &mut buf)
-                .map(|()| Bytes::from(buf))
-                .map_err(|e| format!("read failed: {e}"));
-            let _ = tx.blocking_send(ActorMsg::BlockRead {
-                peer: key,
-                block,
-                result,
-            });
-        });
+        peer.upload_queue.push_back(block);
+        self.issue_reads(key);
         Ok(())
     }
 
-    fn on_block_read(&mut self, key: PeerKey, block: BlockRef, result: Result<Bytes, String>) {
+    /// Start reading queued requests for peer `key` while its send budget allows,
+    /// consecutive blocks of a piece in one read.
+    fn issue_reads(&mut self, key: PeerKey) {
         let Some(peer) = self.peers.get_mut(&key) else {
             return;
         };
-        peer.uploads = peer.uploads.saturating_sub(1);
-        let cancelled = peer.cancelled.remove(&block);
-        if peer.uploads == 0 {
-            peer.cancelled.clear();
-        }
-        match result {
-            Ok(data) => {
-                if peer.am_choking || cancelled {
-                    return;
-                }
-                peer.uploaded += data.len() as u64;
-                let entry = peer.entry;
-                let len = data.len() as u64;
-                peer.send(Message::Piece {
-                    piece: block.piece,
-                    offset: block.offset,
-                    data,
-                });
-                self.uploaded += len;
-                if let Some(e) = self.entry_mut(entry) {
-                    e.uploaded += len;
-                }
+        let budget = send_budget(peer.rate_up);
+        while peer.reading_bytes + peer.unsent < budget
+            && let Some(first) = peer.upload_queue.pop_front()
+        {
+            let mut blocks = vec![first];
+            let mut len = first.length;
+            while let Some(&next) = peer.upload_queue.front()
+                && next.piece == first.piece
+                && next.offset == first.offset + len
+                && len + next.length <= READ_RUN_MAX
+            {
+                peer.upload_queue.pop_front();
+                blocks.push(next);
+                len += next.length;
             }
+            peer.reading += blocks.len();
+            peer.reading_bytes += u64::from(len);
+            let storage = self.storage.clone();
+            let offset = self.layout.piece_offset(first.piece) + u64::from(first.offset);
+            let tx = self.tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut buf = vec![0u8; len as usize];
+                let result = storage
+                    .read(offset, &mut buf)
+                    .map(|()| Bytes::from(buf))
+                    .map_err(|e| format!("read failed: {e}"));
+                let _ = tx.blocking_send(ActorMsg::BlocksRead {
+                    peer: key,
+                    blocks,
+                    result,
+                });
+            });
+        }
+    }
+
+    fn on_blocks_read(&mut self, key: PeerKey, blocks: &[BlockRef], result: Result<Bytes, String>) {
+        let Some(peer) = self.peers.get_mut(&key) else {
+            return;
+        };
+        let total: u64 = blocks.iter().map(|b| u64::from(b.length)).sum();
+        peer.reading = peer.reading.saturating_sub(blocks.len());
+        peer.reading_bytes = peer.reading_bytes.saturating_sub(total);
+        let data = match result {
+            Ok(data) => data,
             Err(e) => {
                 tracing::error!(error = %e, "disk read error");
                 if peer.fast {
-                    peer.send(Message::Reject(block));
+                    for &b in blocks {
+                        peer.send(Message::Reject(b));
+                    }
                 }
                 self.fail(e);
+                return;
+            }
+        };
+        let first = blocks.first().map_or(0, |b| b.offset);
+        let mut sent = 0u64;
+        for &block in blocks {
+            // Cancelled, or choked since it was asked for (its reject went with the choke
+            // if it was still queued; this one was already being read).
+            if peer.cancelled.remove(&block) || peer.am_choking {
+                if peer.fast {
+                    peer.send(Message::Reject(block));
+                }
+                continue;
+            }
+            let start = (block.offset - first) as usize;
+            peer.send(Message::Piece {
+                piece: block.piece,
+                offset: block.offset,
+                data: data.slice(start..start + block.length as usize),
+            });
+            sent += u64::from(block.length);
+        }
+        if peer.reading == 0 {
+            peer.cancelled.clear();
+        }
+        peer.unsent += sent;
+        peer.uploaded += sent;
+        let entry = peer.entry;
+        self.uploaded += sent;
+        if let Some(e) = self.entry_mut(entry) {
+            e.uploaded += sent;
+        }
+        self.issue_reads(key);
+    }
+
+    /// Choke a peer. Its queued requests are dropped: with the Fast extension each is
+    /// rejected (BEP 6); without it, choking cancels them.
+    fn choke(peer: &mut Peer) {
+        peer.am_choking = true;
+        peer.send(Message::Choke);
+        let queued = std::mem::take(&mut peer.upload_queue);
+        if peer.fast {
+            for block in queued {
+                peer.send(Message::Reject(block));
             }
         }
     }
@@ -3722,8 +4147,7 @@ impl TorrentActor {
                 peer.am_choking = false;
                 peer.send(Message::Unchoke);
             } else if !unchoke && !peer.am_choking {
-                peer.am_choking = true;
-                peer.send(Message::Choke);
+                Self::choke(peer);
             }
         }
     }
@@ -3732,6 +4156,8 @@ impl TorrentActor {
 
     fn on_tick(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
+        // Finishing, more files selected, super-seeding on or off.
+        self.sync_upload_only();
         for peer in self.peers.values_mut() {
             peer.rate_down = peer.downloaded - peer.last_down;
             peer.rate_up = peer.uploaded - peer.last_up;
@@ -3914,6 +4340,26 @@ pub(crate) fn announce_crypto(
     }
 }
 
+/// How many piece bytes may be read or waiting to go out for a peer uploading at `rate`
+/// bytes a second: about a second's worth, within [`SEND_BUDGET_MIN`] and
+/// [`SEND_BUDGET_MAX`].
+fn send_budget(rate: u64) -> u64 {
+    rate.clamp(SEND_BUDGET_MIN, SEND_BUDGET_MAX)
+}
+
+/// How many requests to keep outstanding to a peer sending `rate` bytes a second: enough
+/// for [`REQUEST_QUEUE_SECS`] of it, at least `floor`, and no more than the peer takes
+/// (`reqq`, or [`DEFAULT_PEER_REQQ`] when it doesn't say) or [`MAX_REQUEST_QUEUE`].
+fn request_depth(rate: u64, floor: usize, peer_reqq: Option<u32>) -> usize {
+    let cap = peer_reqq
+        .map_or(DEFAULT_PEER_REQQ, |q| q as usize)
+        .clamp(1, MAX_REQUEST_QUEUE);
+    let for_rate =
+        usize::try_from(rate * REQUEST_QUEUE_SECS / u64::from(BLOCK_LEN)).unwrap_or(usize::MAX);
+    // Not `clamp`: the floor may be above the peer's cap, and the cap wins.
+    for_rate.max(floor).min(cap)
+}
+
 fn new_piece_room(
     layout: &Layout,
     in_progress: usize,
@@ -4055,6 +4501,28 @@ mod tests {
             .build()
             .unwrap();
         Layout::from_info(&Torrent::from_bytes(&bytes).unwrap().info)
+    }
+
+    #[test]
+    fn send_budget_follows_the_rate() {
+        assert_eq!(send_budget(0), SEND_BUDGET_MIN);
+        assert_eq!(send_budget(2 * 1024 * 1024), 2 * 1024 * 1024);
+        assert_eq!(send_budget(u64::MAX), SEND_BUDGET_MAX);
+    }
+
+    #[test]
+    fn request_depth_follows_the_rate_within_the_peers_queue() {
+        let block = u64::from(BLOCK_LEN);
+        // Slow or new peers get the floor.
+        assert_eq!(request_depth(0, 64, Some(2000)), 64);
+        // Three seconds of a 10 MiB/s peer: 1920 blocks, capped at 500.
+        assert_eq!(request_depth(640 * block, 64, Some(2000)), 500);
+        assert_eq!(request_depth(100 * block, 64, Some(2000)), 300);
+        // Never more than the peer takes, even below the floor.
+        assert_eq!(request_depth(100 * block, 64, Some(250)), 250);
+        assert_eq!(request_depth(0, 64, Some(16)), 16);
+        assert_eq!(request_depth(100 * block, 64, None), DEFAULT_PEER_REQQ);
+        assert_eq!(request_depth(0, 64, Some(0)), 1);
     }
 
     #[test]

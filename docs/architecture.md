@@ -156,7 +156,7 @@ licence notices intact.
 
 | Area | BEPs / features |
 |---|---|
-| Core protocol | BEP 3, 6 (fast), 10 (extension protocol), 20 (peer id) |
+| Core protocol | BEP 3, 6 (fast), 10 (extension protocol), 20 (peer id), 21 (partial seeds: `upload_only` in the handshake and libtorrent's `upload_only` message), libtorrent's `lt_donthave` |
 | Metadata | BEP 9 (magnet metadata), 12 (multitracker), 47 (pad files, attributes), 52 (v2, hybrid), 53 (magnet file selection) |
 | Discovery | BEP 5 (DHT), 11 (PEX), 14 (LSD), 15 (UDP tracker), 23 (compact), 7 / 32 (IPv6), 48 (scrape) |
 | Transport | TCP, BEP 29 (uTP), BEP 55 (holepunch), MSE/PE encryption, SOCKS4/SOCKS5/HTTP proxy, IPv6 |
@@ -165,7 +165,7 @@ licence notices intact.
 | Choking | tit-for-tat with optimistic unchoke, a rate-based seed choker, upload slots (per session, or per torrent), BEP 16 super-seeding (libtorrent's non-strict mode: a peer gets a new piece once it has one it was shown) |
 | NAT | UPnP IGD, NAT-PMP / PCP |
 | Limits | global, per-torrent and per-peer-class rate limits, connection limits, scheduling |
-| Later | I2P, BEP 21 (partial seeds), share mode |
+| Later | I2P, share mode |
 
 **Ports.** The peer port (TCP, and UDP for uTP) and the DHT's UDP port are picked at random
 from 20000–48999 on the first start, checked free, and stored in the settings
@@ -174,6 +174,22 @@ machine, which most likely holds 6881, is never in the way (`apitorrent_core::po
 stored port that is taken at start is replaced, with a warning. `--peer-listen`,
 `--dht-port` and a desktop profile's port override them and aren't stored; a change in
 Settings applies on restart.
+
+**Requests and uploads.** A peer may queue up to our `reqq` requests (2000, or the
+identity's). Queued requests are read from disk only as its send budget allows: piece
+bytes being read or not yet written to its socket stay under about one second of its
+upload rate (512 KiB to 4 MiB), and consecutive blocks of a piece are read in one go. The
+connection reports what it wrote, which frees budget, so a throttled or slow peer holds no
+more than that in memory. Choking a Fast peer rejects its queue; a cancel gets a reject
+(BEP 6). Downloads keep three seconds of each peer's rate in requests, at least
+`request_queue` and at most 500 or the peer's `reqq`.
+
+**Holepunching (BEP 55).** For each peer PEX lists with the holepunch flag, we remember
+who listed it. If dialing it fails, that peer is asked for a rendezvous, once; the relay sends
+each side the other's address, and both dial over uTP at the same moment, so each NAT lets
+the other's packets in. As a relay we answer with the errors BEP 55 defines. Both ends
+usually end up with two connections; the one started by the peer with the lower peer id
+stays, at both ends. Private torrents take no part (BEP 27).
 
 **Reachability.** Whether peers on the internet can connect in is judged from what
 happens, with no outside service (`apitorrent_engine::reachability`, on `SessionStats`).
@@ -1378,9 +1394,11 @@ unless the user sets it, and the settings say so plainly.
   the user made always win.
 - **What still differs** from the real client, documented in `identity.rs`: HTTP headers
   other than `User-Agent`, libtorrent's `ipv4=`/`ipv6=` and `event=paused`, Transmission's
-  separate IPv4 and IPv6 announces, the TLS `ClientHello` of HTTPS announces, and what
-  peers see beyond `v` (handshake reserved bits, extension handshake keys, uTP and
-  encryption behaviour).
+  separate IPv4 and IPv6 announces, the TLS `ClientHello` of HTTPS announces, and some
+  of what peers see (the `m` ids, which keys the extension handshake carries, uTP and
+  encryption behaviour). Each profile's `WireStyle` does match the client's handshake
+  reserved bits, its `reqq`, and whether it offers libtorrent's extensions; a custom
+  identity sets these in its settings (`PeerWire`).
 
 ## Spaces
 

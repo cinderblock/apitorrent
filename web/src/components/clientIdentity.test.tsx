@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { IdentitySettings } from "../api/generated/IdentitySettings";
 import { ClientIdentitySection } from "./ClientIdentitySection";
-import { describeIdentity, hostProblem, identityProblems, moveRule, presetIdentity } from "./clientIdentity";
+import { LIBTORRENT_WIRE, MAX_REQUEST_QUEUE, describeIdentity, hostProblem, identityProblems, moveRule, presetIdentity, wireOf } from "./clientIdentity";
 
 describe("client identity", () => {
   test("previews match what the server sends", () => {
@@ -26,7 +26,16 @@ describe("client identity", () => {
     expect(describeIdentity({ client: "transmission", version: "4.1.0-beta.2" })?.peerIdPrefix).toBe("-TR410B-");
     expect(describeIdentity({ client: "transmission", version: "4.0.40" })?.peerIdPrefix).toBe("-TR40e0-");
     expect(describeIdentity({ client: "deluge", version: "two", libtorrent: "2.0.10.0" })).toBeNull();
-    expect(describeIdentity({ client: "custom", peerIdPrefix: "-XX1000-", userAgent: "X/1.0\r\nEvil: 1", clientName: "X" })).toBeNull();
+    expect(describeIdentity({ client: "custom", peerIdPrefix: "-XX1000-", userAgent: "X/1.0\r\nEvil: 1", clientName: "X", wire: LIBTORRENT_WIRE })).toBeNull();
+    const custom = { client: "custom", peerIdPrefix: "-XX1000-", userAgent: "X/1.0", clientName: "X" } as const;
+    expect(describeIdentity({ ...custom, wire: LIBTORRENT_WIRE })).not.toBeNull();
+    for (const requestQueue of [0, 1.5, MAX_REQUEST_QUEUE + 1]) {
+      expect(describeIdentity({ ...custom, wire: { ...LIBTORRENT_WIRE, requestQueue } })).toBeNull();
+    }
+    // What peers see of the presets, as the engine's `WireStyle` constants.
+    expect(wireOf(presetIdentity("transmission"))).toEqual({ dhtBit: "publicWhenRunning", v2Bit: false, requestQueue: 512, libtorrentExtensions: false });
+    expect(wireOf(presetIdentity("deluge"))).toEqual(LIBTORRENT_WIRE);
+    expect(wireOf(presetIdentity("custom"))).toEqual(LIBTORRENT_WIRE);
   });
 
   test("host patterns", () => {

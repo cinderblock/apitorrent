@@ -1138,6 +1138,34 @@ code {
   overflow-wrap: anywhere;
 }
 
+.identity-wire {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 8px 12px;
+  margin: 4px 0 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.identity-wire legend {
+  padding: 0 4px;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.identity-wire-dht,
+.identity-wire .check {
+  grid-column: 1 / -1;
+}
+
+.identity-wire-dht > span {
+  display: block;
+  margin-bottom: 4px;
+}
+
 .identity-rule-actions {
   display: flex;
   gap: 6px;

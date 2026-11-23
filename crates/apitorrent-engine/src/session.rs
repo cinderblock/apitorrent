@@ -26,7 +26,8 @@ pub struct SessionConfig {
     /// Where to accept peer connections. Port 0 picks a free port.
     pub listen: SocketAddr,
     pub max_peers_per_torrent: usize,
-    /// Outstanding block requests per peer.
+    /// The fewest block requests kept outstanding to a peer. Faster peers get more: three
+    /// seconds of their rate, up to 500 or what the peer takes (its `reqq`).
     pub request_queue: usize,
     /// Peers we upload to at once, per torrent (one of them is the optimistic unchoke).
     pub upload_slots: usize,

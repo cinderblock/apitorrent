@@ -42,11 +42,15 @@
 //!
 //! UDP trackers see only the peer id, key and numwant.
 //!
-//! Peers see more: the reserved bits of the BitTorrent handshake, the extension
-//! handshake's keys (`reqq` is 2000 in libtorrent and 512 in Transmission, which also
-//! sends `e`; the `m` extension ids differ), uTP and encryption behaviour, and request
-//! patterns. Only the `v` string is changed. Trackers can't see any of that, and peers
-//! don't enforce client lists, so it doesn't matter for what this is for.
+//! Peers see more. A profile's [`WireStyle`] matches the client's reserved bits (DHT and
+//! v2), its `reqq` (2000 for libtorrent, 512 for Transmission), and whether libtorrent's
+//! extensions are offered (`upload_only`, `lt_donthave`, `ut_holepunch`); custom identities
+//! set these at runtime. What doesn't match: the `m` ids, which keys the extension
+//! handshake carries (Transmission sends `e` and always `upload_only`; libtorrent sends
+//! `complete_ago`, and `p` only on outgoing connections), the holepunch error code
+//! (always sent, as BEP 55 says; libtorrent sends it only with errors), uTP and encryption
+//! behaviour, and request patterns. Trackers can't see any of that, and peers don't
+//! enforce client lists, so it doesn't matter for what this is for.
 
 use std::sync::Arc;
 
@@ -67,6 +71,8 @@ pub enum IdentityError {
     BadText(&'static str),
     #[error("{0:?} is not a host name or *.domain pattern")]
     BadHost(String),
+    #[error("a request queue of {0} is not between 1 and {max}", max = WireStyle::MAX_REQUEST_QUEUE)]
+    BadRequestQueue(u32),
 }
 
 /// How the bytes after the peer id prefix are filled.
@@ -87,6 +93,84 @@ pub const LIBTORRENT_ALPHABET: &[u8] =
 /// Transmission's `tr_peerIdInit` alphabet: lower-case base 36.
 pub const TRANSMISSION_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
+/// When the handshake's DHT bit is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DhtBit {
+    /// Always, even with the DHT off (libtorrent, built with DHT support).
+    Always,
+    /// While our DHT runs (apitorrent).
+    WhenRunning,
+    /// While our DHT runs, and only for public torrents (Transmission's `allows_dht`).
+    PublicWhenRunning,
+}
+
+/// How a client fills the parts of the peer handshakes that peers see beyond its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WireStyle {
+    pub dht_bit: DhtBit,
+    /// Set the v2 bit for hybrid torrents. A v2-only torrent always sets it: it can't be
+    /// shared without.
+    pub v2_bit: bool,
+    /// `reqq`: how many requests a peer may have queued with us at once.
+    pub request_queue: u32,
+    /// Offer libtorrent's extensions (`upload_only`, `lt_donthave`, `ut_holepunch`).
+    pub libtorrent_extensions: bool,
+}
+
+impl WireStyle {
+    /// The largest `reqq` a profile may give.
+    pub const MAX_REQUEST_QUEUE: u32 = 10_000;
+
+    /// apitorrent's own.
+    pub const APITORRENT: Self = Self {
+        dht_bit: DhtBit::WhenRunning,
+        v2_bit: true,
+        request_queue: 2000,
+        libtorrent_extensions: true,
+    };
+
+    /// libtorrent 2.0 (Deluge, qBittorrent): `write_handshake`, and
+    /// `max_allowed_in_request_queue` for `reqq`.
+    pub const LIBTORRENT: Self = Self {
+        dht_bit: DhtBit::Always,
+        v2_bit: true,
+        request_queue: 2000,
+        libtorrent_extensions: true,
+    };
+
+    /// Transmission 4: no v2, `reqq` 512, and none of libtorrent's extensions.
+    pub const TRANSMISSION: Self = Self {
+        dht_bit: DhtBit::PublicWhenRunning,
+        v2_bit: false,
+        request_queue: 512,
+        libtorrent_extensions: false,
+    };
+
+    /// Checked: `reqq` 1 to [`Self::MAX_REQUEST_QUEUE`].
+    pub fn checked(self) -> Result<Self, IdentityError> {
+        if (1..=Self::MAX_REQUEST_QUEUE).contains(&self.request_queue) {
+            Ok(self)
+        } else {
+            Err(IdentityError::BadRequestQueue(self.request_queue))
+        }
+    }
+
+    /// Whether the DHT bit goes in a handshake for a torrent.
+    pub fn dht(self, dht_running: bool, private: bool) -> bool {
+        match self.dht_bit {
+            DhtBit::Always => true,
+            DhtBit::WhenRunning => dht_running,
+            DhtBit::PublicWhenRunning => dht_running && !private,
+        }
+    }
+
+    /// Whether the v2 bit goes in a handshake for a torrent with v2 hashes (`has_v2`), and
+    /// v1 ones too (`has_v1`).
+    pub fn v2(self, has_v2: bool, has_v1: bool) -> bool {
+        has_v2 && (self.v2_bit || !has_v1)
+    }
+}
+
 /// Everything that names a client to trackers and peers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ClientProfile {
@@ -98,6 +182,7 @@ pub struct ClientProfile {
     /// The `v` of the extension handshake.
     pub client_name: String,
     pub announce: AnnounceStyle,
+    pub wire: WireStyle,
 }
 
 impl ClientProfile {
@@ -129,6 +214,7 @@ impl ClientProfile {
             client_name: user_agent.clone(),
             user_agent,
             announce: AnnounceStyle::Libtorrent,
+            wire: WireStyle::LIBTORRENT,
         })
     }
 
@@ -144,6 +230,7 @@ impl ClientProfile {
             client_name: user_agent.clone(),
             user_agent,
             announce: AnnounceStyle::Libtorrent,
+            wire: WireStyle::LIBTORRENT,
         })
     }
 
@@ -170,6 +257,7 @@ impl ClientProfile {
             user_agent: format!("Transmission/{}", version.trim()),
             client_name: format!("Transmission {}", version.trim()),
             announce: AnnounceStyle::Transmission,
+            wire: WireStyle::TRANSMISSION,
         })
     }
 
@@ -179,6 +267,7 @@ impl ClientProfile {
         peer_id_prefix: &str,
         user_agent: &str,
         client_name: &str,
+        wire: WireStyle,
     ) -> Result<Self, IdentityError> {
         let prefix = peer_id_prefix.as_bytes();
         if prefix.is_empty() || prefix.len() > 20 || !prefix.iter().all(u8::is_ascii_graphic) {
@@ -190,6 +279,7 @@ impl ClientProfile {
             user_agent: checked_text(user_agent, "the user agent")?,
             client_name: checked_text(client_name, "the client name")?,
             announce: AnnounceStyle::Libtorrent,
+            wire: wire.checked()?,
         })
     }
 
@@ -457,6 +547,13 @@ impl ActiveIdentity {
         self.profile.as_ref().map(|p| p.user_agent.clone())
     }
 
+    /// What peers see of our handshakes besides the name.
+    pub(crate) fn wire(&self) -> WireStyle {
+        self.profile
+            .as_ref()
+            .map_or(WireStyle::APITORRENT, |p| p.wire)
+    }
+
     pub(crate) fn announce_style(&self) -> AnnounceStyle {
         self.profile
             .as_ref()
@@ -580,11 +677,50 @@ mod tests {
                 .collect();
             assert_eq!(values.iter().sum::<usize>() % 36, 0, "{id:?}");
         }
-        let c = ClientProfile::custom("-XX1234-", "X/1.2", "X 1.2").unwrap();
+        let w = WireStyle::LIBTORRENT;
+        let c = ClientProfile::custom("-XX1234-", "X/1.2", "X 1.2", w).unwrap();
         assert_eq!(&c.peer_id().0[..8], b"-XX1234-");
-        assert!(ClientProfile::custom("", "X", "X").is_err());
-        assert!(ClientProfile::custom("-XX1234-", "X\r\nEvil: 1", "X").is_err());
-        assert!(ClientProfile::custom(&"x".repeat(21), "X", "X").is_err());
+        assert!(ClientProfile::custom("", "X", "X", w).is_err());
+        assert!(ClientProfile::custom("-XX1234-", "X\r\nEvil: 1", "X", w).is_err());
+        assert!(ClientProfile::custom(&"x".repeat(21), "X", "X", w).is_err());
+        for bad in [0, WireStyle::MAX_REQUEST_QUEUE + 1] {
+            let wire = WireStyle {
+                request_queue: bad,
+                ..w
+            };
+            assert_eq!(
+                ClientProfile::custom("-XX1234-", "X", "X", wire).unwrap_err(),
+                IdentityError::BadRequestQueue(bad)
+            );
+        }
+    }
+
+    #[test]
+    fn wire_styles_match_the_clients() {
+        let (lt, tr, at) = (
+            WireStyle::LIBTORRENT,
+            WireStyle::TRANSMISSION,
+            WireStyle::APITORRENT,
+        );
+        // DHT bit: (running, private)
+        for (dht, private) in [(false, false), (true, false), (true, true), (false, true)] {
+            assert!(lt.dht(dht, private), "libtorrent always sets it");
+            assert_eq!(at.dht(dht, private), dht);
+            assert_eq!(tr.dht(dht, private), dht && !private);
+        }
+        // v2 bit: hybrid, v2-only, v1-only
+        assert!(lt.v2(true, true) && lt.v2(true, false) && !lt.v2(false, true));
+        assert!(!tr.v2(true, true), "Transmission has no v2");
+        assert!(tr.v2(true, false), "a v2-only torrent needs the bit");
+        assert_eq!((lt.request_queue, tr.request_queue), (2000, 512));
+        assert_eq!(
+            ClientProfile::transmission("4.0.6").unwrap().wire,
+            WireStyle::TRANSMISSION
+        );
+        assert_eq!(
+            ClientProfile::deluge("2.1.1", "2.0.10.0").unwrap().wire,
+            WireStyle::LIBTORRENT
+        );
     }
 
     #[test]

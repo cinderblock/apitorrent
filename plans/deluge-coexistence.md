@@ -320,8 +320,9 @@ What can still tell a spoof apart (also in `crates/apitorrent-engine/src/identit
 - libtorrent's `ipv4=`/`ipv6=` on private torrents and `event=paused`; Transmission's
   separate IPv4 and IPv6 announces. Not done.
 - The TLS `ClientHello` of HTTPS announces (rustls, not OpenSSL or curl).
-- Peers (not trackers) see handshake reserved bits, extension handshake keys (`reqq`,
-  `e`, the `m` ids), uTP and encryption behaviour. Only `v` is changed.
+- Peers (not trackers) see the `m` ids, which extension handshake keys are sent (`e`,
+  `complete_ago`), uTP and encryption behaviour. Since 2026-11-22 (`plans/peer-wire-extensions.md`)
+  the reserved bits, `reqq` and the offered extensions follow the profile.
 
 Gotchas: a rule change takes effect at each torrent's next 1 s tick (a generation counter,
 no messages), and sends `stopped` with the old peer id before `started` with the new one,

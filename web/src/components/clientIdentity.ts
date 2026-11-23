@@ -1,5 +1,6 @@
 import type { ClientIdentity } from "../api/generated/ClientIdentity";
 import type { IdentitySettings } from "../api/generated/IdentitySettings";
+import type { PeerWire } from "../api/generated/PeerWire";
 import type { TrackerIdentityRule } from "../api/generated/TrackerIdentityRule";
 
 export type ClientKind = ClientIdentity["client"];
@@ -11,6 +12,29 @@ export const CLIENT_LABELS: Record<ClientKind, string> = {
   transmission: "Transmission",
   custom: "Custom",
 };
+
+/** libtorrent 2.0's handshake (Deluge, qBittorrent), and the default for a custom identity. Mirrors `WireStyle` in the engine. */
+export const LIBTORRENT_WIRE: PeerWire = { dhtBit: "always", v2Bit: true, requestQueue: 2000, libtorrentExtensions: true };
+const TRANSMISSION_WIRE: PeerWire = { dhtBit: "publicWhenRunning", v2Bit: false, requestQueue: 512, libtorrentExtensions: false };
+const APITORRENT_WIRE: PeerWire = { dhtBit: "whenRunning", v2Bit: true, requestQueue: 2000, libtorrentExtensions: true };
+
+/** The largest request queue (`reqq`) an identity may give. */
+export const MAX_REQUEST_QUEUE = 10000;
+
+/** What peers see of an identity's handshakes. */
+export function wireOf(id: ClientIdentity): PeerWire {
+  switch (id.client) {
+    case "apitorrent":
+      return APITORRENT_WIRE;
+    case "deluge":
+    case "qBittorrent":
+      return LIBTORRENT_WIRE;
+    case "transmission":
+      return TRANSMISSION_WIRE;
+    case "custom":
+      return id.wire;
+  }
+}
 
 /** A fresh identity of each kind, at the newest stable versions this was written against. */
 export function presetIdentity(kind: ClientKind): ClientIdentity {
@@ -24,7 +48,7 @@ export function presetIdentity(kind: ClientKind): ClientIdentity {
     case "transmission":
       return { client: "transmission", version: "4.0.6" };
     case "custom":
-      return { client: "custom", peerIdPrefix: "-XX0000-", userAgent: "", clientName: "" };
+      return { client: "custom", peerIdPrefix: "-XX0000-", userAgent: "", clientName: "", wire: { ...LIBTORRENT_WIRE } };
   }
 }
 
@@ -95,6 +119,8 @@ export function describeIdentity(id: ClientIdentity): { peerIdPrefix: string; us
       const p = id.peerIdPrefix;
       if (p.length === 0 || p.length > 20 || !/^[\x21-\x7e]+$/.test(p)) return null;
       if (!printable(id.userAgent) || !printable(id.clientName)) return null;
+      const q = id.wire.requestQueue;
+      if (!Number.isInteger(q) || q < 1 || q > MAX_REQUEST_QUEUE) return null;
       return { peerIdPrefix: p, userAgent: id.userAgent.trim(), clientName: id.clientName.trim() };
     }
   }

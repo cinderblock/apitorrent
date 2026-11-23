@@ -742,7 +742,52 @@ pub enum ClientIdentity {
         /// Sent to peers in the extension handshake (`v`).
         #[serde(rename = "clientName")]
         client_name: String,
+        /// The rest of what peers see. libtorrent's by default.
+        #[serde(default)]
+        wire: PeerWire,
     },
+}
+
+/// What peers see of an identity besides its name: the reserved bits of the BitTorrent
+/// handshake, how many requests it takes at once, and which extensions it offers. Trackers
+/// never see any of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", default)]
+#[ts(export)]
+pub struct PeerWire {
+    pub dht_bit: DhtBit,
+    /// Set the v2 bit for hybrid torrents. v2-only torrents always set it.
+    pub v2_bit: bool,
+    /// `reqq`: how many requests a peer may have queued with us, 1 to 10000.
+    pub request_queue: u32,
+    /// Offer libtorrent's extensions: `upload_only`, `lt_donthave` and `ut_holepunch`.
+    pub libtorrent_extensions: bool,
+}
+
+impl Default for PeerWire {
+    /// libtorrent 2.0's, which Deluge and qBittorrent use.
+    fn default() -> Self {
+        Self {
+            dht_bit: DhtBit::Always,
+            v2_bit: true,
+            request_queue: 2000,
+            libtorrent_extensions: true,
+        }
+    }
+}
+
+/// When the handshake's DHT bit is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum DhtBit {
+    /// Always, even with the DHT off (libtorrent).
+    #[default]
+    Always,
+    /// While the DHT runs (apitorrent).
+    WhenRunning,
+    /// While the DHT runs, for public torrents only (Transmission).
+    PublicWhenRunning,
 }
 
 impl ClientIdentity {

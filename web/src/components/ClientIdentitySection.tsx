@@ -1,10 +1,67 @@
 import type { ClientIdentity } from "../api/generated/ClientIdentity";
+import type { DhtBit } from "../api/generated/DhtBit";
 import type { IdentitySettings } from "../api/generated/IdentitySettings";
+import type { PeerWire } from "../api/generated/PeerWire";
 import type { TrackerIdentityRule } from "../api/generated/TrackerIdentityRule";
-import { CLIENT_LABELS, type ClientKind, describeIdentity, hostProblem, identityProblems, moveRule, presetIdentity } from "./clientIdentity";
-import { Empty, Note, SettingCard } from "../settings/controls";
+import {
+  CLIENT_LABELS,
+  type ClientKind,
+  MAX_REQUEST_QUEUE,
+  describeIdentity,
+  hostProblem,
+  identityProblems,
+  moveRule,
+  presetIdentity,
+  wireOf,
+} from "./clientIdentity";
+import { AmountInput, type Choice, ChoiceCards, Empty, Note, SettingCard } from "../settings/controls";
 
 const KINDS = Object.keys(CLIENT_LABELS) as ClientKind[];
+
+const DHT_BIT_CHOICES: readonly Choice<DhtBit>[] = [
+  { value: "always", label: "Always", description: "libtorrent: Deluge, qBittorrent" },
+  { value: "whenRunning", label: "While the DHT runs", description: "apitorrent" },
+  { value: "publicWhenRunning", label: "Public torrents, while the DHT runs", description: "Transmission" },
+];
+
+/** A custom identity's handshake details, which only peers see. */
+function WireFields({ value, onChange, idPrefix }: { value: PeerWire; onChange: (v: PeerWire) => void; idPrefix: string }) {
+  const q = value.requestQueue;
+  const badQueue = !Number.isInteger(q) || q < 1 || q > MAX_REQUEST_QUEUE;
+  return (
+    <fieldset className="identity-wire">
+      <legend>What peers see</legend>
+      <label className="field">
+        <span>Request queue (reqq)</span>
+        <AmountInput id={`${idPrefix}-reqq`} value={q} max={MAX_REQUEST_QUEUE} onChange={(requestQueue) => onChange({ ...value, requestQueue })} />
+        {badQueue && <span className="error-text">1 to {MAX_REQUEST_QUEUE}</span>}
+      </label>
+      <div className="identity-wire-dht">
+        <span>DHT bit in the handshake</span>
+        <ChoiceCards label="DHT bit in the handshake" columns={3} value={value.dhtBit} options={DHT_BIT_CHOICES} onChange={(dhtBit) => onChange({ ...value, dhtBit })} />
+      </div>
+      <label className="check">
+        <input type="checkbox" checked={value.v2Bit} onChange={(e) => onChange({ ...value, v2Bit: e.target.checked })} />
+        v2 bit for hybrid torrents
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={value.libtorrentExtensions} onChange={(e) => onChange({ ...value, libtorrentExtensions: e.target.checked })} />
+        Offer libtorrent&apos;s extensions (upload_only, lt_donthave, ut_holepunch)
+      </label>
+    </fieldset>
+  );
+}
+
+/** "reqq 512, no v2 bit, …" in a few words. */
+function WireWords({ wire }: { wire: PeerWire }) {
+  const dht = { always: "the DHT bit always", whenRunning: "the DHT bit while the DHT runs", publicWhenRunning: "the DHT bit on public torrents" }[wire.dhtBit];
+  return (
+    <>
+      <code>reqq {wire.requestQueue}</code>, {dht}, {wire.v2Bit ? "the v2 bit on hybrid torrents" : "no v2 bit on hybrid torrents"}
+      {wire.libtorrentExtensions ? ", and libtorrent's extensions" : ", and none of libtorrent's extensions"}
+    </>
+  );
+}
 
 /** The preset, its versions, and what trackers will see. */
 function IdentityFields({ value, onChange, idPrefix }: { value: ClientIdentity; onChange: (v: ClientIdentity) => void; idPrefix: string }) {
@@ -47,13 +104,14 @@ function IdentityFields({ value, onChange, idPrefix }: { value: ClientIdentity; 
             <span>Client name for peers</span>
             <input id={`${idPrefix}-name`} value={value.clientName} required onChange={(e) => onChange({ ...value, clientName: e.target.value })} />
           </label>
+          <WireFields idPrefix={idPrefix} value={value.wire} onChange={(wire) => onChange({ ...value, wire })} />
         </>
       )}
       {value.client !== "apitorrent" && (
         <p className="hint muted identity-preview">
           {seen ? (
             <>
-              Peer id <code>{seen.peerIdPrefix}…</code>, user agent <code>{seen.userAgent}</code>
+              Peer id <code>{seen.peerIdPrefix}…</code>, user agent <code>{seen.userAgent}</code>. Peers see <WireWords wire={wireOf(value)} />.
             </>
           ) : (
             <span className="error-text">Not a valid {CLIENT_LABELS[value.client]} identity</span>

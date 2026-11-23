@@ -6,11 +6,12 @@ use std::sync::Arc;
 
 use apitorrent_engine::SessionConfig;
 use apitorrent_engine::identity::{
-    ClientProfile, HostPattern, IdentityError, IdentityRule, IdentityRules,
+    self, ClientProfile, HostPattern, IdentityError, IdentityRule, IdentityRules, WireStyle,
 };
 use apitorrent_engine::limits::GroupLimits;
 use apitorrent_types::{
-    ClientIdentity, GroupSettings, IdentitySettings, QueueSettings, Settings, TrackerIdentityRule,
+    ClientIdentity, DhtBit, GroupSettings, IdentitySettings, PeerWire, QueueSettings, Settings,
+    TrackerIdentityRule,
 };
 
 /// The settings a fresh instance starts with, taken from the session configuration (the
@@ -140,9 +141,24 @@ pub fn client_profile(id: &ClientIdentity) -> Result<Option<Arc<ClientProfile>>,
             peer_id_prefix,
             user_agent,
             client_name,
-        } => ClientProfile::custom(peer_id_prefix, user_agent, client_name)?,
+            wire,
+        } => ClientProfile::custom(peer_id_prefix, user_agent, client_name, wire_style(wire))?,
     };
     Ok(Some(Arc::new(profile)))
+}
+
+/// The engine's wire style for a custom identity's `PeerWire`.
+pub fn wire_style(w: &PeerWire) -> WireStyle {
+    WireStyle {
+        dht_bit: match w.dht_bit {
+            DhtBit::Always => identity::DhtBit::Always,
+            DhtBit::WhenRunning => identity::DhtBit::WhenRunning,
+            DhtBit::PublicWhenRunning => identity::DhtBit::PublicWhenRunning,
+        },
+        v2_bit: w.v2_bit,
+        request_queue: w.request_queue,
+        libtorrent_extensions: w.libtorrent_extensions,
+    }
 }
 
 /// The engine's rules for the identity settings. Fails on a bad version, prefix or host,
@@ -596,6 +612,11 @@ mod tests {
                 peer_id_prefix: "-XX1000-".into(),
                 user_agent: "X/1.0".into(),
                 client_name: "X 1.0".into(),
+                wire: PeerWire {
+                    dht_bit: DhtBit::PublicWhenRunning,
+                    request_queue: 512,
+                    ..PeerWire::default()
+                },
             },
         });
         let json = serde_json::to_string(&s).unwrap();
@@ -604,8 +625,29 @@ mod tests {
             "{json}"
         );
         assert!(json.contains(r#""peerIdPrefix":"-XX1000-""#), "{json}");
+        assert!(json.contains(r#""dhtBit":"publicWhenRunning""#), "{json}");
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
+
+        // A custom identity stored before it had a wire style gets libtorrent's.
+        let old_custom: ClientIdentity = serde_json::from_str(
+            r#"{"client":"custom","peerIdPrefix":"-XX1000-","userAgent":"X","clientName":"X"}"#,
+        )
+        .unwrap();
+        let ClientIdentity::Custom { wire, .. } = &old_custom else {
+            panic!("{old_custom:?}");
+        };
+        assert_eq!(wire_style(wire), WireStyle::LIBTORRENT);
+        let bad = ClientIdentity::Custom {
+            peer_id_prefix: "-XX1000-".into(),
+            user_agent: "X".into(),
+            client_name: "X".into(),
+            wire: PeerWire {
+                request_queue: 0,
+                ..PeerWire::default()
+            },
+        };
+        assert!(client_profile(&bad).is_err());
 
         // Settings stored before identities existed still load, as apitorrent.
         let mut old: serde_json::Value =

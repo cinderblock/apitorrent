@@ -39,6 +39,11 @@ pub(crate) enum PeerEvent {
         tx: mpsc::UnboundedSender<PeerCmd>,
     },
     Message(Message),
+    /// This many bytes of piece data went out on the socket, freeing that much of the
+    /// peer's send budget.
+    Sent {
+        bytes: u64,
+    },
     /// The connection is gone. Always the last event for a key.
     Closed {
         reason: String,
@@ -126,6 +131,9 @@ impl Dialer {
                 .utp
                 .as_ref()
                 .is_some_and(|s| reaches(s.local_addr(), addr));
+        if hint == UtpHint::Only {
+            return if utp { &[true] } else { &[] };
+        }
         match (utp, self.prefer_utp && hint != UtpHint::No) {
             (false, _) => &[false],
             (true, true) => &[true, false],
@@ -222,8 +230,12 @@ impl Dialer {
         ours: &Handshake,
         hint: UtpHint,
     ) -> Result<(BoxIo, Handshake, Link), String> {
+        let order = self.order(addr, hint);
+        if order.is_empty() {
+            return Err("a holepunch needs uTP, which can't reach this address".to_owned());
+        }
         let mut errors = Vec::new();
-        for &utp in self.order(addr, hint) {
+        for &utp in order {
             match self.handshake_over(addr, ours, utp).await {
                 Ok(done) => return Ok(done),
                 Err(e) => {
@@ -254,6 +266,9 @@ pub(crate) enum UtpHint {
     Yes,
     /// PEX listed the peer without the flag.
     No,
+    /// uTP and nothing else: a holepunch (BEP 55), where the peer dials us at the same
+    /// time, so each side's NAT lets the other's packets in.
+    Only,
 }
 
 /// Connect to `addr`, handshake, and run the connection until it closes.
@@ -378,7 +393,7 @@ async fn run_connected(
     {
         return;
     }
-    let mut writer = tokio::spawn(write_loop(write, rx, throttle.clone()));
+    let mut writer = tokio::spawn(write_loop(write, rx, throttle.clone(), key, events.clone()));
     let reader = read_loop(read, key, max_message, &events, &throttle);
     let reason = tokio::select! {
         r = reader => r,
@@ -429,8 +444,18 @@ async fn write_loop(
     mut write: WriteHalf<BoxIo>,
     mut rx: mpsc::UnboundedReceiver<PeerCmd>,
     throttle: Arc<Throttle>,
+    key: PeerKey,
+    events: EventTx,
 ) -> Result<(), String> {
     let mut out = BytesMut::with_capacity(64 * 1024);
+    // Piece data in `out`, reported once it is written.
+    let mut piece_bytes = 0u64;
+    let encode = |m: Message, out: &mut BytesMut, piece_bytes: &mut u64| {
+        if let Message::Piece { data, .. } = &m {
+            *piece_bytes += data.len() as u64;
+        }
+        m.encode(out);
+    };
     loop {
         let cmd = match tokio::time::timeout(KEEPALIVE_INTERVAL, rx.recv()).await {
             Err(_) => PeerCmd::Send(Message::KeepAlive),
@@ -443,11 +468,11 @@ async fn write_loop(
         let PeerCmd::Send(m) = cmd else {
             unreachable!()
         };
-        m.encode(&mut out);
+        encode(m, &mut out, &mut piece_bytes);
         // Batch whatever else is already queued into the same write.
         while out.len() < 256 * 1024 {
             match rx.try_recv() {
-                Ok(PeerCmd::Send(m)) => m.encode(&mut out),
+                Ok(PeerCmd::Send(m)) => encode(m, &mut out, &mut piece_bytes),
                 Ok(PeerCmd::Close) => {
                     write
                         .write_all(&out)
@@ -471,6 +496,12 @@ async fn write_loop(
             .await
             .map_err(|e| format!("write failed: {e}"))?;
         out.clear();
+        if piece_bytes > 0 {
+            let bytes = std::mem::take(&mut piece_bytes);
+            if events.send((key, PeerEvent::Sent { bytes })).await.is_err() {
+                return Ok(());
+            }
+        }
     }
 }
 
@@ -518,6 +549,10 @@ mod tests {
         assert_eq!(d.order(peer, UtpHint::No), [false, true]);
         d.prefer_utp = false;
         assert_eq!(d.order(peer, UtpHint::Yes), [false, true]);
+        // A holepunch is uTP or nothing, whatever the preference.
+        assert_eq!(d.order(peer, UtpHint::Only), [true]);
+        let public: std::net::SocketAddr = "203.0.113.5:51413".parse().unwrap();
+        assert!(d.order(public, UtpHint::Only).is_empty());
         // A loopback socket can't reach a public peer over uTP at all.
         assert_eq!(
             d.order("203.0.113.5:51413".parse().unwrap(), UtpHint::Yes),

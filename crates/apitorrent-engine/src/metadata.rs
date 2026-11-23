@@ -298,11 +298,17 @@ impl Fetcher {
                     rejected: HashSet::new(),
                 },
             );
+            // Whether the torrent is private isn't known before its metadata: a magnet
+            // link's swarm came from the DHT or trackers, so it is treated as public.
+            let wire = self.identity.wire();
             let ours = peer::our_handshake(
                 self.wire_hash(),
                 self.identity.peer_id,
-                self.hashes.get_v2().is_some(),
-                self.shared.dht.is_some(),
+                wire.v2(
+                    self.hashes.get_v2().is_some(),
+                    self.hashes.get_v1().is_some(),
+                ),
+                wire.dht(self.shared.dht.is_some(), false),
             );
             tokio::spawn(peer::run_outbound(
                 addr,
@@ -320,6 +326,8 @@ impl Fetcher {
     /// Handle one peer event. Returns the verified dictionary when it is complete.
     fn on_event(&mut self, key: PeerKey, event: PeerEvent) -> Option<Bytes> {
         match event {
+            // A metadata fetch sends no piece data.
+            PeerEvent::Sent { .. } => {}
             PeerEvent::Ready { reserved, tx, .. } => {
                 let Some(p) = self.peers.get_mut(&key) else {
                     let _ = tx.send(PeerCmd::Close);
