@@ -1,5 +1,5 @@
-//! Extension-protocol payloads: the BEP 10 handshake, BEP 9 metadata exchange and BEP 11
-//! peer exchange.
+//! Extension-protocol payloads: the BEP 10 handshake, BEP 9 metadata exchange, BEP 11 peer
+//! exchange, BEP 55 holepunching, and libtorrent's `upload_only` and `lt_donthave`.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
@@ -15,6 +15,134 @@ pub mod names {
     pub const UT_PEX: &str = "ut_pex";
     pub const UPLOAD_ONLY: &str = "upload_only";
     pub const UT_HOLEPUNCH: &str = "ut_holepunch";
+    pub const LT_DONTHAVE: &str = "lt_donthave";
+}
+
+/// libtorrent's `upload_only` message: whether the sender has stopped downloading (it has
+/// everything it wants), sent when that changes after the handshake. One byte, 0 or 1.
+pub fn decode_upload_only(payload: &[u8]) -> Result<bool, ExtendedError> {
+    payload
+        .first()
+        .map(|&b| b != 0)
+        .ok_or(ExtendedError::Malformed("upload_only"))
+}
+
+pub fn encode_upload_only(upload_only: bool) -> Vec<u8> {
+    vec![u8::from(upload_only)]
+}
+
+/// libtorrent's `lt_donthave` message: the sender no longer has this piece. Its index,
+/// big-endian.
+pub fn decode_dont_have(payload: &[u8]) -> Result<u32, ExtendedError> {
+    payload
+        .get(..4)
+        .map(|b| u32::from_be_bytes(b.try_into().expect("four bytes")))
+        .ok_or(ExtendedError::Malformed("lt_donthave"))
+}
+
+pub fn encode_dont_have(piece: u32) -> Vec<u8> {
+    piece.to_be_bytes().to_vec()
+}
+
+/// A BEP 55 holepunch error code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HolepunchError {
+    /// The target isn't a valid peer address.
+    NoSuchPeer,
+    /// The relay isn't connected to the target.
+    NotConnected,
+    /// The target doesn't support holepunching.
+    NoSupport,
+    /// The target is the sender itself.
+    NoSelf,
+    /// A code this implementation doesn't know.
+    Other(u32),
+}
+
+impl HolepunchError {
+    pub fn code(self) -> u32 {
+        match self {
+            Self::NoSuchPeer => 1,
+            Self::NotConnected => 2,
+            Self::NoSupport => 3,
+            Self::NoSelf => 4,
+            Self::Other(c) => c,
+        }
+    }
+
+    pub fn from_code(code: u32) -> Self {
+        match code {
+            1 => Self::NoSuchPeer,
+            2 => Self::NotConnected,
+            3 => Self::NoSupport,
+            4 => Self::NoSelf,
+            c => Self::Other(c),
+        }
+    }
+}
+
+/// A BEP 55 `ut_holepunch` message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HolepunchMessage {
+    /// To a relay: put me in touch with this peer.
+    Rendezvous(SocketAddr),
+    /// From a relay: connect to this peer (over uTP), which is connecting to you.
+    Connect(SocketAddr),
+    /// From a relay: the rendezvous for this peer failed.
+    Error(SocketAddr, HolepunchError),
+}
+
+impl HolepunchMessage {
+    pub fn addr(self) -> SocketAddr {
+        match self {
+            Self::Rendezvous(a) | Self::Connect(a) | Self::Error(a, _) => a,
+        }
+    }
+
+    /// `msg_type`, `addr_type` (0 IPv4, 1 IPv6), the address and port, then the error code.
+    /// BEP 55 always sends the code (0 when not an error); libtorrent sends it only for
+    /// errors. Both are read.
+    pub fn decode(payload: &[u8]) -> Result<Self, ExtendedError> {
+        let bad = || ExtendedError::Malformed("ut_holepunch");
+        let (&kind, rest) = payload.split_first().ok_or_else(bad)?;
+        let (&family, rest) = rest.split_first().ok_or_else(bad)?;
+        let ip_len = match family {
+            0 => 4,
+            1 => 16,
+            _ => return Err(bad()),
+        };
+        let addr_bytes = rest.get(..ip_len + 2).ok_or_else(bad)?;
+        let ip = compact::parse_ip(&addr_bytes[..ip_len]).ok_or_else(bad)?;
+        let port = u16::from_be_bytes([addr_bytes[ip_len], addr_bytes[ip_len + 1]]);
+        let addr = SocketAddr::new(ip, port);
+        let code = rest
+            .get(ip_len + 2..ip_len + 6)
+            .map(|b| u32::from_be_bytes(b.try_into().expect("four bytes")));
+        match kind {
+            0 => Ok(Self::Rendezvous(addr)),
+            1 => Ok(Self::Connect(addr)),
+            2 => Ok(Self::Error(
+                addr,
+                HolepunchError::from_code(code.ok_or_else(bad)?),
+            )),
+            _ => Err(bad()),
+        }
+    }
+
+    /// Always with the error code, as BEP 55 says (libtorrent reads past it).
+    pub fn encode(self) -> Vec<u8> {
+        let (kind, code) = match self {
+            Self::Rendezvous(_) => (0u8, 0),
+            Self::Connect(_) => (1, 0),
+            Self::Error(_, e) => (2, e.code()),
+        };
+        // An IPv4 peer seen on a dual-stack socket goes out as IPv4.
+        let addr = SocketAddr::new(self.addr().ip().to_canonical(), self.addr().port());
+        let mut out = vec![kind, u8::from(addr.is_ipv6())];
+        compact::encode(&addr, &mut out);
+        out.extend_from_slice(&code.to_be_bytes());
+        out
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -323,6 +451,57 @@ mod tests {
         ] {
             let bytes = Bytes::from(m.encode());
             assert_eq!(MetadataMessage::decode(&bytes).unwrap(), m);
+        }
+    }
+
+    #[test]
+    fn upload_only_and_dont_have() {
+        assert_eq!(decode_upload_only(&encode_upload_only(true)), Ok(true));
+        assert_eq!(decode_upload_only(&encode_upload_only(false)), Ok(false));
+        assert!(decode_upload_only(&[]).is_err());
+        // libtorrent's `write_dont_have`: the piece index, big-endian.
+        assert_eq!(encode_dont_have(0x0102_0304), [1, 2, 3, 4]);
+        assert_eq!(decode_dont_have(&[0, 0, 1, 0]), Ok(256));
+        assert!(decode_dont_have(&[0, 0, 1]).is_err());
+    }
+
+    #[test]
+    fn holepunch_messages() {
+        let v4: SocketAddr = "1.2.3.4:6881".parse().unwrap();
+        let v6: SocketAddr = "[2001:db8::1]:51413".parse().unwrap();
+        for m in [
+            HolepunchMessage::Rendezvous(v4),
+            HolepunchMessage::Connect(v6),
+            HolepunchMessage::Error(v4, HolepunchError::NotConnected),
+            HolepunchMessage::Error(v6, HolepunchError::Other(9)),
+        ] {
+            assert_eq!(HolepunchMessage::decode(&m.encode()), Ok(m));
+        }
+        // BEP 55's layout: type, address type, address, port, error code.
+        assert_eq!(
+            HolepunchMessage::Error(v4, HolepunchError::NoSupport).encode(),
+            [2, 0, 1, 2, 3, 4, 0x1a, 0xe1, 0, 0, 0, 3]
+        );
+        // libtorrent leaves the code out of rendezvous and connect messages.
+        assert_eq!(
+            HolepunchMessage::decode(&[1, 0, 1, 2, 3, 4, 0x1a, 0xe1]),
+            Ok(HolepunchMessage::Connect(v4))
+        );
+        // An IPv4 address seen as IPv6-mapped goes out as IPv4.
+        let mapped: SocketAddr = "[::ffff:1.2.3.4]:6881".parse().unwrap();
+        assert_eq!(
+            HolepunchMessage::Connect(mapped).encode()[..8],
+            [1, 0, 1, 2, 3, 4, 0x1a, 0xe1]
+        );
+        for bad in [
+            &[][..],
+            &[0],
+            &[0, 2, 1, 2, 3, 4, 0, 1],
+            &[0, 0, 1, 2, 3],
+            &[3, 0, 1, 2, 3, 4, 0, 1],
+            &[2, 0, 1, 2, 3, 4, 0, 1],
+        ] {
+            assert!(HolepunchMessage::decode(bad).is_err(), "{bad:?}");
         }
     }
 
