@@ -27,7 +27,7 @@ test.
 2. [x] Reproduce on sentinel.
 3. [x] Fix: input-proportional limit.
 4. [x] Regression tests; 8 × 600 s fuzz run clean.
-5. [ ] fmt, clippy, tests; commit; push master; watch CI. (current)
+5. [x] fmt, clippy, tests; commit (`92f1ee1`); push master; CI green.
 
 ## Findings
 
@@ -59,4 +59,4 @@ test.
 - [x] Claim committed
 - [x] Fix and tests pass locally (`cargo test -p apitorrent-deluge`, clippy on the crate)
 - [x] Fixed fuzz run clean
-- [ ] Pushed, CI green
+- [x] Pushed, CI green: https://github.com/cinderblock/apitorrent/actions/runs/45115053485
